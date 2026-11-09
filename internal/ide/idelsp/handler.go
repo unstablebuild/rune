@@ -43,15 +43,17 @@ import (
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/handler/html"
 	"unstable.build/rune/internal/text"
+	"unstable.build/rune/internal/workspace"
 )
 
 var errCouldNotSchedule = errors.New(
 	"could not schedule operation",
 )
 
-// WindowManager provides floating window management for
-// LSP callback prompts.
+// WindowManager provides the floating windows and prompts that LSP
+// callbacks show. Its methods are called on the event loop.
 type WindowManager interface {
+	browserapi.Prompter
 	Floating(h browserapi.Floating, cfg browserapi.FloatingConfig) (browserapi.Window, error)
 	CloseWindow(browserapi.Window) error
 }
@@ -63,6 +65,14 @@ type Editor interface {
 	SetLocationList(textapi.Handler, textapi.LocationPriority, string, textapi.LocationList) error
 	SetCursor(textapi.Handler, term.Coordinates) error
 	CellEditor(textapi.Handler) textapi.CellEditor
+}
+
+// FileSystem is the workspace file system that language servers edit.
+// Its case rule decides whether two URIs from servers name the same
+// document.
+type FileSystem interface {
+	schemeapi.FileSystem
+	PathCaseSensitive() bool
 }
 
 // CallbackHandlerConfig holds optional dependencies for
@@ -108,7 +118,7 @@ type CallbackHandler struct {
 	windowManager    WindowManager
 	resourceOpener   browserapi.ResourceOpener
 	editor           Editor
-	fileSystem       schemeapi.FileSystem
+	fileSystem       FileSystem
 	rootURI          string
 	config           config.Config
 	interrupter      term.Interrupter
@@ -116,15 +126,24 @@ type CallbackHandler struct {
 	icons            IconSet
 	log              *slog.Logger
 
-	mu           sync.Mutex
-	progress     map[string]string
+	mu       sync.Mutex
+	progress map[string]string
+	// fileVersions and diagnostics are keyed by uriKey, so a server
+	// naming a file with different case than the editor still finds it.
 	fileVersions map[string]*fileVersionState
 	versionCond  *sync.Cond
-	// diagnostics caches the latest diagnostics per URI, keyed by the
-	// publishing server's name so that several backends sharing one
-	// language id (e.g. ty + ruff) accumulate independently instead
-	// of overwriting each other.
-	diagnostics map[string]map[string][]semanticapi.Diagnostic
+	diagnostics  map[string]*uriDiagnostics
+}
+
+// uriDiagnostics caches the latest diagnostics of one document.
+type uriDiagnostics struct {
+	// uri is the first spelling published for the document, so callers
+	// of Diagnostics see a URI a server actually used.
+	uri string
+	// byServer is keyed by the publishing server so that several
+	// backends sharing one language id (e.g. ty + ruff) accumulate
+	// independently instead of overwriting each other.
+	byServer map[string][]semanticapi.Diagnostic
 }
 
 // fileVersionState tracks the latest sent and processed
@@ -166,7 +185,7 @@ func NewCallbackHandler(
 	windowManager WindowManager,
 	resourceOpener browserapi.ResourceOpener,
 	editor Editor,
-	fileSystem schemeapi.FileSystem,
+	fileSystem FileSystem,
 	rootURI string,
 	cfg CallbackHandlerConfig,
 ) *CallbackHandler {
@@ -195,10 +214,21 @@ func NewCallbackHandler(
 		log:              slog.With("struct", "idelsp.CallbackHandler", "workspace", rootURI),
 		progress:         make(map[string]string),
 		fileVersions:     make(map[string]*fileVersionState),
-		diagnostics:      make(map[string]map[string][]semanticapi.Diagnostic),
+		diagnostics:      make(map[string]*uriDiagnostics),
 	}
 	h.versionCond = sync.NewCond(&h.mu)
 	return h
+}
+
+func (h *CallbackHandler) uriKey(uri string) string {
+	if h.fileSystem.PathCaseSensitive() {
+		return uri
+	}
+	u, err := workspaceapi.ParseURI(uri)
+	if err != nil {
+		return uri
+	}
+	return workspace.URIKey(u, false)
 }
 
 // ShowMessage displays a message notification.
@@ -242,6 +272,7 @@ func (h *CallbackHandler) PublishDiagnostics(
 	if err != nil {
 		return fmt.Errorf("parse URI: %w", err)
 	}
+	key := h.uriKey(params.URI)
 
 	// serverID combines the publishing server name with its root URI
 	// so two servers sharing a name (e.g. "ty") rooted at different
@@ -257,22 +288,25 @@ func (h *CallbackHandler) PublishDiagnostics(
 	// The cache is keyed by publishing server so multiple backends
 	// for one language id accumulate instead of overwriting.
 	h.mu.Lock()
+	entry, found := h.diagnostics[key]
 	if len(params.Diagnostics) == 0 {
-		if byServer, ok := h.diagnostics[params.URI]; ok {
-			delete(byServer, serverID)
-			if len(byServer) == 0 {
-				delete(h.diagnostics, params.URI)
+		if found {
+			delete(entry.byServer, serverID)
+			if len(entry.byServer) == 0 {
+				delete(h.diagnostics, key)
 			}
 		}
 	} else {
 		stored := make([]semanticapi.Diagnostic, len(params.Diagnostics))
 		copy(stored, params.Diagnostics)
-		byServer, ok := h.diagnostics[params.URI]
-		if !ok {
-			byServer = make(map[string][]semanticapi.Diagnostic)
-			h.diagnostics[params.URI] = byServer
+		if !found {
+			entry = &uriDiagnostics{
+				uri:      params.URI,
+				byServer: make(map[string][]semanticapi.Diagnostic),
+			}
+			h.diagnostics[key] = entry
 		}
-		byServer[serverID] = stored
+		entry.byServer[serverID] = stored
 	}
 	// Merge every server's diagnostics for this URI into a single
 	// location list. Keying the cache by server keeps each server's
@@ -281,8 +315,10 @@ func (h *CallbackHandler) PublishDiagnostics(
 	// under one "lsp-diagnostics" source so navigation aliases treat
 	// them as a single list.
 	merged := make([]semanticapi.Diagnostic, 0)
-	for _, diags := range h.diagnostics[params.URI] {
-		merged = append(merged, diags...)
+	if entry != nil {
+		for _, diags := range entry.byServer {
+			merged = append(merged, diags...)
+		}
 	}
 	h.mu.Unlock()
 
@@ -349,12 +385,12 @@ func (h *CallbackHandler) Diagnostics() map[string][]semanticapi.Diagnostic {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	out := make(map[string][]semanticapi.Diagnostic, len(h.diagnostics))
-	for uri, byServer := range h.diagnostics {
+	for _, entry := range h.diagnostics {
 		var merged []semanticapi.Diagnostic
-		for _, diags := range byServer {
+		for _, diags := range entry.byServer {
 			merged = append(merged, diags...)
 		}
-		out[uri] = merged
+		out[entry.uri] = merged
 	}
 	return out
 }
@@ -556,48 +592,47 @@ func (h *CallbackHandler) ShowMessageRequest(
 	ctx context.Context,
 	params semanticapi.ShowMessageRequestParams,
 ) (*semanticapi.MessageActionItem, error) {
+	if len(params.Actions) == 0 {
+		// A prompt needs an option, and with no action to pick there is
+		// nothing to answer but the message.
+		return nil, h.ShowMessage(ctx, semanticapi.ShowMessageParams{
+			Type: params.Type, Message: params.Message,
+		})
+	}
 	titles := make([]string, len(params.Actions))
 	for i, a := range params.Actions {
 		titles[i] = fmt.Sprintf("   %s    ", a.Title)
 	}
 
 	ch := make(chan *semanticapi.MessageActionItem, 1)
-	prompt := handler.NewPrompt(handler.PromptConfig{
-		HighlightAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorRed,
+	answer := func(item *semanticapi.MessageActionItem) {
+		select {
+		case ch <- item:
+		default:
+		}
+	}
+	promptHandler := handler.FuncPromptHandler(
+		func(idx int, _ string) {
+			if idx >= 0 && idx < len(params.Actions) {
+				answer(&params.Actions[idx])
+			} else {
+				answer(nil)
+			}
 		},
-		OptionAttr: term.Attributes{
-			Attrs: term.AttrBold,
-			Bg:    term.ColorGray,
+		func() error {
+			answer(nil)
+			return nil
 		},
-		PromptConfig: component.PromptConfig{
-			Message: params.Message,
-			Options: titles,
-		},
-		PromptHandler: handler.FuncPromptHandler(
-			func(idx int, _ string) {
-				if idx >= 0 && idx < len(params.Actions) {
-					ch <- &params.Actions[idx]
-				} else {
-					ch <- nil
-				}
-			},
-			func() error {
-				ch <- nil
-				return nil
-			},
-		),
-	})
+	)
 
 	winCh := make(chan browserapi.Window, 1)
 	errCh := make(chan error, 1)
 	ok := h.scheduleNextTick(func() {
-		win, err := h.windowManager.Floating(
-			prompt, browserapi.FloatingConfig{Alignment: component.AlignmentCentered},
-		)
+		win, err := h.windowManager.Prompt(browserapi.PromptConfig{
+			Message: params.Message, Options: titles,
+		}, promptHandler)
 		if err != nil {
-			errCh <- fmt.Errorf("show floating: %w", err)
+			errCh <- fmt.Errorf("show prompt: %w", err)
 			return
 		}
 		winCh <- win
@@ -753,13 +788,14 @@ func (h *CallbackHandler) DiagnosticRefresh(
 // FileDidChange records that a file changed and how the next
 // WaitFileProcessed should wait for the LSP server to reconcile it.
 func (h *CallbackHandler) FileDidChange(uri string, version int32, open, oob bool) {
+	key := h.uriKey(uri)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	state, ok := h.fileVersions[uri]
+	state, ok := h.fileVersions[key]
 	if !ok {
 		state = &fileVersionState{}
-		h.fileVersions[uri] = state
+		h.fileVersions[key] = state
 	}
 	switch {
 	case !oob:
@@ -805,10 +841,11 @@ func (h *CallbackHandler) WaitFileProcessed(ctx context.Context, uri string) err
 		defer cancel()
 	}
 
+	key := h.uriKey(uri)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	state, ok := h.fileVersions[uri]
+	state, ok := h.fileVersions[key]
 	if !ok {
 		return nil
 	}
@@ -861,10 +898,11 @@ func (h *CallbackHandler) WaitFileProcessed(ctx context.Context, uri string) err
 }
 
 func (h *CallbackHandler) fileDidProcess(uri string, version int32) {
+	key := h.uriKey(uri)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	state, ok := h.fileVersions[uri]
+	state, ok := h.fileVersions[key]
 	if !ok {
 		return
 	}

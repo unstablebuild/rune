@@ -23,6 +23,6 @@ import (
 )
 
 // watchGUISignals is a no-op on Windows: no POSIX job-control signals.
-func watchGUISignals(func(term.Event) bool, term.Event) func() {
+func watchGUISignals(*bootstrapHandler, term.Event) func() {
 	return func() {}
 }

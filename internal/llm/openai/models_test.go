@@ -34,6 +34,12 @@ func TestGPT6AstraCatalog(t *testing.T) {
 	assert.True(t, SupportsReasoning(GPT6Astra))
 }
 
+func TestGPT6Dot1TerraCatalog(t *testing.T) {
+	assert.Equal(t, 1050000, AvailableModels()[GPT6Dot1Terra])
+	assert.Equal(t, 128000, MaxOutputTokens(GPT6Dot1Terra))
+	assert.True(t, SupportsReasoning(GPT6Dot1Terra))
+}
+
 func TestMaxOutputTokens(t *testing.T) {
 	tests := []struct {
 		model string
@@ -41,6 +47,7 @@ func TestMaxOutputTokens(t *testing.T) {
 	}{
 		{GPT5Dot6, 128000},
 		{GPT6Astra, 128000},
+		{GPT6Dot1Terra, 128000},
 		{GPT5Dot6Sol, 128000},
 		{GPT5Dot6Terra, 128000},
 		{GPT5Dot6Luna, 128000},
@@ -114,6 +121,7 @@ func TestSupportsReasoning(t *testing.T) {
 		{"gpt-5.6-luna", true},
 		{"gpt-6-astra", true},
 		{"gpt-6-sol", true},
+		{"gpt-6.1-terra", true},
 		{"gpt-6-luna", true},
 		// Older models do not support reasoning.
 		{"gpt-4", false},
@@ -195,10 +203,14 @@ func TestNormalizeEffort(t *testing.T) {
 		{"gpt-6-astra none", "gpt-6-astra", "none", "", true},
 		{"gpt-6-astra minimal", "gpt-6-astra", "minimal", "", true},
 
-		// GPT-6 Sol matches Astra; GPT-6 Luna stops at max.
+		// GPT-6 Sol matches Astra; GPT-6.1 Terra accepts none but not ultra;
+		// GPT-6 Luna stops at max.
 		{"gpt-6-sol max", "gpt-6-sol", "max", "max", false},
 		{"gpt-6-sol ultra", "gpt-6-sol", "ultra", "ultra", false},
 		{"gpt-6-sol none", "gpt-6-sol", "none", "", true},
+		{"gpt-6.1-terra none", "gpt-6.1-terra", "none", "none", false},
+		{"gpt-6.1-terra max", "gpt-6.1-terra", "max", "max", false},
+		{"gpt-6.1-terra ultra", "gpt-6.1-terra", "ultra", "", true},
 		{"gpt-6-luna medium", "gpt-6-luna", "medium", "medium", false},
 		{"gpt-6-luna xhigh", "gpt-6-luna", "xhigh", "xhigh", false},
 		{"gpt-6-luna max", "gpt-6-luna", "max", "max", false},

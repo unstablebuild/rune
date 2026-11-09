@@ -79,7 +79,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	}
 	sum := sha256.Sum256(instructions)
 
-	w, err := Connect()
+	w, err := Connect(ExtensionID)
 	if err != nil {
 		return Result{}, err
 	}

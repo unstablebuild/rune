@@ -38,6 +38,17 @@ expect_rpc(
     timeout = "5s",
 )
 
+# Completion and help, as Rune asks for them on Tab and for a console.
+if complete_command(c, args = ["a", "b"]) != ["beta"]:
+    fail("unexpected count completions")
+if complete_command(c) != ["alpha", "beta"]:
+    fail("unexpected count completions without args")
+s = expect_repl_command("status")
+if complete_repl_command(s, args = ["v"]) != ["verbose"]:
+    fail("unexpected status completions")
+if repl_help(s) != "usage: status [verbose]":
+    fail("unexpected status help")
+
 publish_event("open", uri = "file:///tmp/foo.go")
 expect_rpc(
     "browser.Notifications/Notify",

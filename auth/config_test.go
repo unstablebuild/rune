@@ -80,16 +80,6 @@ func TestDefaultConfigSignupURL(t *testing.T) {
 	assert.Equal(t, staging, DefaultNativeConfig(api).SignupURL)
 }
 
-func TestDefaultNativeConfigPackageKeyring(t *testing.T) {
-	api, err := url.Parse("https://api.rune.build")
-	require.NoError(t, err)
-	keyring := DefaultNativeConfig(api).PackageKeyringArmored
-	assert.Contains(t, keyring, "BEGIN PGP PUBLIC KEY BLOCK")
-	// the M2M shape is ox-api's backend Auth0 client config; it is not
-	// served to Rune clients and must not carry the keyring payload.
-	assert.Empty(t, DefaultM2MConfig().PackageKeyringArmored)
-}
-
 func TestDefaultNativeConfigTokenURL(t *testing.T) {
 	cases := []struct {
 		name string

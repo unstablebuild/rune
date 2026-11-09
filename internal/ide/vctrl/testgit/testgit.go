@@ -21,6 +21,8 @@
 package testgit
 
 import (
+	"net/http"
+	"net/http/cgi"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,4 +84,23 @@ func Run(t *testing.T, dir string, args ...string) []byte {
 		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
 	}
 	return out
+}
+
+// HTTPBackend returns a handler serving every repository under root
+// (worktree or bare) over smart HTTP through `git http-backend`, so
+// real git clients get the protocol features they negotiate, such as
+// shallow fetches and protocol v2. It runs with the hardened env and
+// skips the test when git is not on PATH.
+func HTTPBackend(t *testing.T, root string) http.Handler {
+	t.Helper()
+	gitBin, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available on PATH")
+	}
+	return &cgi.Handler{
+		Path: gitBin,
+		Args: []string{"http-backend"},
+		Dir:  root,
+		Env:  append(Env(root), "GIT_PROJECT_ROOT="+root, "GIT_HTTP_EXPORT_ALL=1"),
+	}
 }

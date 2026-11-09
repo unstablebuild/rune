@@ -17,11 +17,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -120,68 +118,30 @@ func (f *fakeFS) ReadDir(_ string) ([]os.DirEntry, error) {
 	return nil, errors.New("not supported")
 }
 
-// scriptedCmd records expected exit code, stdout payload, and a tag
-// recorded into log for assertions.
-type scriptedCmd struct {
-	stdout string
-	stderr string
-	err    error
-}
-
-// fakeExecutor implements workspaceapi.Executor. It dispatches on
-// (cmd.Path, cmd.Args[0..]) by joining them with spaces and looking
-// up the resulting key in `responses`. Unknown commands return an
-// error from Start.
+// fakeExecutor implements workspaceapi.Executor. LookPath answers from
+// `paths`; Start records the space-joined command in `calls` and fails,
+// since resolving gopls must not run anything.
 type fakeExecutor struct {
-	mu        sync.Mutex
-	responses map[string]scriptedCmd
-	calls     []string
-	nextPid   workspaceapi.Pid
+	mu    sync.Mutex
+	paths map[string]string
+	calls []string
 }
 
 func newFakeExecutor() *fakeExecutor {
-	return &fakeExecutor{
-		responses: map[string]scriptedCmd{},
-		nextPid:   1,
-	}
+	return &fakeExecutor{paths: map[string]string{}}
 }
 
-func (e *fakeExecutor) respond(key string, r scriptedCmd) *fakeExecutor {
-	e.responses[key] = r
+func (e *fakeExecutor) onPath(name, bin string) *fakeExecutor {
+	e.paths[name] = bin
 	return e
 }
 
-func (e *fakeExecutor) callKey(cmd workspaceapi.Cmd) string {
-	return strings.Join(append([]string{cmd.Path}, cmd.Args...), " ")
-}
-
 func (e *fakeExecutor) Start(_ context.Context, cmd workspaceapi.Cmd) (workspaceapi.Pid, error) {
+	key := strings.Join(append([]string{cmd.Path}, cmd.Args...), " ")
 	e.mu.Lock()
-	key := e.callKey(cmd)
 	e.calls = append(e.calls, key)
-	resp, ok := e.responses[key]
-	pid := e.nextPid
-	e.nextPid++
 	e.mu.Unlock()
-
-	if !ok {
-		return 0, fmt.Errorf("fakeExecutor: no scripted response for %q", key)
-	}
-	if cmd.Stdout != nil && resp.stdout != "" {
-		_, _ = io.Copy(cmd.Stdout, bytes.NewBufferString(resp.stdout))
-	}
-	if cmd.Stderr != nil && resp.stderr != "" {
-		_, _ = io.Copy(cmd.Stderr, bytes.NewBufferString(resp.stderr))
-	}
-	if cmd.Watcher != nil {
-		ch := cmd.Watcher.WatchProcess()
-		go func(err error) {
-			if ch != nil {
-				ch <- err
-			}
-		}(resp.err)
-	}
-	return pid, nil
+	return 0, fmt.Errorf("fakeExecutor: unexpected command %q", key)
 }
 
 func (e *fakeExecutor) Signal(_ workspaceapi.Pid, _ syscall.Signal) error {
@@ -189,8 +149,6 @@ func (e *fakeExecutor) Signal(_ workspaceapi.Pid, _ syscall.Signal) error {
 }
 
 func (e *fakeExecutor) Close() error { return nil }
-
-const shellProbe = "sh -lc command -v gopls"
 
 func TestResolveGoplsBinary(t *testing.T) {
 	t.Run("packaged gopls wins over well-known and shell", func(t *testing.T) {
@@ -231,27 +189,26 @@ func TestResolveGoplsBinary(t *testing.T) {
 
 	t.Run("directory at well-known location is ignored", func(t *testing.T) {
 		fs := newFakeFS().addDir("/usr/local/go/bin/gopls")
-		ex := newFakeExecutor().
-			respond(shellProbe, scriptedCmd{err: errors.New("not found")})
+		ex := newFakeExecutor()
 		_, err := resolveGoplsBinary(
 			context.Background(), fs, ex, "")
 		require.Error(t, err)
 	})
 
-	t.Run("well-known miss falls through to shell probe", func(t *testing.T) {
+	t.Run("well-known miss falls through to PATH", func(t *testing.T) {
 		fs := newFakeFS()
-		ex := newFakeExecutor().
-			respond(shellProbe, scriptedCmd{stdout: "/opt/gopls\n"})
+		ex := newFakeExecutor().onPath("gopls", "/opt/gopls")
 		got, err := resolveGoplsBinary(
 			context.Background(), fs, ex, "")
 		require.NoError(t, err)
 		assert.Equal(t, "/opt/gopls", got)
+		assert.Empty(t, ex.calls,
+			"looking gopls up must not run a command the user is asked to approve")
 	})
 
-	t.Run("non-absolute shell output is rejected", func(t *testing.T) {
+	t.Run("non-absolute PATH entry is rejected", func(t *testing.T) {
 		fs := newFakeFS()
-		ex := newFakeExecutor().
-			respond(shellProbe, scriptedCmd{stdout: "gopls\n"})
+		ex := newFakeExecutor().onPath("gopls", "gopls")
 		_, err := resolveGoplsBinary(
 			context.Background(), fs, ex, "")
 		require.Error(t, err)
@@ -259,11 +216,11 @@ func TestResolveGoplsBinary(t *testing.T) {
 
 	t.Run("everything fails returns error", func(t *testing.T) {
 		fs := newFakeFS()
-		ex := newFakeExecutor().
-			respond(shellProbe, scriptedCmd{err: errors.New("not found")})
+		ex := newFakeExecutor()
 		_, err := resolveGoplsBinary(
 			context.Background(), fs, ex, "")
 		require.Error(t, err)
+		assert.Empty(t, ex.calls)
 	})
 }
 
@@ -329,7 +286,7 @@ func TestResolveGoplsForRootLooksUpPackageOnlyWithoutOverride(t *testing.T) {
 				LanguageID: "go", Tools: []string{"gopls"},
 			}).Tools()
 			fs := newFakeFS().addFile(wellKnown)
-			ex := newFakeExecutor().respond(shellProbe, scriptedCmd{err: errors.New("not found")})
+			ex := newFakeExecutor()
 			notify := &mockNotifications{}
 
 			got := resolveGoplsForRoot(t.Context(), fs, ex, tools, tc.cfg, notify, "file")
@@ -395,4 +352,14 @@ func TestReadGoplsLspPath(t *testing.T) {
 		require.Len(t, mn.getMessages(), 1)
 		assert.Equal(t, browserapi.LevelWarn, mn.getMessages()[0].Level)
 	})
+}
+
+func (e *fakeExecutor) LookPath(_ context.Context, name, _ string) (string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	bin, ok := e.paths[name]
+	if !ok {
+		return "", fmt.Errorf("look up %s: %w", name, fs.ErrNotExist)
+	}
+	return bin, nil
 }

@@ -61,7 +61,11 @@ func (t OperationType) String() string {
 }
 
 // Operation represents a single filesystem change detected by
-// comparing the view tree against the base tree.
+// comparing the view tree against the base tree. An operation on a
+// directory carries everything inside it, including entries the
+// explorer never loaded, so entries that only follow their directory
+// get no operation of their own. URI is where the entry is before any
+// operation is applied and NewURI is where it ends up after all of them.
 type Operation struct {
 	Type   OperationType
 	URI    workspaceapi.URI // Source URI (for delete, rename, move, copy)
@@ -107,127 +111,130 @@ func (cs *ChangeSet) HasConflicts() bool {
 	return len(cs.Conflicts) > 0
 }
 
-// computeChangeSet compares the view tree against the base tree
-// and returns a ChangeSet with operations and any detected conflicts.
-func computeChangeSet(baseTree, viewTree *node) *ChangeSet {
+// change is an Operation together with the nodes it was derived from,
+// which schedule needs to tell which changes must wait for which.
+type change struct {
+	Operation
+	base *node // the entry in the base tree; nil for creates
+	view *node // the entry in the view tree; nil for deletes
+}
+
+// slot is where an entry sits: its name within its parent directory.
+// The parent is identified by row ID rather than path, so an entry whose
+// directory moved is still in the same slot and needs no operation.
+type slot struct {
+	parent rune
+	name   string
+}
+
+// rootParent is the slot parent of the root's children. Row IDs are
+// never negative, and an unsaved directory's children get parent 0,
+// which matches no entry on disk.
+const rootParent rune = -1
+
+func slotOf(n *node) slot {
+	if n.parent == nil || n.parent.depth < 0 {
+		return slot{parent: rootParent, name: n.name}
+	}
+	return slot{parent: n.parent.id, name: n.name}
+}
+
+// computeChangeSet compares the view tree against the base tree and
+// returns the conflicts it found together with the changes, in
+// detection order.
+func computeChangeSet(baseTree, viewTree *node) (*ChangeSet, []*change) {
 	cs := &ChangeSet{}
+	baseNodes := descendants(baseTree)
+	viewNodes := descendants(viewTree)
 
-	// Collect entries from both trees
-	baseEntries := collectEntries(baseTree)
-	viewEntries := collectEntries(viewTree)
-
-	baseMap := buildEntryMap(baseEntries)
-	viewMap := buildEntryMap(viewEntries)
-
-	// Track target paths to detect conflicts
-	targetPaths := make(map[string]rune) // path -> entry ID
-
-	// Find IDs that appear multiple times in view (copies)
-	idCounts := make(map[rune]int)
-	for _, e := range viewEntries {
-		if e.ID != 0 {
-			idCounts[e.ID]++
+	baseByID := make(map[rune]*node, len(baseNodes))
+	for _, n := range baseNodes {
+		baseByID[n.id] = n
+	}
+	// An ID on more than one row is copied to all but its last row.
+	idCounts := make(map[rune]int, len(viewNodes))
+	for _, n := range viewNodes {
+		if n.id != 0 {
+			idCounts[n.id]++
 		}
 	}
+	inView := make(map[rune]bool, len(idCounts))
+	for id := range idCounts {
+		inView[id] = true
+	}
 
-	// Process view entries to detect operations
-	for _, viewEntry := range viewEntries {
-		// Check for path conflicts
-		if existingID, exists := targetPaths[viewEntry.URI.String()]; exists {
+	var changes []*change
+	targetPaths := make(map[string]rune, len(viewNodes))
+	for _, v := range viewNodes {
+		if existingID, exists := targetPaths[v.uri.String()]; exists {
 			cs.Conflicts = append(cs.Conflicts, Conflict{
-				Path:    viewEntry.URI.Path(),
+				Path:    v.uri.Path(),
 				Entry1:  existingID,
-				Entry2:  viewEntry.ID,
-				Message: fmt.Sprintf("path conflict: %s", viewEntry.URI.Path()),
+				Entry2:  v.id,
+				Message: fmt.Sprintf("path conflict: %s", v.uri.Path()),
 			})
 			continue
 		}
-		targetPaths[viewEntry.URI.String()] = viewEntry.ID
+		targetPaths[v.uri.String()] = v.id
 
-		// New entry (no ID)
-		if viewEntry.ID == 0 {
-			if viewEntry.IsDir {
-				cs.Operations = append(cs.Operations, Operation{
-					Type:   OpMkdir,
-					NewURI: viewEntry.URI,
-				})
-			} else {
-				cs.Operations = append(cs.Operations, Operation{
-					Type:   OpCreate,
-					NewURI: viewEntry.URI,
-				})
+		b := baseByID[v.id]
+		switch {
+		case v.id == 0 || b == nil:
+			typ := OpCreate
+			if v.isDir {
+				typ = OpMkdir
 			}
-			continue
-		}
-
-		// Look up in base
-		baseEntry := baseMap.Get(viewEntry.ID)
-		if baseEntry == nil {
-			// ID exists in view but not base - treat as new
-			if viewEntry.IsDir {
-				cs.Operations = append(cs.Operations, Operation{
-					Type:   OpMkdir,
-					NewURI: viewEntry.URI,
-				})
-			} else {
-				cs.Operations = append(cs.Operations, Operation{
-					Type:   OpCreate,
-					NewURI: viewEntry.URI,
-				})
+			changes = append(changes, &change{
+				Operation: Operation{Type: typ, NewURI: v.uri},
+				view:      v,
+			})
+		case idCounts[v.id] > 1:
+			idCounts[v.id]--
+			changes = append(changes, &change{
+				Operation: Operation{Type: OpCopy, URI: b.uri, NewURI: v.uri},
+				base:      b,
+				view:      v,
+			})
+		case slotOf(b) != slotOf(v):
+			typ := OpMove
+			if slotOf(b).parent == slotOf(v).parent {
+				typ = OpRename
 			}
-			continue
-		}
-
-		// Check if this is a copy (same ID appears multiple times)
-		if idCounts[viewEntry.ID] > 1 {
-			// First occurrence is the original, subsequent are copies
-			// We track which we've already processed
-			idCounts[viewEntry.ID]--
-			if idCounts[viewEntry.ID] > 0 {
-				cs.Operations = append(cs.Operations, Operation{
-					Type:   OpCopy,
-					URI:    baseEntry.URI,
-					NewURI: viewEntry.URI,
-				})
-				continue
-			}
-		}
-
-		// Check if renamed or moved
-		if baseEntry.URI.String() != viewEntry.URI.String() {
-			baseParent := baseEntry.ParentURI().String()
-			viewParent := viewEntry.ParentURI().String()
-
-			if baseParent == viewParent {
-				// Same parent = rename
-				cs.Operations = append(cs.Operations, Operation{
-					Type:   OpRename,
-					URI:    baseEntry.URI,
-					NewURI: viewEntry.URI,
-				})
-			} else {
-				// Different parent = move
-				cs.Operations = append(cs.Operations, Operation{
-					Type:   OpMove,
-					URI:    baseEntry.URI,
-					NewURI: viewEntry.URI,
-				})
-			}
-		}
-	}
-
-	// Find deleted entries (in base but not in view)
-	for _, baseEntry := range baseEntries {
-		if baseEntry.ID == 0 {
-			continue
-		}
-		if viewMap.Get(baseEntry.ID) == nil {
-			cs.Operations = append(cs.Operations, Operation{
-				Type: OpDelete,
-				URI:  baseEntry.URI,
+			changes = append(changes, &change{
+				Operation: Operation{Type: typ, URI: b.uri, NewURI: v.uri},
+				base:      b,
+				view:      v,
 			})
 		}
 	}
 
-	return cs
+	for _, b := range baseNodes {
+		if inView[b.id] {
+			continue
+		}
+		// Deleting the parent deletes this entry too.
+		if b.parent != baseTree && !inView[b.parent.id] {
+			continue
+		}
+		changes = append(changes, &change{
+			Operation: Operation{Type: OpDelete, URI: b.uri},
+			base:      b,
+		})
+	}
+	return cs, changes
+}
+
+// descendants returns every node below root in pre-order, including the
+// loaded children of collapsed directories.
+func descendants(root *node) []*node {
+	var nodes []*node
+	var walk func(n *node)
+	walk = func(n *node) {
+		for _, child := range n.children {
+			nodes = append(nodes, child)
+			walk(child)
+		}
+	}
+	walk(root)
+	return nodes
 }

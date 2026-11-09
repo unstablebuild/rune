@@ -19,8 +19,11 @@ package ide
 import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
+	"unstable.build/rune/internal/term/programstatus"
 )
 
 // routes calls to WindowManager to the current open workspace
@@ -29,6 +32,7 @@ type currentWorkspaceWindowManager struct {
 }
 
 var _ browserapi.WindowManager = currentWorkspaceWindowManager{}
+var _ browserapi.Prompter = currentWorkspaceWindowManager{}
 
 func (c currentWorkspaceWindowManager) Focus() (browserapi.Window, error) {
 	return c.root.focusBrowser().Focus()
@@ -48,6 +52,24 @@ func (c currentWorkspaceWindowManager) Floating(
 	h browserapi.Floating, cfg browserapi.FloatingConfig,
 ) (browserapi.Window, error) {
 	return c.root.focusBrowser().Floating(h, cfg)
+}
+
+// Prompt satisfies browserapi.Prompter. It must be called on the event
+// loop, and calls h there.
+func (c currentWorkspaceWindowManager) Prompt(
+	cfg browserapi.PromptConfig, h handler.PromptHandler,
+) (browserapi.Window, error) {
+	win, _, err := c.root.focusBrowser().OpenPrompt(cfg, h)
+	if err != nil {
+		return nil, err
+	}
+	return win, nil
+}
+
+// ButtonImages returns the images the current workspace draws its
+// buttons over, or nil when it draws them in colour alone.
+func (c currentWorkspaceWindowManager) ButtonImages() *component.ButtonImages {
+	return c.root.focusBrowser().ButtonImages()
 }
 
 // Bar creates a status bar with Orientation and Handler.
@@ -82,10 +104,14 @@ func (c currentWorkspaceWindowManager) CloseWindow(win browserapi.Window) error 
 	return win.(browser.Window).Close()
 }
 
-// SetTabActivity marks the tab identified by uri in the current
-// workspace as active or idle.
-func (c currentWorkspaceWindowManager) SetTabActivity(
-	uri workspaceapi.URI, active bool,
+// SetTabStatus reports the status of the tab identified by uri in the
+// current workspace.
+func (c currentWorkspaceWindowManager) SetTabStatus(
+	uri workspaceapi.URI, status browserapi.TabStatus,
 ) error {
-	return c.root.focusBrowser().SetTabActivity(uri, active)
+	report, err := browser.ReportFromTabStatus(status, programstatus.HostApp)
+	if err != nil {
+		return err
+	}
+	return c.root.focusBrowser().SetTabStatus(uri, report)
 }

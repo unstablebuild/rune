@@ -37,7 +37,7 @@ import (
 
 type stubWorkspaceManager struct{}
 
-func (stubWorkspaceManager) AddWorkspace(context.Context, workspaceapi.URI) (workspace.Workspace, error) {
+func (stubWorkspaceManager) AcquireWorkspace(context.Context, workspaceapi.URI) (workspace.Workspace, error) {
 	return nil, nil
 }
 func (stubWorkspaceManager) Workspace(workspaceapi.URI) (workspace.Workspace, bool, error) {
@@ -46,12 +46,8 @@ func (stubWorkspaceManager) Workspace(workspaceapi.URI) (workspace.Workspace, bo
 func (stubWorkspaceManager) RegisterScheme(string, schemeapi.SchemeFunc) error {
 	return nil
 }
-func (stubWorkspaceManager) UnregisterScheme(string) error       { return nil }
-func (stubWorkspaceManager) IncrementReference(workspaceapi.URI) {}
-func (stubWorkspaceManager) DecrementReference(workspaceapi.URI) error {
-	return nil
-}
-func (stubWorkspaceManager) RemoveWorkspace(workspaceapi.URI) (workspace.Workspace, bool) {
+func (stubWorkspaceManager) UnregisterScheme(string) error { return nil }
+func (stubWorkspaceManager) ReleaseWorkspace(workspaceapi.URI) (workspace.Workspace, bool) {
 	return nil, false
 }
 
@@ -61,6 +57,8 @@ func (s *stubOpener) Open(uri workspaceapi.URI) (browserapi.Handler, error) {
 	s.opened = append(s.opened, uri)
 	return texttest.NewTestHandler(), nil
 }
+
+func (s *stubOpener) Show(workspaceapi.URI) error { return nil }
 
 type stubWM struct{ set bool }
 
@@ -81,7 +79,7 @@ func (s *stubWM) SetWindowContent(browserapi.Window, browserapi.Handler) error {
 }
 func (stubWM) CloseWindow(browserapi.Window) error { return nil }
 
-func (stubWM) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (stubWM) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
 
 type stubWindow uint64
 

@@ -296,6 +296,7 @@ func TestStatusBarLayout(t *testing.T) {
 						Width:   template.Length{N: 3},
 						Height:  1,
 						Reserve: 3,
+						MaxCut:  template.DefaultImageMaxCut,
 						Fit:     term.ImageFitContain,
 						ZIndex:  -1,
 						Alt:     template.DefaultImageAlt,

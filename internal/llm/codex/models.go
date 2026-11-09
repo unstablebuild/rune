@@ -28,6 +28,8 @@ const (
 	GPT6Astra = "gpt-6-astra"
 	// GPT6Sol is the GPT-6 Sol Codex model.
 	GPT6Sol = "gpt-6-sol"
+	// GPT6Dot1Terra is the GPT-6.1 Terra Codex model.
+	GPT6Dot1Terra = "gpt-6.1-terra"
 	// GPT6Luna is the GPT-6 Luna Codex model.
 	GPT6Luna = "gpt-6-luna"
 	// GPT5Dot6Sol is the GPT-5.6 Sol Codex model.
@@ -62,6 +64,7 @@ func AvailableModels() map[string]int {
 	return map[string]int{
 		GPT6Astra:       872000,
 		GPT6Sol:         872000,
+		GPT6Dot1Terra:   872000,
 		GPT6Luna:        872000,
 		GPT5Dot6Sol:     872000,
 		GPT5Dot6Terra:   872000,

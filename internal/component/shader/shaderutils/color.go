@@ -147,3 +147,93 @@ func DesaturateColor(
 		int32(math.Round(float64(b)+(lum-float64(b))*amount)),
 	)
 }
+
+// AdjustBrightness scales the HSL lightness of color by factor, so
+// factor < 1 darkens and factor > 1 brightens while keeping the hue,
+// the way terminaltexteffects dims and flashes its characters. The
+// lightness is clamped to [0, 1].
+//
+// If color is [term.ColorDefault] it is resolved with resolveDefault.
+// If after resolution color cannot be expressed as RGB, color is
+// returned unchanged so the terminal keeps rendering it natively.
+func AdjustBrightness(
+	color term.Color, factor float64, resolveDefault term.Color,
+) term.Color {
+	resolved := color
+	if resolved == term.ColorDefault {
+		resolved = resolveDefault
+	}
+	if resolved.Hex() < 0 {
+		return color
+	}
+	ri, gi, bi := resolved.RGB()
+	r, g, b := float64(ri)/255, float64(gi)/255, float64(bi)/255
+	h, s, l := rgbToHSL(r, g, b)
+	l = math.Max(0, math.Min(1, l*factor))
+	r, g, b = hslToRGB(h, s, l)
+	return term.NewRGBColor(
+		int32(math.Round(r*255)),
+		int32(math.Round(g*255)),
+		int32(math.Round(b*255)),
+	)
+}
+
+func rgbToHSL(r, g, b float64) (h, s, l float64) {
+	maxC := math.Max(r, math.Max(g, b))
+	minC := math.Min(r, math.Min(g, b))
+	l = (maxC + minC) / 2
+	if maxC == minC {
+		return 0, 0, l
+	}
+	d := maxC - minC
+	if l > 0.5 {
+		s = d / (2 - maxC - minC)
+	} else {
+		s = d / (maxC + minC)
+	}
+	switch maxC {
+	case r:
+		h = (g - b) / d
+		if g < b {
+			h += 6
+		}
+	case g:
+		h = (b-r)/d + 2
+	default:
+		h = (r-g)/d + 4
+	}
+	return h / 6, s, l
+}
+
+func hslToRGB(h, s, l float64) (r, g, b float64) {
+	if s == 0 {
+		return l, l, l
+	}
+	var q float64
+	if l < 0.5 {
+		q = l * (1 + s)
+	} else {
+		q = l + s - l*s
+	}
+	p := 2*l - q
+	return hueToRGB(p, q, h+1.0/3), hueToRGB(p, q, h), hueToRGB(p, q, h-1.0/3)
+}
+
+func hueToRGB(p, q, t float64) float64 {
+	if t < 0 {
+		t++
+	}
+	if t > 1 {
+		t--
+	}
+	switch {
+	case t < 1.0/6:
+		return p + (q-p)*6*t
+	case t < 0.5:
+		return q
+	case t < 2.0/3:
+		return p + (q-p)*(2.0/3-t)*6
+	default:
+		return p
+	}
+}

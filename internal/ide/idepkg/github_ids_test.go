@@ -60,7 +60,7 @@ func TestValidatePkgPath(t *testing.T) {
 }
 
 func ghPkgTarball(t *testing.T) []byte {
-	return makeReqPkgTarball(t, map[string]string{
+	return idepkgtest.MakeTarball(t, map[string]string{
 		"config.yaml": "extensions:\n  demo:\n" +
 			"    path: $RUNE_DATADIR/lib/$RUNE_PKG_ID/main.py\n",
 		"main.py": "print('hi')\n",
@@ -115,13 +115,13 @@ func TestInstallGitHubID(t *testing.T) {
 			[]release.Bundle{{Package: depID, Version: "1"}},
 		)
 		m, n, rm, _ := newTestManager(t, pkgs, versions)
-		rm.SetTarball(ghPkgID, makeReqPkgTarball(t, map[string]string{
+		rm.SetTarball(ghPkgID, idepkgtest.MakeTarball(t, map[string]string{
 			"config.yaml": "requirements:\n  - " + depID + "\n" +
 				"extensions:\n  demo:\n" +
 				"    path: $RUNE_DATADIR/lib/$RUNE_PKG_ID/main.py\n",
 			"main.py": "print('hi')\n",
 		}))
-		rm.SetTarball(depID, makeReqPkgTarball(t, map[string]string{
+		rm.SetTarball(depID, idepkgtest.MakeTarball(t, map[string]string{
 			"lib/python.txt": "python\n",
 		}))
 
@@ -134,6 +134,26 @@ func TestInstallGitHubID(t *testing.T) {
 		assert.True(t, ok, "requirement must be installed")
 		_, ok = versionInUse(t, m, ghPkgID)
 		assert.True(t, ok, "github package must be installed")
+	})
+	t.Run("requirement written as a git URL names its package id", func(t *testing.T) {
+		t.Parallel()
+		pkgs := idepkgtest.MakePackages(release.Package{Name: ghPkgID, Latest: "abc123def456"})
+		versions := idepkgtest.MakeBundles(
+			[]release.Bundle{{Package: ghPkgID, Version: "abc123def456"}})
+		m, _, rm, _ := newTestManager(t, pkgs, versions)
+		rm.SetTarball(ghPkgID, idepkgtest.MakeTarball(t, map[string]string{
+			"config.yaml": "requirements:\n  - https://github.com/foo/dep.git\n" +
+				"extensions:\n  demo:\n" +
+				"    path: $RUNE_DATADIR/lib/$RUNE_PKG_ID/main.py\n",
+			"main.py": "print('hi')\n",
+		}))
+
+		err := m.InstallPackageVersion(
+			context.Background(), ghPkgID, "abc123def456", repl.NopProgressWriter())
+		require.ErrorContains(t, err, `requirement id: `+
+			`"https://github.com/foo/dep.git" is a URL; use github.com/foo/dep`)
+		_, ok := versionInUse(t, m, ghPkgID)
+		assert.False(t, ok)
 	})
 	t.Run("delete package cleans up nested dirs", func(t *testing.T) {
 		t.Parallel()

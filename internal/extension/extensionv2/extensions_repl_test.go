@@ -86,7 +86,7 @@ func TestExtensionsREPLStatusOutput(t *testing.T) {
 
 	runner := newTestWorkspaceRunner(t)
 	require.NoError(t, runner.Run("alpha", "/bin/ext --serve", config.NopConfig()))
-	runner.stopExtension("alpha", assert.AnError)
+	runner.stopExtension(runner.states["alpha"], assert.AnError)
 	require.NoError(t, runner.Run("beta", "/bin/beta --watch", config.NopConfig()))
 	handler := extensionsREPLHandler{runner: runner}
 

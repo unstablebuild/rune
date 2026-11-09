@@ -17,6 +17,7 @@
 package gui
 
 import (
+	"context"
 	"image"
 	"image/color"
 	"testing"
@@ -61,6 +62,35 @@ func TestCellRectToPixels(t *testing.T) {
 	assert.InDelta(t, want.Min.Y, got.Min.Y, 1)
 	assert.InDelta(t, want.Max.X, got.Max.X, 1)
 	assert.InDelta(t, want.Max.Y, got.Max.Y, 1)
+}
+
+func TestFrameContextCarriesTheCellPixelSize(t *testing.T) {
+	tests := []struct {
+		name  string
+		scale float64
+		size  float64
+	}{
+		{name: "unscaled", scale: 1, size: 15},
+		{name: "a fractional device scale", scale: 1.25, size: 15},
+		{name: "a fractional font size", scale: 2, size: 13.5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, err := font.NewManager(0, 0)
+			require.NoError(t, err)
+			m.SetDeviceScale(tt.scale)
+			require.NoError(t, m.SetSize(tt.size))
+			w := cell.NewBufferWriter(frameContext(context.Background(), m), 4, 2)
+
+			width, height, ok := term.CellPixelSizeFromContext(w.Context())
+			require.True(t, ok, "extension handlers must see the frame's cell size")
+			size, ok := cell.PixelSizeFromContext(w.Context())
+			require.True(t, ok)
+			assert.Equal(t, cell.PixelSize{Width: width, Height: height}, size,
+				"handlers in this process and in extensions must see one size")
+			assert.Equal(t, pixelSize(m), size, "the size must be the font's, unrounded")
+		})
+	}
 }
 
 func TestContainRect(t *testing.T) {

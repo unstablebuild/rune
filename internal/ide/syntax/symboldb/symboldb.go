@@ -72,6 +72,10 @@ type Backing interface {
 	syntaxapi.Parser
 	// NewQuerySession returns a per-goroutine batched file querier.
 	NewQuerySession() symbolresolve.QuerySession
+	// GrammarFingerprint identifies the grammar installed for langID:
+	// equal values mean extraction reads identical grammar files. It
+	// fails when the language is not installed.
+	GrammarFingerprint(ctx context.Context, langID string) (string, error)
 }
 
 // Parser is an index-backed syntaxapi.Parser. It also implements
@@ -117,6 +121,7 @@ type Parser struct {
 	// database (persisted marker); it gates ListReferencedSymbols.
 	scannedEver bool
 	closed      bool
+	grammars    map[string]*grammarMemo
 	// updated is closed (and replaced) on every indexer state change so
 	// Wait can block without polling.
 	updated chan struct{}
@@ -125,6 +130,11 @@ type Parser struct {
 	wake chan struct{}
 	// done is closed when the worker goroutine exits.
 	done chan struct{}
+}
+
+type grammarMemo struct {
+	once sync.Once
+	sum  string
 }
 
 var _ syntaxapi.Parser = (*Parser)(nil)
@@ -168,6 +178,7 @@ func New(
 		updated:  make(chan struct{}),
 		wake:     make(chan struct{}, 1),
 		done:     make(chan struct{}),
+		grammars: make(map[string]*grammarMemo),
 	}
 	if writer, ok := symbols.(storageapi.BatchWriter); ok {
 		p.batch = writer
@@ -770,8 +781,12 @@ func (s *scanProgress) done() {
 			return
 		}
 		total := int64(max(scanned, 1))
+		files := "files"
+		if scanned == 1 {
+			files = "file"
+		}
 		_ = s.notify.UpdateNotificationProgress(s.id,
-			fmt.Sprintf("Indexed %d files", scanned), total, total)
+			fmt.Sprintf("Indexed the symbols of %d %s", scanned, files), total, total)
 	})
 }
 
@@ -779,10 +794,29 @@ type fileUpdate struct {
 	us       string
 	rel      string
 	modTime  int64
+	grammar  string
 	ext      symbolresolve.FileExtraction
 	oldNames []string
 	force    bool
 	removed  bool
+}
+
+// grammar returns langID's grammar fingerprint, or "" when it is not
+// installed. The value is fixed for the Parser's lifetime.
+func (p *Parser) grammar(ctx context.Context, langID string) string {
+	p.mu.Lock()
+	m, ok := p.grammars[langID]
+	if !ok {
+		m = &grammarMemo{}
+		p.grammars[langID] = m
+	}
+	p.mu.Unlock()
+	m.once.Do(func() {
+		if sum, err := p.backing.GrammarFingerprint(ctx, langID); err == nil {
+			m.sum = sum
+		}
+	})
+	return m.sum
 }
 
 func (p *Parser) stageFile(
@@ -811,7 +845,12 @@ func (p *Parser) stageFile(
 		return fileUpdate{}, false
 	}
 	modTime := finfo.ModTime().UnixNano()
-	if known && old.ModTime == modTime && old.Version == schemaVersion {
+	// Read before extracting: if the grammar is upgraded in between,
+	// the stamp is older than the grammar used, which only costs a
+	// redundant re-extraction later rather than a stale record.
+	grammar := p.grammar(ctx, spec.LangID)
+	if known && old.ModTime == modTime && old.Version == schemaVersion &&
+		old.Grammar == grammar {
 		return fileUpdate{}, false
 	}
 	ext, err := symbolresolve.ExtractFile(ctx, q, spec, qc, uri)
@@ -825,7 +864,7 @@ func (p *Parser) stageFile(
 		ext = symbolresolve.FileExtraction{}
 	}
 	return fileUpdate{
-		us: us, rel: rel, modTime: modTime, ext: ext,
+		us: us, rel: rel, modTime: modTime, grammar: grammar, ext: ext,
 		oldNames: old.Names,
 		force:    known && old.Version != schemaVersion,
 	}, true
@@ -869,6 +908,7 @@ func (p *Parser) applyFile(ctx context.Context, u fileUpdate) {
 		Path:    u.rel,
 		ModTime: u.modTime,
 		Version: schemaVersion,
+		Grammar: u.grammar,
 		Names:   slices.Sorted(maps.Keys(symbols)),
 		Imports: u.ext.Imports,
 	}

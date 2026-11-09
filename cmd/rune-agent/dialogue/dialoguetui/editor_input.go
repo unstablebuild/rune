@@ -71,6 +71,9 @@ type Input interface {
 	SetDraft(text string, links []InlineAttachmentLink)
 	// AtWordBoundary reports whether a token may begin at the cursor.
 	AtWordBoundary() bool
+	// SetDefaultAttributes sets the attributes of the cells the input
+	// draws without a style of their own.
+	SetDefaultAttributes(term.Attributes)
 	// EnterSubmits handles an <Enter> / <Shift-Enter> key event and
 	// reports whether the dialogue should submit the composed message.
 	// A bare <Enter> always submits; <Shift-Enter> inserts a newline.

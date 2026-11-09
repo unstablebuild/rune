@@ -18,10 +18,13 @@ package ide
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/ide/ideacp"
+	"unstable.build/rune/internal/ide/idedebug"
 )
 
 func mustFileURI(t *testing.T, path string) workspaceapi.URI {
@@ -78,6 +81,21 @@ func TestWorkspaceManagerHandlerEnvSource(t *testing.T) {
 		assert.Equal(t, dir, path)
 	})
 
+	t.Run("RUNE_DATADIR names the data dir on the focused workspace's host", func(t *testing.T) {
+		dir := t.TempDir()
+		m := newTestWorkspaceManagerHandlerWithDir(t,
+			defaultConfigWithWrap(false), dir, nopShutdownShaderConfig())
+		t.Cleanup(func() { _ = m.Close() })
+		m.quiesce()
+		focused := m.workspaces[m.focus]
+		require.NotNil(t, focused)
+		focused.installDir = "/home/remote/.rune"
+
+		got, ok := m.envSource("RUNE_DATADIR")
+		assert.True(t, ok)
+		assert.Equal(t, "/home/remote/.rune", got)
+	})
+
 	t.Run("unknown names return ok=false", func(t *testing.T) {
 		dir := t.TempDir()
 		m := newTestWorkspaceManagerHandlerWithDir(t,
@@ -88,4 +106,54 @@ func TestWorkspaceManagerHandlerEnvSource(t *testing.T) {
 		_, ok = m.envSource("")
 		assert.False(t, ok)
 	})
+}
+
+func TestExpandAdapterDataDir(t *testing.T) {
+	got := expandAdapterDataDir(map[string]idedebug.AdapterConfig{
+		"python": {
+			Command:    []string{"$RUNE_DATADIR/python/bin/python3", "-m", "debugpy.adapter"},
+			LaunchArgs: map[string]string{"python": "$RUNE_DATADIR/python/bin/python3", "cwd": "$HOME"},
+		},
+		"rust": {
+			Command:    []string{"${RUNE_DATADIR}/lib/rust/bin/lldb-dap"},
+			AttachArgs: map[string]string{"program": "$RUNE_DATADIR/x"},
+		},
+	}, "/home/remote/.rune")
+
+	assert.Equal(t, map[string]idedebug.AdapterConfig{
+		"python": {
+			Command:    []string{"/home/remote/.rune/python/bin/python3", "-m", "debugpy.adapter"},
+			LaunchArgs: map[string]string{"python": "/home/remote/.rune/python/bin/python3", "cwd": "$HOME"},
+		},
+		"rust": {
+			Command:    []string{"/home/remote/.rune/lib/rust/bin/lldb-dap"},
+			AttachArgs: map[string]string{"program": "/home/remote/.rune/x"},
+		},
+	}, got)
+}
+
+func TestExpandACPDataDir(t *testing.T) {
+	got := expandACPDataDir(ideacp.Config{
+		Agents: map[string]ideacp.AgentConfig{
+			"rune-agent": {
+				Command: "$RUNE_DATADIR/bin/rune-agent",
+				Args:    []string{"acp", "--config", "${RUNE_DATADIR}/acp.yaml"},
+				Env:     map[string]string{"PATH": "$RUNE_DATADIR/bin:$PATH"},
+			},
+			"claude": {Command: "claude-agent-acp"},
+		},
+		CloseTimeout: time.Second,
+	}, "/home/remote/.rune")
+
+	assert.Equal(t, ideacp.Config{
+		Agents: map[string]ideacp.AgentConfig{
+			"rune-agent": {
+				Command: "/home/remote/.rune/bin/rune-agent",
+				Args:    []string{"acp", "--config", "/home/remote/.rune/acp.yaml"},
+				Env:     map[string]string{"PATH": "/home/remote/.rune/bin:$PATH"},
+			},
+			"claude": {Command: "claude-agent-acp"},
+		},
+		CloseTimeout: time.Second,
+	}, got)
 }

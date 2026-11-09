@@ -299,6 +299,7 @@ func (vi *Vi) Handle(ev term.Event) (quit, handled bool) {
 	mode := vi.handler.mode()
 
 	if ev.Type == term.EventMouse {
+		term.SetPointerShape(ev, term.PointerText)
 		return vi.mouse.Handle(ev)
 	}
 

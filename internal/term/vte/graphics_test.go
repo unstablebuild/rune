@@ -62,8 +62,7 @@ func newGraphicsHarnessFS(
 	mockPtyFile := &workspacetest.File{}
 	tm := &mockTabManager{}
 	attrs := DefaultConfig().NeedsAttentionAttributes
-	pty := workspaceapi.Pty{Master: mockPtyFile, Slave: mockPtyFile}
-	ph := newParserHandler(new(sync.Mutex), pty, tm,
+	ph := newParserHandler(new(sync.Mutex), mockPtyFile, testParserHost{}, tm,
 		clipboard.NewInMemory(), tm.bell, testURI, attrs, false, 100, 0,
 		cellPixelSize, fs, "")
 	ph.sync.primBuf.SetDefaultChar(' ')
@@ -72,7 +71,7 @@ func newGraphicsHarnessFS(
 	return &graphicsHarness{
 		ph:     ph,
 		pty:    mockPtyFile,
-		parser: vteparser.NewParser(ph, new(vteparser.StdTimeout)),
+		parser: vteparser.NewParser(ph),
 	}
 }
 

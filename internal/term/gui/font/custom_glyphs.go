@@ -21,6 +21,10 @@ import (
 	"image/color"
 	"image/draw"
 	"math"
+
+	"golang.org/x/image/font/sfnt"
+	"golang.org/x/image/math/fixed"
+	"golang.org/x/image/vector"
 )
 
 type style uint8
@@ -37,6 +41,8 @@ var (
 	colorFillAlphaStep2 = color.RGBA{R: 128, G: 128, B: 128, A: 128}
 	colorFillAlphaStep3 = color.RGBA{R: 64, G: 64, B: 64, A: 64}
 )
+
+const halfEllipseSegments = 64
 
 func (m *custom) plusGlyph(
 	bounds image.Rectangle,
@@ -68,6 +74,112 @@ func (m *custom) shadeGlyph(bounds image.Rectangle, c color.RGBA) (ok bool) {
 	m.drawRect(bounds, m.mask, x, y, width, height, c)
 	ok = true
 	return
+}
+
+func (m *custom) polygonGlyph(bounds image.Rectangle, polygons ...[][2]float32) bool {
+	return m.fillPath(bounds, func(z *vector.Rasterizer, w, h float32) {
+		for _, vertices := range polygons {
+			z.MoveTo(vertices[0][0]*w, vertices[0][1]*h)
+			for _, v := range vertices[1:] {
+				z.LineTo(v[0]*w, v[1]*h)
+			}
+			z.ClosePath()
+		}
+	})
+}
+
+func (m *custom) halfEllipseGlyph(bounds image.Rectangle, flatX, apexX float32) bool {
+	return m.fillPath(bounds, func(z *vector.Rasterizer, w, h float32) {
+		flat, apex := flatX*w, apexX*w
+		z.MoveTo(flat, 0)
+		for i := 1; i <= halfEllipseSegments; i++ {
+			theta := math.Pi * float64(i) / halfEllipseSegments
+			z.LineTo(
+				flat+(apex-flat)*float32(math.Sin(theta)),
+				h/2*(1-float32(math.Cos(theta))))
+		}
+		z.ClosePath()
+	})
+}
+
+func (m *custom) outlineGlyph(bounds image.Rectangle, r rune) bool {
+	if m.outlines == nil {
+		return false
+	}
+	idx, err := m.outlines.GlyphIndex(&m.buf, r)
+	if err != nil || idx == 0 {
+		return false
+	}
+	unitsPerEm := fixed.I(int(m.outlines.UnitsPerEm()))
+	segments, err := m.outlines.LoadGlyph(&m.buf, idx, unitsPerEm, nil)
+	if err != nil || len(segments) == 0 {
+		return false
+	}
+	extent := fixed.Rectangle26_6{Min: segments[0].Args[0], Max: segments[0].Args[0]}
+	for _, s := range segments {
+		p := s.Args[segmentEnd(s.Op)]
+		extent.Min.X, extent.Max.X = min(extent.Min.X, p.X), max(extent.Max.X, p.X)
+		extent.Min.Y, extent.Max.Y = min(extent.Min.Y, p.Y), max(extent.Max.Y, p.Y)
+	}
+	if extent.Min.X == extent.Max.X || extent.Min.Y == extent.Max.Y {
+		return false
+	}
+	return m.fillPath(bounds, func(z *vector.Rasterizer, w, h float32) {
+		sx := w / float32(extent.Max.X-extent.Min.X)
+		sy := h / float32(extent.Max.Y-extent.Min.Y)
+		at := func(p fixed.Point26_6) (float32, float32) {
+			return float32(p.X-extent.Min.X) * sx, float32(p.Y-extent.Min.Y) * sy
+		}
+		for _, s := range segments {
+			switch s.Op {
+			case sfnt.SegmentOpMoveTo:
+				z.MoveTo(at(s.Args[0]))
+			case sfnt.SegmentOpLineTo:
+				z.LineTo(at(s.Args[0]))
+			case sfnt.SegmentOpQuadTo:
+				bx, by := at(s.Args[0])
+				cx, cy := at(s.Args[1])
+				z.QuadTo(bx, by, cx, cy)
+			case sfnt.SegmentOpCubeTo:
+				bx, by := at(s.Args[0])
+				cx, cy := at(s.Args[1])
+				dx, dy := at(s.Args[2])
+				z.CubeTo(bx, by, cx, cy, dx, dy)
+			}
+		}
+	})
+}
+
+func segmentEnd(op sfnt.SegmentOp) int {
+	switch op {
+	case sfnt.SegmentOpQuadTo:
+		return 1
+	case sfnt.SegmentOpCubeTo:
+		return 2
+	default:
+		return 0
+	}
+}
+
+func (m *custom) fillPath(
+	bounds image.Rectangle, path func(z *vector.Rasterizer, w, h float32),
+) bool {
+	w, h := bounds.Dx(), bounds.Dy()
+	if w <= 0 || h <= 0 {
+		return true
+	}
+	if m.coverage == nil || m.coverage.Rect.Dx() < w || m.coverage.Rect.Dy() < h {
+		m.coverage = image.NewAlpha(image.Rect(0, 0, w, h))
+	}
+	m.raster.Reset(w, h)
+	m.raster.DrawOp = draw.Src
+	path(&m.raster, float32(w), float32(h))
+	m.raster.Draw(m.coverage, image.Rect(0, 0, w, h), image.Opaque, image.Point{})
+	// Unlike the rasterizer, DrawMask clips to the mask, which bounds
+	// overruns when the glyph is measured at a dot off the cell origin.
+	draw.DrawMask(m.mask, bounds, image.White, image.Point{},
+		m.coverage, image.Point{}, draw.Over)
+	return true
 }
 
 func (m *custom) arcPlusGlyph(
@@ -111,11 +223,6 @@ func (m *custom) drawArcPlusGlyphBottomRight(bounds image.Rectangle) {
 	flipVerticalInto(m.mask, m.altMask, bounds.Max.Y-bounds.Min.Y)
 }
 
-// flipVerticalInto copies src into dst mirrored across the horizontal
-// axis of a height-tall region, matching the previous ebiten
-// Scale(1,-1)+Translate(0,height) blit used for the bottom arc glyphs.
-// Source row y lands on dst row height-1-y; only opaque source pixels
-// are written so the reused dst scratch keeps its cleared background.
 func flipVerticalInto(dst, src *image.RGBA, height int) {
 	b := src.Bounds()
 	for y := b.Min.Y; y < b.Max.Y; y++ {

@@ -27,13 +27,17 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi/browserrpc"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
 	tbrowserrpc "unstable.build/rune/internal/browser/browserrpc"
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/extension"
+	"unstable.build/rune/internal/handler/handlerrpc"
 	"unstable.build/rune/internal/rpc"
+	"unstable.build/rune/internal/term/programstatus"
 )
 
 // browserHost is the sandbox's real headless browser backend. It wraps
@@ -117,6 +121,16 @@ func (h *browserHost) Floating(
 	return h.comp.Floating(handler, cfg), nil
 }
 
+func (h *browserHost) OpenPrompt(
+	cfg browserapi.PromptConfig, handler handler.PromptHandler,
+) (browser.Window, bool, error) {
+	return h.comp.OpenPrompt(cfg, handler)
+}
+
+func (h *browserHost) ButtonImages() *component.ButtonImages {
+	return h.comp.ButtonImages()
+}
+
 func (h *browserHost) Bar(cfg browserapi.BarConfig, handler tui.Handler) error {
 	if cfg.Size <= 0 {
 		return fmt.Errorf("invalid bar size: %d", cfg.Size)
@@ -148,9 +162,16 @@ func (h *browserHost) OnTabExit(uri workspaceapi.URI) bool {
 	return h.comp.OnTabExit(uri)
 }
 
-func (h *browserHost) SetTabActivity(uri workspaceapi.URI, active bool) error {
-	if !h.comp.SetTabActivity(uri, active) {
-		return errors.New("set tab activity called on unknown tab")
+func (h *browserHost) SetTabStatus(uri workspaceapi.URI, report programstatus.Report) error {
+	if !h.comp.SetTabStatus(uri, report) {
+		return errors.New("set tab status called on unknown tab")
+	}
+	return nil
+}
+
+func (h *browserHost) EndTabStatus(uri workspaceapi.URI) error {
+	if !h.comp.EndTabStatus(uri) {
+		return errors.New("end tab status called on unknown tab")
 	}
 	return nil
 }
@@ -160,6 +181,16 @@ func (h *browserHost) Open(uri workspaceapi.URI) (browserapi.Handler, error) {
 		return t, nil
 	}
 	return h.comp.NewTab(uri, 0, uri.Name(), browsertest.NewTestHandler(), nil), nil
+}
+
+// Show shows the tab Open opens for uri in the window in focus, whatever
+// its scheme, so a spec can render what an extension showed.
+func (h *browserHost) Show(uri workspaceapi.URI) error {
+	t, _ := h.Open(uri)
+	if err := h.comp.Focus().SetContent(t); err != browserapi.ErrTabNotFree {
+		return err
+	}
+	return nil
 }
 
 func (h *browserHost) Resource(uri workspaceapi.URI) (browserapi.Handler, bool) {
@@ -257,7 +288,7 @@ func (n *recordingNotifier) UpdateNotificationProgress(
 // The server is guarded by h.mu, the same lock render and send_key
 // take, so host-driven renders never race the RPC handlers.
 func (h *browserHost) resources() map[extensionapi.Permission]extension.ResourceRegistrar {
-	server := tbrowserrpc.NewServer(h, &h.mu)
+	server := tbrowserrpc.NewServer(h, &h.mu, handlerrpc.GraphicsConfig{})
 	server.SetSyncMode()
 	reg := &browserServerRegistrar{server: server}
 	return map[extensionapi.Permission]extension.ResourceRegistrar{

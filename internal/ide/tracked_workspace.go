@@ -22,7 +22,7 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"google.golang.org/grpc"
-	"unstable.build/rune/internal/ide/ideshell/workspaceshell"
+	"unstable.build/rune/internal/ide/console/ideconsole/workspaceshell"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -75,4 +75,8 @@ func (w *trackedWorkspace) Signal(
 	pid workspaceapi.Pid, sig syscall.Signal,
 ) error {
 	return w.exec.Signal(pid, sig)
+}
+
+func (w *trackedWorkspace) LookPath(ctx context.Context, name, dir string) (string, error) {
+	return w.exec.LookPath(ctx, name, dir)
 }

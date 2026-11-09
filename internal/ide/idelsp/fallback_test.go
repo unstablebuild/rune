@@ -902,9 +902,9 @@ func (m fixturePkgManager) LibDir(
 }
 
 // integrationFiles is a multi-language workspace: a two-package Go
-// module, a python package, a rust crate, plus the degenerate files
-// (empty, comment-only, unparseable, binary, no grammar) that the
-// fallback has to survive.
+// module, a python package, a rust crate, JavaScript and TSX modules,
+// plus the degenerate files (empty, comment-only, unparseable, binary,
+// no grammar) that the fallback has to survive.
 var integrationFiles = map[string]string{
 	"go.mod": "module example.com/fixture\n\ngo 1.22\n",
 	"greet/greet.go": `package greet
@@ -992,6 +992,56 @@ impl Point {
 
 pub fn origin() -> Point {
     Point::new(0)
+}
+`,
+	"js/geometry.js": `export class Shape {
+  constructor(side) {
+    this.side = side;
+  }
+
+  area() {
+    return this.side * this.side;
+  }
+}
+
+export function perimeter(shape) {
+  return shape.side * 4;
+}
+`,
+	"js/report.jsx": `import * as geometry from "./geometry.js";
+
+const unit = "cm";
+
+export function Report({ side }) {
+  const shape = new geometry.Shape(side);
+  const label = (value) => {
+    const text = value + unit;
+    return text;
+  };
+  return <p>{label(shape.area())}</p>;
+}
+`,
+	"js/broken.js": `function stable() {
+  return 1;
+}
+
+function broken(a, b) {
+  return a +
+`,
+	"tsx/Counter.tsx": `interface Props {
+  start: number;
+}
+
+export function Counter({ start }: Props) {
+  const step = 1;
+  const next = (n: number) => n + step;
+  return <button>{next(start)}</button>;
+}
+
+export class Panel {
+  render() {
+    return <Counter start={0} />;
+  }
 }
 `,
 	"conf.yaml": "root:\n  key: value\n",
@@ -1114,6 +1164,42 @@ func TestFallbackIntegrationDocumentSymbol(t *testing.T) {
 			},
 		},
 		{
+			name: "jsx component nests its locals and arrow functions",
+			file: "js/report.jsx",
+			want: []string{
+				"unit:13:2",
+				"Report:12:4",
+				"Report.shape:13:5",
+				"Report.label:12:6",
+				"Report.text:13:7",
+			},
+		},
+		{
+			name: "javascript class methods nest under their class",
+			file: "js/geometry.js",
+			want: []string{
+				"Shape:5:0", "Shape.constructor:6:1", "Shape.area:6:5",
+				"perimeter:12:10",
+			},
+		},
+		{
+			name: "javascript declarations before a syntax error survive",
+			file: "js/broken.js",
+			want: []string{"stable:12:0"},
+		},
+		{
+			name: "tsx interface, component and class",
+			file: "tsx/Counter.tsx",
+			want: []string{
+				"Props:5:0",
+				"Counter:12:4",
+				"Counter.step:13:5",
+				"Counter.next:12:6",
+				"Panel:5:10",
+				"Panel.render:6:11",
+			},
+		},
+		{
 			name: "empty file yields no symbols",
 			file: "empty.go",
 			want: nil,
@@ -1223,6 +1309,41 @@ func TestFallbackIntegrationDefinition(t *testing.T) {
 			wantFile: "lib.rs", wantLine: 0, wantChar: 11,
 		},
 		{
+			name: "javascript module-level const from a nested arrow function",
+			file: "js/report.jsx", line: 7, char: 25,
+			wantFile: "report.jsx", wantLine: 2, wantChar: 6,
+		},
+		{
+			name: "javascript arrow function const from a jsx expression",
+			file: "js/report.jsx", line: 10, char: 13,
+			wantFile: "report.jsx", wantLine: 6, wantChar: 8,
+		},
+		{
+			name: "javascript local inside an arrow function body",
+			file: "js/report.jsx", line: 8, char: 11,
+			wantFile: "report.jsx", wantLine: 7, wantChar: 10,
+		},
+		{
+			name: "javascript namespace-import member resolves through the index",
+			file: "js/report.jsx", line: 5, char: 29,
+			wantMulti: true,
+		},
+		{
+			name: "tsx jsx tag resolves to its component",
+			file: "tsx/Counter.tsx", line: 12, char: 12,
+			wantFile: "Counter.tsx", wantLine: 4, wantChar: 16,
+		},
+		{
+			name: "tsx type reference resolves to its interface",
+			file: "tsx/Counter.tsx", line: 4, char: 35,
+			wantFile: "Counter.tsx", wantLine: 0, wantChar: 10,
+		},
+		{
+			name: "tsx local from an arrow function body",
+			file: "tsx/Counter.tsx", line: 6, char: 34,
+			wantFile: "Counter.tsx", wantLine: 5, wantChar: 8,
+		},
+		{
 			name: "qualified cross-package name resolves through the index",
 			file: "main.go", line: 7, char: 12,
 			wantMulti: true,
@@ -1312,6 +1433,21 @@ func TestFallbackIntegrationReferences(t *testing.T) {
 			name: "inner declaration only covers its own scope",
 			file: "shadow.go", line: 5, char: 2, decl: true,
 			want: []string{"shadow.go:5:2", "shadow.go:6:6"},
+		},
+		{
+			name: "javascript module-level const with declaration",
+			file: "js/report.jsx", line: 2, char: 6, decl: true,
+			want: []string{"report.jsx:2:6", "report.jsx:7:25"},
+		},
+		{
+			name: "tsx component includes its jsx tag",
+			file: "tsx/Counter.tsx", line: 4, char: 16, decl: true,
+			want: []string{"Counter.tsx:4:16", "Counter.tsx:12:12"},
+		},
+		{
+			name: "tsx interface includes its type reference",
+			file: "tsx/Counter.tsx", line: 0, char: 10, decl: false,
+			want: []string{"Counter.tsx:4:35"},
 		},
 		{
 			name: "empty file has no references",
@@ -1426,4 +1562,74 @@ func TestManagerIntegrationDocumentSymbol(t *testing.T) {
 		require.Error(t, derr)
 		assert.ErrorIs(t, derr, ErrLanguageNotSupported)
 	})
+
+	// JavaScript and TSX route to tsgo, so they reach the fallback
+	// through ErrNoServer rather than ErrLanguageNotSupported.
+	for _, tt := range []struct {
+		file string
+		want []string
+	}{
+		{file: "js/geometry.js", want: []string{"Shape", "perimeter"}},
+		{file: "tsx/Counter.tsx", want: []string{"Props", "Counter", "Panel"}},
+	} {
+		t.Run(tt.file+" without a typescript server is served by the fallback", func(t *testing.T) {
+			res, derr := m.DocumentSymbol(
+				context.Background(), semanticapi.DocumentSymbolParams{
+					TextDocument: semanticapi.TextDocumentIdentifier{
+						URI: fileURI(root, tt.file),
+					},
+				})
+			require.NoError(t, derr)
+			var got []string
+			for _, s := range res.DocumentSymbols {
+				got = append(got, s.Name)
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestManagerIntegrationDefinition(t *testing.T) {
+	parser, root := integrationWorkspace(t)
+	uri, err := workspaceapi.ParseURI("file://" + root)
+	require.NoError(t, err)
+	m := New(uri, newTestScheme(), nil, nil, nil, nil, Config{
+		NoInitializeServer: true, Parser: parser,
+	})
+	defer m.Close() // nolint:errcheck
+
+	tests := []struct {
+		name               string
+		file               string
+		line, char         uint32
+		wantLine, wantChar uint32
+	}{
+		{
+			name: "jsx without a typescript server is served by the fallback",
+			file: "js/report.jsx", line: 7, char: 25,
+			wantLine: 2, wantChar: 6,
+		},
+		{
+			name: "tsx without a typescript server is served by the fallback",
+			file: "tsx/Counter.tsx", line: 12, char: 12,
+			wantLine: 4, wantChar: 16,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, derr := m.Definition(
+				context.Background(), semanticapi.DefinitionParams{
+					TextDocument: semanticapi.TextDocumentIdentifier{
+						URI: fileURI(root, tt.file),
+					},
+					Position: semanticapi.Position{Line: tt.line, Character: tt.char},
+				})
+			require.NoError(t, derr)
+			require.NotNil(t, res.Location)
+			assert.Equal(t, fileURI(root, tt.file), res.Location.URI)
+			assert.Equal(t, semanticapi.Position{
+				Line: tt.wantLine, Character: tt.wantChar,
+			}, res.Location.Range.Start)
+		})
+	}
 }

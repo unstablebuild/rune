@@ -811,6 +811,88 @@ func TestNormalCtrlDotDoesNotRepeat(t *testing.T) {
 func TestUndo100(t *testing.T) {
 	testUndoSize(t, 100, 99)
 }
+
+func TestViCommentUndo(t *testing.T) {
+	newCommentVi := func(t *testing.T, content string) (*Vi, *cell.Buffer) {
+		t.Helper()
+		buf := cell.NewBuffer()
+		_, err := buf.ReadFrom(strings.NewReader(content))
+		require.NoError(t, err)
+		v := New(buf, uri, WithTabspaces(4))
+		v.Resize(40, 10)
+		buf.WithView(testCommentService{view: buf.View(), line: []string{"//"}})
+		v.cursor.SetCommentSpec(text.CommentSpec{Line: []string{"//"}})
+		return v, buf
+	}
+	undo := term.Event{Type: term.EventKey, Ch: 'u'}
+	redo := term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'r'}
+
+	tests := []struct {
+		name    string
+		content string
+		keys    string
+		want    string
+		// undone is the content after one u, the content itself when empty.
+		undone string
+	}{
+		{name: "gcc", content: "a\nb", keys: "gcc", want: "// a\nb"},
+		{name: "visual line gc aligns at the shallowest indentation", content: "\t\ta\n\tb\nc",
+			keys: "Vjgc", want: "\t// \ta\n\t// b\nc"},
+		{name: "gc with a motion aligns", content: "  a\n    b\nc", keys: "gcj", want: "  // a\n  //   b\nc"},
+		{name: "gcap leaves the next paragraph alone", content: "a\nb\n\nc", keys: "gcap", want: "// a\n// b\n\nc"},
+		{name: "visual line gc uncomments", content: "// a\n\t// b", keys: "Vjgc", want: "a\n\tb"},
+		{name: "gcc on wide runes", content: "界界", keys: "lgcc", want: "// 界界"},
+		{name: "gcc on a zwj emoji", content: "👨‍👧‍👦x", keys: "gcc", want: "// 👨‍👧‍👦x"},
+		{name: "gcc on a combining mark", content: "e\u0301x", keys: "gcc", want: "// e\u0301x"},
+		{name: "blank lines are skipped", content: "a\n\n \t\nb", keys: "Vjjjgc", want: "// a\n\n \t\n// b"},
+		{name: "a counted gcc", content: "a\nb\nc", keys: "2gcc", want: "// a\n// b\nc"},
+		{name: "consecutive gc commands are separate steps", content: "a\nb\nc\nd", keys: "gcjjgcj",
+			want: "// a\n// b\n// c\n// d", undone: "// a\n// b\nc\nd"},
+		{name: "typing before gc stays its own step", content: "a\nb", keys: "Ax\x1bgcc",
+			want: "// ax\nb", undone: "ax\nb"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v, buf := newCommentVi(t, tc.content)
+			for _, ch := range tc.keys {
+				ev := term.Event{Type: term.EventKey, Ch: ch}
+				if ch == '\x1b' {
+					ev = term.Event{Type: term.EventKey, Key: term.KeyEsc}
+				}
+				v.Handle(ev)
+			}
+			require.Equal(t, tc.want, buf.String())
+			undone := tc.undone
+			if undone == "" {
+				undone = tc.content
+			}
+
+			for round := range 2 {
+				_, handled := v.Handle(undo)
+				require.True(t, handled)
+				assert.Equal(t, undone, buf.String(), "round %d: one u reverts the comment", round)
+				_, handled = v.Handle(redo)
+				require.True(t, handled)
+				assert.Equal(t, tc.want, buf.String(), "round %d: one C-r reapplies it", round)
+			}
+		})
+	}
+
+	t.Run("an out-of-band toggle undoes in one step", func(t *testing.T) {
+		v, buf := newCommentVi(t, "a\nb\nc")
+		require.True(t, v.cursor.SelectRange(term.Coordinates{}, term.Coordinates{Y: 2, X: 1}))
+		require.True(t, v.cursor.ToggleLineComment())
+		v.cursor.Unselect()
+		require.Equal(t, "// a\n// b\n// c", buf.String())
+
+		_, handled := v.Handle(undo)
+		require.True(t, handled)
+		assert.Equal(t, "a\nb\nc", buf.String())
+		_, handled = v.Handle(redo)
+		require.True(t, handled)
+		assert.Equal(t, "// a\n// b\n// c", buf.String())
+	})
+}
 func TestUndo10(t *testing.T) {
 	testUndoSize(t, 10, 9)
 }
@@ -1074,6 +1156,199 @@ func TestMatchBraceAfterClick(t *testing.T) {
 	assert.Equal(t, term.Coordinates{Y: 7, X: 0}, pos)
 }
 
+func TestViMouseSetsTheTextPointer(t *testing.T) {
+	buf := cell.NewBuffer()
+	buf.ReadFrom(strings.NewReader(snippet))
+	vi := New(buf, uri)
+	vi.Resize(20, 10)
+
+	p := new(term.Pointer)
+	vi.Handle(term.Event{Type: term.EventMouse, MouseX: 1,
+		Context: term.ContextWithPointer(context.Background(), p)})
+	shape, _ := p.Shape()
+	assert.Equal(t, term.PointerText, shape)
+}
+
+// pointerLeaveContent mixes long rows, wide CJK and emoji graphemes so
+// window cells and buffer columns diverge, and is tall enough that the
+// modes below scroll the window both ways.
+var pointerLeaveContent = func() string {
+	var b strings.Builder
+	for i := range 30 {
+		switch i % 3 {
+		case 0:
+			fmt.Fprintf(&b, "line %d plain ascii\n", i)
+		case 1:
+			fmt.Fprintf(&b, "%d 日本語のテキスト 🎉🚀 %s\n", i, strings.Repeat("日本語 ", 12))
+		default:
+			fmt.Fprintf(&b, "%d %s 👩‍👩‍👧 end\n", i, strings.Repeat("long-ascii-run ", 8))
+		}
+	}
+	return b.String()
+}()
+
+type pointerLeaveMode struct {
+	name string
+	keys []term.Event
+	want viMode
+}
+
+// pointerLeaveModes move the cursor onto a long row with wide
+// characters far below the first window, so the vertical and, without
+// wrap, horizontal scroll offsets are non-zero, then enter each mode
+// with a non-empty selection where the mode has one.
+func pointerLeaveModes() []pointerLeaveMode {
+	keys := func(s string, extra ...term.Event) []term.Event {
+		var evs []term.Event
+		for _, ch := range s {
+			evs = append(evs, testKey(ch))
+		}
+		return append(evs, extra...)
+	}
+	ctrlV := term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'v'}
+	const move = "16j$"
+	return []pointerLeaveMode{
+		{name: "normal", keys: keys(move), want: normalMode},
+		{name: "insert", keys: keys(move + "hhi"), want: insertMode},
+		{name: "visual", keys: keys(move + "vhhk"), want: visualMode},
+		{name: "visual line", keys: keys(move + "Vk"), want: visualLineMode},
+		{name: "visual block", keys: append(keys(move+"hhh"), append([]term.Event{ctrlV}, keys("hk")...)...), want: visualBlockMode},
+	}
+}
+
+func newPointerLeaveVi(wrap bool) *Vi {
+	buf := cell.NewBuffer()
+	buf.ReadFrom(strings.NewReader(pointerLeaveContent))
+	return New(buf, uri, WithWrap(wrap))
+}
+
+type pointerLeaveState struct {
+	mode     viMode
+	at       term.Coordinates
+	cursor   term.Coordinates
+	cursorOK bool
+	sel      string
+	selOK    bool
+	seek     int
+	frame    string
+}
+
+func snapshotPointerLeave(h *viHandlerImpl, width, height int) pointerLeaveState {
+	cursor, _, cursorOK := h.Cursor()
+	sel, selOK := h.Selection()
+	w := term.NewStringWriter(width, height)
+	h.Draw(w)
+	return pointerLeaveState{
+		mode:     h.mode(),
+		at:       h.cursorAtScroll(),
+		cursor:   cursor,
+		cursorOK: cursorOK,
+		sel:      sel,
+		selOK:    selOK,
+		seek:     h.less.Scroll().SeekOffset(),
+		frame:    w.String(),
+	}
+}
+
+func pointerLeaveOutside(width, height int) []term.Coordinates {
+	return []term.Coordinates{
+		{X: -1, Y: height / 2}, {X: width, Y: height / 2},
+		{X: width / 2, Y: -1}, {X: width / 2, Y: height},
+		{X: -1, Y: -1}, {X: width, Y: height},
+		{X: -1000, Y: -1000}, {X: 1000, Y: 1000}, {X: -1000, Y: 1000},
+	}
+}
+
+func pointerLeave(at term.Coordinates) term.Event {
+	return term.Event{Type: term.EventMouse, MouseX: at.X, MouseY: at.Y}
+}
+
+func TestViPointerLeaves(t *testing.T) {
+	t.Parallel()
+	const width, height = 40, 10
+	for _, wrap := range []bool{true, false} {
+		for _, mode := range pointerLeaveModes() {
+			t.Run(fmt.Sprintf("%s wrap=%v", mode.name, wrap), func(t *testing.T) {
+				t.Parallel()
+				enter := func(v *Vi) {
+					t.Helper()
+					for _, ev := range mode.keys {
+						quit, _ := v.Handle(ev)
+						require.False(t, quit)
+					}
+					require.Equal(t, mode.want, v.handler.mode())
+				}
+
+				t.Run("leave keeps state", func(t *testing.T) {
+					v := newPointerLeaveVi(wrap)
+					v.Resize(width, height)
+					enter(v)
+					h := v.handler.(*viHandlerImpl)
+					want := snapshotPointerLeave(h, width, height)
+					require.NotZero(t, want.seek, "the mode keys must scroll the window")
+					for _, out := range pointerLeaveOutside(width, height) {
+						v.Handle(pointerLeave(out))
+						assert.Equal(t, want, snapshotPointerLeave(h, width, height),
+							"a leave to %v must not change the editor", out)
+					}
+				})
+
+				for _, size := range [][2]int{{width, height}, {1, 1}} {
+					t.Run(fmt.Sprintf("%dx%d", size[0], size[1]), func(t *testing.T) {
+						v := newPointerLeaveVi(wrap)
+						v.Resize(size[0], size[1])
+						enter(v)
+						handlertest.RunPointerLeaves(t, v, size[0], size[1])
+					})
+				}
+			})
+		}
+	}
+
+	// A leave can end a gesture the release of which went to another
+	// handler, so the next gesture must start afresh exactly as it would
+	// after a release.
+	t.Run("gesture after a leave starts afresh", func(t *testing.T) {
+		t.Parallel()
+		press := []term.Event{mouseEventAt(term.MouseLeft, 2, 1)}
+		drag := append(press, mouseEventAt(term.MouseLeft, 8, 3))
+		next := []term.Event{
+			mouseEventAt(term.MouseLeft, 4, 6),
+			mouseEventAt(term.MouseLeft, 12, 7),
+			mouseEventAt(term.MouseRelease, 12, 7),
+		}
+		for _, tc := range []struct {
+			name    string
+			gesture []term.Event
+			next    []term.Event
+		}{
+			{name: "drag then drag", gesture: drag, next: next},
+			{name: "press then drag", gesture: press, next: next},
+			{name: "drag then click", gesture: drag, next: next[:1]},
+			{name: "press then hover", gesture: press, next: []term.Event{mouseEventAt(0, 9, 4)}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				run := func(end term.Event) pointerLeaveState {
+					v := newPointerLeaveVi(false)
+					v.Resize(width, height)
+					for _, ev := range tc.gesture {
+						v.Handle(ev)
+					}
+					v.Handle(end)
+					for _, ev := range tc.next {
+						v.Handle(ev)
+					}
+					return snapshotPointerLeave(v.handler.(*viHandlerImpl), width, height)
+				}
+				last := tc.gesture[len(tc.gesture)-1]
+				want := run(mouseEventAt(term.MouseRelease, last.MouseX, last.MouseY))
+				assert.Equal(t, want, run(pointerLeave(term.Coordinates{X: -5, Y: 3})))
+			})
+		}
+	})
+}
+
 func TestCopyDelete(t *testing.T) {
 	tsuite := []struct {
 		desc     string
@@ -1087,11 +1362,11 @@ func TestCopyDelete(t *testing.T) {
 		{"does not copy undo of an insert (preserve old data)", "a", "xihello#u", "a"},
 		{"copies remove portion of a delete select", "a", "clb", "a"},
 		{"copies redo of a delete (or leaves previous delete)", "a", "xuR", "a"},
-		{"does not copy backspace within an insert", "x", "ddihella<o#", "x"},
+		{"does not copy backspace within an insert", "x", "ddihella<o#", "x\n"},
 		{"does copy text deleted through C", "x", "Ca#", "x"},
 		{"does copy text deleted through c", "x", "cla#", "x"},
-		{"does copy text deleted through cc", "x\ny", "ccz#", "x"},
-		{"does copy text deleted through S", "x\ny", "Sz#", "x"},
+		{"does copy text deleted through cc", "x\ny", "ccz#", "x\n"},
+		{"does copy text deleted through S", "x\ny", "Sz#", "x\n"},
 	}
 
 	for _, tcase := range tsuite {

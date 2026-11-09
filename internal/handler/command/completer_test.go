@@ -248,6 +248,10 @@ func (m *mockExecutor) Signal(pid workspaceapi.Pid, sig syscall.Signal) error {
 	return nil
 }
 
+func (*mockExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (m *mockExecutor) Close() error {
 	return nil
 }

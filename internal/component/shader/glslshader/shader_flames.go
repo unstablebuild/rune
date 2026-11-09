@@ -26,7 +26,10 @@ import (
 )
 
 // Flames cross the screen from bottom to top.
-func Flames(params FlamesParams, defaultAttr term.Attributes, fps float) shader.Shader {
+//
+// Every timing is a fraction of the run, so a longer run plays the same
+// flames slower.
+func Flames(params FlamesParams, defaultAttr term.Attributes) shader.Shader {
 	// Change normalized parameters to suitable ranges.
 	params.Fuel *= 7.0       // from 0..1 to 0..7
 	params.JitteryBirth *= 3 // from 0..1 to 0..3
@@ -37,10 +40,6 @@ func Flames(params FlamesParams, defaultAttr term.Attributes, fps float) shader.
 	return &flames{
 		defaultAttr:  defaultAttr,
 		FlamesParams: params,
-		flamesOptimization: flamesOptimization{
-			prevFrame: flamesUnset,
-		},
-		fps: fps,
 	}
 }
 
@@ -62,7 +61,7 @@ type FlamesParams struct {
 	// if too high the flames will run too fast not looking organic exposing the
 	// base shape (defined with the belly and clump parameters).
 	// (range 0..1 unrestricted)
-	Fuel float // each frame `Fuel` amount of rows will be activated to start fire
+	Fuel float // each 1/90 of the run, Fuel rows' worth of cells are activated
 	// Amplifies the Fuel results by spacing out the markings that kickstart
 	// the course of the flames.
 	// (range 0..1 unrestricted)
@@ -95,44 +94,6 @@ type FlamesParams struct {
 // parameter overrides.
 func DefaultFlamesParams() FlamesParams {
 	return FlamesPresetBlobby()
-}
-
-// FlamesPresetVShape shows a less explosive progressive burn in concave shape.
-func FlamesPresetVShape() FlamesParams {
-	return FlamesParams{
-		Chars:         blockierFlames(),
-		ColorGradient: FlamesColorGradientRed(),
-		BgContour: FlamesBgOpacityContour{
-			inEdge0: 0.05, inEdge1: 0.21,
-			outEdge0: 0.66, outEdge1: 0.88,
-		},
-		Fuel:         0.1286,
-		JitteryBirth: 0.3333,
-		Belly:        35.0,
-		NoiseAmount:  0.6,
-		NoiseSize:    0.5,
-		Clumps:       7.0,
-		ClumpHeight:  0.9,
-	}
-}
-
-// FlamesPresetAShape shows a less explosive progressive burn in convex shape.
-func FlamesPresetAShape() FlamesParams {
-	return FlamesParams{
-		Chars:         blockierFlames(),
-		ColorGradient: FlamesColorGradientRed(),
-		BgContour: FlamesBgOpacityContour{
-			inEdge0: 0.20, inEdge1: 0.300,
-			outEdge0: 0.66, outEdge1: 0.89,
-		},
-		Fuel:         0.1134,
-		JitteryBirth: 0.4333,
-		Belly:        -25.0,
-		NoiseAmount:  0.0,
-		NoiseSize:    0.0,
-		Clumps:       15.0,
-		ClumpHeight:  0.4,
-	}
 }
 
 // FlamesPresetBlobby makes big blobby blast on the flamess in convex shape.
@@ -191,138 +152,109 @@ type FlamesBgOpacityContour struct {
 type flames struct {
 	FlamesParams
 	defaultAttr term.Attributes
-	// Stats used for skipping unnecessary calculations.
-	flamesOptimization
-	fps float
-	// The keys of this map represent each column on the screen. The value is a
-	// slice of numbers representing the base offset for the flame animation.
-	// This allows to orchestrate the flame so it starts on lower parts on the
-	// columns increasing towards the top (the natural ascending nature of
-	// fire).
-	activations map[int][]int
-	// The total frame offset for the flame animation on a particular cell. The
-	// activations field carries the base offset but the value in flamesOffsets
-	// in addition to the base offset pull and push the offsets to achieve the
-	// belly (or dome) shape, the saw teeth for the fire look, and more organic
-	// noises, ...
-	flamesOffsets [][]float
-	// Indicates if the flame has not passed, is passing or has passed per cell.
-	flamesCellStatuses [][]flamesCellStatus
+	// table is the activations and offsets of the last canvas size
+	// shaded, which only depend on that size.
+	table *flamesTable
 }
 
-type flamesOptimization struct {
-	prevFrame               int                 // to identify play direction changes
-	playingDirection        flamesPlayDirection // unknown, forward or backward
-	playingDirectionChanged bool                // detects non-continuous playback
+// flamesTable is when each cell of a canvas may catch fire and when its
+// flame starts, in steps of 1/tunedSteps of the run.
+type flamesTable struct {
+	w, h int
+	// cells is indexed by screen row then column.
+	cells [][]flamesCell
+	// lastActivation and lastOffset are the largest activation and
+	// offset of a cell that ever activates.
+	lastActivation, lastOffset float
+}
+
+type flamesCell struct {
+	// activation is the step after which the cell may burn, or +Inf if
+	// it never does. Activations are handed out from the bottom of each
+	// column up, the natural ascending nature of fire.
+	activation float
+	// offset is the step the cell's flame starts at. On top of the
+	// activation it pulls and pushes the start to achieve the belly (or
+	// dome) shape, the saw teeth for the fire look, and more organic
+	// noises, ... It is not rounded to a whole step, so that over a long
+	// run cells catch fire on every frame rather than in batches.
+	offset float
 }
 
 func (s *flames) Shade(frame, total int, cells [][]term.Cell) {
-	if frame < 0 || frame >= total {
+	if total <= 0 || frame < 0 || frame >= total ||
+		len(cells) == 0 || len(cells[0]) == 0 {
 		return
 	}
 
-	s.analizePlayingDirection(frame)
-	if s.wouldRenderNothing() {
+	speed := flamesSpeed(1)
+	table := s.tableFor(len(cells[0]), len(cells))
+	step := float(frame) / float(total) * s.runSteps(table, speed)
+	if s.wouldRenderNothing(table, step, speed) {
 		return
 	}
-	s.ensureSliceFieldsCap(frame, total, cells)
-	s.jitterActivations(frame, total, cells)
 
 	for y := range cells {
 		for x := 0; x < len(cells[0]); x++ {
-			s.processCell(x, y, frame, total, cells)
+			s.processCell(table, x, y, step, speed, cells)
 		}
 	}
 }
 
-func (s *flames) processCell(x, y int, frame, total int, cells [][]term.Cell) {
+// flamesDoneBy is how far into a run the flames are over at the latest,
+// so that its last frames show the canvas untouched, as its first does,
+// and the run loops without a seam.
+const flamesDoneBy = 0.95
+
+// runSteps is how many steps a run spans: the ones the flames were tuned
+// to, or more on a canvas too tall for those to see them over by
+// flamesDoneBy.
+func (s *flames) runSteps(table *flamesTable, speed float) float {
+	end := math.Max(table.lastActivation, table.lastOffset+float(len(s.Chars)-1)/speed)
+	return math.Max(tunedSteps, end/flamesDoneBy)
+}
+
+// flamesSpeed is how many characters of its animation a flame goes
+// through per step, slowed down stretch times.
+func flamesSpeed(stretch float) float {
+	const charsPerStep = 1 / 0.43
+	return charsPerStep / stretch
+}
+
+// phase tells whether the flame has not reached, is passing or has
+// passed the cell at x, y at step, and when passing, how far along the
+// characters of its animation it is.
+func (s *flames) phase(table *flamesTable, x, y int, step, speed float) (
+	status flamesCellStatus, at float,
+) {
+	c := table.cells[y][x]
+	if c.activation >= step || step < c.offset {
+		return flamesNotPassed, 0
+	}
+	at = speed * (step - c.offset)
+	if math.Round(at) >= float(len(s.Chars)-1) {
+		return flamesPassed, 0
+	}
+	return flamesPassing, at
+}
+
+func (s *flames) processCell(
+	table *flamesTable, x, y int, step, speed float, cells [][]term.Cell,
+) {
 	if y >= len(cells) || x >= len(cells[y]) {
 		return
 	}
 
-	if !s.playingDirectionChanged &&
-		s.playingDirection == flamesDirectionForward &&
-		s.flamesCellStatuses[y][x] == flamesPassed {
-		return
-	}
-
-	w := len(cells[0])
-	h := len(cells)
-
-	yy := h - y - 1 // complementary to flip vertical screen coords
-
-	if len(s.activations[x]) <= yy {
-		return
-	}
-
-	// The flame animation is simply showing the chars in FlamesParams.Chars
-	// one after the other. To give the illusion of fire we offset the chars to
-	// break the animation into different flames. The offset not only is when
-	// the flame starts but also conditions the location within the flame
-	// defining the general shape of the effect, that's why we speak in plural:
-	var offsets float
-	if false && s.flamesOffsets[y][x] != 0.0 {
-		offsets = s.flamesOffsets[y][x]
-	} else {
-		baseOffset := s.activations[x][yy]
-
-		// Offset: Non-spatial random.
-		of1 := s.JitteryBirth * float(baseOffset)
-		if s.JitteryBirth < 1.0 {
-			of1 += (1.0 - s.JitteryBirth) * float(yy)
-		}
-
-		// Offset: Sine belly, lateral shows flames first and middle of scren last.
-		of2 := s.Belly * sin(
-			(math.Pi/2.0)*(float(x)-float(w)/2.0)/(float(w)/2.0)+ // freq
-				(math.Pi/2.0), // offset
-		)
-
-		// Offset: [triangle waves]: https://thndl.com/triangle-waves.html.
-		teethNum := s.Clumps
-		teethHeight := s.ClumpHeight
-		teeth := abs(-1.0 + 2.0*fract(((teethNum*float(x))/float(w))))
-		teeth = 1.0 - (teeth-1.0)*(teeth-1.0) // sharp pointy ([timeshader.FastToSlow] algorithm)
-		teeth *= teethHeight                  // from unit-scale to desired length
-		of3 := teeth
-
-		// Offset: break down for organic look.
-		of4 := s.NoiseAmount * noiseSimplex(
-			vec2(float(x)/float(w), float(yy)/float(h)).multSc(s.NoiseSize),
-		)
-
-		// Ofset: Combine them all.
-		offsets = of1 + of2 + of3 + of4
-		s.flamesOffsets[y][x] = offsets
-	}
-
-	// Do not bother drawing any flame if it's too early for it.
-	offsetFrame := frame - int(math.Round(offsets))
-	if offsetFrame < 0 {
-		return
-	}
-
-	flamesFrame := offsetFrame
+	status, at := s.phase(table, x, y, step, speed)
 
 	var char rune
 	var fg, bg term.Color
 
-	// Perform some adjustement to the speed of the flame, to speed up its
-	// animation on shorter shader runs or slow it down on longer ones.
-	normalFlamesDur := 3.0
-	minAcceptableFlamesDur := 0.1
-	percentageFlamesDur := 0.43
-	actualFlamesDur := math.Max(
-		minAcceptableFlamesDur, float(total)/s.fps*percentageFlamesDur,
-	)
-	flamesSpeed := normalFlamesDur / actualFlamesDur
-	flamesFrame = int(math.Round(flamesSpeed * float64(flamesFrame)))
-	flamesAnimHighestIndex := len(s.Chars) - 1
-
-	// Only draw if we are within the bounds of the animation characters.
-	if flamesFrame >= 0 && flamesFrame < flamesAnimHighestIndex {
-		char = s.Chars[flamesFrame]
-		factor := float(flamesFrame) / float(len(s.Chars)-1)
+	// Only draw while the flame passes, within the bounds of the
+	// animation characters.
+	if status == flamesPassing {
+		char = s.Chars[int(math.Round(at))]
+		factor := at / float(len(s.Chars)-1)
 
 		// Starts at 1.0 and after edge0 it starts decreasing up to edge1,
 		// after which the result is 0.0.
@@ -413,9 +345,6 @@ func (s *flames) processCell(x, y int, frame, total int, cells [][]term.Cell) {
 		if char != rune(0) {
 			cells[y][x].Width = 1
 		}
-		s.flamesCellStatuses[y][x] = flamesPassing
-	} else {
-		s.flamesCellStatuses[y][x] = flamesPassed
 	}
 }
 
@@ -443,108 +372,107 @@ func (s *flames) sampleFlamesGradient(t float) term.Color {
 	)
 }
 
-// ensureSliceFieldsCap protects dimensions of slices that represent terminal
-// coordinates so if the window is resized doesn't panic.
-func (s *flames) ensureSliceFieldsCap(frame, total int, in [][]term.Cell) {
-	if len(s.flamesOffsets) < len(in) {
-		s.flamesOffsets = append(s.flamesOffsets,
-			make([][]float, len(in)-len(s.flamesOffsets))...)
+// tableFor returns the table of a canvas w columns wide and h rows tall,
+// reusing the last one built when it is of that size.
+func (s *flames) tableFor(w, h int) *flamesTable {
+	if s.table != nil && s.table.w == w && s.table.h == h {
+		return s.table
 	}
-	if len(s.flamesCellStatuses) < len(in) {
-		s.flamesCellStatuses = append(s.flamesCellStatuses,
-			make([][]flamesCellStatus, len(in)-len(s.flamesCellStatuses))...)
+	activations := s.jitterActivations(w, h)
+	table := &flamesTable{
+		w: w, h: h,
+		cells:          make([][]flamesCell, h),
+		lastActivation: math.Inf(-1),
+		lastOffset:     math.Inf(-1),
 	}
-	for i, row := range in {
-		if len(s.flamesOffsets[i]) < len(row) {
-			s.flamesOffsets[i] = append(s.flamesOffsets[i],
-				make([]float, len(row)-len(s.flamesOffsets[i]))...)
+	for y := range table.cells {
+		table.cells[y] = make([]flamesCell, w)
+		yy := h - y - 1 // complementary to flip vertical screen coords
+		for x := range table.cells[y] {
+			if len(activations[x]) <= yy {
+				table.cells[y][x] = flamesCell{activation: math.Inf(1), offset: math.Inf(1)}
+				continue
+			}
+			activation := activations[x][yy]
+			offset := s.offsets(x, yy, w, h, activation)
+			table.cells[y][x] = flamesCell{activation: activation, offset: offset}
+			table.lastActivation = math.Max(table.lastActivation, activation)
+			table.lastOffset = math.Max(table.lastOffset, offset)
 		}
-		if len(s.flamesCellStatuses[i]) < len(row) {
-			s.flamesCellStatuses[i] = append(s.flamesCellStatuses[i],
-				make([]flamesCellStatus, len(row)-len(s.flamesCellStatuses[i]))...)
-		}
 	}
+	s.table = table
+	return table
 }
 
-// jitterActivations fills in the activations map, check the fire.activations
-// field docstring for more.
-func (s *flames) jitterActivations(frame, total int, in [][]term.Cell) {
-	h := len(in)
-	w := len(in[0])
-
-	// NOTE: Performance sacrifice here since we can't garantee we will receive
-	// the frames linearly we run the simulation up to the frame we want so
-	// this shader can be sampled at any point in time without having to run
-	// the previous frames.
-	s.activations = make(map[int][]int) // reset
+// jitterActivations hands out activations to random columns, Fuel rows'
+// worth each step, until every cell of a w by h canvas has one, and
+// returns the steps each column got its activations at. A step's
+// activations are spread evenly across it, so that over a long run the
+// fire does not advance in batches.
+func (s *flames) jitterActivations(w, h int) [][]float {
+	// One past the last column also draws activations, which go unused.
+	activations := make([][]float, w+1)
+	picks := int(s.Fuel * float(w))
+	if picks <= 0 {
+		return activations
+	}
 	rng := rand.New(rand.NewSource(0))
-	for f := range frame {
-		for i := 0; i < int(s.Fuel*float(w)); i++ {
-			randCol := rng.Intn(w + 1)
-			if len(s.activations[randCol]) <= h {
-				s.activations[randCol] = append(
-					s.activations[randCol],
-					f,
-				)
+	for f, full := 0, 0; full < w; f++ {
+		for i := range picks {
+			col := rng.Intn(w + 1)
+			if len(activations[col]) < h {
+				activations[col] = append(activations[col], float(f)+float(i)/float(picks))
+				if col < w && len(activations[col]) == h {
+					full++
+				}
 			}
 		}
 	}
+	return activations
 }
 
-func (s *flames) analizePlayingDirection(frame int) {
-	defer func() {
-		s.prevFrame = frame
-	}()
-
-	if s.prevFrame == flamesUnset {
-		return
+// offsets is when the flame of the cell at x, yy from the bottom starts,
+// in steps, for a canvas w by h and the cell's activation. The
+// flame animation is simply showing the chars in FlamesParams.Chars one
+// after the other. To give the illusion of fire we offset the chars to
+// break the animation into different flames. The offset not only is when
+// the flame starts but also conditions the location within the flame
+// defining the general shape of the effect, that's why we speak in plural.
+func (s *flames) offsets(x, yy, w, h int, activation float) float {
+	// Offset: Non-spatial random.
+	of1 := s.JitteryBirth * activation
+	if s.JitteryBirth < 1.0 {
+		of1 += (1.0 - s.JitteryBirth) * float(yy)
 	}
 
-	playingBackwardNow := s.prevFrame > frame
+	// Offset: Sine belly, lateral shows flames first and middle of scren last.
+	of2 := s.Belly * sin(
+		(math.Pi/2.0)*(float(x)-float(w)/2.0)/(float(w)/2.0)+ // freq
+			(math.Pi/2.0), // offset
+	)
 
-	var directionNow flamesPlayDirection
-	if playingBackwardNow {
-		directionNow = flamesDirectionBackward
-	} else {
-		directionNow = flamesDirectionForward
-	}
+	// Offset: [triangle waves]: https://thndl.com/triangle-waves.html.
+	teethNum := s.Clumps
+	teethHeight := s.ClumpHeight
+	teeth := abs(-1.0 + 2.0*fract(((teethNum*float(x))/float(w))))
+	teeth = 1.0 - (teeth-1.0)*(teeth-1.0) // sharp pointy ([timeshader.FastToSlow] algorithm)
+	teeth *= teethHeight                  // from unit-scale to desired length
+	of3 := teeth
 
-	if s.playingDirection != flamesDirectionUnknown {
-		if s.playingDirection != directionNow {
-			s.playingDirectionChanged = true
-		}
-	}
+	// Offset: break down for organic look.
+	of4 := s.NoiseAmount * noiseSimplex(
+		vec2(float(x)/float(w), float(yy)/float(h)).multSc(s.NoiseSize),
+	)
 
-	s.playingDirection = directionNow
+	// Ofset: Combine them all.
+	return of1 + of2 + of3 + of4
 }
 
-// wouldRenderNothing tells you if running the shader would produce no changes,
-// and can therefore be used to optimize computation and skip unnecessary
-// renders.
-//
-// The conditions  where we can infer nothing would be rendered  are very
-// specific at the moment: shader must have played always forward and all
-// cells must have seen the flame pass.
-func (s *flames) wouldRenderNothing() bool {
-	if len(s.flamesCellStatuses) == 0 ||
-		s.playingDirectionChanged ||
-		s.playingDirection != flamesDirectionForward {
-		return false
-	}
-
-	// Only if finding one cell has not finished the flame animation it's
-	// enough to consider the whole animation unfinished and therefore
-	// something would render.
-	for _, row := range s.flamesCellStatuses {
-		for _, status := range row {
-			if s.playingDirection == flamesDirectionForward &&
-				status != flamesPassed {
-				return false
-			}
-		}
-	}
-
-	return true
+// wouldRenderNothing tells whether the flames have passed every cell
+// of table by step, so shading would change nothing.
+func (s *flames) wouldRenderNothing(table *flamesTable, step, speed float) bool {
+	return step > table.lastActivation &&
+		step >= table.lastOffset+float(len(s.Chars)-1)/speed
 }
 
 const blockChar = '█'
@@ -607,81 +535,6 @@ func defaultFlamesChars() []rune {
 	}
 }
 
-func blockierFlames() []rune {
-	return []rune{
-		'\'',
-		'.',
-		'.',
-		'.',
-		'.',
-		'.',
-		'.',
-		'.',
-		'.',
-		'▖',
-		'▙',
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		blockChar,
-		'▜',
-		'▀',
-		'▝',
-		'▛',
-		'.',
-		'.',
-		'.',
-		'.',
-		'.',
-		'.',
-		'.',
-		'.',
-		'.',
-		'.',
-	}
-}
-
-type flamesPlayDirection int
-
-const (
-	flamesDirectionUnknown flamesPlayDirection = iota
-	flamesDirectionForward
-	flamesDirectionBackward
-)
-
 type flamesCellStatus int
 
 const (
@@ -689,7 +542,3 @@ const (
 	flamesPassing
 	flamesPassed
 )
-
-// flamesUnset can be used as an alternative when the int zero-value 0 is not
-// meaningful for the recognition as uninitialized zero-value.
-const flamesUnset = math.MaxInt

@@ -17,11 +17,10 @@
 package text
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"slices"
+	"image"
 
 	"github.com/ernestrc/go-multierror"
 	log "github.com/sirupsen/logrus"
@@ -108,6 +107,51 @@ type StatusBarConfig struct {
 	// what it draws. It is required when Layout has a StatusBarImage
 	// component.
 	Interrupter term.Interrupter
+	// Styles, when set, overrides Layout, BackgroundColor and ErrorColor
+	// with its current style, and restyles the bar whenever it is
+	// restyled, until the bar is closed.
+	Styles *StatusBarStyles
+}
+
+// StatusBarStyle is the part of a StatusBarConfig that StatusBarStyles
+// changes in the bars it styles.
+type StatusBarStyle struct {
+	// Layout is nil for the default layout.
+	Layout          []StatusBarComponent
+	BackgroundColor term.Color
+	ErrorColor      term.Color
+}
+
+// StatusBarStyles is the style of the status bars created with it as
+// their StatusBarConfig.Styles. Its methods must be called from the
+// event loop.
+type StatusBarStyles struct {
+	style  StatusBarStyle
+	images map[string]image.Image
+	bars   map[*StatusBar]struct{}
+}
+
+// NewStatusBarStyles returns the styles that create bars with style.
+func NewStatusBarStyles(style StatusBarStyle) *StatusBarStyles {
+	return &StatusBarStyles{style: style, bars: make(map[*StatusBar]struct{})}
+}
+
+// Current returns the style bars are created with.
+func (s *StatusBarStyles) Current() StatusBarStyle {
+	return s.style
+}
+
+// Restyle draws the open bars with style from their next Draw on, and
+// creates the later ones with it. images holds, by URI, the images of
+// style's StatusBarImage components that are drawn from the first frame
+// as given, without being fetched; the others load as they do in a new
+// bar. The open bars keep their status message, and what they last
+// learned about their file.
+func (s *StatusBarStyles) Restyle(style StatusBarStyle, images map[string]image.Image) {
+	s.style, s.images = style, images
+	for bar := range s.bars {
+		bar.restyle(style, images)
+	}
 }
 
 // WithStatusBar wraps the given editor with an git bar. The given buffer,
@@ -118,6 +162,13 @@ func WithStatusBar(
 ) *StatusBar {
 	if cfg.Publisher == nil || cfg.ScheduleNextTick == nil {
 		panic("statusbar configuration is missing key dependencies")
+	}
+	var images map[string]image.Image
+	if cfg.Styles != nil {
+		style := cfg.Styles.style
+		cfg.Layout, cfg.BackgroundColor, cfg.ErrorColor = style.Layout,
+			style.BackgroundColor, style.ErrorColor
+		images = cfg.Styles.images
 	}
 	ret := new(StatusBar)
 	ret.buf = buf
@@ -153,7 +204,7 @@ func WithStatusBar(
 	ret.cursorY = component.NewFloatingReference(nil)
 	ret.totalLines = component.NewFloatingReference(nil)
 
-	ret.initLayout(cfg)
+	ret.initLayout(cfg, images)
 	ret.SetStatus("", term.Attributes{})
 
 	buf.Subscribe((*statusBarSubscriber)(ret))
@@ -164,6 +215,9 @@ func WithStatusBar(
 
 	if ret.dirty {
 		ret.rebuildBarAll()
+	}
+	if cfg.Styles != nil {
+		cfg.Styles.bars[ret] = struct{}{}
 	}
 
 	return ret
@@ -201,39 +255,62 @@ type StatusBar struct {
 	barLeftItems  []component.Floating
 	barRightItems []component.Floating
 	// images are in the order they are drawn: by z_index, then layout.
-	images                     []*statusBarImage
-	status                     *component.FloatingReference
-	statusTemplate             StatusBarComponent
-	relpath                    *component.FloatingReference
-	relpathTemplate            StatusBarComponent
-	gitShortRef                *component.FloatingReference
-	gitShortRefTemplate        StatusBarComponent
-	gitAdd                     *component.FloatingReference
-	gitAddTemplate             StatusBarComponent
-	gitDel                     *component.FloatingReference
-	gitDelTemplate             StatusBarComponent
-	diagnosticsError           *component.FloatingReference
-	diagnosticsErrorTemplate   StatusBarComponent
-	diagnosticsWarning         *component.FloatingReference
-	diagnosticsWarningTemplate StatusBarComponent
-	diagnosticsInfo            *component.FloatingReference
-	diagnosticsInfoTemplate    StatusBarComponent
-	syntaxState                *component.FloatingReference
-	syntaxTemplate             StatusBarComponent
-	cursorX                    *component.FloatingReference
-	cursorXTemplate            StatusBarComponent
-	cursorY                    *component.FloatingReference
-	cursorYTemplate            StatusBarComponent
-	totalLines                 *component.FloatingReference
-	totalLinesTemplate         StatusBarComponent
+	images             []*template.ImageElement
+	status             *component.FloatingReference
+	relpath            *component.FloatingReference
+	gitShortRef        *component.FloatingReference
+	gitAdd             *component.FloatingReference
+	gitDel             *component.FloatingReference
+	diagnosticsError   *component.FloatingReference
+	diagnosticsWarning *component.FloatingReference
+	diagnosticsInfo    *component.FloatingReference
+	syntaxState        *component.FloatingReference
+	cursorX            *component.FloatingReference
+	cursorY            *component.FloatingReference
+	totalLines         *component.FloatingReference
+	statusBarTemplates
+	statusBarBuilt
 
-	// Built state of hideable components, used by doRebuildBar
-	// to restore components before re-evaluating overflow.
+	// What the bar last learned, which a restyle draws again.
+	statusMessage   string
+	statusAttrs     term.Attributes
+	lastSyntax      syntax.State
+	lastGit         statusBarGit
+	syntaxStreaming bool
+}
+
+// statusBarTemplates are the components of the layout, by type.
+type statusBarTemplates struct {
+	statusTemplate             StatusBarComponent
+	relpathTemplate            StatusBarComponent
+	gitShortRefTemplate        StatusBarComponent
+	gitAddTemplate             StatusBarComponent
+	gitDelTemplate             StatusBarComponent
+	diagnosticsErrorTemplate   StatusBarComponent
+	diagnosticsWarningTemplate StatusBarComponent
+	diagnosticsInfoTemplate    StatusBarComponent
+	syntaxTemplate             StatusBarComponent
+	cursorXTemplate            StatusBarComponent
+	cursorYTemplate            StatusBarComponent
+	totalLinesTemplate         StatusBarComponent
+}
+
+// statusBarBuilt is the built state of hideable components, used by
+// doRebuildBar to restore components before re-evaluating overflow.
+type statusBarBuilt struct {
 	gitShortRefBuilt component.Floating
 	gitAddBuilt      component.Floating
 	gitDelBuilt      component.Floating
 	syntaxStateBuilt component.Floating
 	totalLinesBuilt  component.Floating
+}
+
+// statusBarGit is what the bar last learned from git.
+type statusBarGit struct {
+	known          bool
+	err            bool
+	shortRef       string
+	added, deleted int
 }
 
 // ShowCommandBar satisfies text.Handler.
@@ -244,6 +321,7 @@ func (b *StatusBar) ShowCommandBar(show bool) {
 
 // SetStatus sets the status message.
 func (b *StatusBar) SetStatus(message string, attrs term.Attributes) {
+	b.statusMessage, b.statusAttrs = message, attrs
 	components := template.Build(b.statusTemplate.Template, message,
 		attrs, b.statusTemplate.Attributes, b.config.BackgroundColor)
 	status := component.Inline(components, component.AlignmentLeft)
@@ -259,6 +337,9 @@ func (b *StatusBar) Close() (ret error) {
 	}
 	b.cancelAll()
 	b.closed = true
+	if b.config.Styles != nil {
+		delete(b.config.Styles.bars, b)
+	}
 	for _, img := range b.images {
 		if err := img.Close(); err != nil {
 			ret = multierror.Append(ret, err)
@@ -330,7 +411,7 @@ func (b *StatusBar) Draw(w term.Writer) {
 	if len(b.images) > 0 {
 		iw := term.BoundsCheckWriter(b.width, b.height, w)
 		for _, img := range b.images {
-			img.drawImage(iw, shifted)
+			img.DrawImage(iw, shifted)
 		}
 	}
 	if shifted {
@@ -368,9 +449,35 @@ func (b *StatusBar) rebuildBarAll() {
 	b.dirty = false
 	b.rebuildBarEdit()
 	b.rebuildBarCursor()
-	b.rebuildBarSyntax(syntax.State{})
+	b.rebuildBarSyntax(b.lastSyntax)
 	b.rebuildBarFlush(context.Background())
 	b.doRebuildBar()
+}
+
+// restyle rebuilds the bar with style, keeping its subscriptions and
+// what it last learned.
+func (b *StatusBar) restyle(style StatusBarStyle, images map[string]image.Image) {
+	for _, img := range b.images {
+		if err := img.Close(); err != nil {
+			b.log(log.WarnLevel, "close status bar image: %v", err)
+		}
+	}
+	b.images = nil
+	b.statusBarTemplates = statusBarTemplates{}
+	b.statusBarBuilt = statusBarBuilt{}
+	b.config.Layout = style.Layout
+	b.config.BackgroundColor = style.BackgroundColor
+	b.config.ErrorColor = style.ErrorColor
+	b.initLayout(b.config, images)
+	b.SetStatus(b.statusMessage, b.statusAttrs)
+	if b.lastGit.known {
+		if b.lastGit.err {
+			b.buildGitError()
+		} else {
+			b.buildGit(b.lastGit.shortRef, b.lastGit.added, b.lastGit.deleted)
+		}
+	}
+	b.rebuildBarAll()
 }
 
 func (b *StatusBar) isCursorEnabled() bool {
@@ -427,6 +534,7 @@ func (b *StatusBar) rebuildBarEdit() {
 }
 
 func (b *StatusBar) rebuildBarSyntax(state syntax.State) {
+	b.lastSyntax = state
 	if state.LangID == "" {
 		state.LangID = "unknown"
 	}
@@ -486,6 +594,10 @@ func (b *StatusBar) rebuildBarFlush(ctx context.Context) {
 				b.buildGitError()
 			} else {
 				b.buildGit(shortRef, added, deleted)
+			}
+			b.lastGit = statusBarGit{
+				known: true, err: err != nil, shortRef: shortRef,
+				added: added, deleted: deleted,
 			}
 			b.doRebuildBar()
 		})
@@ -625,27 +737,15 @@ func (b *StatusBar) doRebuildBar() int {
 	return barHeight
 }
 
-// layoutImages places every image from where its element is laid out,
-// which follows how component.Inline lays out the bar's elements: left
-// to right, each cut to the width left.
+// layoutImages places every image over the editor and its bar.
 func (b *StatusBar) layoutImages(barLeftWidth, barRightWidth, barHeight int) {
 	rows := b.height
 	if barHeight == 0 {
 		rows = 0
 	}
-	place := func(items []component.Floating, x, width int) {
-		for _, item := range items {
-			if img, ok := item.(*statusBarImage); ok {
-				img.place(x, b.width, rows)
-			}
-			w, _ := item.Dimensions()
-			w = min(w, width)
-			x += w
-			width -= w
-		}
-	}
-	place(b.barLeftItems, 0, barLeftWidth)
-	place(b.barRightItems, b.width-barRightWidth, barRightWidth)
+	template.PlaceImages(b.barLeftItems, 0, barLeftWidth, b.width, rows)
+	template.PlaceImages(b.barRightItems, b.width-barRightWidth, barRightWidth,
+		b.width, rows)
 }
 
 func (b *StatusBar) log(level log.Level, msg string, args ...any) {
@@ -683,6 +783,10 @@ type syntaxService interface {
 }
 
 func (b *StatusBar) streamSyntaxState() {
+	if b.syntaxStreaming {
+		return
+	}
+	b.syntaxStreaming = true
 	svc, ok := b.buf.View().(syntaxService)
 	if !ok {
 		b.log(log.DebugLevel, "no syntax will be reported: "+
@@ -707,7 +811,9 @@ func (b *StatusBar) streamSyntaxState() {
 	})
 }
 
-func (b *StatusBar) initLayout(cfg StatusBarConfig) {
+// initLayout lays out cfg.Layout. images holds, by URI, the images its
+// StatusBarImage components draw as loaded.
+func (b *StatusBar) initLayout(cfg StatusBarConfig, images map[string]image.Image) {
 	if cfg.Layout == nil {
 		// the default layout is backwards compatible
 		// with previous less-based bar.
@@ -767,8 +873,15 @@ func (b *StatusBar) initLayout(cfg StatusBarConfig) {
 			toappend = b.totalLines
 			b.totalLinesTemplate = comp
 		case StatusBarImage:
-			img, err := newStatusBarImage(comp, cfg.BackgroundColor, cfg.Storage,
-				cfg.Interrupter)
+			var img *template.ImageElement
+			var err error
+			if loaded, ok := images[comp.Image.URI]; ok {
+				img, err = template.NewLoadedImageElement(comp.Image, loaded,
+					comp.Template, comp.Attributes, cfg.BackgroundColor)
+			} else {
+				img, err = template.NewImageElement(comp.Image, comp.Template,
+					comp.Attributes, cfg.BackgroundColor, cfg.Storage, cfg.Interrupter)
+			}
 			if err != nil {
 				b.log(log.WarnLevel, "status bar image: %v", err)
 				continue
@@ -786,9 +899,7 @@ func (b *StatusBar) initLayout(cfg StatusBarConfig) {
 	b.barLeft.C = component.Inline(barLeft, component.AlignmentLeft)
 	b.barRight.C = component.Inline(barRight, component.AlignmentRight)
 	b.barLeftItems, b.barRightItems = barLeft, barRight
-	slices.SortStableFunc(b.images, func(a, c *statusBarImage) int {
-		return cmp.Compare(a.spec.ZIndex, c.spec.ZIndex)
-	})
+	template.SortImages(b.images)
 }
 
 func calculateGitStats(diff vctrl.FileDiff) (added, deleted int) {

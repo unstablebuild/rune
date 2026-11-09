@@ -20,21 +20,40 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"slices"
+	"time"
 
+	log "github.com/sirupsen/logrus"
+	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
+	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/component/imageuri"
+	"unstable.build/rune/internal/component/template"
+	"unstable.build/rune/internal/handler/quickmenu"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/gui/glassbar"
 	"unstable.build/rune/internal/text"
 )
 
 const (
 	// quickMenuColumnCells is the width of the grid column reserved for
-	// the native quick menu, and quickMenuTopCell the row it starts at,
-	// which is right below the tab bar.
+	// the quick menu, and quickMenuTopCell the row it starts at, which is
+	// right below the tab bar.
 	quickMenuColumnCells = 5
 	quickMenuTopCell     = 3
 
 	cmdQuickMenu = "quickmenu"
+
+	// quickMenuImagesPartition caches the images of the quick menu's
+	// sprites.
+	quickMenuImagesPartition = "quick_menu_images"
+
+	// quickMenuTooltipDelay matches the hover delay of desktop toolkits'
+	// tooltips.
+	quickMenuTooltipDelay = 500 * time.Millisecond
 )
 
 func quickMenuGlassButtons(buttons []ide.QuickMenuButton) []glassbar.Button {
@@ -47,10 +66,181 @@ func quickMenuGlassButtons(buttons []ide.QuickMenuButton) []glassbar.Button {
 	return ret
 }
 
+// readQuickMenu reads the quick menu configured at configPath and the
+// sounds its Rune-drawn bar plays. It loads the config standalone
+// because the reserved grid column must be known before ide.New. The
+// first-run presets never set the quick menu, so the config the
+// bootstrap wizard writes leaves it as it was. A validation error still
+// yields a usable tree with the offending entries neutralised, and the
+// IDE reports it to the user, so the valid buttons are kept rather than
+// dropping the whole bar.
+func readQuickMenu(configPath string) ([]ide.QuickMenuButton, quickmenu.Sounds) {
+	cfg, err := ide.Config(configPath, runeDefaultConfig())
+	if err != nil {
+		log.Warnf("load config for quick menu: %v", err)
+	}
+	return quickMenuConfig(cfg)
+}
+
+// quickMenuConfig returns the quick menu cfg configures and the sounds
+// its Rune-drawn bar plays.
+func quickMenuConfig(cfg config.Config) ([]ide.QuickMenuButton, quickmenu.Sounds) {
+	hover, click := ide.QuickMenuSounds(cfg)
+	return ide.QuickMenuButtons(cfg), quickmenu.Sounds{Hover: hover, Click: click}
+}
+
+// readQuickMenuImages reads the sprites of menu again, dropping their
+// cached copies so that a sprite overwritten in place shows. It returns
+// those it could read, by URI. It must not run on the event loop.
+func readQuickMenuImages(
+	ctx context.Context, menu []ide.QuickMenuButton, storage storageapi.Service,
+) map[string]image.Image {
+	images := make(map[string]image.Image)
+	if storage == nil {
+		return images
+	}
+	storage = storageapi.WithPartition(storage, quickMenuImagesPartition)
+	defer storage.Close() //nolint:errcheck
+	read := make(map[string]struct{})
+	for _, button := range menu {
+		for _, uri := range []string{button.Sprite.Idle, button.Sprite.Hover, button.Sprite.Pressed} {
+			if _, ok := read[uri]; ok || uri == "" {
+				continue
+			}
+			read[uri] = struct{}{}
+			img, err := imageuri.Refresh(ctx, uri, template.DefaultImageTTL, storage)
+			if err != nil {
+				log.Warnf("reload quick menu image: %v", err)
+				continue
+			}
+			images[uri] = img
+		}
+	}
+	return images
+}
+
+// newQuickMenuBar returns the bar Rune draws for menu, or nil when the
+// native bar draws it instead, which is when its buttons have no
+// sprites. The config allows sprites on every button or on none.
+// images are sprites read already, which draw without loading. player
+// plays sounds by name, and activate is called with the ID of the
+// clicked button.
+func newQuickMenuBar(
+	menu []ide.QuickMenuButton, soundNames quickmenu.Sounds, images map[string]image.Image,
+	storage storageapi.Service, publishEvent func(term.Event) bool,
+	player sounds.Player, activate func(id string),
+) *quickmenu.Bar {
+	if len(menu) == 0 || !menu[0].HasSprite() {
+		return nil
+	}
+	buttons := make([]quickmenu.Button, len(menu))
+	for i, button := range menu {
+		buttons[i] = quickmenu.Button{
+			Title:   button.Title,
+			Idle:    button.Sprite.Idle,
+			Hover:   button.Sprite.Hover,
+			Pressed: button.Sprite.Pressed,
+		}
+	}
+	return quickmenu.New(quickmenu.Config{
+		Buttons:      buttons,
+		Columns:      quickMenuColumnCells,
+		Top:          quickMenuTopCell,
+		Storage:      storageapi.WithPartition(storage, quickMenuImagesPartition),
+		Interrupter:  redrawInterrupter(publishEvent),
+		TooltipDelay: quickMenuTooltipDelay,
+		Player:       player,
+		Sounds:       soundNames,
+		Images:       images,
+		Activate:     func(i int) { activate(menu[i].ID()) },
+	})
+}
+
+// setQuickMenu replaces the quick menu with menu, whose bar plays
+// soundNames and draws images. A Rune-drawn bar is rebuilt even when
+// the menu is unchanged, to draw sprites overwritten in place. It keeps
+// the bar hidden if the user hid it. It must run on the event loop.
+func (b *bootstrapHandler) setQuickMenu(
+	menu []ide.QuickMenuButton, soundNames quickmenu.Sounds, images map[string]image.Image,
+) {
+	changed := soundNames != b.quickMenuSounds || !slices.EqualFunc(menu, b.quickMenu,
+		func(x, y ide.QuickMenuButton) bool {
+			return x.Symbol == y.Symbol && x.Title == y.Title && x.Sprite == y.Sprite &&
+				slices.Equal(x.Command, y.Command)
+		})
+	if !changed && b.quickMenuBar == nil {
+		return
+	}
+	if b.quickMenuBar != nil {
+		if err := b.quickMenuBar.Close(); err != nil {
+			log.Warnf("close the quick menu: %v", err)
+		}
+	}
+	b.quickMenu, b.quickMenuSounds = menu, soundNames
+	b.quickMenuBar = newQuickMenuBar(menu, soundNames, images, b.storage, b.publishEvent,
+		sounds.PlayerFunc(b.playSound), b.activateQuickMenuButton)
+	if b.quickMenuBar != nil {
+		b.quickMenuBar.Resize(b.lastResizeW, b.lastResizeH)
+	}
+	if !changed {
+		return
+	}
+	if i := b.currentIDE(); i != nil {
+		i.SetRightInset(b.quickMenuCells())
+	}
+	b.publishQuickMenuInstall()
+	b.publishAppMenuInstall()
+}
+
+// playSound plays name through the current IDE, whose sound registry
+// follows the user config across reloads. It plays nothing before an
+// IDE exists.
+func (b *bootstrapHandler) playSound(name string) {
+	if i := b.currentIDE(); i != nil {
+		i.Sounds().Play(name)
+	}
+}
+
+// visibleQuickMenuBar returns the quick menu Rune draws while it is on
+// screen, or nil.
+func (b *bootstrapHandler) visibleQuickMenuBar() *quickmenu.Bar {
+	if b.quickMenuBar == nil || !b.quickMenuVisible() {
+		return nil
+	}
+	return b.quickMenuBar
+}
+
+// handleQuickMenuMouse offers ev to bar before the IDE, except for a
+// motion, which the IDE sees first: the bar never consumes one, and
+// handling it last makes the bar's pointer shape win.
+func (b *bootstrapHandler) handleQuickMenuMouse(
+	bar *quickmenu.Bar, ev term.Event,
+) (exit, handled bool) {
+	if ev.Key == 0 {
+		exit, handled = b.inner.Handle(ev)
+		bar.Handle(ev)
+		return exit, handled
+	}
+	if _, handled := bar.Handle(ev); handled {
+		return false, true
+	}
+	return b.inner.Handle(ev)
+}
+
+// redrawInterrupter wakes the event loop for a redraw through publish.
+type redrawInterrupter func(term.Event) bool
+
+// Interrupt satisfies term.Interrupter.
+func (publish redrawInterrupter) Interrupt(context.Context) error {
+	publish(term.Event{Type: term.EventInterrupt})
+	return nil
+}
+
 // quickMenuAvailable reports whether the quick menu can be shown at all:
-// the platform draws it and the user configured buttons for it.
+// the user configured buttons for it, and either Rune draws them or the
+// platform does.
 func (b *bootstrapHandler) quickMenuAvailable() bool {
-	return glassbar.Supported() && len(b.quickMenu) > 0
+	return len(b.quickMenu) > 0 && (b.quickMenuBar != nil || glassbar.Supported())
 }
 
 // quickMenuVisible reports whether the bar is currently on screen.
@@ -67,10 +257,10 @@ func (b *bootstrapHandler) quickMenuCells() int {
 	return quickMenuColumnCells
 }
 
-// quickMenuButtons are the buttons to install, empty while hidden so
-// installing clears the bar.
+// quickMenuButtons are the buttons to install in the native bar, empty
+// while it is hidden or Rune draws the menu, so installing clears it.
 func (b *bootstrapHandler) quickMenuButtons() []ide.QuickMenuButton {
-	if !b.quickMenuVisible() {
+	if !b.quickMenuVisible() || b.quickMenuBar != nil {
 		return nil
 	}
 	return b.quickMenu
@@ -91,16 +281,13 @@ func (b *bootstrapHandler) setQuickMenuVisible(visible bool) {
 	b.publishAppMenuInstall()
 }
 
-// subscribeQuickMenuCommand registers the toggle on i. The command only
-// exists where a native quick menu is drawn, so a config that binds it
-// elsewhere fails loudly rather than silently doing nothing.
+// subscribeQuickMenuCommand registers the toggle on i. It is registered
+// even where no quick menu can be drawn yet, because a HUD reload can add
+// sprites; until then it fails rather than silently doing nothing.
 func (b *bootstrapHandler) subscribeQuickMenuCommand(i *ide.IDE) error {
-	if !glassbar.Supported() {
-		return nil
-	}
 	man := textapi.CommandManual{
 		Name: cmdQuickMenu,
-		Summary: "Shows or hides the quick menu, the vertical bar of native " +
+		Summary: "Shows or hides the quick menu, the vertical bar of " +
 			"buttons along the right edge of the window. Hiding it gives the " +
 			"column it reserves back to the editor.",
 		Synopsis: "[on|off]",
@@ -118,6 +305,10 @@ func (b *bootstrapHandler) subscribeQuickMenuCommand(i *ide.IDE) error {
 			}
 		}
 		if !b.quickMenuAvailable() {
+			if len(b.quickMenu) > 0 {
+				return errors.New("this platform has no native quick menu; " +
+					"give the gui.quick_menu buttons sprites")
+			}
 			return errors.New("no quick menu buttons are configured; " +
 				"set gui.quick_menu in your configuration")
 		}

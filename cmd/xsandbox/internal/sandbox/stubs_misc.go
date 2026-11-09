@@ -65,6 +65,14 @@ type stubLLM struct{}
 
 var _ llmapi.Service = stubLLM{}
 
+func (stubLLM) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+func (stubLLM) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
+}
+
 func (stubLLM) CreateCompletion(
 	context.Context, llmapi.ModelEntry, llmapi.Request,
 ) (iterator.Iterator[llmapi.Event], error) {

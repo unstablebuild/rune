@@ -37,7 +37,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/component/notifications"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/localstorage"
 	"unstable.build/rune/internal/workspace"
 )
@@ -76,7 +76,7 @@ func TestNotifyAcrossWorkspaces(t *testing.T) {
 	})
 }
 
-func TestSetWorkspaceRequiresAttentionRace(t *testing.T) {
+func TestAddWorkspaceNotificationRace(t *testing.T) {
 	homeURI, err := workspaceapi.ParseURI("memory:///home")
 	require.NoError(t, err)
 
@@ -103,7 +103,7 @@ func TestSetWorkspaceRequiresAttentionRace(t *testing.T) {
 	err = h.init(nil, homeURI, manager,
 		notificationsConfig(), cfg, storage, dir,
 		func(term.Event) bool { return true },
-		FuncExtensionsRunner(testRunnerFn), pkgtrust.NewStore(dir, nil), mu, nil,
+		FuncExtensionsRunner(testRunnerFn), pkgtrust.NewStore(), mu, nil,
 		func() (ideConfig, error) { return cfg, nil },
 		".sixrc", 0, 0, 0, '1', 0, 0, true, nil, releaseManager,
 		shRunner, 0, nil, false, false, newCommandObserverRegistry())
@@ -123,13 +123,41 @@ func TestSetWorkspaceRequiresAttentionRace(t *testing.T) {
 	for range goroutines {
 		go func() {
 			defer wg.Done()
-			h.setWorkspaceRequiresAttention(wsURI, attr)
+			h.addWorkspaceNotification(wsURI, browserapi.LevelError, attr)
 		}()
 	}
 	wg.Wait()
 	drain()
 
-	assert.Equal(t, attr, h.workspaces[1].attentionAttr)
+	assert.Equal(t, pendingNotifications{
+		count: goroutines, level: browserapi.LevelError, attr: attr,
+	}, h.workspaces[1].notifs)
+}
+
+func TestPendingNotificationsKeepHighestLevel(t *testing.T) {
+	info := term.Attributes{Fg: term.ColorBlue}
+	warn := term.Attributes{Fg: term.ColorYellow}
+	errAttr := term.Attributes{Fg: term.ColorRed}
+	success := term.Attributes{Fg: term.ColorGreen}
+
+	var p pendingNotifications
+	p.add(browserapi.LevelSuccess, success)
+	assert.Equal(t, pendingNotifications{1, browserapi.LevelSuccess, success}, p)
+	p.add(browserapi.LevelInfo, info)
+	assert.Equal(t, pendingNotifications{2, browserapi.LevelInfo, info}, p)
+	p.add(browserapi.LevelError, errAttr)
+	assert.Equal(t, pendingNotifications{3, browserapi.LevelError, errAttr}, p)
+	p.add(browserapi.LevelWarn, warn)
+	assert.Equal(t, pendingNotifications{4, browserapi.LevelError, errAttr}, p,
+		"a lower level keeps the highest one's attribute")
+}
+
+func TestSuperscript(t *testing.T) {
+	for n, want := range map[int]string{
+		0: "⁰", 1: "¹", 7: "⁷", 10: "¹⁰", 42: "⁴²", 120: "¹²⁰",
+	} {
+		assert.Equal(t, want, superscript(n), "%d", n)
+	}
 }
 
 func TestNotificationsInheritRightInset(t *testing.T) {
@@ -161,7 +189,7 @@ func TestNotificationsInheritRightInset(t *testing.T) {
 	require.NoError(t, h.init(nil, homeURI, manager,
 		notificationsConfig(), cfg, storage, dir,
 		func(term.Event) bool { return true },
-		FuncExtensionsRunner(testRunnerFn), pkgtrust.NewStore(dir, nil), mu, nil,
+		FuncExtensionsRunner(testRunnerFn), pkgtrust.NewStore(), mu, nil,
 		func() (ideConfig, error) { return cfg, nil },
 		".sixrc", 0, rightInset, 0, '1', 0, 0, true, nil, releaseManager,
 		shRunner, 0, nil, false, false, newCommandObserverRegistry()))

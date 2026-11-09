@@ -19,6 +19,7 @@ package emacs
 import (
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
+	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/text"
 )
 
@@ -48,6 +49,19 @@ func (h *emacsHandler) saveKill(killed string, prepend bool) {
 		h.log(log.ErrorLevel, "kill ring copy: %v", err)
 	}
 	h.killedNow = true
+}
+
+// saveKillAround saves a kill that took text from both sides of point: the
+// part before point is prepended to a running kill and the rest appended,
+// as GNU does for kill-whole-line's pair of kill-region calls.
+func (h *emacsHandler) saveKillAround(before, after string) {
+	h.killedNow = true
+	if !h.lastKill {
+		h.saveKill(before+after, false)
+		return
+	}
+	h.saveKill(before, true)
+	h.saveKill(after, false)
 }
 
 // killSelection deletes the active selection and saves the removed text to
@@ -91,13 +105,53 @@ func (h *emacsHandler) killLine() bool {
 	return true
 }
 
-// killWholeLine implements the C-S-k whole-line kill: the entire line
-// including its newline is killed to the kill ring.
-func (h *emacsHandler) killWholeLine() bool {
-	if !h.cursor.SelectLine() {
+// killWholeLine implements GNU kill-whole-line (C-S-backspace). With a
+// positive n it kills from the start of point's line through n line breaks,
+// or to the end of the buffer, so the last line goes without the line break
+// before it. Zero kills only the line's text, and a negative n kills the
+// line and the -n lines above it with the line break before them. The
+// region is ignored and point ends where the killed text was. There is
+// nothing to kill forward from an empty last line, or backward from an empty
+// first one at the buffer start.
+func (h *emacsHandler) killWholeLine(n int) bool {
+	view := h.cursor.View()
+	rows := view.Rows()
+	if rows == 0 {
 		return false
 	}
-	return h.killSelection(false)
+	point := h.cursor.CursorAtScroll()
+	point.Y = min(point.Y, rows-1)
+	point.X = min(point.X, view.Columns(point.Y))
+	start := term.Coordinates{Y: point.Y}
+	end := term.Coordinates{X: view.Columns(point.Y), Y: point.Y}
+	switch {
+	case n > 0:
+		if point.Y == rows-1 && end.X == 0 {
+			return false
+		}
+		end = term.Coordinates{Y: point.Y + n}
+		if end.Y >= rows {
+			end = term.Coordinates{X: view.Columns(rows - 1), Y: rows - 1}
+		}
+	case n < 0:
+		if point == (term.Coordinates{}) && end.X == 0 {
+			return false
+		}
+		start = term.Coordinates{}
+		if y := point.Y + n; y >= 0 {
+			start = term.Coordinates{X: view.Columns(y), Y: y}
+		}
+	}
+	before, _ := h.rangeText(start, point)
+	after, _ := h.rangeText(point, end)
+	if start != end {
+		if !h.cursor.SelectRange(start, end) || !h.cursor.DeleteSelection() {
+			h.cursor.Unselect()
+			return false
+		}
+	}
+	h.saveKillAround(before, after)
+	return true
 }
 
 // killRegion implements kill-region (C-w): the text between mark and point

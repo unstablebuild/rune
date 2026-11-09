@@ -451,7 +451,9 @@ func (v *vteAdapter) ClearPrimaryBuffer() bool {
 
 func (v *vteAdapter) Handle(ev term.Event) (exit, handled bool) {
 	exit, handled = v.Handler.Handle(ev)
-	v.exit = exit
+	// a dead terminal does not report exit for every event, such as a
+	// pointer leaving it, so the first report must stick
+	v.exit = v.exit || exit
 	return
 }
 

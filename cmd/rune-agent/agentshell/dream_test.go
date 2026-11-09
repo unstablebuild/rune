@@ -19,6 +19,7 @@ package agentshell
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -150,7 +151,7 @@ func (stubWindowManager) Tab(workspaceapi.URI, rune, string, browserapi.Handler)
 func (stubWindowManager) SetWindowContent(browserapi.Window, browserapi.Handler) error { return nil }
 func (stubWindowManager) CloseWindow(browserapi.Window) error                          { return nil }
 
-func (stubWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (stubWindowManager) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
 
 var _ browserapi.WindowManager = stubWindowManager{}
 
@@ -181,6 +182,14 @@ func (emptyDialogueStore) List(context.Context) (
 var _ dialoguemanager.Store = emptyDialogueStore{}
 
 type stopOnlyLLMService struct{}
+
+func (s *stopOnlyLLMService) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+func (s *stopOnlyLLMService) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
+}
 
 func (s *stopOnlyLLMService) CreateCompletion(
 	ctx context.Context, _ llmapi.ModelEntry, _ llmapi.Request,
@@ -458,3 +467,7 @@ var (
 	_ browserapi.Notifications = noopNotifications{}
 	_ textapi.REPLHandler      = (*shell)(nil)
 )
+
+func (mockExec) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}

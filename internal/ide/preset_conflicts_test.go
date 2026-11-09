@@ -40,6 +40,7 @@ import (
 	"unstable.build/rune/internal/ide/idepreset"
 	"unstable.build/rune/internal/ide/keymeta"
 	"unstable.build/rune/internal/ide/starlarkconfig"
+	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/emacs"
 	"unstable.build/rune/internal/text/helix"
@@ -379,9 +380,10 @@ func acceptedFor(o overlap) (acceptedOverlap, bool) {
 }
 
 // terminalReachable reports whether a focused terminal lets k through to
-// Rune: it writes every key with only <ctrl> and <shift> to the shell.
+// Rune: it writes every key with only <ctrl> and <shift> to the shell,
+// save the few it leaves to Rune.
 func terminalReachable(k term.KeyComb) bool {
-	return k.Mod&^term.ModCtrlShift != 0
+	return k.Mod&^term.ModCtrlShift != 0 || vte.Whitelisted(k)
 }
 
 // unboundChord is a chord no editor binds, to prove a probe can decline.

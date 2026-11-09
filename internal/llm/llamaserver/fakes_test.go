@@ -18,8 +18,12 @@ package llamaserver
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"sync"
@@ -34,12 +38,15 @@ import (
 // llama-server, binds an in-process HTTP server to the --host/--port the
 // pool requested. The server answers GET /health with 200 and
 // POST /v1/chat/completions with a minimal OpenAI-compatible JSON body so a
-// real openai.Client can drive it. It records started commands and drives
-// the process watcher on context cancellation (i.e. kill).
+// real openai.Client can drive it, and POST /v1/embeddings with
+// deterministic 8-dim vectors. It records started commands and drives the
+// process watcher on context cancellation (i.e. kill).
 type fakeExecutor struct {
 	mu sync.Mutex
 	// starts counts StartCommand invocations.
 	starts int
+	// startArgs records each started command's arguments.
+	startArgs [][]string
 	// signals records signals sent via Signal.
 	signals []syscall.Signal
 	// healthDelay delays /health returning 200, simulating model load time.
@@ -58,6 +65,14 @@ type fakeExecutor struct {
 	// watchers maps pid to the process watcher channel so tests can
 	// simulate an unexpected exit (crash) independent of ctx cancellation.
 	watchers map[workspaceapi.Pid]chan error
+	// embedRequests counts /v1/embeddings requests; embedInputs records
+	// each request's inputs.
+	embedRequests int
+	embedInputs   [][]string
+	// embedMaxBytes, when positive, makes /v1/embeddings answer 400 for a
+	// request holding an input longer than this, as llama-server does for
+	// an input larger than the physical batch.
+	embedMaxBytes int
 }
 
 func (f *fakeExecutor) StartCommand(
@@ -65,6 +80,7 @@ func (f *fakeExecutor) StartCommand(
 ) (workspaceapi.Pid, error) {
 	f.mu.Lock()
 	f.starts++
+	f.startArgs = append(f.startArgs, append([]string(nil), cmd.Args...))
 	if f.failStart != nil {
 		err := f.failStart
 		f.mu.Unlock()
@@ -144,6 +160,7 @@ func (f *fakeExecutor) StartCommand(
 			}
 		}
 	})
+	mux.HandleFunc("/v1/embeddings", f.serveEmbeddings)
 	srv := &http.Server{Handler: mux} // #nosec G112 -- test-only server
 
 	if cmd.Stderr != nil {
@@ -174,6 +191,64 @@ func (f *fakeExecutor) Signal(_ workspaceapi.Pid, sig syscall.Signal) error {
 	defer f.mu.Unlock()
 	f.signals = append(f.signals, sig)
 	return nil
+}
+
+func (f *fakeExecutor) serveEmbeddings(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Input []string `json:"input"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	f.embedRequests++
+	f.embedInputs = append(f.embedInputs, req.Input)
+	limit := f.embedMaxBytes
+	f.mu.Unlock()
+	type datum struct {
+		Index     int       `json:"index"`
+		Embedding []float32 `json:"embedding"`
+	}
+	data := make([]datum, len(req.Input))
+	for i, text := range req.Input {
+		if limit > 0 && len(text) > limit {
+			http.Error(w, `{"error":{"message":"input is too large to process"}}`, http.StatusBadRequest)
+			return
+		}
+		// Reverse order so callers must sort by index.
+		data[len(req.Input)-1-i] = datum{Index: i, Embedding: fakeVector(text)}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
+}
+
+// fakeVector is a deterministic unit vector of 8 dims derived from text.
+func fakeVector(text string) []float32 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(text))
+	seed := h.Sum64()
+	v := make([]float32, 8)
+	var sum float64
+	for i := range v {
+		seed = seed*6364136223846793005 + 1442695040888963407
+		v[i] = float32(int64(seed>>33)%1000+1) / 1000
+		sum += float64(v[i]) * float64(v[i])
+	}
+	for i := range v {
+		v[i] /= float32(math.Sqrt(sum))
+	}
+	return v
+}
+
+func (f *fakeExecutor) embedStats() (int, [][]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.embedRequests, append([][]string(nil), f.embedInputs...)
+}
+
+func (*fakeExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }
 
 func (f *fakeExecutor) Close() error { return nil }

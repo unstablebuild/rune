@@ -202,11 +202,10 @@ func TestRemoteWorkspaceAsksAboutItsHostsConfig(t *testing.T) {
 	assert.Contains(t, screen, "wants to update your configuration")
 	h.Handle(term.Event{Type: term.EventKey, Ch: 'a'})
 
-	goroot := filepath.Join(dataDir, "pkg", "configpkg", "2", "go")
 	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		data, err := os.ReadFile(configPath)
 		require.NoError(c, err)
-		assert.Contains(c, string(data), "GOROOT: "+goroot)
+		assert.Contains(c, string(data), "GOROOT: $RUNE_DATADIR/pkg/configpkg/2/go")
 	}, 5*time.Second, 5*time.Millisecond, "the approved change is applied on the host")
 	_, err = os.Stat(filepath.Join(m.sixDir, "rune.yaml"))
 	assert.ErrorIs(t, err, os.ErrNotExist, "nothing changes on this machine")

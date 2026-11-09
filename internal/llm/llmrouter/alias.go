@@ -33,15 +33,20 @@ import (
 	"unstable.build/rune/internal/llm/openai"
 )
 
+// SearchAlias is the alias of the model that answers Search. Unset, it
+// is the configured local embedding model.
+const SearchAlias = "search"
+
 // reservedAliasNames are the alias names the router recognizes even when
-// unset. An unset reserved alias other than `default` resolves to
-// whatever `default` resolves to; `default` itself falls back to the
-// latest authenticated provider's flagship model.
+// unset. An unset reserved alias other than `default` and `search`
+// resolves to whatever `default` resolves to; `default` itself falls
+// back to the latest authenticated provider's flagship model.
 var reservedAliasNames = []string{
 	llmapi.DefaultModel,
 	"query",
 	"compact",
 	"dream",
+	SearchAlias,
 }
 
 var reservedAliases = func() map[string]bool {
@@ -73,6 +78,14 @@ func (r *Router) resolveAlias(
 	}
 	if !reservedAliases[model.Name] {
 		return llmapi.ModelEntry{}, false, nil
+	}
+	if model.Name == SearchAlias {
+		// Searching needs an embedding model, which `default` never is.
+		entry, err := r.search.EmbeddingModel(ctx)
+		if err != nil {
+			return llmapi.ModelEntry{}, false, err
+		}
+		return entry, true, nil
 	}
 	// An unset reserved alias other than `default` defers to `default`,
 	// which is the single knob users set; only `default` itself falls

@@ -70,6 +70,10 @@ func (l recordingLoader) Load(
 	return l.testLoader.Load(file, buf, swapDir, readOnly)
 }
 
+func (l recordingLoader) LoaderFor(file workspaceapi.URI) (workspace.FileLoader, error) {
+	return workspace.FileLoaderOf(l, file), nil
+}
+
 func TestExternalEditorForcesReadOnly(t *testing.T) {
 	var loaderRO, editorRO bool
 	ed := externalEditor{TestEditor: NopEditor(), readOnlyObserved: &editorRO}

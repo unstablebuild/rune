@@ -280,7 +280,7 @@ func TestStart(t *testing.T) {
 		// Advance past 7 days and un-throttle
 		now = now.Add(8 * 24 * time.Hour)
 
-		// The prompt will auto-select "Update All" (index 0) via mockWindowManager
+		// The prompt will auto-select "Update All" (index 0) via mockPrompter
 		// which sends Enter on the first option.
 		n.Reset()
 		uc.run(context.Background())
@@ -474,7 +474,7 @@ func TestUpdatePromptActions(t *testing.T) {
 		m, n, _, _ := newTestManager(t, pkgs, versions)
 
 		// Override floating to select "Skip These Versions" (index 2)
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				h.Resize(70, 20)
 				// Move down twice to reach "Skip These Versions"
@@ -516,7 +516,7 @@ func TestUpdatePromptActions(t *testing.T) {
 		m, n, _, _ := newTestManager(t, pkgs, versions)
 
 		// Override floating to select "Remind Later" (index 1)
-		m.wm = &mockWindowManager{
+		m.prompter = &mockPrompter{
 			floatingFn: func(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
 				h.Resize(70, 20)
 				h.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowRight})

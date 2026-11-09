@@ -40,7 +40,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/cell"
-	"unstable.build/rune/internal/ide/ideshell"
+	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/ide/console/ideconsole"
 	"unstable.build/rune/internal/text/standard"
 )
 
@@ -1496,11 +1497,13 @@ func newTestREPLHandler(t *testing.T) (*drainHandler, *tickScheduler) {
 	t.Helper()
 	ti := &nopInterrupter{}
 	sched := newTickScheduler(ti)
-	shell, _ := ideshell.New(
+	shell, _ := ideconsole.New(
 		sched.schedule,
 		ti,
 		commandEditor{te: standard.Editor()},
-		ideshell.Config{
+		&fakeWM{},
+		workspaceapi.URI{},
+		ideconsole.Config{
 			DisableShellInterpreter: newTestSession(newScriptedRunner()),
 			Prompt:                  "go> ",
 		},
@@ -1531,6 +1534,108 @@ func TestDrainHandlerForwardsMouse(t *testing.T) {
 		require.NotPanics(t, func() { h.Handle(ev) },
 			"wrapper must forward mouse event %v", key)
 	}
+}
+
+// newPopulatedREPLHandler returns a REPL whose scrollback holds more
+// evaluated output than fits on screen and whose input line holds a
+// partly typed expression.
+func newPopulatedREPLHandler(t *testing.T) *drainHandler {
+	t.Helper()
+	runner := newScriptedRunner()
+	runner.def = scriptedReply{out: "line one\nline two\nline three\nline four"}
+	ti := &nopInterrupter{}
+	sched := newTickScheduler(ti)
+	shell, _ := ideconsole.New(
+		sched.schedule, ti, commandEditor{te: standard.Editor()}, &fakeWM{},
+		workspaceapi.URI{},
+		ideconsole.Config{DisableShellInterpreter: newTestSession(runner), Prompt: "go> "},
+	)
+	t.Cleanup(func() { _ = shell.Close() })
+	h := &drainHandler{Handler: shell, sched: sched}
+	h.Resize(60, 15)
+	for _, line := range []string{`import "strings"`, "x := 21", "x * 2", `strings.Repeat("ab", 3)`} {
+		h.Submit(line)
+		h.Wait()
+	}
+	for _, ch := range "x + 1" {
+		h.Handle(term.Event{Type: term.EventKey, Ch: ch})
+	}
+	w := term.NewStringWriter(60, 15)
+	h.Draw(w)
+	require.NoError(t, w.Flush())
+	require.Contains(t, w.String(), "line four", "the scrollback shows evaluated output")
+	require.Contains(t, w.String(), "x + 1", "the input line shows the typed expression")
+	return h
+}
+
+func TestDrainHandlerPointerLeaves(t *testing.T) {
+	t.Parallel()
+	for _, size := range [][2]int{{60, 15}, {1, 1}} {
+		handlertest.RunPointerLeaves(t, newPopulatedREPLHandler(t), size[0], size[1])
+	}
+}
+
+func TestDrainHandlerPointerLeaveIsInert(t *testing.T) {
+	t.Parallel()
+	const width, height = 60, 15
+	mid := term.Coordinates{X: width / 2, Y: height / 2}
+	mouse := func(key term.Key) term.Event {
+		return term.Event{
+			Type: term.EventMouse, Key: key, MouseX: mid.X, MouseY: mid.Y,
+			Context: term.ContextWithPointer(context.Background(), new(term.Pointer)),
+		}
+	}
+	snapshot := func(h *drainHandler) replFrame {
+		w := term.NewStringWriter(width, height)
+		h.Draw(w)
+		f := replFrame{cells: w.Cells()}
+		f.cursor, _, f.showCur = h.Cursor()
+		f.selection, f.selected = h.Selection()
+		return f
+	}
+	tests := []struct {
+		name    string
+		gesture []term.Event
+		// restores reports that the leave must restore the frame drawn
+		// before the gesture rather than keep the one it left.
+		restores bool
+	}{
+		{name: "hover", gesture: []term.Event{mouse(0)}, restores: true},
+		{name: "click", gesture: []term.Event{mouse(0), mouse(term.MouseLeft), mouse(term.MouseRelease)}},
+		{name: "wheel", gesture: []term.Event{mouse(term.MouseWheelUp)}},
+		{name: "press", gesture: []term.Event{mouse(term.MouseLeft)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := newPopulatedREPLHandler(t)
+			before := snapshot(h)
+			for _, ev := range tt.gesture {
+				h.Handle(ev)
+			}
+			if !tt.restores {
+				before = snapshot(h)
+			}
+			for _, out := range []term.Coordinates{
+				{X: -1, Y: mid.Y}, {X: width, Y: mid.Y}, {X: mid.X, Y: -1},
+				{X: mid.X, Y: height}, {X: 4 * width, Y: 4 * height},
+			} {
+				exit, _ := h.Handle(term.Event{Type: term.EventMouse, MouseX: out.X, MouseY: out.Y})
+				require.False(t, exit, "a leave to %v exits", out)
+				require.Equal(t, before, snapshot(h), "a leave to %v changes what is shown", out)
+			}
+		})
+	}
+}
+
+// replFrame is everything the REPL shows: its drawn cells, its cursor
+// and its selection.
+type replFrame struct {
+	cells     []term.Cell
+	cursor    term.Coordinates
+	showCur   bool
+	selection string
+	selected  bool
 }
 
 // assertSlice asserts got matches want, treating a non-nil empty want as
@@ -1672,7 +1777,7 @@ func TestGoREPLEvalEndToEnd(t *testing.T) {
 	}
 }
 
-// --- ideshell wiring --------------------------------------------------
+// --- ideconsole wiring --------------------------------------------------
 
 func TestGoSessionHelp(t *testing.T) {
 	t.Parallel()
@@ -1761,7 +1866,7 @@ func (m *fakeWM) Bar(browserapi.BarConfig, tui.Handler) error {
 
 func (m *fakeWM) CloseWindow(browserapi.Window) error { return nil }
 
-func (m *fakeWM) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (m *fakeWM) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
 
 func TestNewREPLSubcommandOpensShell(t *testing.T) {
 	t.Parallel()
@@ -1813,9 +1918,9 @@ func TestREPLShellConfigPersistsHistory(t *testing.T) {
 	require.NotEmpty(t, cfg.HistoryDocumentID,
 		"a history document id is required to persist commands")
 
-	shell, _ := ideshell.New(
+	shell, _ := ideconsole.New(
 		func(func()) bool { return false }, &nopInterrupter{},
-		commandEditor{te: standard.Editor()}, cfg,
+		commandEditor{te: standard.Editor()}, &fakeWM{}, workspaceapi.URI{}, cfg,
 	)
 	t.Cleanup(func() { _ = shell.Close() })
 	shell.Resize(80, 24)

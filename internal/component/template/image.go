@@ -24,6 +24,8 @@ import (
 	"strings"
 	"text/template/parse"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/component/imageuri"
@@ -36,15 +38,25 @@ const ImageField = "Image"
 // The values of the image directives an ImageField element leaves out.
 const (
 	// DefaultImageAlt is a cross from the Nerd Fonts Font Awesome set.
-	DefaultImageAlt   = "\uf00d"
-	DefaultImageWidth = 2
-	DefaultImageTTL   = 24 * time.Hour
+	DefaultImageAlt    = "\uf00d"
+	DefaultImageWidth  = 2
+	DefaultImageTTL    = 24 * time.Hour
+	DefaultImageMaxCut = 1
 )
 
 // ZIndexBackground is the lowest ZIndex of an image drawn over the
 // layout's backgrounds, as in the kitty graphics protocol: an image with
 // a lower ZIndex is drawn under them.
 const ZIndexBackground = math.MinInt32 / 2
+
+// The bounds of an Image's sizes and offsets. No screen is that many
+// cells or device pixels across, so a value past them can only be a
+// mistake, and bounding them keeps the arithmetic that places the image
+// from overflowing.
+const (
+	MaxImageCells       = 1 << 12
+	MaxImagePixelOffset = 1 << 16
+)
 
 // Image is an image anchored in a layout by an ImageField element. The
 // element takes up Reserve cells in the layout, and its anchor is the
@@ -61,6 +73,11 @@ const ZIndexBackground = math.MinInt32 / 2
 // around them, up to the edges of the screen. Reserve defaults to the
 // width when the width is a number of cells, and to 0 when it is a
 // percentage.
+//
+// A layout too narrow for its elements cuts off its end, which pushes
+// the elements there past it, and the image with them. The image is
+// hidden once its element would end more than MaxCut cells past the end
+// of the layout, as there is no room to show it where it belongs.
 //
 // ZIndex stacks the image with the layout's text and the other images,
 // as in the kitty graphics protocol: an image with a ZIndex of 0 or more
@@ -94,6 +111,9 @@ type Image struct {
 	ZIndex int32
 	// Overflow lets the image extend past the layout's surroundings.
 	Overflow bool
+	// MaxCut is how many cells the layout may cut off the element before
+	// the image is hidden.
+	MaxCut int
 	// Alt is drawn centered over the image's cells when the image cannot
 	// be shown. An empty Alt draws nothing.
 	Alt string
@@ -112,6 +132,78 @@ func (img Image) Layer() term.ImageLayer {
 	default:
 		return term.ImageLayerBelowBackground
 	}
+}
+
+// Validate reports the first field of img out of its range, naming the
+// directive that sets it. URI must be accepted by imageuri.ValidateURI.
+// Width is from 1 to MaxImageCells cells, or from 1% to 100%. Height is
+// from 1 to MaxImageCells, and Reserve and MaxCut from 0 to
+// MaxImageCells. XOffset and YOffset are at most MaxImageCells cells
+// either way, or 100% for XOffset, and the pixel offsets at most
+// MaxImagePixelOffset either way. Fit is term.ImageFitContain or
+// term.ImageFitFill. Alt is valid UTF-8, and its only control characters
+// are newlines, which break it into lines. TTL is not negative.
+func (img Image) Validate() error {
+	if err := imageuri.ValidateURI(img.URI); err != nil {
+		return fmt.Errorf("src: %w", err)
+	}
+	const cells, pixels = MaxImageCells, MaxImagePixelOffset
+	if err := checkLength("width", img.Width, 1, cells, 1); err != nil {
+		return err
+	}
+	if err := checkRange("height", img.Height, 1, cells); err != nil {
+		return err
+	}
+	if err := checkRange("reserve", img.Reserve, 0, cells); err != nil {
+		return err
+	}
+	if err := checkLength("x_offset", img.XOffset, -cells, cells, -100); err != nil {
+		return err
+	}
+	if err := checkRange("y_offset", img.YOffset, -cells, cells); err != nil {
+		return err
+	}
+	if err := checkRange("x_pixel_offset", img.XOffsetPixels, -pixels, pixels); err != nil {
+		return err
+	}
+	if err := checkRange("y_pixel_offset", img.YOffsetPixels, -pixels, pixels); err != nil {
+		return err
+	}
+	if img.Fit != term.ImageFitContain && img.Fit != term.ImageFitFill {
+		return fmt.Errorf("fit must be contain or fill, got %d", img.Fit)
+	}
+	if err := checkRange("max_cut", img.MaxCut, 0, cells); err != nil {
+		return err
+	}
+	if !utf8.ValidString(img.Alt) || strings.ContainsFunc(img.Alt, func(r rune) bool {
+		return r != '\n' && unicode.IsControl(r)
+	}) {
+		return fmt.Errorf("alt must be UTF-8 text without control characters "+
+			"other than newlines, got %q", img.Alt)
+	}
+	if img.TTL < 0 {
+		return fmt.Errorf("ttl must not be negative, got %s", img.TTL)
+	}
+	return nil
+}
+
+func checkRange(name string, n, least, most int) error {
+	if n < least || n > most {
+		return fmt.Errorf("%s must be from %d to %d, got %d", name, least, most, n)
+	}
+	return nil
+}
+
+// checkLength checks a number of cells from leastCells to mostCells, or
+// a percentage from leastPercent to 100.
+func checkLength(name string, l Length, leastCells, mostCells, leastPercent int) error {
+	if !l.Percent {
+		return checkRange(name, l.N, leastCells, mostCells)
+	}
+	if l.N < leastPercent || l.N > 100 {
+		return fmt.Errorf("%s must be from %d%% to 100%%, got %d%%", name, leastPercent, l.N)
+	}
+	return nil
 }
 
 // Length is a number of cells, or a percentage of the layout's width.
@@ -133,7 +225,7 @@ func (l Length) Cells(total int) int {
 var imageDirectives = map[string]struct{}{
 	"src": {}, "width": {}, "height": {}, "reserve": {},
 	"x_offset": {}, "y_offset": {}, "x_pixel_offset": {}, "y_pixel_offset": {},
-	"fit": {}, "z_index": {}, "overflow": {}, "alt": {}, "ttl": {},
+	"fit": {}, "z_index": {}, "overflow": {}, "max_cut": {}, "alt": {}, "ttl": {},
 }
 
 type imageBuilder struct {
@@ -145,6 +237,7 @@ func newImageBuilder() *imageBuilder {
 	return &imageBuilder{img: Image{
 		Width:  Length{N: DefaultImageWidth},
 		Height: 1,
+		MaxCut: DefaultImageMaxCut,
 		Fit:    term.ImageFitContain,
 		Alt:    DefaultImageAlt,
 		TTL:    DefaultImageTTL,
@@ -154,29 +247,22 @@ func newImageBuilder() *imageBuilder {
 func (b *imageBuilder) apply(name string, args []parse.Node) (err error) {
 	switch name {
 	case "src":
-		var uri string
-		if uri, err = stringArg(name, args); err != nil {
-			return err
-		}
-		if err := imageuri.ValidateURI(uri); err != nil {
-			return fmt.Errorf("src: %w", err)
-		}
-		b.img.URI = uri
+		b.img.URI, err = stringArg(name, args)
 	case "width":
-		b.img.Width, err = lengthArg(name, args, 1, 1)
+		b.img.Width, err = lengthArg(name, args)
 	case "height":
-		b.img.Height, err = intArg(name, args, 1)
+		b.img.Height, err = intArg(name, args)
 	case "reserve":
-		b.img.Reserve, err = intArg(name, args, 0)
+		b.img.Reserve, err = intArg(name, args)
 		b.reserveSet = true
 	case "x_offset":
-		b.img.XOffset, err = lengthArg(name, args, math.MinInt, -100)
+		b.img.XOffset, err = lengthArg(name, args)
 	case "y_offset":
-		b.img.YOffset, err = intArg(name, args, math.MinInt)
+		b.img.YOffset, err = intArg(name, args)
 	case "x_pixel_offset":
-		b.img.XOffsetPixels, err = intArg(name, args, math.MinInt)
+		b.img.XOffsetPixels, err = intArg(name, args)
 	case "y_pixel_offset":
-		b.img.YOffsetPixels, err = intArg(name, args, math.MinInt)
+		b.img.YOffsetPixels, err = intArg(name, args)
 	case "fit":
 		b.img.Fit, err = enumArg(name, args, map[string]term.ImageFit{
 			"contain": term.ImageFitContain,
@@ -184,7 +270,7 @@ func (b *imageBuilder) apply(name string, args []parse.Node) (err error) {
 		})
 	case "z_index":
 		var z int
-		if z, err = intArg(name, args, math.MinInt); err != nil {
+		if z, err = intArg(name, args); err != nil {
 			return err
 		}
 		if z < math.MinInt32 || z > math.MaxInt32 {
@@ -197,6 +283,8 @@ func (b *imageBuilder) apply(name string, args []parse.Node) (err error) {
 			return fmt.Errorf("%s takes no arguments", name)
 		}
 		b.img.Overflow = true
+	case "max_cut":
+		b.img.MaxCut, err = intArg(name, args)
 	case "alt":
 		b.img.Alt, err = stringArg(name, args)
 	case "ttl":
@@ -205,9 +293,6 @@ func (b *imageBuilder) apply(name string, args []parse.Node) (err error) {
 			return err
 		}
 		b.img.TTL, err = time.ParseDuration(s)
-		if err == nil && b.img.TTL < 0 {
-			err = fmt.Errorf("ttl must not be negative, got %s", s)
-		}
 	}
 	return err
 }
@@ -218,6 +303,9 @@ func (b *imageBuilder) build() (Image, error) {
 	}
 	if !b.reserveSet && !b.img.Width.Percent {
 		b.img.Reserve = b.img.Width.N
+	}
+	if err := b.img.Validate(); err != nil {
+		return Image{}, err
 	}
 	return b.img, nil
 }
@@ -233,36 +321,34 @@ func stringArg(name string, args []parse.Node) (string, error) {
 	return s.Text, nil
 }
 
-func intArg(name string, args []parse.Node, least int) (int, error) {
+// intArg parses an integer. A character constant such as 'a' is a number
+// to text/template, but cannot be meant as one here.
+func intArg(name string, args []parse.Node) (int, error) {
 	if len(args) != 1 {
 		return 0, fmt.Errorf("%s takes one argument", name)
 	}
 	n, ok := args[0].(*parse.NumberNode)
-	if !ok || !n.IsInt {
+	if !ok || !n.IsInt || strings.HasPrefix(n.Text, "'") {
 		return 0, fmt.Errorf("%s argument must be an integer", name)
-	}
-	if n.Int64 < int64(least) {
-		return 0, fmt.Errorf("%s must be at least %d, got %d", name, least, n.Int64)
 	}
 	return int(n.Int64), nil
 }
 
-// lengthArg parses a number of cells of at least leastCells, or a
-// percentage from leastPercent to 100.
-func lengthArg(name string, args []parse.Node, leastCells, leastPercent int) (Length, error) {
+// lengthArg parses a number of cells, or a percentage such as "50%".
+func lengthArg(name string, args []parse.Node) (Length, error) {
 	if len(args) == 1 {
 		if s, ok := args[0].(*parse.StringNode); ok {
 			digits, found := strings.CutSuffix(s.Text, "%")
 			pct, err := strconv.Atoi(digits)
-			if !found || err != nil || pct < leastPercent || pct > 100 {
+			if !found || err != nil {
 				return Length{}, fmt.Errorf(
-					"%s must be a number of cells or a percentage from %d%% to 100%%, got %q",
-					name, leastPercent, s.Text)
+					"%s must be a number of cells or a percentage such as \"50%%\", got %q",
+					name, s.Text)
 			}
 			return Length{N: pct, Percent: true}, nil
 		}
 	}
-	n, err := intArg(name, args, leastCells)
+	n, err := intArg(name, args)
 	return Length{N: n}, err
 }
 

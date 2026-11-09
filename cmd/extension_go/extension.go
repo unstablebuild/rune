@@ -34,6 +34,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension/langext"
 )
 
@@ -50,6 +51,8 @@ func NewExtension() (extensionapi.WorkspaceExtension, extensionapi.Metadata) {
 		DeveloperKey:   "064D4ABCFA6D9338",
 		ExtensionID:    "go",
 		ExtensionName:  "Go Language Extension",
+		// debug.Tag is stamped by the rune-language-go build with the package's release tag.
+		ExtensionVersion: debug.Tag,
 		Permissions: extensionapi.NewPermissions(
 			extensionapi.PermissionLSP,
 			extensionapi.PermissionEditor,

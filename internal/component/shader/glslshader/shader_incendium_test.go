@@ -19,11 +19,32 @@ package glslshader
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/component/shader/shadertest"
 )
 
 func TestIncendium(t *testing.T) {
-	sh := Incendium(DefaultIncendiumParams(), term.Attributes{}, 30)
+	sh := Incendium(DefaultIncendiumParams(), term.Attributes{})
 	shadertest.TestShader(t, sh)
+}
+
+func TestIncendiumDependsOnProgressOnly(t *testing.T) {
+	build := func() shader.Shader { return Incendium(DefaultIncendiumParams(), term.Attributes{}) }
+	shadertest.AssertProgressOnly(t, build, shadertest.MakeTextCanvas(12, 6))
+	shadertest.AssertOrderIndependent(t, build, shadertest.MakeTextCanvas(12, 6), 20)
+}
+
+func TestIncendiumFrontAdvancesEveryFrame(t *testing.T) {
+	for _, total := range []int{90, 300, 900} {
+		sh := Incendium(DefaultIncendiumParams(), term.Attributes{})
+		assert.Zero(t, frontStall(sh, shadertest.MakeTextCanvas(40, 14), total),
+			"frames in a row the front stands still over %d frames", total)
+	}
+}
+
+func BenchmarkIncendium(b *testing.B) {
+	sh := Incendium(DefaultIncendiumParams(), term.Attributes{})
+	shadertest.BenchmarkShader(b, sh, 120, 40, shadertest.MakeTextCanvas(120, 40))
 }

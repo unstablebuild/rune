@@ -53,6 +53,14 @@ type client struct {
 	initErr error
 }
 
+func (c *client) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+func (c *client) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
+}
+
 // NewClient returns an llmapi.Service backed by the native Gemini API via
 // Google's google.golang.org/genai SDK.
 func NewClient(token string, config Config) llmapi.Service {

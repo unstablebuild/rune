@@ -389,6 +389,34 @@ func TestQuitEventFollowsConfiguredBinding(t *testing.T) {
 	}, quitEvent(bindings))
 }
 
+func TestQuitEventFollowsLoadedConfig(t *testing.T) {
+	tests := []struct {
+		name       string
+		configBody string
+		want       term.Event
+	}{
+		{
+			name: "remapped quit",
+			configBody: "command:\n  key_bindings:\n" +
+				"    \"<meta-shift-q>\": quit\n" +
+				"    \"<meta-q>\": windowclose\n" +
+				"    \"<alt-q>\": tabclose\n",
+			want: term.Event{Type: term.EventKey, Mod: term.ModMeta, Ch: 'Q'},
+		},
+		{
+			name:       "default preset quit",
+			configBody: "editor:\n  mode: modal\n",
+			want:       term.Event{Type: term.EventKey, Mod: term.ModMeta, Ch: 'q'},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := newConfiguredBootstrapForEnvTest(t, configFilename, tt.configBody, t.TempDir())
+			assert.Equal(t, tt.want, quitEvent(appMenuKeyBindings(b.config())))
+		})
+	}
+}
+
 func TestAppMenusDeriveAccelerators(t *testing.T) {
 	menus := testAppMenus(map[string]term.KeyComb{
 		"quit":                              {Mod: term.ModMeta, Ch: 'q'},

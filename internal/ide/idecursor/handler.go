@@ -226,16 +226,12 @@ func (h *handler) HandleCommand(ctx context.Context, cmd textapi.Command) error 
 		return h.navigate(ctx, loc)
 	case "jump":
 		entries := h.pickerEntries(h.displayOrder(sub))
-		picker := locationpicker.New(entries, h.wm, h.fs, h.scheduleNextTick, h.parser, locationpicker.DefaultConfig(), nil)
+		picker := locationpicker.New(entries, h.fs, h.scheduleNextTick, h.parser, locationpicker.DefaultConfig(), nil)
 		picker.SetOnSelect(func(idx int) {
 			_, _ = h.jumpToIndex(context.Background(), h.displayOrder(sub)[idx])
 		})
-		win, err := h.wm.Floating(picker, browserapi.FloatingConfig{Alignment: component.AlignmentCentered})
-		if err != nil {
-			return err
-		}
-		picker.SetWindow(win)
-		return nil
+		_, err := h.wm.Floating(picker, browserapi.FloatingConfig{Alignment: component.AlignmentCentered})
+		return err
 	default:
 		return fmt.Errorf("unknown cursorhistory subcommand %q", sub)
 	}

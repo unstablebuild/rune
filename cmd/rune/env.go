@@ -17,13 +17,12 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
-	"path"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -31,17 +30,12 @@ import (
 
 	"github.com/Xuanwo/go-locale"
 	log "github.com/sirupsen/logrus"
-	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"golang.org/x/text/language"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/ide/hostenv"
 )
 
 const fallbackLocale = "UTF-8"
-
-// runeShellEnvMarker is printed by the login-shell probe immediately before the
-// shell's environment dump so we can ignore any banner chatter rc files emit on
-// stdout before our probe runs, and parse only the env that follows it.
-const runeShellEnvMarker = "RUNE_SHELL_ENV_START"
 
 // loginPathTimeout bounds the login-shell probe so a wedged shell can never
 // block startup.
@@ -49,124 +43,25 @@ const loginPathTimeout = 10 * time.Second
 
 var darwinRe = regexp.MustCompile("UserShell: (/[^ ]+)\n")
 
-func setupRuneBinPATH(dataDir string) error {
-	if err := makePkgDirs(dataDir); err != nil {
-		return err
-	}
-	return setRuneBinPATH(dataDir, os.Getenv("PATH"))
-}
-
-func startLoginShellPATHResolve(dataDir string) <-chan error {
+// startLoginShellPATHResolve probes the user's login shell PATH in the
+// background and makes it the base PATH of host. The channel receives the
+// outcome once.
+func startLoginShellPATHResolve(host *hostenv.Host) <-chan error {
 	done := make(chan error, 1)
 	go debug.CapturePanicReport(func() {
-		login, err := resolveLoginPath(loginPathTimeout, userShell)
+		ctx, cancel := context.WithTimeout(context.Background(), loginPathTimeout)
+		defer cancel()
+		login, err := hostenv.ProbeLoginPATH(ctx, userShell)
 		if err != nil {
 			done <- err
 			return
 		}
-		done <- setRuneBinPATH(dataDir, login)
+		done <- host.SetBasePATH(login)
 	})
 	return done
 }
 
-func setRuneBinPATH(dataDir, base string) error {
-	binDir := filepath.Join(dataDir, "bin")
-	if err := os.Setenv("PATH", prependPATH(runtime.GOOS, binDir, base)); err != nil {
-		return fmt.Errorf("set env PATH: %w", err)
-	}
-	return nil
-}
-
-// prependPATH puts dir first in the goos PATH list base, dropping entries that
-// name dir: the resolved login PATH is inherited from a process whose PATH
-// already starts with dir. Other entries are kept verbatim, including empty
-// ones (the current directory on POSIX) and Windows quoting, which protects
-// entries containing the separator.
-func prependPATH(goos, dir, base string) string {
-	windows := goos == "windows"
-	sep := ":"
-	if windows {
-		sep = ";"
-	}
-	entries := []string{dir}
-	for _, e := range splitPATH(base, windows) {
-		if !samePATHDir(e, dir, windows) {
-			entries = append(entries, e)
-		}
-	}
-	return strings.Join(entries, sep)
-}
-
-// splitPATH splits list like filepath.SplitList does for the given syntax, but
-// keeps Windows quotes so entries can be joined back unchanged.
-func splitPATH(list string, windows bool) []string {
-	if list == "" {
-		return nil
-	}
-	if !windows {
-		return strings.Split(list, ":")
-	}
-	var entries []string
-	start, quoted := 0, false
-	for i := range len(list) {
-		switch list[i] {
-		case '"':
-			quoted = !quoted
-		case ';':
-			if !quoted {
-				entries = append(entries, list[start:i])
-				start = i + 1
-			}
-		}
-	}
-	return append(entries, list[start:])
-}
-
-// samePATHDir reports whether the PATH entry names dir, comparing lexically
-// cleaned paths. Windows ignores quotes and case and accepts either slash.
-func samePATHDir(entry, dir string, windows bool) bool {
-	if entry == "" {
-		return false
-	}
-	if !windows {
-		return path.Clean(entry) == path.Clean(dir)
-	}
-	norm := func(p string) string {
-		p = strings.ReplaceAll(p, `"`, "")
-		return path.Clean(strings.ReplaceAll(p, `\`, "/"))
-	}
-	return strings.EqualFold(norm(entry), norm(dir))
-}
-
-func makePkgDirs(dataDir string) error {
-	for _, sub := range []string{"bin", "lib"} {
-		dir := filepath.Join(dataDir, sub)
-		if err := os.MkdirAll(dir, 0o777); err != nil {
-			return fmt.Errorf("mkdir %s: %w", dir, err)
-		}
-	}
-	return nil
-}
-
-// pathFromMarkerEnv extracts PATH from a NUL-delimited `/usr/bin/env -0` dump
-// that follows the env marker. Everything before the last marker occurrence is
-// banner chatter and is ignored, so rc-file output that happens to look like
-// KEY=VALUE cannot shadow the real environment.
-func pathFromMarkerEnv(out string) string {
-	if idx := strings.LastIndex(out, runeShellEnvMarker); idx >= 0 {
-		out = out[idx+len(runeShellEnvMarker):]
-	}
-	for entry := range strings.SplitSeq(out, "\x00") {
-		if v, ok := strings.CutPrefix(entry, "PATH="); ok {
-			return v
-		}
-	}
-	return ""
-}
-
-func setEnvForGUI(dataPath string) {
-	os.Setenv("RUNE_DATADIR", dataPath)
-
+func setEnvForGUI() {
 	// set vte vars
 	os.Setenv("TERM", "xterm-256color")
 	os.Setenv("COLORTERM", "truecolor")
@@ -279,35 +174,4 @@ func windowsShell() (string, error) {
 	}
 
 	return consoleApp, nil
-}
-
-// applyGUIEnvVars applies the resolved gui.env config block to the local
-// process environment with os.Setenv, expanding values against a stable
-// baseline so repeated applications do not duplicate self-referential entries.
-// It captures the baseline on first use.
-func applyGUIEnvVars(env config.Config) error {
-	return applyGUIEnvVarsWithLookup(env, os.Getenv)
-}
-
-// applyGUIEnvVarsWithLookup applies env to the local process environment,
-// expanding string values with the given lookup. It preserves evalVar
-// semantics: strings expand via os.Expand, non-strings use fmt.Sprintf("%v").
-func applyGUIEnvVarsWithLookup(env config.Config, lookup func(string) string) error {
-	var err error
-	env.Iterate(func(k string, value any) {
-		if setErr := os.Setenv(k, evalVarWithLookup(value, lookup)); setErr != nil && err == nil {
-			err = fmt.Errorf("set env %s: %w", k, setErr)
-		}
-	})
-	return err
-}
-
-// evalVarWithLookup mirrors evalVar but expands string values against the
-// given lookup instead of the live environment.
-func evalVarWithLookup(value any, lookup func(string) string) string {
-	str, ok := value.(string)
-	if !ok {
-		return fmt.Sprintf("%v", value)
-	}
-	return os.Expand(str, lookup)
 }

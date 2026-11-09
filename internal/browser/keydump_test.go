@@ -24,6 +24,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/handler/handlertest"
 )
 
 type keydumpClipboard struct{ copies int }
@@ -82,4 +83,38 @@ func TestKeydumpHeldDragCopiesOnlyOnPress(t *testing.T) {
 	_, handled = h.Handle(press)
 	assert.True(t, handled)
 	assert.Equal(t, 2, clip.copies, "the next press copies again")
+}
+
+type countingNotifications struct{ n int }
+
+func (c *countingNotifications) Notify(browserapi.NotificationLevel, string, ...any) (string, error) {
+	c.n++
+	return "", nil
+}
+
+func (c *countingNotifications) NotifyOnce(browserapi.NotificationLevel, string, ...any) (string, error) {
+	c.n++
+	return "", nil
+}
+
+func (c *countingNotifications) UpdateNotificationProgress(string, string, int64, int64) error {
+	return nil
+}
+
+func TestKeydumpPointerLeaves(t *testing.T) {
+	for _, size := range [][2]int{{60, 15}, {1, 1}} {
+		notifications := new(countingNotifications)
+		k := Keydump(clipboard.NewInMemory(), notifications)
+		for _, ch := range "a long sequence of keys to dump" {
+			k.Handle(term.Event{Type: term.EventKey, Ch: ch})
+		}
+		k.Resize(size[0], size[1])
+		k.Handle(term.Event{Type: term.EventMouse, MouseX: -1, MouseY: 0})
+		k.Handle(term.Event{Type: term.EventMouse, MouseX: 0, MouseY: size[1]})
+		_, selected := k.Selection()
+		assert.False(t, selected, "a leave does not copy a row")
+		assert.Zero(t, notifications.n)
+
+		handlertest.RunPointerLeaves(t, k, size[0], size[1])
+	}
 }

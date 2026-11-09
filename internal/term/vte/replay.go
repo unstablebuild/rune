@@ -27,6 +27,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte/vteparser"
 )
 
@@ -53,9 +54,8 @@ func Replay(width, height int, data []byte) (*cell.Buffer, term.Coordinates, err
 		return nil, term.Coordinates{}, fmt.Errorf("vte.Replay: parse uri: %w", err)
 	}
 
-	pty := workspaceapi.Pty{Master: replayFile{}, Slave: replayFile{}}
 	ph := newParserHandler(
-		new(sync.Mutex), pty, replayTabManager{}, clipboard.NewInMemory(),
+		new(sync.Mutex), replayFile{}, replayHost{}, replayTabManager{}, clipboard.NewInMemory(),
 		func() {}, uri, term.Attributes{},
 		false, // useTitleAsTabname=false: SetTitle becomes a no-op
 		0,     // maxScrollLength: caller controls history via screen size
@@ -71,7 +71,7 @@ func Replay(width, height int, data []byte) (*cell.Buffer, term.Coordinates, err
 	ph.sync.altBuf.SetDefaultChar(' ')
 	ph.Resize(width, height)
 
-	parser := vteparser.NewParser(ph, new(vteparser.StdTimeout))
+	parser := vteparser.NewParser(ph)
 	for _, b := range data {
 		parser.Advance(b)
 	}
@@ -80,6 +80,14 @@ func Replay(width, height int, data []byte) (*cell.Buffer, term.Coordinates, err
 	cursor := ph.sync.primBuf.CursorAtScroll()
 	return cell.CellsToBuffer(cells), cursor, nil
 }
+
+// replayHost denies the clipboard and keeps no frames, since a replay
+// is never drawn while it parses.
+type replayHost struct{}
+
+func (replayHost) clipboardAccess() ClipboardAccess { return ClipboardAccess{} }
+
+func (replayHost) syncUpdateLocked(bool) {}
 
 // replayTabManager satisfies browser.TabManager with no side effects.
 // It is only used during Replay, which keeps the parser handler in focus
@@ -102,7 +110,11 @@ func (replayTabManager) OnTabExit(workspaceapi.URI) bool {
 	return false
 }
 
-func (replayTabManager) SetTabActivity(workspaceapi.URI, bool) error {
+func (replayTabManager) SetTabStatus(workspaceapi.URI, programstatus.Report) error {
+	return nil
+}
+
+func (replayTabManager) EndTabStatus(workspaceapi.URI) error {
 	return nil
 }
 

@@ -1200,6 +1200,14 @@ func (m *mockLLMService) CreateCompletion(
 	return iterator.FromSlice(events), nil
 }
 
+func (m *mockLLMService) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+func (m *mockLLMService) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
+}
+
 func (m *mockLLMService) CountTokens(_ llmapi.ModelEntry, _ []llmapi.Message) (int, error) {
 	return 0, nil
 }
@@ -1405,3 +1413,11 @@ func (f *failingFS) Remove(_ string) error                   { return nil }
 func (f *failingFS) Stat(_ string) (os.FileInfo, error)      { return nil, f.statErr }
 func (f *failingFS) ReadDir(_ string) ([]os.DirEntry, error) { return nil, nil }
 func (f *failingFS) MkdirAll(_ string, _ os.FileMode) error  { return nil }
+
+func (*mockExec) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
+func (osExec) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}

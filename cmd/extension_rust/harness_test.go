@@ -434,10 +434,11 @@ const (
 // production: while a floating window is up, it holds the focus, so a
 // jump that resolves its target window too late lands in the float.
 type fakeWM struct {
-	mu       sync.Mutex
-	floating browserapi.Floating
-	winSet   browserapi.Window
-	content  browserapi.Handler
+	mu               sync.Mutex
+	floating         browserapi.Floating
+	winSet           browserapi.Window
+	content          browserapi.Handler
+	closeWindowCalls int
 }
 
 var _ browserapi.WindowManager = (*fakeWM)(nil)
@@ -491,9 +492,14 @@ func (m *fakeWM) Bar(browserapi.BarConfig, tui.Handler) error {
 	return errors.New("not implemented")
 }
 
-func (m *fakeWM) CloseWindow(browserapi.Window) error { return nil }
+func (m *fakeWM) CloseWindow(browserapi.Window) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closeWindowCalls++
+	return nil
+}
 
-func (m *fakeWM) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (m *fakeWM) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
 
 type progressSample struct {
 	id       string
@@ -709,7 +715,7 @@ func runRustExtensionOnDir(t *testing.T, dir, rustupHome, cargoHome string) rust
 		nil,
 		nil,
 		nil,
-		&langexttest.Installer{},
+		&langexttest.Installer{Files: []string{findRustAnalyzer(t)}},
 		rustupHome, cargoHome, nil,
 		func(m textapi.CommandManual, _ textapi.REPLHandler) error {
 			env.manuals = append(env.manuals, m)
@@ -785,4 +791,16 @@ func newTestURI(t *testing.T) workspaceapi.URI {
 	uri, err := workspaceapi.ParseURI("file:///ws/src/main.rs")
 	require.NoError(t, err)
 	return uri
+}
+
+func (*fakeExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
+func (realExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
+func (*captureExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }

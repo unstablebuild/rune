@@ -19,7 +19,6 @@ package vte
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	"unstable.build/rune/internal/term/vte/vteparser"
@@ -106,7 +105,7 @@ func TestSyncUpdateMarkerSplitAtEveryOffset(t *testing.T) {
 
 			ph := newInputParserHandler(t, false)
 			ph.Resize(24, 8)
-			parser := vteparser.NewParser(ph, new(vteparser.StdTimeout))
+			parser := vteparser.NewParser(ph)
 			parser.AdvanceBytes([]byte(head))
 			parser.AdvanceBytes([]byte(tail))
 
@@ -123,7 +122,7 @@ func TestSyncUpdateMarkerSplitAtEveryOffset(t *testing.T) {
 
 			ph := newInputParserHandler(t, false)
 			ph.Resize(24, 8)
-			parser := vteparser.NewParser(ph, new(vteparser.StdTimeout))
+			parser := vteparser.NewParser(ph)
 			parser.AdvanceBytes([]byte(head))
 			parser.AdvanceBytes([]byte(tail))
 
@@ -132,7 +131,7 @@ func TestSyncUpdateMarkerSplitAtEveryOffset(t *testing.T) {
 	}
 }
 
-func TestSyncUpdateNestedBSUExtendsRegion(t *testing.T) {
+func TestSyncUpdateNestedBSUMatchesPerByte(t *testing.T) {
 	t.Parallel()
 	stream := "\x1b[?2026habc\x1b[?2026hdef\x1b[?2026lghi"
 
@@ -146,64 +145,4 @@ func TestSyncUpdateNestedBSUExtendsRegion(t *testing.T) {
 		got := parserStateDump(t, stream, (*vteparser.Parser).AdvanceBytes, chunk)
 		require.Equal(t, want, got, "chunk=%d", chunk)
 	}
-}
-
-func TestSyncUpdateOpenRegionBuffersUntilExpiry(t *testing.T) {
-	t.Parallel()
-	const body = "unterminated region body"
-
-	ph := newInputParserHandler(t, false)
-	ph.Resize(24, 8)
-	timeout := new(expiringTimeout)
-	parser := vteparser.NewParser(ph, timeout)
-
-	parser.AdvanceBytes([]byte("\x1b[?2026h" + body))
-	require.Equal(t, len(body), parser.SyncBytesCount(),
-		"body must stay buffered while the region is open")
-	require.NotContains(t, dumpParserState(ph), "U+0075",
-		"buffered bytes must not reach the screen before the region ends")
-
-	timeout.expired = true
-	parser.AdvanceBytes([]byte("!"))
-
-	require.Equal(t, len(body), parser.SyncBytesCount(),
-		"an expired region must stop buffering, not absorb new bytes")
-}
-
-func TestSyncUpdateOverflowFlushesRegion(t *testing.T) {
-	t.Parallel()
-	// syncBufferSize is 2 MiB; overshoot it so the overflow guard fires.
-	body := strings.Repeat("overflow ", (3<<20)/9)
-
-	ph := newInputParserHandler(t, false)
-	ph.Resize(24, 8)
-	parser := vteparser.NewParser(ph, new(vteparser.StdTimeout))
-
-	parser.AdvanceBytes([]byte("\x1b[?2026h" + body))
-
-	require.Less(t, parser.SyncBytesCount(), 2<<20,
-		"overflowing region must have been flushed")
-	require.Contains(t, dumpParserState(ph), "U+006F",
-		"flushed region contents must reach the screen")
-}
-
-// expiringTimeout lets a test flip a synchronized update from pending to
-// expired without sleeping.
-type expiringTimeout struct {
-	set     bool
-	expired bool
-}
-
-func (t *expiringTimeout) SetTimeout(time.Duration) {
-	t.set = true
-	t.expired = false
-}
-
-func (t *expiringTimeout) ClearTimeout() {
-	t.set = false
-	t.expired = false
-}
-
-func (t *expiringTimeout) PendingTimeout() bool {
-	return t.set && !t.expired
 }

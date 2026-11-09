@@ -39,6 +39,8 @@ func (o *recordingOpener) Open(uri workspaceapi.URI) (browserapi.Handler, error)
 	return o.h, nil
 }
 
+func (o *recordingOpener) Show(workspaceapi.URI) error { return nil }
+
 // handleEditor is a fakeEditor whose Editor returns a distinct symbolic
 // handle, mirroring the production textrpc client where the editor
 // handle is not a browser content token.

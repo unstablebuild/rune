@@ -23,6 +23,7 @@ import (
 )
 
 // TransitionCut jumps from one shader to the other without an interpolation.
+// Images are shaded by whichever is running, as [ShadeImages] does.
 func TransitionCut(params TransitionCutParams, shader1, shader2 Shader) Shader {
 	if params.ChangeAtPerc < 0.0 || params.ChangeAtPerc > 1.0 {
 		panic("ChangeAtPerc must be within the closed interval [0,1]")
@@ -55,11 +56,16 @@ type transitionCut struct {
 }
 
 func (t *transitionCut) Shade(frame, total int, in [][]term.Cell) {
+	t.ShadeImages(frame, total, in, nil)
+}
+
+func (t *transitionCut) ShadeImages(
+	frame, total int, in [][]term.Cell, images []term.Image,
+) []term.Image {
 	shader1Total := int(math.Round(float64(total) * (t.ChangeAtPerc)))
 	shader2Total := total - shader1Total
 	if frame < shader1Total {
-		t.shader1.Shade(frame, shader1Total, in)
-	} else {
-		t.shader2.Shade(frame-shader1Total, shader2Total, in)
+		return ShadeImages(t.shader1, frame, shader1Total, in, images)
 	}
+	return ShadeImages(t.shader2, frame-shader1Total, shader2Total, in, images)
 }

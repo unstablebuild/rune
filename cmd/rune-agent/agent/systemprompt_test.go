@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
 )
 
@@ -60,6 +61,19 @@ func TestCommitAttributionInstructions(t *testing.T) {
 func TestSkillsPromptSection(t *testing.T) {
 	t.Run("empty skills returns empty string", func(t *testing.T) {
 		assert.Equal(t, "", skillsPromptSection(nil))
+	})
+
+	t.Run("builtins include rune-hud as a prompt skill", func(t *testing.T) {
+		registry := skills.NewRegistry(nil, workspaceapi.URI{}, nil, nil)
+		result := skillsPromptSection(registry.List())
+		promptSection, agentSection, _ := strings.Cut(result, "Agent skills")
+
+		assert.Contains(t, promptSection, "- rune-hud: Update Rune's configuration")
+		assert.Contains(t, promptSection, "(location: <builtin>/rune-hud/SKILL.md)")
+		assert.NotContains(t, agentSection, "rune-hud")
+		assert.Contains(t, agentSection, "- explore (agent):")
+		assert.Contains(t, agentSection, "- plan (agent):")
+		assert.NotContains(t, result, "# Rune HUD images and sounds")
 	})
 
 	t.Run("prompt skills only", func(t *testing.T) {

@@ -337,6 +337,7 @@ func TestStoreWorkspaceStateForClose(t *testing.T) {
 			WindowID: 42,
 			Focus:    true,
 		}},
+		programs: []Program{{URI: mustURI(t, "fake://host/chat"), App: "rune-agent"}},
 	}
 	require.NoError(t, store.StoreWorkspaceStateForClose(
 		context.Background(), uri, snap))
@@ -350,6 +351,127 @@ func TestStoreWorkspaceStateForClose(t *testing.T) {
 	assert.Equal(t, "task1", got.Tasks[0].Name)
 	assert.Equal(t, "renamed", got.Name)
 	assert.Equal(t, snap.extensions, got.Extensions)
+	assert.Equal(t, snap.programs, got.Programs)
+}
+
+func TestProgramsRoundTrip(t *testing.T) {
+	uri := mustURI(t, "memory:///programs")
+	agent := Program{URI: mustURI(t, "rune-agent://model/rolling-fox"), App: "rune-agent"}
+	silent := Program{URI: mustURI(t, "file:///notes.md")}
+	doc := func(p Program) map[string]any {
+		return map[string]any{"uri": p.URI.String(), "app": p.App}
+	}
+	tests := []struct {
+		name string
+		// programs is stored as the programs of the document, which has
+		// none when it is nil.
+		programs any
+		want     []Program
+	}{
+		{
+			name: "a document saved before programs were",
+		},
+		{
+			name:     "no programs",
+			programs: []any{},
+		},
+		{
+			name:     "every field survives, an app or none",
+			programs: []any{doc(agent), doc(silent)},
+			want:     []Program{agent, silent},
+		},
+		{
+			name:     "a program saved twice is kept twice, for restore to list it once",
+			programs: []any{doc(agent), doc(Program{URI: agent.URI, App: "other"})},
+			want:     []Program{agent, {URI: agent.URI, App: "other"}},
+		},
+		{
+			name: "a uri that does not parse is skipped",
+			programs: []any{
+				map[string]any{"uri": "not-a-uri", "app": "make"},
+				map[string]any{"uri": "relative/path", "app": "make"},
+				map[string]any{"uri": "%zz", "app": "make"},
+				doc(agent),
+			},
+			want: []Program{agent},
+		},
+		{
+			name: "an empty uri is skipped",
+			programs: []any{
+				map[string]any{"uri": "", "app": "make"},
+				map[string]any{"uri": " ", "app": "make"},
+				doc(agent),
+			},
+			want: []Program{agent},
+		},
+		{
+			name:     "a program without a uri is skipped",
+			programs: []any{map[string]any{"app": "make"}, doc(agent)},
+			want:     []Program{agent},
+		},
+		{
+			name:     "a uri that is no string is skipped",
+			programs: []any{map[string]any{"uri": 42, "app": "make"}, doc(agent)},
+			want:     []Program{agent},
+		},
+		{
+			name:     "an app that is no string is dropped",
+			programs: []any{map[string]any{"uri": agent.URI.String(), "app": []int{1}}},
+			want:     []Program{{URI: agent.URI}},
+		},
+		{
+			name: "a field it does not know is ignored",
+			programs: []any{map[string]any{
+				"uri": agent.URI.String(), "app": agent.App, "pid": 7,
+			}},
+			want: []Program{agent},
+		},
+		{
+			name:     "a program that is no document is skipped",
+			programs: []any{"rune-agent://model/rolling-fox", 3, nil, doc(agent)},
+			want:     []Program{agent},
+		},
+		{
+			name:     "programs that are a string",
+			programs: "garbage",
+		},
+		{
+			name:     "programs that are a number",
+			programs: 42,
+		},
+		{
+			name:     "programs that are a document",
+			programs: doc(agent),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cs := storagestub.NewInMemoryServiceWithMarshaler(docbson.Marshaler())
+			store := New(cs)
+			raw := map[string]any{
+				"kind":         workspaceStateDocumentKind,
+				"workspaceuri": uri.String(),
+				"files":        []any{map[string]any{"uri": silent.URI.String()}},
+			}
+			if tt.programs != nil {
+				raw["programs"] = tt.programs
+			}
+			require.NoError(t, cs.Set(context.Background(),
+				workspaceStateDocumentID(uri), raw))
+
+			got, err := store.LoadWorkspaceState(context.Background(), uri)
+			require.NoError(t, err, "what programs were saved never fails the load")
+			assert.Equal(t, tt.want, got.Programs)
+			require.Len(t, got.Files, 1, "the rest of the state loads")
+			assert.Equal(t, silent.URI, got.Files[0].URI)
+
+			require.NoError(t, store.StoreWorkspaceState(
+				context.Background(), uri, got))
+			again, err := store.LoadWorkspaceState(context.Background(), uri)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, again.Programs)
+		})
+	}
 }
 
 func TestExtensionTabsRoundTrip(t *testing.T) {
@@ -431,6 +553,8 @@ func TestStateIsEmpty(t *testing.T) {
 		{name: "tasks", state: State{Tasks: []TaskSession{{Name: "t"}}}},
 		{name: "extension tabs",
 			state: State{Extensions: []ExtensionTab{{URI: uri}}}},
+		{name: "programs only, whose tabs are gone",
+			state: State{Programs: []Program{{URI: uri}}}, want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -447,6 +571,7 @@ type stubSnapshotter struct {
 	terminals  []TerminalSession
 	tasks      []TaskSession
 	extensions []ExtensionTab
+	programs   []Program
 	winIDs     map[string]uint64
 }
 
@@ -456,6 +581,7 @@ func (s stubSnapshotter) Tasks() []TaskSession         { return s.tasks }
 func (s stubSnapshotter) ExtensionTabs() []ExtensionTab {
 	return s.extensions
 }
+func (s stubSnapshotter) Programs() []Program { return s.programs }
 func (s stubSnapshotter) Layout() (tcomponent.TileLayout, bool) {
 	return s.layout, s.hasLayout
 }
@@ -862,17 +988,18 @@ func TestTrackerDoesNotSnapshotTerminalsOnEditorEvents(t *testing.T) {
 	assert.Equal(t, "from-close", got.Terminals[0].Name)
 }
 
-func TestTrackerPersistsExtensionTabsOnEditorEvents(t *testing.T) {
+func TestTrackerPersistsExtensionTabsAndProgramsOnEditorEvents(t *testing.T) {
 	store := New(newCountingStorage())
 	uri := mustURI(t, "memory:///track-extension-tabs")
 	tabs := []ExtensionTab{{
 		URI:      mustURI(t, "rune-agent://model/rolling-fox"),
 		WindowID: 2,
 	}}
+	programs := []Program{{URI: tabs[0].URI, App: "rune-agent"}}
 	tr := &tracker{
 		store: store,
 		uri:   uri,
-		snap:  stubSnapshotter{extensions: tabs},
+		snap:  stubSnapshotter{extensions: tabs, programs: programs},
 		ctx:   context.Background(),
 		files: make(map[string]File),
 	}
@@ -884,4 +1011,5 @@ func TestTrackerPersistsExtensionTabsOnEditorEvents(t *testing.T) {
 	got, err := store.LoadWorkspaceState(context.Background(), uri)
 	require.NoError(t, err)
 	assert.Equal(t, tabs, got.Extensions)
+	assert.Equal(t, programs, got.Programs)
 }

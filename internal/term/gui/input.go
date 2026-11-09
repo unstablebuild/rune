@@ -18,7 +18,6 @@ package gui
 
 import (
 	"fmt"
-	"sync/atomic"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -51,8 +50,7 @@ type input struct {
 	// false on GLFW desktop platforms.
 	metaDown bool
 	// altModifier names the reserved Alt key; the zero value reserves neither.
-	// Atomic: bootstrap writes it while processEvents reads it off the lock.
-	altModifier     atomic.Uint32
+	altModifier     AltModifier
 	selectedAltDown bool
 }
 
@@ -101,7 +99,7 @@ func (i *input) setKeyMapping(m map[term.KeyComb]term.KeyComb) {
 }
 
 func (i *input) setAltModifier(modifier AltModifier) {
-	i.altModifier.Store(uint32(modifier))
+	i.altModifier = modifier
 }
 
 // bareModBit reports the modifier bit a pure-modifier key event represents.
@@ -293,7 +291,7 @@ func (i *input) trackMeta(ev ebiten.InputEvent) {
 // it; any other action without the Alt bit resynchronizes a release the
 // window never observed.
 func (i *input) trackSelectedAlt(ev ebiten.InputEvent) {
-	modifier := AltModifier(i.altModifier.Load())
+	modifier := i.altModifier
 	switch {
 	case modifier == AltModifierRight && ev.Key == ebiten.KeyAltRight,
 		modifier == AltModifierLeft && ev.Key == ebiten.KeyAltLeft:

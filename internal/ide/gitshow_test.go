@@ -26,8 +26,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/workspace"
@@ -210,6 +212,27 @@ func TestGitShowOpensAtNearestHunk(t *testing.T) {
 	e.Handle(term.Event{Type: term.EventKey, Ch: 'w', Mod: term.ModCtrl})
 	assert.Equal(t, before, e.comp.Browser().FloatingWindows(),
 		"<c-w> must close the popup")
+}
+
+func TestGitShowReleaseLeavesItsWindow(t *testing.T) {
+	e, uri := gitshowFixture(t, "one\ntwo\n", vctrl.NopService())
+	e.svc = gitshowStubService{
+		Service: vctrl.NopService(),
+		diff:    gitshowDiff(t, uri, "one\n", "one\ntwo\n"),
+	}
+	_, err := e.openGitshow(t.Context())
+	require.NoError(t, err)
+	win, err := e.Browser().Focus()
+	require.NoError(t, err)
+	require.True(t, win.IsFloating())
+
+	next := browserapi.NopHandler(handler.NewTestHandler())
+	require.NoError(t, win.SetContent(next))
+
+	require.False(t, win.Closed(), "replacing the popup must not close its window")
+	got, err := win.Content()
+	require.NoError(t, err)
+	assert.Same(t, next, got)
 }
 
 // gitshowFrame renders the whole IDE, popup included.

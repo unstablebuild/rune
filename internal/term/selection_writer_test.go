@@ -18,12 +18,58 @@ package term
 
 import (
 	"context"
+	"image"
+	"image/color"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/component/asciiart"
 )
+
+func TestSelectionWriterImages(t *testing.T) {
+	picture := image.NewNRGBA(image.Rect(0, 0, 4, 2))
+	for x := range 4 {
+		picture.SetNRGBA(x, 0, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
+		picture.SetNRGBA(x, 1, color.NRGBA{A: 255})
+	}
+	for _, tc := range []struct {
+		name     string
+		x        int
+		after    func(*SelectionWriter)
+		expected string
+	}{
+		{name: "pixels and caption", x: 2, expected: "caption \n  ####  \n  ....  \n        "},
+		{name: "clipped", x: -2, expected: "caption \n##      \n..      \n        "},
+		{name: "later cells cover image", x: 2, after: func(g *SelectionWriter) {
+			g.SetCell(term.Coordinates{X: 3, Y: 1}, term.NewCell('X', 1, term.Attributes{}))
+		}, expected: "caption \n  #X##  \n  ....  \n        "},
+		{name: "clear releases image", x: 2, after: func(g *SelectionWriter) { g.Clear() }, expected: "        \n        \n        \n        "},
+		{name: "resize releases image", x: 2, after: func(g *SelectionWriter) { g.Resize(8, 4) }, expected: "        \n        \n        \n        "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewSelectionWriter(8, 4)
+			g.SetContext(term.ContextWithCellPixelSize(t.Context(), 10, 23))
+			writeRow(g, 0, "caption")
+			require.True(t, g.DrawImage(term.Image{Src: picture, Pos: term.Coordinates{X: tc.x, Y: 1}, Width: 4, Height: 2, Fit: term.ImageFitFill}))
+			require.Equal(t, "caption", g.TextBetween(term.Coordinates{}, term.Coordinates{X: 7, Y: 3}))
+			if tc.after != nil {
+				tc.after(g)
+			}
+			cfg := asciiart.DefaultConfig()
+			cfg.DensityCharacters = ".#"
+			w := asciiart.NewStringWriter(8, 4, cfg)
+			for range 2 {
+				require.NoError(t, w.Clear(term.Attributes{}))
+				g.Dump(w, &SelRange{Start: term.Coordinates{}, End: term.Coordinates{X: 6}, Active: true})
+				require.NoError(t, w.Flush())
+				assert.Equal(t, tc.expected, w.String())
+				assert.NotZero(t, w.Cells()[0].Attributes().Attrs&term.AttrReverse)
+			}
+		})
+	}
+}
 
 // writeRow paints text starting at column 0 of row y, ignoring runes
 // that would overflow the grid width.
@@ -52,10 +98,10 @@ func TestSelectionWriterResize(t *testing.T) {
 		assert.False(t, ok)
 	})
 
-	t.Run("grow reuses backing array when cap allows", func(t *testing.T) {
-		g := NewSelectionWriter(10, 10) // cap 100
+	t.Run("shrinking clears the frame", func(t *testing.T) {
+		g := NewSelectionWriter(10, 10)
 		writeRow(g, 0, "x")
-		g.Resize(5, 5) // 25 <= 100, reuse
+		g.Resize(5, 5)
 		writeRow(g, 0, "hello")
 		assert.Equal(t, "hello", g.TextBetween(
 			term.Coordinates{X: 0, Y: 0}, term.Coordinates{X: 4, Y: 0}))

@@ -23,9 +23,12 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
+	"unstable.build/rune/internal/term/programstatus"
 )
 
 // BrowserFromAPIBrowser wraps a browserapi.Browser and returns
@@ -54,13 +57,25 @@ func (b toBrowser) OnTabExit(uri workspaceapi.URI) bool {
 	return false
 }
 
-func (b toBrowser) SetTabActivity(uri workspaceapi.URI, active bool) error {
-	return b.b.SetTabActivity(uri, active)
+func (b toBrowser) SetTabStatus(uri workspaceapi.URI, report programstatus.Report) error {
+	return b.b.SetTabStatus(uri, browser.TabStatusFromReport(report))
+}
+
+func (b toBrowser) EndTabStatus(workspaceapi.URI) error {
+	return errors.New("unimplemented")
 }
 
 func (b toBrowser) SetFocus(browser.Window) (browser.Window, error) {
 	return nil, errors.New("unimplemented")
 }
+
+func (b toBrowser) OpenPrompt(
+	browserapi.PromptConfig, handler.PromptHandler,
+) (browser.Window, bool, error) {
+	return nil, false, errors.New("unimplemented")
+}
+
+func (b toBrowser) ButtonImages() *component.ButtonImages { return nil }
 
 func (b toBrowser) Split(
 	o browserapi.Orientation, win browser.Window, h browserapi.Handler,
@@ -129,6 +144,10 @@ func (b toBrowser) UpdateNotificationProgress(
 
 func (b toBrowser) Open(resource workspaceapi.URI) (browserapi.Handler, error) {
 	return b.b.Open(resource)
+}
+
+func (b toBrowser) Show(resource workspaceapi.URI) error {
+	return b.b.Show(resource)
 }
 
 func (b toBrowser) Resource(u workspaceapi.URI) (browserapi.Handler, bool) {

@@ -19,8 +19,15 @@ package ide
 import (
 	"context"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"log/slog"
+	"maps"
+	"net/url"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -36,15 +43,24 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
+	"unstable.build/rune/internal/cell"
 	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/imagecomp"
 	"unstable.build/rune/internal/component/notifications"
+	"unstable.build/rune/internal/component/template"
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
+	"unstable.build/rune/internal/ide/ideacp"
 	"unstable.build/rune/internal/ide/idedebug"
 	"unstable.build/rune/internal/ide/idelsp"
+	"unstable.build/rune/internal/ide/idestatus"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/llm/llmsearch"
+	"unstable.build/rune/internal/sounds"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/standard"
@@ -272,6 +288,12 @@ browser:
         highlight_attr:
             bg: red
             fg: "#f0f0f0"
+        hover_attr:
+            bg: silver
+            fg: navy
+        clicked_attr:
+            bg: purple
+            fg: white
     window_manager:
         frame: true
         dim: false
@@ -286,10 +308,18 @@ browser:
             topright: '┓'
             bottomleft: '┗'
             bottomright: '┛'
+            graphics:
+                topleft: 'file:///frames/tl.png'
+                horizontaltop: 'https://example.com/top.png'
         scroll_bar_attr:
             fg: "#f0f0f0"
-        scroll_bar_char: '|'
-        scroll_bar_hover_char: 'X'
+        scroll_bar_charset:
+            top_char: '▲'
+            middle_char: '|'
+            hover_middle_char: 'X'
+            graphics:
+                mode: overlay
+                middle_char: 'file:///frames/bar.png'
         window_bar: true
         window_bar_charset:
             left: '▓'
@@ -313,7 +343,7 @@ browser:
 
 workspace:
     auto_restore: false
-    wallpaper: abc
+    wallpaper_ascii: abc
     wallpaper_attr:
         fg: yellow
         bg: white
@@ -336,9 +366,13 @@ terminal:
     shell: sh
     max_lines: 999
     bell_trigger: "\x07"
+    bell: info
     modal: true
     dynamic_tab_name: true
     initial_reservoir: 0
+    clipboard:
+        write: false
+        read: true
     attr:
         fg: white
         bg: yellow
@@ -349,6 +383,51 @@ terminal:
         fg: red
         flags:
           - blink
+    status:
+        enabled: true
+        spinner: "abc"
+        spinner_fps: 4
+        icons:
+            permission: "P"
+            question: "Q"
+            auth: "A"
+            done: "D"
+            error: "E"
+        content_tab:
+            progress: true
+            idle_icon_attr:
+                fg: green
+            working_icon_attr:
+                fg: teal
+            working_done_attr:
+                fg: lime
+            blocked_attr:
+                fg: olive
+            blocked_icon_attr:
+                fg: maroon
+            done_attr:
+                fg: navy
+            done_icon_attr:
+                fg: purple
+            error_attr:
+                fg: fuchsia
+            error_icon_attr:
+                fg: aqua
+        workspace_tab:
+            working_done_attr:
+                fg: blue
+            blocked_attr:
+                fg: white
+            error_icon_attr:
+                fg: black
+        notify:
+          - blocked
+          - error
+        notify_interval: 5s
+program_status:
+    sounds:
+        done: ""
+        working: info
 `
 
 func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
@@ -398,7 +477,7 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 
 	actualNotifications := cfg.notificationsConfig()
 	expectedNotifications := defaultNotificationsConfig()
-	setNotificationsColor(&expectedNotifications)
+	setNotificationsColor(&expectedNotifications.Style)
 	assert.NotNil(t, actualNotifications.Interrupter)
 	actualNotifications.Interrupter = nil
 	expectedNotifications.Interrupter = nil
@@ -418,13 +497,16 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 	assert.Equal(t, expectedBarConfig, barConfig)
 
 	vteConfig := cfg.terminalConfig()
-	assert.NotNil(t, vteConfig.RingBell)
+	assert.NotNil(t, vteConfig.Sounds)
 	assert.NotNil(t, vteConfig.ScheduleNextTick)
 	vteConfig.ScheduleNextTick = nil
-	vteConfig.RingBell = nil
+	vteConfig.Sounds = nil
+	assert.Equal(t, sounds.Warning, *vteConfig.BellSound.Load())
+	vteConfig.BellSound = nil
 	assertTerminalSearchConfig(t, &vteConfig, cfg.standardResultAttr(), selectAttr)
 	assert.Equal(t, vte.Config{
 		Clipboard:                cfg.clipboard(),
+		ClipboardAccess:          vte.ClipboardAccess{Write: true},
 		SelectionAttributes:      selectAttr,
 		NeedsAttentionAttributes: term.Attributes{Attrs: term.AttrBlink},
 		Modal:                    true,
@@ -432,6 +514,9 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 		MaxLines:                 10_000,
 		MinWidth:                 defaultMinWidth,
 	}, vteConfig)
+	assert.True(t, cfg.tabStatusEnabled())
+	assert.Equal(t, browser.DefaultTabStatusConfig(), cfg.tabStatusConfig())
+	assert.Equal(t, idestatus.DefaultNotifyConfig(), cfg.tabStatusNotifyConfig())
 	assert.Equal(t, command.DefaultConfig().ShowManual, cfg.commandOverlayShowManual())
 	assert.Equal(t, command.DefaultConfig().ManualAttr, cfg.commandOverlayManualAttr())
 	assert.Zero(t, cfg.defaultAttr())
@@ -464,9 +549,320 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 
 func TestConfigDefault(t *testing.T) {
 	ret := new(ideConfig)
-	initDefaultConfig(ret, browser.NopWallpaper(),
-		term.RingBell, term.ScheduleNextTick, "")
+	initDefaultConfig(ret, nil,
+		sounds.Silent, term.ScheduleNextTick, "")
 	assertDefaultConfig(t, ret)
+}
+
+func TestTabStatusConfigProgress(t *testing.T) {
+	for _, key := range []string{"content_tab", "workspace_tab"} {
+		for _, tc := range []struct {
+			name    string
+			status  map[string]any
+			want    bool
+			wantErr bool
+		}{
+			{name: "no status config"},
+			{name: "missing", status: map[string]any{}},
+			{name: "missing progress", status: map[string]any{key: map[string]any{}}},
+			{name: "top level is ignored", status: map[string]any{"progress": true}},
+			{name: "disabled", status: map[string]any{key: map[string]any{"progress": false}}},
+			{name: "enabled", status: map[string]any{key: map[string]any{"progress": true}}, want: true},
+			{name: "invalid", status: map[string]any{key: map[string]any{"progress": "true"}}, wantErr: true},
+		} {
+			t.Run(key+"/"+tc.name, func(t *testing.T) {
+				cfg := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
+				if tc.status != nil {
+					cfg.cfg["terminal"] = map[string]any{"status": tc.status}
+				}
+				got := cfg.tabStatusConfig()
+				style, other := got.ContentTab, got.WorkspaceTab
+				if key == "workspace_tab" {
+					style, other = other, style
+				}
+				assert.Equal(t, tc.want, style.Progress)
+				assert.False(t, other.Progress, "progress is set per kind of tab")
+				assert.True(t, cfg.tabStatusEnabled())
+				if tc.wantErr {
+					assert.Error(t, cfg.errors["terminal.status."+key+".progress"])
+				} else {
+					assert.Empty(t, cfg.errors)
+				}
+			})
+		}
+	}
+}
+
+func TestStatusInboxStyle(t *testing.T) {
+	def := idestatus.DefaultInboxStyle()
+	attrKeys := []string{
+		"marker_attr", "selected_attr", "hover_attr", "workspace_attr", "workspace_highlight_attr",
+		"progress_attr", "progress_done_attr", "progress_remaining_attr", "progress_remaining_selected_attr",
+		"progress_label_attr", "more_below_attr", "divider_attr", "placeholder_attr",
+	}
+	invalid := map[string]any{"marker": true, "progress_bar": true, "more_below": true}
+	wantInvalid := []string{"program_status.marker", "program_status.progress_bar", "program_status.more_below"}
+	for _, key := range attrKeys {
+		invalid[key] = "gray"
+		wantInvalid = append(wantInvalid, "program_status."+key)
+	}
+	for _, tc := range []struct {
+		name    string
+		cfg     map[string]any
+		want    idestatus.InboxStyle
+		wantErr []string
+	}{
+		{name: "defaults", cfg: map[string]any{}, want: def},
+		{
+			name: "the marker takes the color of the focused tab marker",
+			cfg: map[string]any{"browser": map[string]any{
+				"focus_tab_highlight_attr": map[string]any{"fg": "red", "bg": "navy"},
+			}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.MarkerAttr = term.Attributes{Fg: term.ColorRed}
+				return s
+			}(),
+		},
+		{
+			name: "the marker keeps what it does not set of the focused tab marker",
+			cfg: map[string]any{
+				"browser":        map[string]any{"focus_tab_highlight_attr": map[string]any{"fg": "red"}},
+				"program_status": map[string]any{"marker_attr": map[string]any{"bg": "navy"}},
+			},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.MarkerAttr = term.Attributes{Fg: term.ColorRed, Bg: term.ColorNavy}
+				return s
+			}(),
+		},
+		{
+			name: "configured",
+			cfg: map[string]any{"program_status": map[string]any{
+				"marker":                           "┃",
+				"marker_attr":                      map[string]any{"fg": "purple", "bg": "red"},
+				"selected_attr":                    map[string]any{"bg": "navy"},
+				"hover_attr":                       map[string]any{"bg": "teal"},
+				"workspace_attr":                   map[string]any{"fg": "blue"},
+				"workspace_highlight_attr":         map[string]any{"fg": "black"},
+				"progress_bar":                     "╢░_╟",
+				"progress_attr":                    map[string]any{"bg": "maroon"},
+				"progress_done_attr":               map[string]any{"fg": "lime"},
+				"progress_remaining_attr":          map[string]any{"fg": "silver"},
+				"progress_remaining_selected_attr": map[string]any{"fg": "white"},
+				"progress_label_attr":              map[string]any{"fg": "aqua"},
+				"more_below":                       "↓",
+				"more_below_attr":                  map[string]any{"fg": "yellow"},
+				"divider_attr":                     map[string]any{"fg": "olive"},
+				"placeholder_attr":                 map[string]any{"fg": "fuchsia"},
+			}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Marker = '┃'
+				s.MarkerAttr = term.Attributes{Fg: term.ColorPurple, Bg: term.ColorRed}
+				s.SelectedAttr = term.Attributes{Bg: term.ColorNavy}
+				s.HoverAttr = term.Attributes{Bg: term.ColorTeal}
+				s.WorkspaceAttr = term.Attributes{Fg: term.ColorBlue}
+				s.WorkspaceHighlightAttr = term.Attributes{Fg: term.ColorBlack}
+				s.ProgressBar = component.ProgressBarCharSet{Left: '╢', Filled: '░', Empty: '_', Right: '╟'}
+				s.ProgressAttr = term.Attributes{Bg: term.ColorMaroon}
+				s.ProgressDoneAttr = term.Attributes{Fg: term.ColorLime}
+				s.ProgressRemainingAttr = term.Attributes{Fg: term.ColorSilver}
+				s.ProgressRemainingSelectedAttr = term.Attributes{Fg: term.ColorWhite}
+				s.ProgressLabelAttr = term.Attributes{Fg: term.ColorAqua}
+				s.MoreBelow = '↓'
+				s.MoreBelowAttr = term.Attributes{Fg: term.ColorYellow}
+				s.DividerAttr = term.Attributes{Fg: term.ColorOlive}
+				s.PlaceholderAttr = term.Attributes{Fg: term.ColorFuchsia}
+				return s
+			}(),
+		},
+		{
+			name: "the same character all along the bar",
+			cfg:  map[string]any{"program_status": map[string]any{"progress_bar": "━━━━"}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.ProgressBar = component.ProgressBarCharSet{Left: '━', Filled: '━', Empty: '━', Right: '━'}
+				return s
+			}(),
+		},
+		{
+			name:    "invalid",
+			cfg:     map[string]any{"program_status": invalid},
+			want:    def,
+			wantErr: wantInvalid,
+		},
+		{
+			name:    "a progress bar short of a character",
+			cfg:     map[string]any{"program_status": map[string]any{"progress_bar": "╢░╟"}},
+			want:    def,
+			wantErr: []string{"program_status.progress_bar"},
+		},
+		{
+			name:    "a progress bar of wide characters",
+			cfg:     map[string]any{"program_status": map[string]any{"progress_bar": "界界界界"}},
+			want:    def,
+			wantErr: []string{"program_status.progress_bar"},
+		},
+		{
+			name: "images",
+			cfg: map[string]any{"program_status": map[string]any{
+				"images": map[string]any{
+					"idle":     map[string]any{"middle": "file:///inbox/idle.png"},
+					"selected": map[string]any{"left": "file:///inbox/l.png", "right": "file:///inbox/r.png"},
+					"hover":    map[string]any{"middle": "file:///inbox/hover.png"},
+					"outset":   map[string]any{"top": 1, "bottom": 2, "sides": 1},
+				},
+				"marker_graphics": map[string]any{
+					"top": "file:///marker/t.png", "vertical": "file:///marker/v.png", "bottom": "file:///marker/b.png",
+				},
+				"progress_bar_graphics": map[string]any{
+					"left": "file:///bar/l.png", "filled": "file:///bar/f.png",
+					"empty": "file:///bar/e.png", "right": "file:///bar/r.png",
+				},
+			}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Images = browser.PromptImages{
+					Idle:     browser.PromptButtonImage{Middle: "file:///inbox/idle.png"},
+					Selected: browser.PromptButtonImage{Left: "file:///inbox/l.png", Right: "file:///inbox/r.png"},
+					Hover:    browser.PromptButtonImage{Middle: "file:///inbox/hover.png"},
+					Outset:   component.ButtonOutset{Top: 1, Bottom: 2, Sides: 1},
+				}
+				s.MarkerGraphics = tcomponent.LineGraphics{
+					Start: "file:///marker/t.png", Middle: "file:///marker/v.png", End: "file:///marker/b.png",
+				}
+				s.ProgressBarGraphics = idestatus.ProgressBarGraphics{
+					Left: "file:///bar/l.png", Filled: "file:///bar/f.png",
+					Empty: "file:///bar/e.png", Right: "file:///bar/r.png",
+				}
+				return s
+			}(),
+		},
+		{
+			name: "only selected item images",
+			cfg: map[string]any{"program_status": map[string]any{"images": map[string]any{
+				"selected": map[string]any{"middle": "file:///inbox/selected.png"},
+			}}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Images = browser.PromptImages{
+					Selected: browser.PromptButtonImage{Middle: "file:///inbox/selected.png"},
+				}
+				return s
+			}(),
+		},
+		{
+			name: "invalid images draw none of their kind",
+			cfg: map[string]any{"program_status": map[string]any{
+				"images":                map[string]any{"idle": map[string]any{"middle": "ftp://example.com/idle.png"}},
+				"marker_graphics":       map[string]any{"vertical": "ftp://example.com/v.png"},
+				"progress_bar_graphics": map[string]any{"filled": "ftp://example.com/f.png"},
+			}},
+			want: def,
+			wantErr: []string{
+				"program_status.images", "program_status.marker_graphics",
+				"program_status.progress_bar_graphics",
+			},
+		},
+		{
+			name: "divider charset",
+			cfg: map[string]any{"program_status": map[string]any{"divider_charset": map[string]any{
+				"top": "╦", "vertical_top": "║", "vertical": "┃", "bottom": "╩",
+				"graphics": map[string]any{
+					"mode": "overlay", "top": "file:///divider/t.png",
+					"vertical": "file:///divider/v.png", "bottom": "file:///divider/b.png",
+					"outset": map[string]any{"left": 1, "right": 2, "inward": 3},
+				},
+			}}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Divider = tcomponent.DividerCharSet{
+					Top: '╦', VerticalTop: '║', Vertical: '┃', VerticalBottom: '┃', Bottom: '╩',
+					Graphics: tcomponent.DividerGraphics{
+						Top: "file:///divider/t.png", Vertical: "file:///divider/v.png",
+						Bottom: "file:///divider/b.png", Overlay: true,
+						Outset: tcomponent.DividerOutset{Left: 1, Right: 2, Inward: 3},
+					},
+				}
+				return s
+			}(),
+		},
+		{
+			name: "the divider takes the window frame's left edge",
+			cfg: map[string]any{"browser": map[string]any{"window_manager": map[string]any{
+				"frame_charset": map[string]any{
+					"verticalleft": "▏",
+					"graphics":     map[string]any{"mode": "overlay", "verticalleft": "file:///frame/left.png"},
+				},
+			}}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Divider.VerticalTop, s.Divider.Vertical, s.Divider.VerticalBottom = '▏', '▏', '▏'
+				s.Divider.Graphics = tcomponent.DividerGraphics{Vertical: "file:///frame/left.png", Overlay: true}
+				return s
+			}(),
+		},
+		{
+			name: "the divider clears the image it takes from the frame",
+			cfg: map[string]any{
+				"browser": map[string]any{"window_manager": map[string]any{"frame_charset": map[string]any{
+					"graphics": map[string]any{"verticalleft": "file:///frame/left.png"},
+				}}},
+				"program_status": map[string]any{"divider_charset": map[string]any{
+					"graphics": map[string]any{"vertical": ""},
+				}},
+			},
+			want: def,
+		},
+		{
+			name: "an invalid divider image draws none of the divider's images",
+			cfg: map[string]any{"program_status": map[string]any{"divider_charset": map[string]any{
+				"bottom":   "╩",
+				"graphics": map[string]any{"top": "file:///divider/t.png", "mode": "sideways"},
+			}}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Divider.Bottom = '╩'
+				return s
+			}(),
+			wantErr: []string{"program_status.divider_charset"},
+		},
+		{
+			name: "invalid divider characters keep their defaults",
+			cfg: map[string]any{"program_status": map[string]any{"divider_charset": map[string]any{
+				"top": true, "vertical": []any{"│"},
+				"graphics": map[string]any{"outset": map[string]any{"left": -1}},
+			}}},
+			want: def,
+			wantErr: []string{
+				"program_status.divider_charset.top", "program_status.divider_charset.vertical",
+				"program_status.divider_charset.graphics.outset.left",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := ideConfig{cfg: tc.cfg, errors: map[string]error{}}
+			assert.Equal(t, tc.want, cfg.statusInboxStyle())
+			assert.ElementsMatch(t, tc.wantErr, slices.Collect(maps.Keys(cfg.errors)))
+		})
+	}
+}
+
+func TestTabStatusConfigIgnoresPluginIcons(t *testing.T) {
+	m, err := decodeConfig(strings.NewReader(`
+terminal:
+    plugin:
+        status_error_icon: "X"
+        status_success_icon: "$"
+`))
+	require.NoError(t, err)
+	var cfg ideConfig
+	initConfig(&cfg, m, nil, sounds.Silent, term.ScheduleNextTick, "")
+	def := browser.DefaultTabStatusConfig()
+	got := cfg.tabStatusConfig()
+	assert.Equal(t, def.DoneIcon, got.DoneIcon)
+	assert.Equal(t, def.ErrorIcon, got.ErrorIcon)
 }
 
 // assertTerminalSearchConfig pins the terminal's scrollback search and
@@ -806,6 +1202,318 @@ func TestAuthorizerAutoAuthorize(t *testing.T) {
 	}
 }
 
+func TestTerminalClipboardAccess(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		terminal map[string]any
+		want     vte.ClipboardAccess
+		wantErr  string
+	}{
+		{
+			name: "unset lets programs write but not read",
+			want: vte.ClipboardAccess{Write: true},
+		},
+		{
+			name:     "empty clipboard section keeps the defaults",
+			terminal: map[string]any{"clipboard": map[string]any{}},
+			want:     vte.ClipboardAccess{Write: true},
+		},
+		{
+			name:     "read on",
+			terminal: map[string]any{"clipboard": map[string]any{"read": true}},
+			want:     vte.ClipboardAccess{Write: true, Read: true},
+		},
+		{
+			name:     "write off",
+			terminal: map[string]any{"clipboard": map[string]any{"write": false}},
+			want:     vte.ClipboardAccess{},
+		},
+		{
+			name:     "section is not a map",
+			terminal: map[string]any{"clipboard": "yes"},
+			want:     vte.ClipboardAccess{Write: true},
+			wantErr:  "terminal.clipboard",
+		},
+		{
+			name:     "read is not a bool",
+			terminal: map[string]any{"clipboard": map[string]any{"read": "yes"}},
+			want:     vte.ClipboardAccess{Write: true},
+			wantErr:  "terminal.clipboard.read",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := map[string]any{}
+			if tc.terminal != nil {
+				m["terminal"] = tc.terminal
+			}
+			cfg := &ideConfig{cfg: m, errors: map[string]error{}}
+			assert.Equal(t, tc.want, cfg.terminalClipboardAccess())
+			assert.Equal(t, tc.want, cfg.terminalConfig().ClipboardAccess)
+			if tc.wantErr == "" {
+				assert.Empty(t, cfg.errors)
+				return
+			}
+			assert.Error(t, cfg.errors[tc.wantErr])
+		})
+	}
+}
+
+func TestTerminalBellSound(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		terminal map[string]any
+		want     string
+	}{
+		{name: "unset plays a warning", want: sounds.Warning},
+		{name: "named sound", terminal: map[string]any{"bell": "ding"}, want: "ding"},
+		{name: "empty plays nothing", terminal: map[string]any{"bell": ""}, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := map[string]any{}
+			if tc.terminal != nil {
+				m["terminal"] = tc.terminal
+			}
+			cfg := &ideConfig{cfg: m, errors: map[string]error{}}
+			assert.Equal(t, tc.want, *cfg.terminalConfig().BellSound.Load())
+			assert.Empty(t, cfg.errors)
+		})
+	}
+}
+
+func TestValidateSounds(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		cfg        map[string]any
+		wantSounds map[string]any
+		wantBell   any
+		// wantStatus is what is left of program_status.sounds.
+		wantStatus any
+		// wantQuickMenu is what is left of gui.quick_menu_sounds.
+		wantQuickMenu any
+		// wantBrowserTabs and wantWorkspaceTabs are what is left of
+		// browser.tab_sounds and workspace.tab_sounds.
+		wantBrowserTabs   any
+		wantWorkspaceTabs any
+		wantErrs          []string
+	}{
+		{
+			name:     "no sounds and a reserved bell",
+			cfg:      map[string]any{"terminal": map[string]any{"bell": "info"}},
+			wantBell: "info",
+		},
+		{
+			name: "bell names a configured sound",
+			cfg: map[string]any{
+				"sounds":   map[string]any{"ding": "/ding.wav", "chime": "ding"},
+				"terminal": map[string]any{"bell": "chime"},
+			},
+			wantSounds: map[string]any{"ding": "/ding.wav", "chime": "ding"},
+			wantBell:   "chime",
+		},
+		{
+			name:     "empty bell is silent",
+			cfg:      map[string]any{"terminal": map[string]any{"bell": ""}},
+			wantBell: "",
+		},
+		{
+			name: "invalid entries are dropped",
+			cfg: map[string]any{"sounds": map[string]any{
+				"ok": "/ok.wav", "typo": "warnign", "number": 3,
+			}},
+			wantSounds: map[string]any{"ok": "/ok.wav"},
+			wantErrs: []string{`'sounds.number' must be a file path`,
+				`sound "typo": refers to unknown sound "warnign"`},
+		},
+		{
+			name:       "sounds is not a map",
+			cfg:        map[string]any{"sounds": "ding.wav"},
+			wantSounds: map[string]any{},
+			wantErrs:   []string{`'sounds' must map sound names`},
+		},
+		{
+			name: "unknown bell resets to warning",
+			cfg: map[string]any{
+				"sounds":   map[string]any{"typo": "warnign"},
+				"terminal": map[string]any{"bell": "typo"},
+			},
+			wantSounds: map[string]any{},
+			wantBell:   sounds.Warning,
+			wantErrs:   []string{`'terminal.bell' names unknown sound "typo"`},
+		},
+		{
+			name:     "bell of the wrong type resets to warning",
+			cfg:      map[string]any{"terminal": map[string]any{"bell": false}},
+			wantBell: sounds.Warning,
+			wantErrs: []string{`'terminal.bell' must be a sound name or "", got bool`},
+		},
+		{
+			name: "program status sounds name states and known sounds",
+			cfg: map[string]any{
+				"sounds": map[string]any{"chime": "/chime.wav"},
+				"program_status": map[string]any{"sounds": map[string]any{
+					"done": "chime", "error": "", "working": "info",
+				}},
+			},
+			wantSounds: map[string]any{"chime": "/chime.wav"},
+			wantStatus: map[string]any{"done": "chime", "error": "", "working": "info"},
+		},
+		{
+			name: "invalid program status sounds are dropped",
+			cfg: map[string]any{"program_status": map[string]any{"sounds": map[string]any{
+				"done": "chmie", "idle": "info", "blocked": 1, "error": "error",
+			}}},
+			wantStatus: map[string]any{"error": "error"},
+			wantErrs: []string{
+				`'program_status.sounds.done' names unknown sound "chmie"`,
+				`'program_status.sounds.idle': unknown state`,
+				`'program_status.sounds.blocked' must be a sound name or "", got int`,
+			},
+		},
+		{
+			name:       "program status sounds is not a map",
+			cfg:        map[string]any{"program_status": map[string]any{"sounds": "chime"}},
+			wantStatus: nil,
+			wantErrs:   []string{`'program_status.sounds' must map states to sound names`},
+		},
+		{
+			name: "quick menu sounds name events and known sounds",
+			cfg: map[string]any{
+				"sounds": map[string]any{"tick": "/tick.wav"},
+				"gui": map[string]any{"quick_menu_sounds": map[string]any{
+					"hover": "tick", "click": "",
+				}},
+			},
+			wantSounds:    map[string]any{"tick": "/tick.wav"},
+			wantQuickMenu: map[string]any{"hover": "tick", "click": ""},
+		},
+		{
+			name: "invalid quick menu sounds are dropped",
+			cfg: map[string]any{"gui": map[string]any{"quick_menu_sounds": map[string]any{
+				"hover": "tikc", "click": 1, "press": "info",
+			}}},
+			wantQuickMenu: map[string]any{},
+			wantErrs: []string{
+				`'gui.quick_menu_sounds.hover' names unknown sound "tikc"`,
+				`'gui.quick_menu_sounds.click' must be a sound name or "", got int`,
+				`'gui.quick_menu_sounds.press': unknown event`,
+			},
+		},
+		{
+			name:          "quick menu sounds is not a map",
+			cfg:           map[string]any{"gui": map[string]any{"quick_menu_sounds": "info"}},
+			wantQuickMenu: nil,
+			wantErrs:      []string{`'gui.quick_menu_sounds' must map hover and click`},
+		},
+		{
+			name: "tab sounds name events and known sounds",
+			cfg: map[string]any{
+				"sounds":    map[string]any{"tick": "/tick.wav"},
+				"browser":   map[string]any{"tab_sounds": map[string]any{"hover": "tick", "click": "info"}},
+				"workspace": map[string]any{"tab_sounds": map[string]any{"click": ""}},
+			},
+			wantSounds:        map[string]any{"tick": "/tick.wav"},
+			wantBrowserTabs:   map[string]any{"hover": "tick", "click": "info"},
+			wantWorkspaceTabs: map[string]any{"click": ""},
+		},
+		{
+			name: "invalid tab sounds are dropped",
+			cfg: map[string]any{
+				"browser": map[string]any{"tab_sounds": map[string]any{
+					"hover": "tikc", "click": "info", "press": "info",
+				}},
+				"workspace": map[string]any{"tab_sounds": map[string]any{
+					"hover": "info", "click": true,
+				}},
+			},
+			wantBrowserTabs:   map[string]any{"click": "info"},
+			wantWorkspaceTabs: map[string]any{"hover": "info"},
+			wantErrs: []string{
+				`'browser.tab_sounds.hover' names unknown sound "tikc"`,
+				`'browser.tab_sounds.press': unknown event`,
+				`'workspace.tab_sounds.click' must be a sound name or "", got bool`,
+			},
+		},
+		{
+			name: "tab sounds is not a map",
+			cfg: map[string]any{
+				"browser":   map[string]any{"tab_sounds": "info"},
+				"workspace": map[string]any{"tab_sounds": []any{"info"}},
+			},
+			wantErrs: []string{
+				`'browser.tab_sounds' must map hover and click`,
+				`'workspace.tab_sounds' must map hover and click`,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateSounds(tc.cfg)
+			if len(tc.wantErrs) == 0 {
+				require.NoError(t, err)
+			}
+			for _, want := range tc.wantErrs {
+				assert.ErrorContains(t, err, want)
+			}
+			if tc.wantSounds == nil {
+				assert.NotContains(t, tc.cfg, "sounds")
+			} else {
+				assert.Equal(t, tc.wantSounds, tc.cfg["sounds"])
+			}
+			if terminal, ok := tc.cfg["terminal"].(map[string]any); ok {
+				assert.Equal(t, tc.wantBell, terminal["bell"])
+			}
+			if status, ok := tc.cfg["program_status"].(map[string]any); ok {
+				assert.Equal(t, tc.wantStatus, status["sounds"])
+			}
+			if gui, ok := tc.cfg["gui"].(map[string]any); ok {
+				assert.Equal(t, tc.wantQuickMenu, gui["quick_menu_sounds"])
+			}
+			if b, ok := tc.cfg["browser"].(map[string]any); ok {
+				assert.Equal(t, tc.wantBrowserTabs, b["tab_sounds"])
+			}
+			if ws, ok := tc.cfg["workspace"].(map[string]any); ok {
+				assert.Equal(t, tc.wantWorkspaceTabs, ws["tab_sounds"])
+			}
+		})
+	}
+}
+
+func TestSoundEntries(t *testing.T) {
+	t.Setenv("RUNE_TEST_SOUNDS", "/home/rune/sounds")
+	cfg := &ideConfig{cfg: map[string]any{"sounds": map[string]any{
+		"pkg":     "$RUNE_DATADIR/lib/pkg/ding.wav",
+		"env":     "$RUNE_TEST_SOUNDS/chime.ogg",
+		"uri":     "file:///opt/sounds/pop.mp3",
+		"alias":   "pkg",
+		"silent":  "",
+		"ignored": 3,
+	}}, errors: map[string]error{}}
+	assert.Equal(t, map[string]string{
+		"pkg":    "/data/lib/pkg/ding.wav",
+		"env":    "/home/rune/sounds/chime.ogg",
+		"uri":    "/opt/sounds/pop.mp3",
+		"alias":  "pkg",
+		"silent": "",
+	}, cfg.soundEntries("/data"))
+}
+
+func TestApplySounds(t *testing.T) {
+	var played []sounds.Sound
+	registry := sounds.NewRegistry(sounds.BackendFunc(func(s sounds.Sound) {
+		played = append(played, s)
+	}))
+	cfg := &ideConfig{cfg: map[string]any{"sounds": map[string]any{
+		"ding":         "$RUNE_DATADIR/ding.wav",
+		sounds.Warning: "ding",
+	}}, errors: map[string]error{}}
+	cfg.applySounds(registry, "/data")
+	require.Empty(t, cfg.errors)
+
+	registry.Play(sounds.Warning)
+	assert.Equal(t, []sounds.Sound{
+		{Name: sounds.Warning, Path: "/data/ding.wav", BuiltIn: sounds.Warning},
+	}, played)
+}
+
 func TestTerminalModalDefaultFromEditorMode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -1037,6 +1745,87 @@ func TestDebuggerConfigsConnectCommand(t *testing.T) {
 	})
 }
 
+func TestACPConfigs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		cfg       map[string]any
+		want      map[string]ideacp.AgentConfig
+		wantError string
+	}{
+		{
+			name: "absent block",
+			cfg:  map[string]any{},
+			want: map[string]ideacp.AgentConfig{},
+		},
+		{
+			name: "command args and env",
+			cfg: map[string]any{"acp": map[string]any{"agents": map[string]any{
+				"claude": map[string]any{
+					"command": "claude-agent-acp",
+					"args":    []any{"--verbose"},
+					"env":     map[string]any{"DEBUG": "1"},
+				},
+				"rune-agent": map[string]any{"command": "rune-agent"},
+			}}},
+			want: map[string]ideacp.AgentConfig{
+				"claude": {
+					Command: "claude-agent-acp",
+					Args:    []string{"--verbose"},
+					Env:     map[string]string{"DEBUG": "1"},
+				},
+				"rune-agent": {Command: "rune-agent"},
+			},
+		},
+		{
+			name: "missing command",
+			cfg: map[string]any{"acp": map[string]any{"agents": map[string]any{
+				"x": map[string]any{"args": []any{"a"}},
+			}}},
+			want:      map[string]ideacp.AgentConfig{},
+			wantError: "acp.agents.x.command",
+		},
+		{
+			name: "blank command",
+			cfg: map[string]any{"acp": map[string]any{"agents": map[string]any{
+				"x": map[string]any{"command": "  "},
+			}}},
+			want:      map[string]ideacp.AgentConfig{},
+			wantError: "acp.agents.x.command",
+		},
+		{
+			name: "non-string arg",
+			cfg: map[string]any{"acp": map[string]any{"agents": map[string]any{
+				"x": map[string]any{"command": "x", "args": []any{"a", 1}},
+			}}},
+			want:      map[string]ideacp.AgentConfig{},
+			wantError: "acp.agents.x.args.1",
+		},
+		{
+			name: "non-string env",
+			cfg: map[string]any{"acp": map[string]any{"agents": map[string]any{
+				"x": map[string]any{"command": "x", "env": map[string]any{"N": 1}},
+			}}},
+			want:      map[string]ideacp.AgentConfig{},
+			wantError: "acp.agents.x.env.N",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := ideConfig{cfg: tt.cfg, errors: map[string]error{}}
+			got := c.acpConfigs()
+			assert.Equal(t, tt.want, got.Agents)
+			if tt.wantError == "" {
+				assert.Empty(t, c.errors)
+				return
+			}
+			assert.Contains(t, c.errors, tt.wantError)
+		})
+	}
+}
+
 func TestHighlightTabCharEmptyDisables(t *testing.T) {
 	def := browser.DefaultConfig().FocusTabHighlightChar
 
@@ -1147,10 +1936,10 @@ func TestConfigDecodeError(t *testing.T) {
 	// for assertDefaultConfig
 	ret.cfg = map[string]any{
 		"workspace": map[string]any{
-			"wallpaper": "notEmpty",
+			"wallpaper_ascii": "notEmpty",
 		},
 	}
-	ret.ringBell = term.RingBell
+	ret.sounds = sounds.Silent
 	ret.scheduleNextTick = term.ScheduleNextTick
 	err = loadFileConfig(&ret, f.Name())
 	assert.Error(t, err)
@@ -1162,8 +1951,8 @@ func TestConfigSetting(t *testing.T) {
 	require.NoError(t, err)
 
 	var cfg ideConfig
-	initConfig(&cfg, m, browser.NopWallpaper(),
-		term.RingBell, term.ScheduleNextTick, "")
+	initConfig(&cfg, m, nil,
+		sounds.Silent, term.ScheduleNextTick, "")
 	cfg.storage = storagestub.NewInMemoryService()
 
 	assert.Equal(t, 4, cfg.editorTabspaces())
@@ -1179,15 +1968,23 @@ func TestConfigSetting(t *testing.T) {
 	assert.True(t, term.InputEsc&cfg.inputMode() != 0)
 	assert.Equal(t, "XX", cfg.tabNameSeparator())
 
+	frameCharSet := component.FrameCharSetHighlight()
+	frameCharSet.Graphics.TopLeft = "file:///frames/tl.png"
+	frameCharSet.Graphics.HorizontalTop = "https://example.com/top.png"
 	expectedConfig := handler.WindowManagerConfig{
 		WindowManagerConfig: tcomponent.WindowManagerConfig{
 			Frame:         true,
 			FrameAttr:     term.Attributes{Fg: term.ColorRed},
-			FrameCharSet:  component.FrameCharSetHighlight(),
+			FrameCharSet:  frameCharSet,
 			ScrollBarAttr: term.Attributes{Fg: term.GetColor("#f0f0f0")},
-			ScrollBarChar: '|',
-			NoMaxSize:     true,
-			WindowBar:     true,
+			ScrollBarCharSet: component.ScrollBarCharSet{
+				Top: '▲', Middle: '|',
+				Graphics: component.ScrollBarCharSetGraphics{
+					Middle: "file:///frames/bar.png", Overlay: true,
+				},
+			},
+			NoMaxSize: true,
+			WindowBar: true,
 			WindowBarCharSet: tcomponent.WindowBarCharSet{
 				Left:       '▓',
 				Horizontal: '▒',
@@ -1196,12 +1993,25 @@ func TestConfigSetting(t *testing.T) {
 			CloseIcon:     'x',
 			CloseIconAttr: term.Attributes{Fg: term.ColorYellow},
 		},
-		Dim:                false,
-		ScrollBarHoverChar: 'X',
-		FocusFrameAttr:     handler.DefaultWindowManagerConfig().FrameAttr,
-		FocusFrameCharSet:  handler.DefaultWindowManagerConfig().FrameCharSet,
+		Dim: false,
+		ScrollBarHoverCharSet: component.ScrollBarCharSet{
+			Middle:   'X',
+			Graphics: component.ScrollBarCharSetGraphics{Overlay: true},
+		},
+		FocusFrameAttr:    handler.DefaultWindowManagerConfig().FrameAttr,
+		FocusFrameCharSet: handler.DefaultWindowManagerConfig().FrameCharSet,
 	}
-	assert.Equal(t, expectedConfig, cfg.windowManagerConfig())
+	wmConfig := cfg.windowManagerConfig()
+	// Frame images are cached in a partition of their own.
+	require.NotNil(t, wmConfig.FrameGraphicsStorage)
+	require.NoError(t, wmConfig.FrameGraphicsStorage.Set(context.Background(), "frame", map[string]any{"a": 1}))
+	frameImages, err := cfg.storage.Partition("frame_images")
+	require.NoError(t, err)
+	var frameDoc map[string]any
+	require.NoError(t, frameImages.Get(context.Background(), "frame", &frameDoc))
+	assert.ErrorIs(t, cfg.storage.Get(context.Background(), "frame", &frameDoc), storageapi.ErrNotFound)
+	wmConfig.FrameGraphicsStorage = nil
+	assert.Equal(t, expectedConfig, wmConfig)
 	assert.True(t, cfg.frameUnion())
 
 	expectedIcons := text.IconSet{
@@ -1358,6 +2168,7 @@ func TestConfigSetting(t *testing.T) {
 	expectedFUCs.Right = '┫'
 	expectedFUCs.Top = '┫'
 	expectedFUCs.Bottom = '┫'
+	expectedFUCs.Graphics = frameCharSet.Graphics
 	assert.Equal(t, expectedFUCs, cfg.frameUnionCharset())
 
 	statusBar := cfg.statusBarEnabled()
@@ -1507,8 +2318,10 @@ func TestConfigSetting(t *testing.T) {
 	vteConfig := cfg.terminalConfig()
 	assert.NotNil(t, vteConfig.ScheduleNextTick)
 	vteConfig.ScheduleNextTick = nil
-	assert.NotNil(t, vteConfig.RingBell)
-	vteConfig.RingBell = nil
+	assert.NotNil(t, vteConfig.Sounds)
+	vteConfig.Sounds = nil
+	assert.Equal(t, sounds.Info, *vteConfig.BellSound.Load())
+	vteConfig.BellSound = nil
 	assertTerminalSearchConfig(t, &vteConfig, cfg.standardResultAttr(),
 		term.Attributes{Fg: term.ColorGreen, Bg: term.ColorTeal})
 	expectedEmulatorConfig := vte.Config{
@@ -1516,6 +2329,7 @@ func TestConfigSetting(t *testing.T) {
 		Attributes:               term.Attributes{Fg: term.ColorWhite, Bg: term.ColorYellow},
 		Clipboard:                cfg.clipboard(),
 		ClipboardRegister:        clipboard.DefaultRegisterID,
+		ClipboardAccess:          vte.ClipboardAccess{Read: true},
 		SelectionAttributes:      term.Attributes{Fg: term.ColorGreen, Bg: term.ColorTeal},
 		NeedsAttentionAttributes: term.Attributes{Attrs: term.AttrBlink, Fg: term.ColorRed},
 		Modal:                    true,
@@ -1526,9 +2340,58 @@ func TestConfigSetting(t *testing.T) {
 	}
 	assert.Equal(t, expectedEmulatorConfig, vteConfig)
 
+	assert.True(t, cfg.tabStatusEnabled())
+	assert.Equal(t, browser.TabStatusConfig{
+		Spinner:    []rune("abc"),
+		SpinnerFPS: 4,
+		BlockedIcons: map[programstatus.Kind]rune{
+			programstatus.KindNone:       'P',
+			programstatus.KindPermission: 'P',
+			programstatus.KindQuestion:   'Q',
+			programstatus.KindAuth:       'A',
+		},
+		DoneIcon:  'D',
+		ErrorIcon: 'E',
+		ContentTab: browser.TabStatusStyle{
+			Progress:        true,
+			IdleIconAttr:    term.Attributes{Fg: term.ColorGreen},
+			WorkingIconAttr: term.Attributes{Fg: term.ColorTeal},
+			WorkingDoneAttr: term.Attributes{Fg: term.ColorLime},
+			BlockedAttr:     term.Attributes{Fg: term.ColorOlive},
+			BlockedIconAttr: term.Attributes{Fg: term.ColorMaroon},
+			DoneAttr:        term.Attributes{Fg: term.ColorNavy},
+			DoneIconAttr:    term.Attributes{Fg: term.ColorPurple},
+			ErrorAttr:       term.Attributes{Fg: term.ColorFuchsia},
+			ErrorIconAttr:   term.Attributes{Fg: term.ColorAqua},
+		},
+		WorkspaceTab: func() browser.TabStatusStyle {
+			style := browser.DefaultTabStatusConfig().WorkspaceTab
+			style.WorkingDoneAttr = term.Attributes{Fg: term.ColorBlue}
+			style.BlockedAttr = term.Attributes{Fg: term.ColorWhite}
+			style.ErrorIconAttr = term.Attributes{Fg: term.ColorBlack}
+			return style
+		}(),
+	}, cfg.tabStatusConfig())
+	assert.Equal(t, idestatus.NotifyConfig{
+		States: map[programstatus.State]bool{
+			programstatus.Blocked: true,
+			programstatus.Error:   true,
+		},
+		Interval: 5 * time.Second,
+		Messages: true,
+		Sounds: map[programstatus.State]string{
+			programstatus.Blocked: sounds.Warning,
+			programstatus.Error:   sounds.Error,
+			programstatus.Done:    "",
+			programstatus.Working: sounds.Info,
+		},
+	}, cfg.tabStatusNotifyConfig())
+
 	expectedPrompt := browser.PromptConfig{
 		TextAttr:      term.Attributes{Fg: term.ColorTeal},
 		HighlightAttr: term.Attributes{Fg: term.GetColor("#f0f0f0"), Bg: term.ColorRed},
+		HoverAttr:     term.Attributes{Fg: term.ColorNavy, Bg: term.ColorSilver},
+		ClickedAttr:   term.Attributes{Fg: term.ColorWhite, Bg: term.ColorPurple},
 		MinWidth:      browser.DefaultConfig().MinWidth,
 	}
 	assert.Equal(t, expectedPrompt, cfg.promptConfig())
@@ -1588,13 +2451,11 @@ func TestConfigSetting(t *testing.T) {
 	assert.Len(t, cfg.extensions(), 1)
 	extensionCfgStruct := cfg.extensions()["fuzzy_search"]
 	assert.Equal(t, "fuzzy_search", extensionCfgStruct.id)
-	cfg.cfg["workspace"].(map[string]any)["wallpaper"] = ""
-	extensionCfgStruct.parent.cfg["workspace"].(map[string]any)["wallpaper"] = ""
-	cfg.defaultWallpaper.NewComponent = nil
-	cfg.ringBell = nil
+	cfg.cfg["workspace"].(map[string]any)["wallpaper_ascii"] = ""
+	extensionCfgStruct.parent.cfg["workspace"].(map[string]any)["wallpaper_ascii"] = ""
+	cfg.sounds = nil
 	cfg.scheduleNextTick = nil
-	extensionCfgStruct.parent.defaultWallpaper.NewComponent = nil
-	extensionCfgStruct.parent.ringBell = nil
+	extensionCfgStruct.parent.sounds = nil
 	extensionCfgStruct.parent.scheduleNextTick = nil
 	assert.Equal(t, &cfg, extensionCfgStruct.parent)
 
@@ -1608,6 +2469,317 @@ func TestConfigSetting(t *testing.T) {
 	assert.Equal(t, "ag -g \"\"", cmd)
 
 	assert.NotZero(t, cfg.defaultAttr())
+}
+
+func TestConfigImageWallpapersWithAnEmptyRampUseTheDefaultRamp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "white.png")
+	white := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	white.Set(0, 0, color.White)
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	require.NoError(t, png.Encode(f, white))
+	require.NoError(t, f.Close())
+
+	for _, key := range []string{"wallpaper_image", "wallpaper_image_ascii"} {
+		t.Run(key, func(t *testing.T) {
+			cfg := &ideConfig{cfg: map[string]any{
+				"workspace": map[string]any{
+					key:                            path,
+					"wallpaper_density_characters": "",
+				},
+			}, errors: map[string]error{}}
+
+			wallpaper := cfg.wallpaper()
+			assert.Contains(t, cfg.errors, "workspace.wallpaper_density_characters")
+
+			const width, height = 20, 4
+			art := wallpaper.NewComponent()
+			art.Resize(width, height)
+			w := cell.NewBufferWriter(context.Background(), width, height)
+			require.NotPanics(t, func() { art.Draw(w) })
+			var drawn []rune
+			for _, row := range w.RawCells() {
+				for _, c := range row {
+					if c.Ch != 0 && c.Ch != ' ' {
+						drawn = append(drawn, c.Ch)
+					}
+				}
+			}
+			require.NotEmpty(t, drawn)
+			assert.Equal(t, strings.Repeat("▓", len(drawn)), string(drawn))
+		})
+	}
+}
+
+func TestConfigWallpaperResolvesTheImagesThenTheTextThenTheLogo(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "white.png")
+	white := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	white.Set(0, 0, color.White)
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	require.NoError(t, png.Encode(f, white))
+	require.NoError(t, f.Close())
+	largePath := filepath.Join(t.TempDir(), "large.png")
+	f, err = os.Create(largePath)
+	require.NoError(t, err)
+	require.NoError(t, png.Encode(f, image.NewGray(image.Rect(0, 0, maxWallpaperImageSize+1, 1))))
+	require.NoError(t, f.Close())
+
+	logo := func(text string, fps int) Logo {
+		return Logo{
+			Wallpaper: browser.Wallpaper{NewComponent: func() tui.Component {
+				return component.NewString(text)
+			}},
+			ShaderFPS: fps,
+		}
+	}
+	logoA := logo("logo a", 1)
+
+	cases := []struct {
+		name      string
+		workspace map[string]any
+		logo      *Logo
+		wantDrawn string
+		// wantPicture are the cells of the pictures drawn, on cells of
+		// 10x20 pixels.
+		wantPicture []image.Rectangle
+		wantFPS     int
+		wantErrs    map[string]string
+	}{
+		{
+			name:      "no wallpaper",
+			workspace: map[string]any{},
+		},
+		{
+			name:      "the logo",
+			workspace: map[string]any{},
+			logo:      &logoA,
+			wantDrawn: "logoa",
+			wantFPS:   1,
+		},
+		{
+			name:      "the text over the logo",
+			workspace: map[string]any{"wallpaper_ascii": "art"},
+			logo:      &logoA,
+			wantDrawn: "art",
+		},
+		{
+			name:      "the text of the deprecated key",
+			workspace: map[string]any{"wallpaper": "art"},
+			logo:      &logoA,
+			wantDrawn: "art",
+		},
+		{
+			name: "the text over the text of the deprecated key",
+			workspace: map[string]any{
+				"wallpaper_ascii": "new", "wallpaper": "old",
+			},
+			logo:      &logoA,
+			wantDrawn: "new",
+		},
+		{
+			name: "the deprecated key under an empty text",
+			workspace: map[string]any{
+				"wallpaper_ascii": "", "wallpaper": "old",
+			},
+			logo:      &logoA,
+			wantDrawn: "old",
+		},
+		{
+			name: "the picture of an image over the text",
+			workspace: map[string]any{
+				"wallpaper_image": path, "wallpaper_ascii": "art",
+			},
+			logo:        &logoA,
+			wantPicture: []image.Rectangle{image.Rect(8, 1, 12, 3)},
+		},
+		{
+			name: "the picture of a section",
+			workspace: map[string]any{
+				"wallpaper_image": map[string]any{
+					"path": path, "width": "100%", "height": 2, "fit": "fill",
+				},
+			},
+			wantPicture: []image.Rectangle{image.Rect(0, 1, 20, 3)},
+		},
+		{
+			name: "the picture over the ASCII art of an image",
+			workspace: map[string]any{
+				"wallpaper_image": path, "wallpaper_image_ascii": path,
+			},
+			wantPicture: []image.Rectangle{image.Rect(8, 1, 12, 3)},
+		},
+		{
+			name: "the ASCII art of an image over the text",
+			workspace: map[string]any{
+				"wallpaper_image":       map[string]any{"path": ""},
+				"wallpaper_image_ascii": path,
+				"wallpaper_ascii":       "art",
+			},
+			wantDrawn: "▓",
+		},
+		{
+			name:      "an image that is neither a path nor a section",
+			workspace: map[string]any{"wallpaper_image": 42, "wallpaper_ascii": "art"},
+			wantDrawn: "art",
+			wantErrs: map[string]string{
+				"workspace.wallpaper_image": "must be the path of an image or a section with its path",
+			},
+		},
+		{
+			name:      "an image that cannot be opened",
+			workspace: map[string]any{"wallpaper_image_ascii": "/nonexistent.png", "wallpaper_ascii": "art"},
+			wantDrawn: "art",
+			wantErrs: map[string]string{
+				"workspace.wallpaper_image_ascii": `open image "/nonexistent.png": ` +
+					"open /nonexistent.png: no such file or directory",
+			},
+		},
+		{
+			name:      "a picture that cannot be opened",
+			workspace: map[string]any{"wallpaper_image": "/nonexistent.png", "wallpaper_ascii": "art"},
+			wantDrawn: "art",
+			wantErrs: map[string]string{
+				"workspace.wallpaper_image": `open image "/nonexistent.png": ` +
+					"open /nonexistent.png: no such file or directory",
+			},
+		},
+		{
+			name:      "a picture too large to draw",
+			workspace: map[string]any{"wallpaper_image": largePath, "wallpaper_ascii": "art"},
+			wantDrawn: "art",
+			wantErrs: map[string]string{
+				"workspace.wallpaper_image": "image is 8193x1, larger than 8192x8192",
+			},
+		},
+		{
+			name: "empty values show the logo",
+			workspace: map[string]any{
+				"wallpaper_image": "", "wallpaper_image_ascii": "", "wallpaper_ascii": "",
+				"wallpaper": "",
+			},
+			logo:      &logoA,
+			wantDrawn: "logoa",
+			wantFPS:   1,
+		},
+		{
+			name: "empty values without a logo leave the window blank",
+			workspace: map[string]any{
+				"wallpaper_image": "", "wallpaper_image_ascii": "", "wallpaper_ascii": "",
+				"wallpaper": "",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ideConfig{
+				cfg:    map[string]any{"workspace": tc.workspace},
+				errors: map[string]error{},
+				logo:   tc.logo,
+			}
+
+			const width, height = 20, 4
+			wallpaper := cfg.wallpaper()
+			comp := wallpaper.NewComponent()
+			comp.Resize(width, height)
+			ctx := cell.ContextWithPixelSize(context.Background(), cell.PixelSize{Width: 10, Height: 20})
+			w := cell.NewBufferWriter(ctx, width, height)
+			comp.Draw(w)
+			// Collapses repeats so the cells of the image read as one.
+			var drawn []rune
+			for _, row := range w.RawCells() {
+				for _, c := range row {
+					if c.Ch != 0 && c.Ch != ' ' && (len(drawn) == 0 || drawn[len(drawn)-1] != c.Ch) {
+						drawn = append(drawn, c.Ch)
+					}
+				}
+			}
+			assert.Equal(t, tc.wantDrawn, string(drawn))
+			var pictures []image.Rectangle
+			for _, img := range w.Images() {
+				pictures = append(pictures, img.Visible())
+			}
+			assert.Equal(t, tc.wantPicture, pictures)
+			assert.Equal(t, tc.wantFPS, cfg.intro().fps)
+			errs := map[string]string{}
+			for key, err := range cfg.errors {
+				errs[key] = err.Error()
+			}
+			if tc.wantErrs == nil {
+				tc.wantErrs = map[string]string{}
+			}
+			assert.Equal(t, tc.wantErrs, errs)
+		})
+	}
+}
+
+func TestConfigWallpaperImageSection(t *testing.T) {
+	const lengthErr = `must be a number of cells, such as 40, or a percentage of the ` +
+		`window from 1% to 100%, such as "60%"`
+	cases := []struct {
+		name     string
+		section  map[string]any
+		want     imagecomp.Config
+		wantErrs map[string]string
+	}{
+		{
+			name:    "the defaults",
+			section: map[string]any{},
+			want:    defaultWallpaperImage,
+		},
+		{
+			name:    "cells and percentages",
+			section: map[string]any{"width": 40, "height": "100%", "fit": "cover"},
+			want: imagecomp.Config{
+				Width:  imagecomp.Length{N: 40},
+				Height: imagecomp.Length{N: 100, Percent: true},
+				Fit:    imagecomp.Cover,
+			},
+		},
+		{
+			name:    "cells written as a string",
+			section: map[string]any{"width": "40", "height": int64(10), "fit": "fill"},
+			want: imagecomp.Config{
+				Width:  imagecomp.Length{N: 40},
+				Height: imagecomp.Length{N: 10},
+				Fit:    imagecomp.Fill,
+			},
+		},
+		{
+			name:    "invalid values keep the defaults",
+			section: map[string]any{"width": "150%", "height": 0, "fit": "stretch"},
+			want:    defaultWallpaperImage,
+			wantErrs: map[string]string{
+				"workspace.wallpaper_image.width":  lengthErr,
+				"workspace.wallpaper_image.height": lengthErr,
+				"workspace.wallpaper_image.fit": `unknown fit "stretch", ` +
+					"expected one of: contain, cover, fill",
+			},
+		},
+		{
+			name:    "values of the wrong type keep the defaults",
+			section: map[string]any{"width": true, "fit": 1},
+			want:    defaultWallpaperImage,
+			wantErrs: map[string]string{
+				"workspace.wallpaper_image.width": lengthErr,
+				"workspace.wallpaper_image.fit":   "type is invalid",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ideConfig{errors: map[string]error{}}
+			assert.Equal(t, tc.want, cfg.wallpaperImageConfig(config.MapConfig(tc.section)))
+			errs := map[string]string{}
+			for key, err := range cfg.errors {
+				errs[key] = err.Error()
+			}
+			if tc.wantErrs == nil {
+				tc.wantErrs = map[string]string{}
+			}
+			assert.Equal(t, tc.wantErrs, errs)
+		})
+	}
 }
 
 func TestConfigDim(t *testing.T) {
@@ -1652,12 +2824,919 @@ func TestConfigDim(t *testing.T) {
 	}
 }
 
+func TestConfigWindowFrameGraphics(t *testing.T) {
+	def := handler.DefaultWindowManagerConfig()
+	cases := []struct {
+		name      string
+		key       string
+		graphics  map[string]any
+		want      component.FrameCharSetGraphics
+		wantError string
+	}{
+		{
+			name:     "frame charset",
+			key:      "frame_charset",
+			graphics: map[string]any{"topleft": "file:///frames/tl.png"},
+			want:     component.FrameCharSetGraphics{TopLeft: "file:///frames/tl.png"},
+		},
+		{
+			name:     "focus frame charset",
+			key:      "focus_frame_charset",
+			graphics: map[string]any{"verticalright": "https://example.com/right.png"},
+			want:     component.FrameCharSetGraphics{VerticalRight: "https://example.com/right.png"},
+		},
+		{
+			name:      "an invalid URI keeps the default",
+			key:       "frame_charset",
+			graphics:  map[string]any{"topleft": "ftp://example.com/tl.png"},
+			wantError: `graphics.topleft: imageuri: unsupported scheme "ftp"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ideConfig{cfg: map[string]any{
+				"browser": map[string]any{
+					"window_manager": map[string]any{
+						tc.key: map[string]any{"topleft": "╭", "graphics": tc.graphics},
+					},
+				},
+			}, errors: map[string]error{}}
+
+			wmCfg := cfg.windowManagerConfig()
+			cs := wmCfg.FrameCharSet
+			if tc.key == "focus_frame_charset" {
+				cs = wmCfg.FocusFrameCharSet
+			}
+			assert.Equal(t, tc.want, cs.Graphics)
+			assert.Nil(t, wmCfg.FrameGraphicsStorage, "no storage without ideConfig.storage")
+			errKey := "window_manager." + tc.key
+			if tc.wantError == "" {
+				assert.Equal(t, '╭', cs.TopLeft)
+				assert.NotContains(t, cfg.errors, errKey)
+				return
+			}
+			assert.Equal(t, def.FrameCharSet, cs)
+			assert.ErrorContains(t, cfg.errors[errKey], tc.wantError)
+		})
+	}
+}
+
+func TestConfigWindowScrollBarCharset(t *testing.T) {
+	every := map[string]any{
+		"top_char": "▗", "middle_char": "▐", "bottom_char": "▝",
+		"hover_top_char": "▄", "hover_middle_char": "█", "hover_bottom_char": "▀",
+		"graphics": map[string]any{
+			"mode":              "replace",
+			"top_char":          "file:///bar/top.png",
+			"middle_char":       "file:///bar/middle.png",
+			"bottom_char":       "file:///bar/bottom.png",
+			"hover_top_char":    "file:///bar/hover-top.png",
+			"hover_middle_char": "file:///bar/hover-middle.png",
+			"hover_bottom_char": "file:///bar/hover-bottom.png",
+		},
+	}
+	cases := []struct {
+		name       string
+		wm         map[string]any
+		want       component.ScrollBarCharSet
+		wantHover  component.ScrollBarCharSet
+		wantOutset int
+		wantError  map[string]string
+	}{
+		{
+			name: "unset is the frame's right edge",
+			wm:   map[string]any{},
+		},
+		{
+			name: "every key",
+			wm:   map[string]any{"scroll_bar_charset": every},
+			want: component.ScrollBarCharSet{
+				Top: '▗', Middle: '▐', Bottom: '▝',
+				Graphics: component.ScrollBarCharSetGraphics{
+					Top:    "file:///bar/top.png",
+					Middle: "file:///bar/middle.png",
+					Bottom: "file:///bar/bottom.png",
+				},
+			},
+			wantHover: component.ScrollBarCharSet{
+				Top: '▄', Middle: '█', Bottom: '▀',
+				Graphics: component.ScrollBarCharSetGraphics{
+					Top:    "file:///bar/hover-top.png",
+					Middle: "file:///bar/hover-middle.png",
+					Bottom: "file:///bar/hover-bottom.png",
+				},
+			},
+		},
+		{
+			name: "the older keys are the middle characters",
+			wm: map[string]any{
+				"scroll_bar_char": "|", "scroll_bar_hover_char": "X",
+			},
+			want:      component.ScrollBarCharSet{Middle: '|'},
+			wantHover: component.ScrollBarCharSet{Middle: 'X'},
+		},
+		{
+			name: "the older keys win over the charset",
+			wm: map[string]any{
+				"scroll_bar_char":    "|",
+				"scroll_bar_charset": map[string]any{"middle_char": "▐", "top_char": "▗"},
+			},
+			want: component.ScrollBarCharSet{Top: '▗', Middle: '|'},
+		},
+		{
+			name: "the hover graphics share the mode",
+			wm: map[string]any{"scroll_bar_charset": map[string]any{
+				"graphics": map[string]any{
+					"mode": "overlay", "hover_middle_char": "file:///bar/hover.png",
+				},
+			}},
+			want: component.ScrollBarCharSet{
+				Graphics: component.ScrollBarCharSetGraphics{Overlay: true},
+			},
+			wantHover: component.ScrollBarCharSet{
+				Graphics: component.ScrollBarCharSetGraphics{
+					Middle: "file:///bar/hover.png", Overlay: true,
+				},
+			},
+		},
+		{
+			name: "an invalid character is reported and skipped",
+			wm: map[string]any{"scroll_bar_charset": map[string]any{
+				"middle_char": true, "bottom_char": "▝",
+			}},
+			want: component.ScrollBarCharSet{Bottom: '▝'},
+			wantError: map[string]string{
+				"window_manager.scroll_bar_charset.middle_char": "",
+			},
+		},
+		{
+			name: "invalid graphics keep the characters",
+			wm: map[string]any{"scroll_bar_charset": map[string]any{
+				"middle_char": "▐",
+				"graphics": map[string]any{
+					"middle_char":       "file:///bar/middle.png",
+					"hover_middle_char": "ftp://example.com/hover.png",
+				},
+			}},
+			want: component.ScrollBarCharSet{Middle: '▐'},
+			wantError: map[string]string{
+				"window_manager.scroll_bar_charset": `graphics.hover_middle_char: imageuri: unsupported scheme "ftp"`,
+			},
+		},
+		{
+			name: "an outset stretches the images left",
+			wm: map[string]any{"scroll_bar_charset": map[string]any{
+				"graphics": map[string]any{
+					"middle_char": "file:///bar/middle.png",
+					"outset":      map[string]any{"left": 2},
+				},
+			}},
+			want: component.ScrollBarCharSet{
+				Graphics: component.ScrollBarCharSetGraphics{Middle: "file:///bar/middle.png"},
+			},
+			wantOutset: 2,
+		},
+		{
+			name: "a negative outset is reported and skipped",
+			wm: map[string]any{"scroll_bar_charset": map[string]any{
+				"graphics": map[string]any{
+					"middle_char": "file:///bar/middle.png",
+					"outset":      map[string]any{"left": -1},
+				},
+			}},
+			want: component.ScrollBarCharSet{
+				Graphics: component.ScrollBarCharSetGraphics{Middle: "file:///bar/middle.png"},
+			},
+			wantError: map[string]string{
+				"window_manager.scroll_bar_charset.graphics.outset.left": "expected 0 or more cells, got -1",
+			},
+		},
+		{
+			name: "a charset that is not a map is reported",
+			wm:   map[string]any{"scroll_bar_charset": "▐"},
+			wantError: map[string]string{
+				"window_manager.scroll_bar_charset": "",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ideConfig{cfg: map[string]any{
+				"browser": map[string]any{"window_manager": tc.wm},
+			}, errors: map[string]error{}}
+
+			wmCfg := cfg.windowManagerConfig()
+			assert.Equal(t, tc.want, wmCfg.ScrollBarCharSet)
+			assert.Equal(t, tc.wantHover, wmCfg.ScrollBarHoverCharSet)
+			assert.Equal(t, tc.wantOutset, wmCfg.ScrollBarOutset)
+			assert.Len(t, cfg.errors, len(tc.wantError))
+			for key, msg := range tc.wantError {
+				if assert.Contains(t, cfg.errors, key) {
+					assert.ErrorContains(t, cfg.errors[key], msg)
+				}
+			}
+		})
+	}
+}
+
+func TestConfigWindowBarGraphics(t *testing.T) {
+	def := handler.DefaultWindowManagerConfig().WindowBarCharSet
+	cases := []struct {
+		name      string
+		charset   map[string]any
+		want      tcomponent.WindowBarCharSet
+		wantError map[string]string
+	}{
+		{
+			name:    "runes alone draw no images",
+			charset: map[string]any{"horizontal": "▀"},
+			want:    tcomponent.WindowBarCharSet{Left: def.Left, Horizontal: '▀', Right: def.Right},
+		},
+		{
+			name: "every slot",
+			charset: map[string]any{"graphics": map[string]any{
+				"mode":       "overlay",
+				"left":       "file:///bar/left.png",
+				"horizontal": "https://example.com/bar/middle.png",
+				"right":      "file:///bar/right.png",
+			}},
+			want: tcomponent.WindowBarCharSet{
+				Left: def.Left, Horizontal: def.Horizontal, Right: def.Right,
+				Graphics: tcomponent.WindowBarGraphics{
+					Left:       "file:///bar/left.png",
+					Horizontal: "https://example.com/bar/middle.png",
+					Right:      "file:///bar/right.png",
+					Overlay:    true,
+				},
+			},
+		},
+		{
+			name: "invalid graphics keep the runes",
+			charset: map[string]any{
+				"left":     "▛",
+				"graphics": map[string]any{"left": "file:///bar/left.png", "right": "/bar/right.png"},
+			},
+			want: tcomponent.WindowBarCharSet{Left: '▛', Horizontal: def.Horizontal, Right: def.Right},
+			wantError: map[string]string{
+				"window_manager.window_bar_charset": `graphics.right: imageuri: unsupported scheme ""`,
+			},
+		},
+		{
+			name: "an outset stretches the ends",
+			charset: map[string]any{"graphics": map[string]any{
+				"left": "file:///bar/left.png",
+				"outset": map[string]any{
+					"top": 1, "bottom": 2.0, "sides": 4, "inward": 3, "horizontal_top": 1,
+				},
+			}},
+			want: tcomponent.WindowBarCharSet{
+				Left: def.Left, Horizontal: def.Horizontal, Right: def.Right,
+				Graphics: tcomponent.WindowBarGraphics{
+					Left: "file:///bar/left.png",
+					Outset: tcomponent.WindowBarOutset{
+						Top: 1, Bottom: 2, Sides: 4, Inward: 3, HorizontalTop: 1,
+					},
+				},
+			},
+		},
+		{
+			name: "invalid outset sides are reported and skipped",
+			charset: map[string]any{"graphics": map[string]any{
+				"left": "file:///bar/left.png",
+				"outset": map[string]any{
+					"top": -1, "bottom": "one", "sides": 2, "inward": -2, "horizontal_top": -3,
+				},
+			}},
+			want: tcomponent.WindowBarCharSet{
+				Left: def.Left, Horizontal: def.Horizontal, Right: def.Right,
+				Graphics: tcomponent.WindowBarGraphics{
+					Left:   "file:///bar/left.png",
+					Outset: tcomponent.WindowBarOutset{Sides: 2},
+				},
+			},
+			wantError: map[string]string{
+				"window_manager.window_bar_charset.graphics.outset.top":            "expected 0 or more cells, got -1",
+				"window_manager.window_bar_charset.graphics.outset.bottom":         config.ErrInvalidType.Error(),
+				"window_manager.window_bar_charset.graphics.outset.inward":         "expected 0 or more cells, got -2",
+				"window_manager.window_bar_charset.graphics.outset.horizontal_top": "expected 0 or more cells, got -3",
+			},
+		},
+		{
+			name: "an outset that is not a map is reported",
+			charset: map[string]any{"graphics": map[string]any{
+				"left": "file:///bar/left.png", "outset": 1,
+			}},
+			want: tcomponent.WindowBarCharSet{
+				Left: def.Left, Horizontal: def.Horizontal, Right: def.Right,
+				Graphics: tcomponent.WindowBarGraphics{Left: "file:///bar/left.png"},
+			},
+			wantError: map[string]string{
+				"window_manager.window_bar_charset.graphics.outset": config.ErrInvalidType.Error(),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ideConfig{cfg: map[string]any{
+				"browser": map[string]any{"window_manager": map[string]any{
+					"window_bar_charset": tc.charset,
+				}},
+			}, errors: map[string]error{}}
+
+			assert.Equal(t, tc.want, cfg.windowManagerConfig().WindowBarCharSet)
+			assert.Len(t, cfg.errors, len(tc.wantError))
+			for key, msg := range tc.wantError {
+				if assert.Contains(t, cfg.errors, key) {
+					assert.ErrorContains(t, cfg.errors[key], msg)
+				}
+			}
+		})
+	}
+}
+
 func TestLoadEmbededConfig(t *testing.T) {
 	var cfg ideConfig
-	err := loadConfig(&cfg, "nonExistent", browser.NopWallpaper(),
+	err := loadConfig(&cfg, "nonExistent", nil,
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick)
+		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
+}
+
+func TestConfigPromptImages(t *testing.T) {
+	idle := map[string]any{
+		"left":   "file:///btn/left.png",
+		"middle": "file:///btn/middle.png",
+		"right":  "file:///btn/right.png",
+	}
+	idleImage := browser.PromptButtonImage{
+		Left:   "file:///btn/left.png",
+		Middle: "file:///btn/middle.png",
+		Right:  "file:///btn/right.png",
+	}
+	cases := []struct {
+		name      string
+		images    any
+		want      browser.PromptImages
+		wantError map[string]string
+	}{
+		{name: "no images", want: browser.PromptImages{}},
+		{
+			name: "every state and an outset",
+			images: map[string]any{
+				"idle":     idle,
+				"selected": map[string]any{"middle": "https://example.com/sel.png"},
+				"hover":    map[string]any{"left": "file:///btn/hover.png"},
+				"pressed":  map[string]any{"right": "file:///btn/pressed.png"},
+				"outset":   map[string]any{"top": 1, "bottom": 2.0, "sides": 3},
+			},
+			want: browser.PromptImages{
+				Idle:     idleImage,
+				Selected: browser.PromptButtonImage{Middle: "https://example.com/sel.png"},
+				Hover:    browser.PromptButtonImage{Left: "file:///btn/hover.png"},
+				Pressed:  browser.PromptButtonImage{Right: "file:///btn/pressed.png"},
+				Outset:   component.ButtonOutset{Top: 1, Bottom: 2, Sides: 3},
+			},
+		},
+		{
+			name:   "states left out fall back to idle",
+			images: map[string]any{"idle": idle},
+			want:   browser.PromptImages{Idle: idleImage},
+		},
+		{
+			name: "other states need idle",
+			images: map[string]any{
+				"hover": map[string]any{"left": "file:///btn/hover.png"},
+			},
+			wantError: map[string]string{
+				"prompt.images.idle": "expected images for idle buttons",
+			},
+		},
+		{
+			name: "an invalid URI draws no images",
+			images: map[string]any{
+				"idle":  idle,
+				"hover": map[string]any{"left": "/btn/hover.png"},
+			},
+			wantError: map[string]string{
+				"prompt.images": `hover.left: imageuri: unsupported scheme ""`,
+			},
+		},
+		{
+			name: "an invalid outset side is reported and skipped",
+			images: map[string]any{
+				"idle":   idle,
+				"outset": map[string]any{"top": -1, "bottom": "one", "sides": 2},
+			},
+			want: browser.PromptImages{
+				Idle:   idleImage,
+				Outset: component.ButtonOutset{Sides: 2},
+			},
+			wantError: map[string]string{
+				"prompt.images.outset.top":    "expected 0 or more cells, got -1",
+				"prompt.images.outset.bottom": config.ErrInvalidType.Error(),
+			},
+		},
+		{
+			name:   "images that are not a map are reported",
+			images: "file:///btn.png",
+			wantError: map[string]string{
+				"prompt.images": config.ErrInvalidType.Error(),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt := map[string]any{}
+			if tc.images != nil {
+				prompt["images"] = tc.images
+			}
+			cfg := &ideConfig{cfg: map[string]any{
+				"browser": map[string]any{"prompt": prompt},
+			}, errors: map[string]error{}}
+
+			assert.Equal(t, tc.want, cfg.promptConfig().Images)
+			assert.Len(t, cfg.errors, len(tc.wantError))
+			for key, msg := range tc.wantError {
+				if assert.Contains(t, cfg.errors, key) {
+					assert.ErrorContains(t, cfg.errors[key], msg)
+				}
+			}
+		})
+	}
+}
+
+func TestConfigHUDStyle(t *testing.T) {
+	cases := []struct {
+		name     string
+		cfg      map[string]any
+		check    func(t *testing.T, s hudStyle)
+		wantURIs []string
+		// wantErr is the key of the only config error.
+		wantErr string
+	}{
+		{
+			name: "no HUD keys draw no images",
+			cfg:  map[string]any{},
+			check: func(t *testing.T, s hudStyle) {
+				def := handler.DefaultWindowManagerConfig()
+				assert.Equal(t, def.FrameCharSet, s.browser.WindowManager.FrameCharSet)
+				assert.Nil(t, s.commandPromptFrame)
+				assert.Equal(t, text.StatusBarStyle{}, s.statusBar)
+				assert.Empty(t, s.statusBarImages())
+			},
+		},
+		{
+			name: "frames",
+			cfg: map[string]any{"browser": map[string]any{
+				"window_manager": map[string]any{
+					"frame_attr":       map[string]any{"fg": "blue"},
+					"focus_frame_attr": map[string]any{"fg": "purple"},
+					"frame_charset": map[string]any{
+						"topleft":  "╭",
+						"graphics": map[string]any{"topleft": "file:///frame/tl.png"},
+					},
+					"focus_frame_charset": map[string]any{
+						"graphics": map[string]any{"verticalright": "file:///focus/r.png"},
+					},
+				},
+				"frameunion_charset": map[string]any{"top": "┬"},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				wm := s.browser.WindowManager
+				assert.Equal(t, term.ColorBlue, wm.FrameAttr.Fg)
+				assert.Equal(t, term.ColorPurple, wm.FocusFrameAttr.Fg)
+				assert.Equal(t, '╭', wm.FrameCharSet.TopLeft)
+				assert.Equal(t, "file:///focus/r.png", wm.FocusFrameCharSet.Graphics.VerticalRight)
+				union := s.browser.FrameUnionCharSet
+				assert.Equal(t, wm.FrameCharSet, union.FrameCharSet)
+				assert.Equal(t, '┬', union.Top)
+				assert.Nil(t, wm.FrameGraphicsStorage)
+			},
+			wantURIs: []string{"file:///focus/r.png", "file:///frame/tl.png"},
+		},
+		{
+			name: "scroll bar",
+			cfg: map[string]any{"browser": map[string]any{"window_manager": map[string]any{
+				"scroll_bar_attr": map[string]any{"fg": "red"},
+				"scroll_bar_charset": map[string]any{"graphics": map[string]any{
+					"middle_char":       "file:///bar/middle.png",
+					"hover_middle_char": "file:///bar/hover.png",
+					"outset":            map[string]any{"left": 2},
+				}},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				wm := s.browser.WindowManager
+				assert.Equal(t, term.ColorRed, wm.ScrollBarAttr.Fg)
+				assert.Equal(t, 2, wm.ScrollBarOutset)
+			},
+			wantURIs: []string{"file:///bar/hover.png", "file:///bar/middle.png"},
+		},
+		{
+			name: "window bar",
+			cfg: map[string]any{"browser": map[string]any{"window_manager": map[string]any{
+				"close_icon":      "x",
+				"close_icon_attr": map[string]any{"fg": "red"},
+				"window_bar_charset": map[string]any{"graphics": map[string]any{
+					"left": "file:///bar/left.png", "right": "file:///bar/right.png",
+				}},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				wm := s.browser.WindowManager
+				assert.Equal(t, 'x', wm.CloseIcon)
+				assert.Equal(t, term.ColorRed, wm.CloseIconAttr.Fg)
+			},
+			wantURIs: []string{"file:///bar/left.png", "file:///bar/right.png"},
+		},
+		{
+			name: "the command prompt falls back to the window frame",
+			cfg: map[string]any{"browser": map[string]any{"window_manager": map[string]any{
+				"frame_charset": map[string]any{"graphics": map[string]any{
+					"horizontalbottom": "file:///frame/bottom.png",
+				}},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Nil(t, s.commandPromptFrame)
+				assert.Equal(t, "file:///frame/bottom.png", s.commandPromptSeparator.Graphics.Horizontal)
+			},
+			wantURIs: []string{"file:///frame/bottom.png"},
+		},
+		{
+			name: "the command prompt frame and separator",
+			cfg: map[string]any{"command": map[string]any{
+				"frame_charset": map[string]any{"graphics": map[string]any{
+					"topleft": "file:///prompt/tl.png",
+				}},
+				"separator_charset": map[string]any{"graphics": map[string]any{
+					"left": "file:///prompt/sep.png",
+				}},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				require.NotNil(t, s.commandPromptFrame)
+				assert.Equal(t, "file:///prompt/tl.png", s.commandPromptFrame.Graphics.TopLeft)
+				assert.Equal(t, "file:///prompt/sep.png", s.commandPromptSeparator.Graphics.Left)
+			},
+			wantURIs: []string{"file:///prompt/sep.png", "file:///prompt/tl.png"},
+		},
+		{
+			name: "prompt buttons",
+			cfg: map[string]any{"browser": map[string]any{"prompt": map[string]any{
+				"text_attr":  map[string]any{"fg": "green"},
+				"hover_attr": map[string]any{"fg": "yellow"},
+				"images": map[string]any{
+					"idle": map[string]any{
+						"left": "file:///btn/left.png", "middle": "file:///btn/middle.png",
+					},
+					"hover": map[string]any{"left": "file:///btn/left.png"},
+				},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				prompt := s.browser.Prompt
+				assert.Equal(t, term.ColorGreen, prompt.TextAttr.Fg)
+				assert.Equal(t, term.ColorYellow, prompt.HoverAttr.Fg)
+			},
+			wantURIs: []string{"file:///btn/left.png", "file:///btn/middle.png"},
+		},
+		{
+			name: "tab style",
+			cfg: map[string]any{"browser": map[string]any{
+				"focus_tab_attr":           map[string]any{"fg": "green"},
+				"non_focus_tab_attr":       map[string]any{"fg": "red"},
+				"focus_tab_icon_attr":      map[string]any{"fg": "yellow"},
+				"non_focus_tab_icon_attr":  map[string]any{"fg": "blue"},
+				"focus_tab_highlight_attr": map[string]any{"fg": "purple"},
+				"focus_tab_highlight_char": "▔",
+				"hover_tab_attr":           map[string]any{"fg": "white", "flags": "bold"},
+				"tab_images": map[string]any{
+					"focus":     map[string]any{"middle": "file:///tab/focus.png"},
+					"non_focus": map[string]any{"left": "file:///tab/l.png", "right": "file:///tab/r.png"},
+					"hover":     map[string]any{"middle": "file:///tab/hover.png"},
+					"pressed":   map[string]any{"middle": "file:///tab/pressed.png"},
+					"outset":    map[string]any{"sides": 1},
+				},
+				"focus_tab_highlight_graphics": map[string]any{
+					"mode": "overlay", "horizontal": "file:///tab/hl.png", "right": "file:///tab/r.png",
+				},
+				"tab_sounds": map[string]any{"hover": "tick", "click": "info"},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, browser.TabStyle{
+					FocusTabAttr:          term.Attributes{Fg: term.ColorGreen},
+					NonFocusTabAttr:       term.Attributes{Fg: term.ColorRed},
+					FocusTabIconAttr:      term.Attributes{Fg: term.ColorYellow},
+					NonFocusTabIconAttr:   term.Attributes{Fg: term.ColorBlue},
+					FocusTabHighlightAttr: term.Attributes{Fg: term.ColorPurple},
+					FocusTabHighlightChar: '▔',
+					HoverTabAttr:          term.Attributes{Fg: term.ColorWhite, Attrs: term.AttrBold},
+					Images: browser.PromptImages{
+						Idle:     browser.PromptButtonImage{Left: "file:///tab/l.png", Right: "file:///tab/r.png"},
+						Selected: browser.PromptButtonImage{Middle: "file:///tab/focus.png"},
+						Hover:    browser.PromptButtonImage{Middle: "file:///tab/hover.png"},
+						Pressed:  browser.PromptButtonImage{Middle: "file:///tab/pressed.png"},
+						Outset:   component.ButtonOutset{Sides: 1},
+					},
+					HighlightGraphics: tcomponent.LineGraphics{
+						Middle: "file:///tab/hl.png", End: "file:///tab/r.png", Overlay: true,
+					},
+					Sounds: handler.TabSounds{Hover: "tick", Click: "info"},
+				}, s.browser.Tabs)
+			},
+			wantURIs: []string{
+				"file:///tab/focus.png", "file:///tab/hl.png", "file:///tab/hover.png",
+				"file:///tab/l.png", "file:///tab/pressed.png", "file:///tab/r.png",
+			},
+		},
+		{
+			name: "only focus tab images",
+			cfg: map[string]any{"browser": map[string]any{"tab_images": map[string]any{
+				"focus": map[string]any{"middle": "file:///tab/focus.png"},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, browser.PromptImages{
+					Selected: browser.PromptButtonImage{Middle: "file:///tab/focus.png"},
+				}, s.browser.Tabs.Images)
+			},
+			wantURIs: []string{"file:///tab/focus.png"},
+		},
+		{
+			name: "an invalid tab image draws no tab images",
+			cfg: map[string]any{"browser": map[string]any{"tab_images": map[string]any{
+				"focus":     map[string]any{"middle": "ftp://example.com/focus.png"},
+				"non_focus": map[string]any{"middle": "file:///tab/idle.png"},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.True(t, s.browser.Tabs.Images.Empty())
+			},
+			wantErr: "browser.tab_images",
+		},
+		{
+			name: "an invalid tab highlight image draws no highlight images",
+			cfg: map[string]any{"browser": map[string]any{"focus_tab_highlight_graphics": map[string]any{
+				"horizontal": "file:///tab/hl.png", "mode": "sideways",
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.True(t, s.browser.Tabs.HighlightGraphics.Empty())
+			},
+			wantErr: "browser.focus_tab_highlight_graphics",
+		},
+		{
+			name: "workspace bar style",
+			cfg: map[string]any{
+				"browser": map[string]any{
+					"focus_tab_attr":           map[string]any{"fg": "green"},
+					"non_focus_tab_attr":       map[string]any{"fg": "red"},
+					"focus_tab_icon_attr":      map[string]any{"fg": "yellow"},
+					"non_focus_tab_icon_attr":  map[string]any{"fg": "blue"},
+					"focus_tab_highlight_attr": map[string]any{"fg": "purple"},
+					"focus_tab_highlight_char": "▔",
+					"hover_tab_attr":           map[string]any{"fg": "white"},
+					"tab_images": map[string]any{
+						"focus": map[string]any{"middle": "file:///tab/focus.png"},
+					},
+					"tab_sounds": map[string]any{"click": "info"},
+				},
+				"workspace": map[string]any{
+					"focus_tab_highlight_char": "",
+					"tab_images": map[string]any{
+						"focus":     map[string]any{"middle": "file:///ws/focus.png"},
+						"non_focus": map[string]any{"middle": "file:///ws/idle.png"},
+						"hover":     map[string]any{"middle": "file:///ws/hover.png"},
+						"outset":    map[string]any{"sides": 1},
+					},
+					"focus_tab_highlight_graphics": map[string]any{
+						"left": "file:///ws/hl-l.png", "horizontal": "file:///ws/hl.png",
+					},
+					"tab_sounds": map[string]any{"hover": "tick"},
+				},
+			},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, workspaceBarStyle{
+					focusTabAttr:        term.Attributes{Fg: term.ColorGreen},
+					nonFocusTabAttr:     term.Attributes{Fg: term.ColorRed},
+					focusTabIconAttr:    term.Attributes{Fg: term.ColorYellow},
+					nonFocusTabIconAttr: term.Attributes{Fg: term.ColorBlue},
+					highlightAttr:       term.Attributes{Fg: term.ColorPurple},
+					hoverAttr:           term.Attributes{Fg: term.ColorWhite},
+					images: browser.PromptImages{
+						Idle:     browser.PromptButtonImage{Middle: "file:///ws/idle.png"},
+						Selected: browser.PromptButtonImage{Middle: "file:///ws/focus.png"},
+						Hover:    browser.PromptButtonImage{Middle: "file:///ws/hover.png"},
+						Outset:   component.ButtonOutset{Sides: 1},
+					},
+					highlight: tcomponent.LineGraphics{
+						Start: "file:///ws/hl-l.png", Middle: "file:///ws/hl.png",
+					},
+					sounds: handler.TabSounds{Hover: "tick"},
+				}, s.workspaceBar)
+				assert.Equal(t, '▔', s.browser.Tabs.FocusTabHighlightChar)
+				assert.Equal(t, handler.TabSounds{Click: "info"}, s.browser.Tabs.Sounds)
+			},
+			wantURIs: []string{
+				"file:///tab/focus.png", "file:///ws/focus.png", "file:///ws/hl-l.png",
+				"file:///ws/hl.png", "file:///ws/hover.png", "file:///ws/idle.png",
+			},
+		},
+		{
+			name: "workspace bar without workspace keys",
+			cfg:  map[string]any{},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, browser.DefaultConfig().FocusTabHighlightChar,
+					s.workspaceBar.highlightChar)
+				assert.True(t, s.workspaceBar.images.Empty())
+				assert.True(t, s.workspaceBar.highlight.Empty())
+			},
+		},
+		{
+			name: "an invalid workspace tab image draws no workspace tab images",
+			cfg: map[string]any{"workspace": map[string]any{"tab_images": map[string]any{
+				"focus": map[string]any{"middle": "ftp://example.com/focus.png"},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.True(t, s.workspaceBar.images.Empty())
+			},
+			wantErr: "workspace.tab_images",
+		},
+		{
+			name: "an invalid workspace highlight image draws no workspace highlight images",
+			cfg: map[string]any{"workspace": map[string]any{"focus_tab_highlight_graphics": map[string]any{
+				"horizontal": "file:///ws/hl.png", "mode": "sideways",
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.True(t, s.workspaceBar.highlight.Empty())
+			},
+			wantErr: "workspace.focus_tab_highlight_graphics",
+		},
+		{
+			name: "status inbox",
+			cfg: map[string]any{"program_status": map[string]any{
+				"marker":          "┃",
+				"images":          map[string]any{"idle": map[string]any{"middle": "file:///inbox/idle.png"}},
+				"marker_graphics": map[string]any{"vertical": "file:///inbox/marker.png"},
+				"divider_charset": map[string]any{"graphics": map[string]any{
+					"top": "file:///inbox/top.png", "vertical": "file:///inbox/divider.png",
+				}},
+				"progress_bar_graphics": map[string]any{
+					"filled": "file:///inbox/filled.png", "empty": "file:///inbox/empty.png",
+				},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, '┃', s.statusInbox.Marker)
+				assert.Equal(t, "file:///inbox/idle.png", s.statusInbox.Images.Idle.Middle)
+			},
+			wantURIs: []string{
+				"file:///inbox/divider.png", "file:///inbox/empty.png", "file:///inbox/filled.png",
+				"file:///inbox/idle.png", "file:///inbox/marker.png", "file:///inbox/top.png",
+			},
+		},
+		{
+			name: "wallpaper",
+			cfg: map[string]any{"workspace": map[string]any{
+				"wallpaper_ascii":           "art",
+				"wallpaper_background_attr": map[string]any{"bg": "navy"},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				wallpaper := s.browser.Wallpaper
+				assert.Equal(t, term.ColorNavy, wallpaper.BackgroundAttr.Bg)
+				comp := wallpaper.NewComponent()
+				comp.Resize(3, 1)
+				w := cell.NewBufferWriter(context.Background(), 3, 1)
+				comp.Draw(w)
+				var drawn []rune
+				for _, c := range w.RawCells()[0] {
+					drawn = append(drawn, c.Ch)
+				}
+				assert.Equal(t, "art", string(drawn))
+			},
+		},
+		{
+			name: "status bar",
+			cfg: map[string]any{"editor": map[string]any{"status_bar": map[string]any{
+				"layout": `[{{ .Status }}]{{ .Image | src "file:///bar/a.png" | ttl "1h" }}` +
+					`{{ .Image | src "file:///bar/b.png" }}`,
+				"background_attr":       map[string]any{"bg": "navy"},
+				"foreground_error_attr": map[string]any{"fg": "red"},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, term.ColorNavy, s.statusBar.BackgroundColor)
+				assert.Equal(t, term.ColorRed, s.statusBar.ErrorColor)
+				require.Len(t, s.statusBar.Layout, 3)
+				assert.Equal(t, "[%s]", s.statusBar.Layout[0].Template)
+				images := s.statusBarImages()
+				require.Len(t, images, 2)
+				assert.Equal(t, "file:///bar/a.png", images[0].URI)
+				assert.Equal(t, time.Hour, images[0].TTL)
+				assert.Equal(t, "file:///bar/b.png", images[1].URI)
+				assert.Equal(t, template.DefaultImageTTL, images[1].TTL)
+			},
+		},
+		{
+			name: "a status bar layout that does not parse",
+			cfg: map[string]any{"editor": map[string]any{"status_bar": map[string]any{
+				"layout": `{{ .Nope }}`,
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Nil(t, s.statusBar.Layout)
+			},
+			wantErr: "editor.status_bar.layout",
+		},
+		{
+			name: "the bell, the command manual and program status sounds",
+			cfg: map[string]any{
+				"terminal": map[string]any{"bell": "ding"},
+				"command":  map[string]any{"show_manual": false},
+				"program_status": map[string]any{"sounds": map[string]any{
+					"working": "tick", "done": "",
+				}},
+			},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, "ding", s.bellSound)
+				assert.False(t, s.commandShowManual)
+				want := idestatus.DefaultNotifyConfig()
+				want.Sounds[programstatus.Working] = "tick"
+				want.Sounds[programstatus.Done] = ""
+				assert.Equal(t, want, s.notifyStatus)
+			},
+		},
+		{
+			name: "a disabled program status notifies nothing",
+			cfg: map[string]any{"terminal": map[string]any{
+				"status": map[string]any{"enabled": false},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, sounds.Warning, s.bellSound)
+				assert.Equal(t, text.DefaultCommandOverlayConfig().ShowManual, s.commandShowManual)
+				assert.Equal(t, idestatus.NotifyConfig{}, s.notifyStatus)
+			},
+		},
+		{
+			name: "notifications",
+			cfg: map[string]any{"notifications": map[string]any{
+				"progress_bar": false,
+				"padding":      2,
+				"attr":         map[string]any{"fg": "green"},
+				"frame_charset": map[string]any{
+					"topleft": "╓",
+					"graphics": map[string]any{
+						"topleft": "file:///noti/tl.png", "bottomright": "file:///noti/br.png",
+					},
+				},
+				"progress_format": map[string]any{
+					"start": "{",
+					"graphics": map[string]any{
+						"mode":   "overlay",
+						"start":  "file:///noti/start.png",
+						"remain": "file:///noti/tl.png",
+					},
+				},
+				// Read once at startup, so not part of the style.
+				"auto_close": "bogus",
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				n := s.notifications
+				assert.False(t, n.ProgressBar)
+				assert.Equal(t, 2, n.Padding)
+				assert.Equal(t, term.ColorGreen, n.Attributes.Fg)
+				assert.Equal(t, '╓', n.FrameCharSet.TopLeft)
+				assert.Equal(t, "file:///noti/tl.png", n.FrameCharSet.Graphics.TopLeft)
+				assert.Equal(t, '{', n.ProgressRunes.Start)
+				assert.Equal(t, notifications.ProgressGraphics{
+					Start: "file:///noti/start.png", Remain: "file:///noti/tl.png", Overlay: true,
+				}, n.ProgressRunes.Graphics)
+			},
+			wantURIs: []string{"file:///noti/br.png", "file:///noti/start.png", "file:///noti/tl.png"},
+		},
+		{
+			name: "an invalid notification progress image keeps the default progress",
+			cfg: map[string]any{"notifications": map[string]any{
+				"progress_format": map[string]any{
+					"start":    "{",
+					"graphics": map[string]any{"start": "ftp://example.com/start.png"},
+				},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, defaultNotificationsConfig().ProgressRunes, s.notifications.ProgressRunes)
+			},
+			wantErr: "notifications.progress_format",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := ideConfig{cfg: tc.cfg, errors: map[string]error{}}
+
+			s := cfg.hudStyle()
+			if tc.wantErr == "" {
+				assert.Empty(t, cfg.errors)
+			} else {
+				assert.Len(t, cfg.errors, 1)
+				assert.Contains(t, cfg.errors, tc.wantErr)
+			}
+			tc.check(t, s)
+			if tc.wantURIs == nil {
+				assert.Empty(t, s.imageURIs())
+			} else {
+				assert.Equal(t, tc.wantURIs, s.imageURIs())
+			}
+		})
+	}
 }
 
 func TestTutorialFilesDecoded(t *testing.T) {
@@ -1670,11 +3749,27 @@ func TestTutorialFilesDecoded(t *testing.T) {
 		},
 		errors: map[string]error{},
 	}
-	got := cfg.tutorialFiles()
+	got := cfg.tutorialFiles("/data")
 	require.Equal(t, 2, len(got))
 	assert.Equal(t, "/etc/x.star", got["basics"])
 	assert.Equal(t, "/etc/y.star", got["advanced"])
 	assert.Empty(t, cfg.errors)
+}
+
+func TestTutorialFilesExpandDataDir(t *testing.T) {
+	cfg := ideConfig{
+		cfg: map[string]any{
+			"tutorials": map[string]any{
+				"pkg":   "$RUNE_DATADIR/pkg/fuzzy_search/1/fuzzy_search.star",
+				"other": "$HOME/x.star",
+			},
+		},
+		errors: map[string]error{},
+	}
+	assert.Equal(t, map[string]string{
+		"pkg":   "/data/pkg/fuzzy_search/1/fuzzy_search.star",
+		"other": "$HOME/x.star",
+	}, cfg.tutorialFiles("/data"))
 }
 
 func TestTutorialFilesMissingReturnsNil(t *testing.T) {
@@ -1682,7 +3777,7 @@ func TestTutorialFilesMissingReturnsNil(t *testing.T) {
 		cfg:    map[string]any{},
 		errors: map[string]error{},
 	}
-	assert.Nil(t, cfg.tutorialFiles())
+	assert.Nil(t, cfg.tutorialFiles("/data"))
 	assert.Empty(t, cfg.errors)
 }
 
@@ -1693,7 +3788,7 @@ func TestTutorialFilesWrongRootTypeRecordsError(t *testing.T) {
 		},
 		errors: map[string]error{},
 	}
-	assert.Nil(t, cfg.tutorialFiles())
+	assert.Nil(t, cfg.tutorialFiles("/data"))
 	require.NotNil(t, cfg.errors["tutorials"])
 	assert.Contains(t, cfg.errors["tutorials"].Error(), "invalid type")
 }
@@ -1708,7 +3803,7 @@ func TestTutorialFilesEntryWrongTypeRecordsError(t *testing.T) {
 		},
 		errors: map[string]error{},
 	}
-	got := cfg.tutorialFiles()
+	got := cfg.tutorialFiles("/data")
 	assert.Equal(t, map[string]string{"good": "/etc/ok.star"}, got)
 	require.NotNil(t, cfg.errors["tutorials.bad"])
 	assert.Contains(t, cfg.errors["tutorials.bad"].Error(),
@@ -1729,9 +3824,9 @@ func TestShellMaxHistoryFromConfig(t *testing.T) {
 	require.NoError(t, f.Close())
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
+	err = loadConfig(&cfg, f.Name(), nil,
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick)
+		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Equal(t, 7, cfg.consoleMaxHistory())
 }
@@ -1750,9 +3845,9 @@ func TestShellModalStartInsertFromConfig(t *testing.T) {
 	require.NoError(t, f.Close())
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
+	err = loadConfig(&cfg, f.Name(), nil,
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick)
+		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.False(t, cfg.consoleModalStartInsert())
 }
@@ -1771,9 +3866,9 @@ func TestShellModalStartInsertDefaultsTrue(t *testing.T) {
 	require.NoError(t, f.Close())
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
+	err = loadConfig(&cfg, f.Name(), nil,
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick)
+		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.True(t, cfg.consoleModalStartInsert())
 }
@@ -1792,9 +3887,9 @@ func TestConsolePromptFromConfig(t *testing.T) {
 	require.NoError(t, f.Close())
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
+	err = loadConfig(&cfg, f.Name(), nil,
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick)
+		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Equal(t, "rune> ", cfg.consolePrompt())
 	assert.Equal(t, "rune> ", cfg.consoleCfg().prompt)
@@ -1814,9 +3909,9 @@ func TestConsolePromptDefaultsEmpty(t *testing.T) {
 	require.NoError(t, f.Close())
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
+	err = loadConfig(&cfg, f.Name(), nil,
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick)
+		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Empty(t, cfg.consolePrompt())
 }
@@ -1872,9 +3967,9 @@ command:
 	require.NoError(t, err)
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
+	err = loadConfig(&cfg, f.Name(), nil,
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick)
+		sounds.Silent, term.ScheduleNextTick)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "alias cycle detected")
 	aliases, _ := cfg.parseAliasCommands()
@@ -1893,9 +3988,9 @@ editor:
 	require.NoError(t, err)
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
+	err = loadConfig(&cfg, f.Name(), nil,
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick)
+		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Equal(t, 2, cfg.editorTabspaces())
 }
@@ -1912,9 +4007,9 @@ editor:
 	require.NoError(t, err)
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
+	err = loadConfig(&cfg, f.Name(), nil,
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick)
+		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Equal(t, 2048, cfg.editorMaxSizeForSyntax())
 }
@@ -1946,9 +4041,9 @@ func TestEditorSwapDir(t *testing.T) {
 			require.NoError(t, err)
 
 			var cfg ideConfig
-			err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
+			err = loadConfig(&cfg, f.Name(), nil,
 				DefaultConfig{src: "config = {}"},
-				term.RingBell, term.ScheduleNextTick)
+				sounds.Silent, term.ScheduleNextTick)
 			require.NoError(t, err)
 
 			assert.Equal(t, tcase.want, cfg.editorSwapDir())
@@ -1975,9 +4070,9 @@ editor:
 	require.NoError(t, err)
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
+	err = loadConfig(&cfg, f.Name(), nil,
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick)
+		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
 	assert.Equal(t, text.IndentConfig{
 		"yaml": text.IndentRuneSpace,
@@ -2108,8 +4203,18 @@ func quickMenuEntry(symbol, title string, command any) map[string]any {
 	return map[string]any{"symbol": symbol, "title": title, "command": command}
 }
 
+func quickMenuSpriteEntry(title, command string, sprite any) map[string]any {
+	return map[string]any{"title": title, "command": command, "sprite": sprite}
+}
+
 func TestQuickMenuButtons(t *testing.T) {
 	t.Parallel()
+	const (
+		idle    = "file:///hud/idle.png"
+		hover   = "file:///hud/hover.png"
+		pressed = "https://example.com/pressed.png"
+	)
+	every := map[string]any{"idle": idle, "hover": hover, "pressed": pressed}
 	tests := []struct {
 		name     string
 		entries  any
@@ -2183,6 +4288,66 @@ func TestQuickMenuButtons(t *testing.T) {
 			{Symbol: "plus", Title: "First", Command: []string{"help"}},
 		},
 		wantErrs: []string{"gui.quick_menu[1]"},
+	}, {
+		name:    "a sprite replaces the symbol",
+		entries: []any{quickMenuSpriteEntry("Help", "help", every)},
+		want: []QuickMenuButton{{Title: "Help", Command: []string{"help"},
+			Sprite: QuickMenuSprite{Idle: idle, Hover: hover, Pressed: pressed}}},
+	}, {
+		name: "a symbol is kept alongside a sprite",
+		entries: []any{map[string]any{
+			"symbol": "plus", "command": "help", "sprite": every,
+		}},
+		want: []QuickMenuButton{{Symbol: "plus", Title: "help", Command: []string{"help"},
+			Sprite: QuickMenuSprite{Idle: idle, Hover: hover, Pressed: pressed}}},
+	}, {
+		name: "hover defaults to idle and pressed to hover",
+		entries: []any{
+			quickMenuSpriteEntry("Idle", "help", map[string]any{"idle": idle}),
+			quickMenuSpriteEntry("Hover", "config",
+				map[string]any{"idle": idle, "hover": hover}),
+		},
+		want: []QuickMenuButton{
+			{Title: "Idle", Command: []string{"help"},
+				Sprite: QuickMenuSprite{Idle: idle, Hover: idle, Pressed: idle}},
+			{Title: "Hover", Command: []string{"config"},
+				Sprite: QuickMenuSprite{Idle: idle, Hover: hover, Pressed: hover}},
+		},
+	}, {
+		name:     "a sprite needs an idle image",
+		entries:  []any{quickMenuSpriteEntry("Help", "help", map[string]any{"hover": hover})},
+		wantErrs: []string{"gui.quick_menu[0].sprite.idle"},
+	}, {
+		name:     "a sprite must be a dict",
+		entries:  []any{quickMenuSpriteEntry("Help", "help", idle)},
+		wantErrs: []string{"gui.quick_menu[0].sprite"},
+	}, {
+		name: "sprite images must be valid URIs",
+		entries: []any{quickMenuSpriteEntry("Help", "help", map[string]any{
+			"idle": "ftp://example.com/idle.png", "pressed": 3,
+		})},
+		wantErrs: []string{
+			"gui.quick_menu[0].sprite.idle", "gui.quick_menu[0].sprite.pressed",
+		},
+	}, {
+		name: "unknown sprite keys are rejected",
+		entries: []any{quickMenuSpriteEntry("Help", "help",
+			map[string]any{"idle": idle, "focus": hover})},
+		wantErrs: []string{"gui.quick_menu[0].sprite"},
+	}, {
+		name: "once a button sets a sprite every button needs one",
+		entries: []any{
+			quickMenuSpriteEntry("Help", "help", every),
+			quickMenuEntry("plus", "Open Project", "workspaceopen"),
+			quickMenuSpriteEntry("Settings", "config", every),
+		},
+		want: []QuickMenuButton{
+			{Title: "Help", Command: []string{"help"},
+				Sprite: QuickMenuSprite{Idle: idle, Hover: hover, Pressed: pressed}},
+			{Title: "Settings", Command: []string{"config"},
+				Sprite: QuickMenuSprite{Idle: idle, Hover: hover, Pressed: pressed}},
+		},
+		wantErrs: []string{"gui.quick_menu[1].sprite"},
 	}}
 
 	for _, tc := range tests {
@@ -2199,9 +4364,7 @@ func TestQuickMenuButtons(t *testing.T) {
 			for _, key := range tc.wantErrs {
 				assert.Contains(t, errs, key)
 			}
-			if len(tc.wantErrs) == 0 {
-				assert.Empty(t, errs)
-			}
+			assert.Len(t, errs, len(tc.wantErrs))
 		})
 	}
 }
@@ -2228,6 +4391,40 @@ func TestQuickMenuButtonsMissingSection(t *testing.T) {
 		map[string]any{"gui": map[string]any{}})))
 }
 
+func TestQuickMenuSounds(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		cfg          map[string]any
+		hover, click string
+	}{
+		{name: "unset plays none", cfg: map[string]any{}},
+		{name: "no gui section plays none", cfg: map[string]any{"gui": map[string]any{}}},
+		{
+			name: "both events",
+			cfg: map[string]any{"gui": map[string]any{"quick_menu_sounds": map[string]any{
+				"hover": "tick", "click": "info",
+			}}},
+			hover: "tick", click: "info",
+		},
+		{
+			name: "an event left out plays none",
+			cfg: map[string]any{"gui": map[string]any{"quick_menu_sounds": map[string]any{
+				"click": "success",
+			}}},
+			click: "success",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			hover, click := QuickMenuSounds(config.MapConfig(tc.cfg))
+			assert.Equal(t, tc.hover, hover)
+			assert.Equal(t, tc.click, click)
+		})
+	}
+}
+
 func TestValidateQuickMenuDropsInvalidEntries(t *testing.T) {
 	t.Parallel()
 	cfg := map[string]any{"gui": map[string]any{"quick_menu": []any{
@@ -2242,6 +4439,24 @@ func TestValidateQuickMenuDropsInvalidEntries(t *testing.T) {
 	// reach the native bar.
 	assert.Equal(t, []QuickMenuButton{{Symbol: "plus", Title: "Open Project",
 		Command: []string{"workspaceopen"}}}, QuickMenuButtons(config.MapConfig(cfg)))
+}
+
+func TestValidateQuickMenuKeepsSprites(t *testing.T) {
+	t.Parallel()
+	sprite := map[string]any{"idle": "file:///hud/help.png"}
+	cfg := map[string]any{"gui": map[string]any{"quick_menu": []any{
+		quickMenuSpriteEntry("Help", "help", sprite),
+		quickMenuEntry("plus", "Open Project", "workspaceopen"),
+	}}}
+
+	err := validateQuickMenu(cfg)
+	assert.ErrorContains(t, err, "gui.quick_menu[1].sprite")
+
+	want := []QuickMenuButton{{Title: "Help", Command: []string{"help"},
+		Sprite: QuickMenuSprite{Idle: "file:///hud/help.png",
+			Hover: "file:///hud/help.png", Pressed: "file:///hud/help.png"}}}
+	assert.Equal(t, want, QuickMenuButtons(config.MapConfig(cfg)))
+	assert.NoError(t, validateQuickMenu(cfg), "the neutralised tree must be valid")
 }
 
 func TestValidateQuickMenuAcceptsValidConfig(t *testing.T) {
@@ -2311,4 +4526,145 @@ func TestFileExplorerEditKeyInvalid(t *testing.T) {
 			c.fileExplorerEditKey())
 		assert.Contains(t, c.errors, "editor.file_explorer.edit_key")
 	}
+}
+
+func TestMetaOpenURLConfig(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		cfg           map[string]any
+		wantCommand   string
+		wantClipboard bool
+		wantErr       bool
+	}{
+		{name: "unset", cfg: map[string]any{}},
+		{name: "system", cfg: map[string]any{"meta_open_url": "system"}},
+		{
+			name:          "clipboard",
+			cfg:           map[string]any{"meta_open_url": "clipboard"},
+			wantClipboard: true,
+		},
+		{
+			name:        "command",
+			cfg:         map[string]any{"meta_open_url": "browser $URL"},
+			wantCommand: "browser $URL",
+		},
+		{name: "blank", cfg: map[string]any{"meta_open_url": "  "}, wantErr: true},
+		{name: "not a string", cfg: map[string]any{"meta_open_url": 1}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var opened bool
+			c := ideConfig{cfg: tc.cfg, errors: map[string]error{},
+				systemOpenURL: func(*url.URL) error { opened = true; return nil }}
+
+			got := c.metaOpenURL()
+
+			assert.Equal(t, tc.wantCommand, got.command)
+			assert.Equal(t, tc.wantClipboard, got.clipboard)
+			require.NotNil(t, got.system)
+			require.NoError(t, got.system(&url.URL{}))
+			assert.True(t, opened, "the system opener must be the IDE's")
+			if tc.wantErr {
+				assert.Contains(t, c.errors, "meta_open_url")
+			} else {
+				assert.Empty(t, c.errors)
+			}
+		})
+	}
+}
+
+func TestSearchConfig(t *testing.T) {
+	defaults := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
+	assert.False(t, defaults.workspaceSearch(), "semantic indexing is off by default")
+	assert.True(t, defaults.workspaceRegexSearch(), "regexp indexing remains on by default")
+	assert.Equal(t, llmsearch.DefaultConfig(), defaults.searchConfig())
+
+	c := ideConfig{cfg: map[string]any{
+		"search": map[string]any{
+			"semantic_enabled":    true,
+			"model":               "huggingface.co/acme/encoder-GGUF:Q4_K_M",
+			"code_stretch":        900,
+			"excluded_folders":    []any{"fixtures", "third_party/big"},
+			"excluded_extensions": []any{"sql", "csv"},
+			"idle_timeout":        "45s",
+		},
+	}, errors: map[string]error{}}
+
+	got := c.searchConfig()
+	want := llmsearch.DefaultOptions()
+	want.CodeStretch = 900
+	want.ExcludedFolders = []string{"fixtures", "third_party/big"}
+	want.ExcludedExtensions = []string{"sql", "csv"}
+	want.IdleTimeout = 45 * time.Second
+	assert.Equal(t, llmsearch.Config{
+		Enabled: true,
+		Model:   "huggingface.co/acme/encoder-GGUF:Q4_K_M",
+		Options: want,
+	}, got)
+	assert.True(t, c.workspaceSearch())
+	assert.Empty(t, c.errors)
+
+	empty := ideConfig{cfg: map[string]any{
+		"search": map[string]any{"idle_timeout": ""},
+	}, errors: map[string]error{}}
+	assert.Equal(t, llmsearch.DefaultOptions().IdleTimeout, empty.searchConfig().Options.IdleTimeout,
+		"an empty idle_timeout keeps the built-in default")
+}
+
+func TestWorkspaceSearchIndexingConfig(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		search   map[string]any
+		semantic bool
+		regexp   bool
+	}{
+		{"defaults", nil, false, true},
+		{"regexp enabled", map[string]any{"regex_enabled": true}, false, true},
+		{"semantic disabled", map[string]any{"regex_enabled": true, "semantic_enabled": false}, false, true},
+		{"semantic enabled", map[string]any{"semantic_enabled": true}, true, true},
+		{"semantic only", map[string]any{"regex_enabled": false, "semantic_enabled": true}, true, false},
+		{"all disabled", map[string]any{"regex_enabled": false, "semantic_enabled": false}, false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := ideConfig{cfg: map[string]any{
+				"workspace": map[string]any{"symboldb": true},
+			}, errors: map[string]error{}}
+			if tt.search != nil {
+				c.cfg["search"] = tt.search
+			}
+			assert.Equal(t, tt.semantic, c.workspaceSearch())
+			assert.Equal(t, tt.regexp, c.workspaceRegexSearch())
+			assert.True(t, c.workspaceSymbolDB(), "search settings do not disable symbol indexing")
+			assert.Empty(t, c.errors)
+		})
+	}
+}
+
+func TestSearchConfigInvalidKeepsDefaults(t *testing.T) {
+	tests := []struct {
+		name   string
+		search map[string]any
+		key    string
+	}{
+		{"no model", map[string]any{"model": ""}, "search.model"},
+		{"empty stretches", map[string]any{"code_stretch": 0}, "search.code_stretch"},
+		{"negative stretches", map[string]any{"code_stretch": -5}, "search.code_stretch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.search["semantic_enabled"] = true
+			c := ideConfig{cfg: map[string]any{"search": tt.search}, errors: map[string]error{}}
+			want := llmsearch.DefaultConfig()
+			want.Enabled = true
+			assert.Equal(t, want, c.searchConfig())
+			assert.Contains(t, c.errors, tt.key)
+		})
+	}
+
+	off := ideConfig{cfg: map[string]any{
+		"search": map[string]any{"semantic_enabled": false, "model": ""},
+	}, errors: map[string]error{}}
+	assert.Empty(t, off.searchConfig().Model, "a disabled search needs no model")
+	assert.Empty(t, off.errors)
 }

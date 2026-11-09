@@ -136,6 +136,7 @@ func (m *markdownFlusherCloser) replaceComponent(
 
 	previous := m.component
 	m.handler.SetComponent(next)
+	next.InheritImageSizes(previous)
 	next.Search(searchQuery)
 	next.SeekTo(offset)
 	m.component = next

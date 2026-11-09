@@ -17,13 +17,15 @@
 package main
 
 import (
+	"bytes"
+	_ "embed"
+	"fmt"
 	"image"
+	"image/png"
+	"sync"
 )
 
 //go:generate go run ./logogen
-
-// logo is the default Rune logo used by the single-logo wallpaper.
-var logo image.Image = logoImageBase
 
 const logoThemeDefault = "default"
 
@@ -41,4 +43,71 @@ func logoForTheme(theme string) image.Image {
 		return img
 	}
 	return logoImageBase
+}
+
+var (
+	//go:embed logo_base.gen.png
+	logoPictureBasePNG []byte
+	//go:embed logo_hopper.gen.png
+	logoPictureHopperPNG []byte
+)
+
+// The pictures are the logo art at full resolution, which only the GUI
+// draws, so they are decoded on first use.
+var (
+	logoPictureBase   = sync.OnceValue(func() image.Image { return decodeLogoPicture(logoPictureBasePNG) })
+	logoPictureHopper = sync.OnceValue(func() image.Image { return decodeLogoPicture(logoPictureHopperPNG) })
+)
+
+// logoPictureVariants is logoVariants for the pictures.
+var logoPictureVariants = map[string]func() image.Image{
+	"hopper": logoPictureHopper,
+}
+
+// logoPictureForTheme returns the picture of the logo art logoForTheme
+// returns for theme.
+func logoPictureForTheme(theme string) func() image.Image {
+	if picture, ok := logoPictureVariants[theme]; ok {
+		return picture
+	}
+	return logoPictureBase
+}
+
+var (
+	//go:embed logo_unstable_build.gen.png
+	logoUnstableBuildPNG []byte
+	//go:embed logo_unstable_build_hopper.gen.png
+	logoUnstableBuildHopperPNG []byte
+)
+
+// The Unstable Build logos are only drawn in a terminal, so they are
+// decoded on first use.
+var (
+	logoUnstableBuild = sync.OnceValue(func() image.Image {
+		return decodeLogoPicture(logoUnstableBuildPNG)
+	})
+	logoUnstableBuildHopper = sync.OnceValue(func() image.Image {
+		return decodeLogoPicture(logoUnstableBuildHopperPNG)
+	})
+)
+
+// unstableBuildLogoVariants is logoVariants for the Unstable Build logo.
+var unstableBuildLogoVariants = map[string]func() image.Image{
+	"hopper": logoUnstableBuildHopper,
+}
+
+// unstableBuildLogoForTheme is logoForTheme for the Unstable Build logo.
+func unstableBuildLogoForTheme(theme string) image.Image {
+	if img, ok := unstableBuildLogoVariants[theme]; ok {
+		return img()
+	}
+	return logoUnstableBuild()
+}
+
+func decodeLogoPicture(data []byte) image.Image {
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		panic(fmt.Sprintf("decode embedded logo picture: %v", err))
+	}
+	return img
 }

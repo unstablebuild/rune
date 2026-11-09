@@ -27,6 +27,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/workspace"
 )
 
 // Initializer wires editor open events to project-root discovery and
@@ -73,9 +74,21 @@ func NewInitializer(
 
 // Start subscribes the Initializer to the editor events in
 // cfg.WatchEvents (defaulting to open only). Call it once per workspace.
-// It returns the subscription error, if any.
+// It returns the subscription error, if any. In an in-memory workspace
+// it subscribes to nothing, since no toolchain or language server can
+// run there.
 func (i *Initializer) Start() error {
+	if i.inMemory() {
+		slog.Info("langext: in-memory workspace; skipping project discovery",
+			"lang", i.cfg.LanguageID)
+		return nil
+	}
 	return i.editor.SubscribeEvents(i.watchEvents(), i)
+}
+
+func (i *Initializer) inMemory() bool {
+	uri, err := i.fs.URI(".")
+	return err == nil && workspace.IsInMemoryScheme(uri.Scheme())
 }
 
 // Handle implements textapi.EventHandler. It discovers the project root
@@ -116,13 +129,20 @@ func (i *Initializer) Handle(_ context.Context, ev textapi.Event) bool {
 		return false
 	}
 
-	root, found := FindProjectRoot(i.fs, wsRoot, ev.URI, i.cfg.Markers)
+	root, found := i.findRoot(wsRoot, ev.URI)
 	if !found {
 		i.markUnresolved(ev.Type, dir)
 		return false
 	}
 	i.initializeAsync(i.baseCtx, root)
 	return false
+}
+
+func (i *Initializer) findRoot(wsRoot, uri workspaceapi.URI) (Root, bool) {
+	if i.cfg.Outermost {
+		return FindOutermostProjectRoot(i.fs, wsRoot, uri, i.cfg.Markers)
+	}
+	return FindProjectRoot(i.fs, wsRoot, uri, i.cfg.Markers)
 }
 
 // watchEvents defaults to open-only when cfg.WatchEvents is empty.
@@ -194,9 +214,10 @@ func underDir(path, dir string) bool {
 // bring-up error, deduped against event-driven bring-up. It is used for
 // the workspace-root project on startup. If the root is already
 // initialized or in flight, it returns nil without running InitRoot
-// again.
+// again. In an in-memory workspace it returns nil without running
+// InitRoot at all.
 func (i *Initializer) InitializeAt(ctx context.Context, root Root) error {
-	if !i.claim(root) {
+	if i.inMemory() || !i.claim(root) {
 		return nil
 	}
 	return i.run(ctx, root)

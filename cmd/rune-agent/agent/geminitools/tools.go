@@ -33,9 +33,8 @@ func runCommand(base agent.Tool) agent.Tool {
 		Cwd         string `json:"Cwd"`
 	}
 	type bashArgs struct {
-		Command     string `json:"command"`
-		Description string `json:"description"`
-		WorkingDir  string `json:"working_dir,omitempty"`
+		Command    string `json:"command"`
+		WorkingDir string `json:"working_dir,omitempty"`
 	}
 	translate := func(arguments string) (string, error) {
 		var a antigravityArgs
@@ -43,14 +42,14 @@ func runCommand(base agent.Tool) agent.Tool {
 			return "", err
 		}
 		return remarshal(bashArgs{
-			Command:     a.CommandLine,
-			Description: a.CommandLine,
-			WorkingDir:  a.Cwd,
+			Command:    a.CommandLine,
+			WorkingDir: a.Cwd,
 		})
 	}
 	return &specializedTool{
-		base:      base,
-		translate: translate,
+		base:         base,
+		translate:    translate,
+		runsCommands: true,
 		summarize: func(arguments string) string {
 			var a antigravityArgs
 			if err := json.Unmarshal([]byte(arguments), &a); err != nil {

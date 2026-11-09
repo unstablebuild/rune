@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"slices"
@@ -53,6 +54,11 @@ const (
 	// Google and most other search engines answer with a CAPTCHA.
 	webBrowserUserAgent  = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
 	webBrowserLaunchArgs = "--disable-blink-features=AutomationControlled"
+)
+
+const (
+	untrustedOpen  = "<<<UNTRUSTED_CONTENT>>>"
+	untrustedClose = "<<<END_UNTRUSTED_CONTENT>>>"
 )
 
 // webBrowserCommands are the agent-browser commands that only act on the
@@ -120,30 +126,17 @@ func NewWebBrowser(
 
 // LookupAgentBrowser returns the absolute path agent-browser resolves to
 // on the workspace host's PATH, or an error if it is not installed there.
+// It runs no command, so the user is not asked to approve one.
 func LookupAgentBrowser(ctx context.Context, exec workspaceapi.Executor) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, webBrowserLookupTimeout)
 	defer cancel()
-	var stdout bytes.Buffer
-	watcher := newProcessWatcher()
-	_, err := exec.Start(ctx, workspaceapi.Cmd{
-		Path:    "sh",
-		Args:    []string{"-c", "command -v agent-browser"},
-		Stdout:  &stdout,
-		Stderr:  io.Discard,
-		Watcher: watcher,
-	})
-	if err != nil {
+	bin, err := exec.LookPath(ctx, "agent-browser", "")
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", fmt.Errorf("agent-browser is not on PATH: %w", err)
+	case err != nil:
 		return "", fmt.Errorf("look up agent-browser: %w", err)
 	}
-	select {
-	case err = <-watcher.WatchProcess():
-	case <-ctx.Done():
-		return "", fmt.Errorf("look up agent-browser: %w", ctx.Err())
-	}
-	if err != nil {
-		return "", fmt.Errorf("agent-browser is not on PATH: %w", err)
-	}
-	bin := strings.TrimSpace(stdout.String())
 	if !path.IsAbs(bin) {
 		return "", fmt.Errorf("agent-browser resolved to %q, not an executable path", bin)
 	}
@@ -167,8 +160,7 @@ screenshots.
 Use it to search the web: open
 https://www.google.com/search?q=<url-encoded query>, then read or
 snapshot the results and open the promising ones. Also use it for pages
-that need JavaScript or interaction. To read the text of a known URL,
-web_fetch is cheaper.
+that need JavaScript or interaction.
 
 If a cookie consent dialog covers the page, snapshot -i and click its
 reject or accept button.
@@ -465,6 +457,14 @@ func untrustedOutput(out []byte) string {
 		return "(no output)"
 	}
 	return untrustedOpen + "\n" + sanitizeBoundaries(text) + "\n" + untrustedClose
+}
+
+// sanitizeBoundaries strips boundary markers from page content to prevent
+// escaping the untrusted block.
+func sanitizeBoundaries(content string) string {
+	s := strings.ReplaceAll(content, untrustedOpen, "")
+	s = strings.ReplaceAll(s, untrustedClose, "")
+	return s
 }
 
 func webBrowserError(msg string) agent.ToolResult {

@@ -97,6 +97,24 @@ func promptFromProto(p *pkgrpcpb.Prompt) idepkg.ConfigPrompt {
 	}
 }
 
+func requirementToProto(c idepkg.RequirementChange) *pkgrpcpb.Requirement {
+	return &pkgrpcpb.Requirement{
+		Package:    c.Package,
+		From:       string(c.From),
+		To:         string(c.To),
+		RequiredBy: c.RequiredBy,
+	}
+}
+
+func requirementFromProto(r *pkgrpcpb.Requirement) idepkg.RequirementChange {
+	return idepkg.RequirementChange{
+		Package:    r.GetPackage(),
+		From:       release.Version(r.GetFrom()),
+		To:         release.Version(r.GetTo()),
+		RequiredBy: r.GetRequiredBy(),
+	}
+}
+
 // timeToProto keeps a zero time zero across the wire.
 func timeToProto(t time.Time) *timestamppb.Timestamp {
 	if t.IsZero() {

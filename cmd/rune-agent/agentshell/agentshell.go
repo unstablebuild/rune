@@ -47,6 +47,7 @@ import (
 	"unstable.build/rune/cmd/rune-agent/llm/llmarg"
 	"unstable.build/rune/cmd/rune-agent/mcp"
 	"unstable.build/rune/internal/component/markdown"
+	"unstable.build/rune/internal/debug"
 	mdhandler "unstable.build/rune/internal/handler/markdown"
 	"unstable.build/rune/internal/workspace/walkdir"
 )
@@ -57,9 +58,28 @@ var ErrExit = errors.New("exit")
 
 const compactModelAlias = "compact"
 
-// MCPInfo provides a snapshot of MCP server state.
+// MCPInfo provides the state of the MCP servers and the commands that
+// manage them.
 type MCPInfo interface {
 	Servers() []*mcp.ServerInfo
+	// Login signs in to a remote server through the browser. out
+	// receives the URL of the sign-in page before the browser opens it,
+	// and is not called when the server connects without signing in.
+	// Login returns once the server is connected with the new sign-in,
+	// or when ctx ends.
+	Login(ctx context.Context, name string, out func(url string)) error
+	// CompleteLogin finishes the sign-in under way for the server with
+	// the address the browser was redirected to, for when the redirect
+	// cannot reach Rune.
+	CompleteLogin(name, redirectURL string) error
+	// Logout forgets the server's sign-in and disconnects it.
+	Logout(ctx context.Context, name string) error
+	// Reconnect connects the server again. The name "all" reconnects
+	// every server that failed or needs sign-in.
+	Reconnect(ctx context.Context, name string) error
+	// Trust asks the user again whether to trust a server the
+	// workspace declares, and connects it if the user does.
+	Trust(ctx context.Context, name string) error
 }
 
 // Option configures the shell.
@@ -244,7 +264,18 @@ var commandManual = textapi.CommandManual{
 		{Name: "effort", Summary: "Show or set default reasoning effort.", Synopsis: "[none|minimal|low|medium|high|xhigh|max]"},
 		{Name: "exit", Summary: "Exit the shell."},
 		{Name: "help", Summary: "Show usage for agent commands.", Synopsis: "[<command>...]"},
-		{Name: "mcp", Summary: "Show MCP server status and tool stats."},
+		{
+			Name:     "mcp",
+			Summary:  "Show MCP server status and sign in, trust or reconnect servers.",
+			Synopsis: "[list|login|logout|reconnect|trust] [<args>]",
+			Commands: []textapi.CommandManual{
+				{Name: "list", Summary: "Show MCP server status and tool stats. The default."},
+				{Name: "login", Summary: "Sign in to a remote MCP server through the browser. --callback finishes a sign-in whose redirect could not reach Rune.", Synopsis: "<name> [--callback <redirect-url>]"},
+				{Name: "logout", Summary: "Forget the sign-in of a remote MCP server and disconnect it.", Synopsis: "<name>"},
+				{Name: "reconnect", Summary: "Connect an MCP server again, or every failed one.", Synopsis: "<name>|all"},
+				{Name: "trust", Summary: "Review an MCP server the workspace declares and connect it if you trust it.", Synopsis: "<name>"},
+			},
+		},
 		{Name: "max_tokens", Summary: "Show or set the global max output tokens config value.", Synopsis: "[<tokens>]"},
 		{Name: "model", Summary: "Show the default model or a conversation's assigned model.", Synopsis: "[<dialogue_id>]"},
 		{Name: "models", Summary: "List available models with context window sizes."},
@@ -401,7 +432,7 @@ func (s *shell) handleCommand(
 	case "agents":
 		return s.listAgents(), nil
 	case "mcp":
-		return s.listMCPServers(), nil
+		return s.handleMCP(ctx, cmd.Args)
 	case "max_tokens":
 		return s.handleMaxTokens(cmd.Args)
 	case "system-prompt":
@@ -546,6 +577,8 @@ func (s *shell) Complete(
 		return s.completeSkills(ctx, args)
 	case "chats":
 		return s.completeChats(ctx, args)
+	case "mcp":
+		return s.completeMCP(args), nil
 	}
 
 	if len(args) > 1 {
@@ -658,24 +691,150 @@ func (s *shell) listAgents() iterator.Iterator[component.Responsive] {
 	return markdownOutput(b.String())
 }
 
+const mcpUsage = "usage: mcp [list|login <name> [--callback <redirect-url>]|logout <name>|reconnect <name|all>|trust <name>]"
+
+func (s *shell) handleMCP(
+	ctx context.Context, args []string,
+) (iterator.Iterator[component.Responsive], error) {
+	if len(args) == 0 || (len(args) == 1 && args[0] == "list") {
+		return s.listMCPServers(), nil
+	}
+	if s.mcpInfo == nil {
+		return nil, errors.New("no MCP servers configured")
+	}
+	switch args[0] {
+	case "login":
+		switch {
+		case len(args) == 2:
+			return s.mcpLogin(ctx, args[1]), nil
+		case len(args) == 4 && args[2] == "--callback":
+			if err := s.mcpInfo.CompleteLogin(args[1], args[3]); err != nil {
+				return nil, err
+			}
+			return markdownOutput(fmt.Sprintf("Finishing the sign-in to **%s**.", args[1])), nil
+		}
+		return nil, errors.New("usage: mcp login <name> [--callback <redirect-url>]")
+	case "logout":
+		if len(args) != 2 {
+			return nil, errors.New("usage: mcp logout <name>")
+		}
+		if err := s.mcpInfo.Logout(ctx, args[1]); err != nil {
+			return nil, err
+		}
+		return markdownOutput(fmt.Sprintf("Signed out of **%s**.", args[1])), nil
+	case "reconnect":
+		if len(args) != 2 {
+			return nil, errors.New("usage: mcp reconnect <name|all>")
+		}
+		if err := s.mcpInfo.Reconnect(ctx, args[1]); err != nil {
+			return nil, err
+		}
+		if args[1] == "all" {
+			return s.listMCPServers(), nil
+		}
+		return markdownOutput(s.mcpConnected(args[1])), nil
+	case "trust":
+		if len(args) != 2 {
+			return nil, errors.New("usage: mcp trust <name>")
+		}
+		if err := s.mcpInfo.Trust(ctx, args[1]); err != nil {
+			return nil, err
+		}
+		return markdownOutput(s.mcpConnected(args[1])), nil
+	default:
+		return nil, errors.New(mcpUsage)
+	}
+}
+
+// mcpLogin streams a sign-in: first where to sign in, then its outcome.
+// Closing the iterator abandons the sign-in.
+func (s *shell) mcpLogin(ctx context.Context, name string) iterator.Iterator[component.Responsive] {
+	ctx, cancel := context.WithCancel(ctx)
+	urls := make(chan string, 1)
+	done := make(chan error, 1)
+	go debug.CapturePanicReport(func() {
+		done <- s.mcpInfo.Login(ctx, name, func(u string) {
+			select {
+			case urls <- u:
+			default:
+			}
+		})
+	})
+	var signingIn, finished bool
+	signInPage := func(u string) component.Responsive {
+		signingIn = true
+		return markdownResponsive(fmt.Sprintf(
+			"Opening your browser to sign in to **%s**… If it doesn't open, visit:\n\n<%s>\n\n"+
+				"If the browser cannot reach Rune after you approve, copy the address it ends on "+
+				"and run `agent mcp login %s --callback <address>`.", name, u, name))
+	}
+	return iterator.FromFunc(
+		func(nextCtx context.Context) (component.Responsive, bool, error) {
+			if finished {
+				return nil, false, nil
+			}
+			// The sign-in page comes before the outcome, even when both
+			// are ready.
+			select {
+			case u := <-urls:
+				return signInPage(u), true, nil
+			default:
+			}
+			select {
+			case u := <-urls:
+				return signInPage(u), true, nil
+			case err := <-done:
+				finished = true
+				if err != nil {
+					return nil, false, err
+				}
+				if signingIn {
+					return markdownResponsive(fmt.Sprintf("Signed in to **%s**: %d tools available.",
+						name, s.mcpToolCount(name))), true, nil
+				}
+				return markdownResponsive(s.mcpConnected(name)), true, nil
+			case <-nextCtx.Done():
+				return nil, false, nextCtx.Err()
+			}
+		},
+		func() error {
+			cancel()
+			if !finished {
+				finished = true
+				<-done
+			}
+			return nil
+		},
+	)
+}
+
+func (s *shell) mcpConnected(name string) string {
+	return fmt.Sprintf("**%s** is connected: %d tools available.", name, s.mcpToolCount(name))
+}
+
+func (s *shell) mcpToolCount(name string) int {
+	for _, srv := range s.mcpInfo.Servers() {
+		if srv.Name == name {
+			return srv.ToolCount
+		}
+	}
+	return 0
+}
+
 func (s *shell) listMCPServers() iterator.Iterator[component.Responsive] {
 	if s.mcpInfo == nil {
 		return markdownOutput("*(no MCP servers configured)*")
 	}
+	return markdownOutput(formatMCPServers(s.mcpInfo.Servers(), time.Now()))
+}
 
-	servers := s.mcpInfo.Servers()
+func formatMCPServers(servers []*mcp.ServerInfo, now time.Time) string {
 	if len(servers) == 0 {
-		return markdownOutput("*(no MCP servers configured)*")
+		return "*(no MCP servers configured)*"
 	}
-
 	var b strings.Builder
 	b.WriteString("## MCP Servers\n\n")
 	for _, srv := range servers {
-		status := string(srv.Status)
-		if srv.Status == mcp.StatusError && srv.Error != "" {
-			status = "error: " + srv.Error
-		}
-
 		var callCount, errorCount int64
 		for _, name := range srv.ToolNames {
 			if ts := srv.ToolStats(name); ts != nil {
@@ -685,17 +844,51 @@ func (s *shell) listMCPServers() iterator.Iterator[component.Responsive] {
 		}
 
 		fmt.Fprintf(&b, "### %s\n\n", srv.Name)
-		fmt.Fprintf(&b, "- Status: %s\n", status)
-		fmt.Fprintf(&b, "- Command: `%s`\n", srv.Command)
+		fmt.Fprintf(&b, "- Status: %s\n", mcpStatus(srv))
+		if srv.Transport != "" {
+			fmt.Fprintf(&b, "- Transport: %s\n", srv.Transport)
+		}
+		if srv.URL != "" {
+			fmt.Fprintf(&b, "- URL: `%s`\n", srv.URL)
+		} else {
+			fmt.Fprintf(&b, "- Command: `%s`\n", srv.Command)
+		}
+		if srv.ServerName != "" {
+			server := srv.ServerName
+			if srv.ServerVersion != "" {
+				server += " " + srv.ServerVersion
+			}
+			fmt.Fprintf(&b, "- Server: %s\n", server)
+		}
+		if srv.ProtocolVersion != "" {
+			fmt.Fprintf(&b, "- Protocol: %s\n", srv.ProtocolVersion)
+		}
 		fmt.Fprintf(&b, "- Tools: %d\n", srv.ToolCount)
 		fmt.Fprintf(&b, "- Calls: %d, Errors: %d\n", callCount, errorCount)
-
 		if srv.Status == mcp.StatusConnected && !srv.ConnectedAt.IsZero() {
-			fmt.Fprintf(&b, "- Uptime: %s\n", formatDuration(time.Since(srv.ConnectedAt)))
+			fmt.Fprintf(&b, "- Uptime: %s\n", formatDuration(now.Sub(srv.ConnectedAt)))
+		}
+		for _, w := range srv.Warnings {
+			fmt.Fprintf(&b, "- Warning: %s\n", w)
 		}
 		b.WriteByte('\n')
 	}
-	return markdownOutput(b.String())
+	return b.String()
+}
+
+func mcpStatus(srv *mcp.ServerInfo) string {
+	switch srv.Status {
+	case mcp.StatusError:
+		if srv.Error != "" {
+			return "error: " + srv.Error
+		}
+	case mcp.StatusNeedsAuth:
+		if srv.Error != "" {
+			return srv.Error
+		}
+		return fmt.Sprintf("needs sign-in: run `agent mcp login %s`", srv.Name)
+	}
+	return string(srv.Status)
 }
 
 func (s *shell) listConversations(
@@ -748,13 +941,8 @@ func (s *shell) showHistory(
 	}
 	mdh := mdhandler.New(md)
 
-	var win browserapi.Window
-	bhandler := browserapi.FuncHandler(mdh, func() error {
-		return s.wm.CloseWindow(win)
-	})
-	floating := browserapi.FuncFloating(bhandler, mdh.Dimensions)
-
-	win, err = s.wm.Floating(floating, browserapi.FloatingConfig{
+	floating := browserapi.FuncFloating(browserapi.FuncHandler(mdh, mdh.Close), mdh.Dimensions)
+	_, err = s.wm.Floating(floating, browserapi.FloatingConfig{
 		Alignment: component.AlignmentCentered,
 	})
 	if err != nil {
@@ -849,13 +1037,8 @@ func (s *shell) showAudit(
 	}
 	mdh := mdhandler.New(md)
 
-	var win browserapi.Window
-	bhandler := browserapi.FuncHandler(mdh, func() error {
-		return s.wm.CloseWindow(win)
-	})
-	floating := browserapi.FuncFloating(bhandler, mdh.Dimensions)
-
-	win, err = s.wm.Floating(floating, browserapi.FloatingConfig{
+	floating := browserapi.FuncFloating(browserapi.FuncHandler(mdh, mdh.Close), mdh.Dimensions)
+	_, err = s.wm.Floating(floating, browserapi.FloatingConfig{
 		Alignment: component.AlignmentCentered,
 	})
 	if err != nil {
@@ -1276,13 +1459,8 @@ func (s *shell) showSkill(name string) (iterator.Iterator[component.Responsive],
 	}
 	mdh := mdhandler.New(md)
 
-	var win browserapi.Window
-	bhandler := browserapi.FuncHandler(mdh, func() error {
-		return s.wm.CloseWindow(win)
-	})
-	floating := browserapi.FuncFloating(bhandler, mdh.Dimensions)
-
-	win, err = s.wm.Floating(floating, browserapi.FloatingConfig{
+	floating := browserapi.FuncFloating(browserapi.FuncHandler(mdh, mdh.Close), mdh.Dimensions)
+	_, err = s.wm.Floating(floating, browserapi.FloatingConfig{
 		Alignment: component.AlignmentCentered,
 	})
 	if err != nil {
@@ -1410,6 +1588,32 @@ func (s *shell) completeAgentIDs() iterator.Iterator[string] {
 }
 
 // --- skills tab completion ---
+
+var mcpSubcommands = []string{"list", "login", "logout", "reconnect", "trust"}
+
+func (s *shell) completeMCP(args []string) iterator.Iterator[string] {
+	switch len(args) {
+	case 1:
+		return iterator.FromSlice(filterNames(mcpSubcommands, args[0]))
+	case 2:
+		if args[0] == "list" || !slices.Contains(mcpSubcommands, args[0]) || s.mcpInfo == nil {
+			break
+		}
+		var names []string
+		if args[0] == "reconnect" {
+			names = append(names, "all")
+		}
+		for _, srv := range s.mcpInfo.Servers() {
+			names = append(names, srv.Name)
+		}
+		return iterator.FromSlice(filterNames(names, args[1]))
+	case 3:
+		if args[0] == "login" {
+			return iterator.FromSlice(filterNames([]string{"--callback"}, args[2]))
+		}
+	}
+	return iterator.FromSlice[string](nil)
+}
 
 func (s *shell) completeSkills(ctx context.Context, args []string) (iterator.Iterator[string], error) {
 	if len(args) == 1 {
@@ -1868,13 +2072,16 @@ func mdConfig() markdown.Config {
 }
 
 func markdownOutput(content string) iterator.Iterator[component.Responsive] {
+	return iterator.FromSlice([]component.Responsive{markdownResponsive(content)})
+}
+
+func markdownResponsive(content string) component.Responsive {
 	cfg := mdConfig()
 	md, err := markdown.NewWithConfig(content, cfg)
 	if err != nil {
-		r := component.NewResponsiveString(content, component.StringResponsiveConfig{})
-		return iterator.FromSlice([]component.Responsive{r})
+		return component.NewResponsiveString(content, component.StringResponsiveConfig{})
 	}
-	return iterator.FromSlice([]component.Responsive{md})
+	return md
 }
 
 func configValue(cfg configedit.Getter, key string) string {

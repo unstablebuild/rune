@@ -1,0 +1,12 @@
+go test fuzz v1
+[]byte("0B0")
+int(3074457345618258602)
+int(9223372036854775807)
+uint64(0)
+byte('\x02')
+int(74)
+bool(true)
+bool(true)
+byte('\x00')
+uint32(26)
+float64(0)

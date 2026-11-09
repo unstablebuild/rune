@@ -40,8 +40,9 @@ import (
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idelsp/languages"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
 	"unstable.build/rune/internal/ide/syntax/treesitter"
@@ -261,13 +262,16 @@ func newGUIBenchSession(tb testing.TB, cfg guiBenchConfig) *guiBenchSession {
 		tb.Fatalf("load config: %v", err)
 	}
 
+	soundOutput := gui.NewSounds()
+	soundOutput.SetMuted(true)
 	root, err := newBootstrapHandler(
-		s.dataDir, configPath, s.workDir, "" /* shellRCDir */, files,
+		s.dataDir, configPath, s.workDir, "", /* shellRCDir */
+		hostenv.New(s.dataDir, ""), files,
 		nil /* launchCmd */, ide.FuncExtensionsRunner(testE2EExtensionsRunner),
-		s.mu, publishEvent, cellPixelSize, nil, /* setAltModifier */
-		func(*url.URL) error { return nil }, clipboard.NewInMemory(),
+		s.mu, publishEvent, cellPixelSize,
+		func(*url.URL) error { return nil }, clipboard.NewInMemory(), soundOutput,
 		s.dataDir /* installBackupDir */, rootCfg,
-		pkgtrust.NewStore(s.dataDir, nil),
+		pkgtrust.NewStore(),
 	)
 	if err != nil {
 		tb.Fatalf("new bootstrap handler: %v", err)
@@ -296,7 +300,7 @@ func newGUIBenchSession(tb testing.TB, cfg guiBenchConfig) *guiBenchSession {
 	// so every font load resolves against scale 1 regardless of the
 	// host monitor. Everything after mirrors runGUI exactly.
 	options := []gui.Option{gui.WithDeviceScale(1)}
-	options = append(options, buildGUIOptions(browser, guiCfg,
+	options = append(options, buildGUIOptions(browser, root.config(), guiCfg,
 		transparentWindow, s.mu, false)...)
 	options = append(options, gui.WithSize(cfg.pixelsW, cfg.pixelsH))
 	if cfg.forceFullRepaint {

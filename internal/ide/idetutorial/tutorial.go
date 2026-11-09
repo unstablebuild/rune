@@ -19,6 +19,7 @@
 package idetutorial
 
 import (
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
@@ -29,7 +30,12 @@ import (
 type PromptStyle struct {
 	TextAttr       term.Attributes
 	HighlightAttr  term.Attributes
+	HoverAttr      term.Attributes
+	ClickedAttr    term.Attributes
 	BackgroundAttr term.Attributes
+	// ButtonImages, when set, are drawn under the buttons in place of
+	// their background, as under the IDE's prompts.
+	ButtonImages *component.ButtonImages
 }
 
 // Tutorial is the in-process state machine driving a single tutorial

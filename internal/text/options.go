@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/url"
 	"path/filepath"
 	"time"
 
@@ -32,11 +33,15 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/markdown"
+	"unstable.build/rune/internal/component/shader/shaderloop"
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/idelsp/languages"
 	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/sounds"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/text/cmdenv"
 )
 
@@ -90,6 +95,11 @@ type Config struct {
 	// commands. It is injected rather than linked so that editors which
 	// never parse files build without the parser's cgo dependencies.
 	SyntaxTree syntax.NewTreeFunc
+	// SyntaxParse parses the syntax tree of a StreamingOpen file tab on
+	// its load worker, so the tab installs a tree that is already parsed
+	// instead of one SyntaxTree parses on the event loop. When nil,
+	// streamed tabs install their tree through SyntaxTree.
+	SyntaxParse syntax.ParseTreeFunc
 	// SwapDirectory reports the directory holding file's swap entry,
 	// named after the full path of the file it backs. It is asked per
 	// file because one editor opens files on many hosts, and a
@@ -98,9 +108,22 @@ type Config struct {
 	SwapDirectory func(file workspaceapi.URI) string
 	PkgManager    syntax.PkgManager
 	Markdown      markdown.Config
-	Clipboard     clipboard.Register
-	OpenRouter    OpenRouter
-	Comments      CommentConfig
+	// MarkdownImageStorage, when set, shows the images of markdown view
+	// tabs, and caches the https images they download in it. It is used
+	// as-is: the caller owns its partitioning and lifetime. When nil,
+	// markdown view tabs show alt text in place of images.
+	MarkdownImageStorage storageapi.Service
+	Clipboard            clipboard.Register
+	OpenRouter           OpenRouter
+	Comments             CommentConfig
+	// OnLinkClick handles a link clicked in a markdown tab or in the
+	// message of a prompt, and reports whether it did. Links it
+	// declines in a markdown tab, or every link there when it is nil,
+	// only scroll to the in-document anchors they name; the links of
+	// prompts are plain text when it is nil.
+	OnLinkClick func(*url.URL) bool
+	// OpenURL opens the URIs Show does not open in a tab.
+	OpenURL func(*url.URL) error
 	// StreamingOpen enables the async streaming file-open path.
 	// When true, OpenFileTab returns a lightweight read-only
 	// streaming handler immediately and runs workspace.Load on a
@@ -470,6 +493,14 @@ func WithSyntaxTree(fn syntax.NewTreeFunc) Option {
 	}
 }
 
+// WithSyntaxParse returns an Option that sets the function parsing the
+// syntax tree of streamed file tabs. See Config.SyntaxParse.
+func WithSyntaxParse(fn syntax.ParseTreeFunc) Option {
+	return func(cfg *Config) {
+		cfg.SyntaxParse = fn
+	}
+}
+
 // WithSwapDirectory returns an Option that sets the resolver for the
 // directory holding swap entries. See Config.SwapDirectory.
 func WithSwapDirectory(resolve func(file workspaceapi.URI) string) Option {
@@ -482,6 +513,13 @@ func WithSwapDirectory(resolve func(file workspaceapi.URI) string) Option {
 func WithMarkdownConfig(markdown markdown.Config) Option {
 	return func(cfg *Config) {
 		cfg.Markdown = markdown
+	}
+}
+
+// WithMarkdownImageStorage sets Config.MarkdownImageStorage.
+func WithMarkdownImageStorage(storage storageapi.Service) Option {
+	return func(cfg *Config) {
+		cfg.MarkdownImageStorage = storage
 	}
 }
 
@@ -660,6 +698,40 @@ func WithFocusTabHighlightChar(r rune) Option {
 	}
 }
 
+// WithTabImages returns an Option that names the images drawn under the
+// tabs, as browser.Config.TabImages does.
+func WithTabImages(images browser.PromptImages) Option {
+	return func(cfg *Config) {
+		cfg.TabImages = images
+	}
+}
+
+// WithFocusTabHighlightGraphics returns an Option that names the images
+// drawn over the highlight on top of the focused tab, as
+// browser.Config.FocusTabHighlightGraphics does.
+func WithFocusTabHighlightGraphics(g tcomponent.LineGraphics) Option {
+	return func(cfg *Config) {
+		cfg.FocusTabHighlightGraphics = g
+	}
+}
+
+// WithHoverTabAttr returns an Option that configures the attributes of
+// the tab under the pointer, as browser.Config.HoverTabAttr does.
+func WithHoverTabAttr(attr term.Attributes) Option {
+	return func(cfg *Config) {
+		cfg.HoverTabAttr = attr
+	}
+}
+
+// WithTabSounds returns an Option that names the sounds the tabs play
+// through player, as browser.Config.TabSounds does.
+func WithTabSounds(names handler.TabSounds, player sounds.Player) Option {
+	return func(cfg *Config) {
+		cfg.TabSounds = names
+		cfg.SoundPlayer = player
+	}
+}
+
 // WithTabOverrideIcon returns an Option that forces every tab icon
 // rendered by the browser to r. A zero rune disables the override and
 // keeps the per-source icons supplied by callers of NewTab.
@@ -728,22 +800,55 @@ func WithDirtyTabAttr(attr term.Attributes) Option {
 }
 
 // WithActiveTabShader defines the continuous effect run over the labels
-// of tabs marked active via SetTabActivity, and its cadence. An empty
-// name disables it; zero fps or loop keep the catalog defaults.
-func WithActiveTabShader(name string, fps int, loop time.Duration) Option {
+// of tabs whose program reported working via SetTabStatus, and its
+// cadence, colour and strength. An empty name disables it; zero fps,
+// loop or params keep the catalog defaults.
+func WithActiveTabShader(
+	name string, fps int, loop time.Duration, params shaderloop.Params,
+) Option {
 	return func(cfg *Config) {
 		cfg.ActiveTabShader = name
 		cfg.ActiveTabShaderFPS = fps
 		cfg.ActiveTabShaderLoop = loop
+		cfg.ActiveTabShaderParams = params
 	}
 }
 
-// WithOnTabActivity registers fn to be called on the host event loop
-// whenever a tab's activity changes, including when an active tab is
-// removed.
-func WithOnTabActivity(fn func()) Option {
+// WithTabStatusConfig styles the tab decorations that reflect the
+// status a tab's program reported via SetTabStatus.
+func WithTabStatusConfig(c browser.TabStatusConfig) Option {
 	return func(cfg *Config) {
-		cfg.OnTabActivity = fn
+		cfg.TabStatus = c
+	}
+}
+
+// WithOnTabStatus registers fn to be called on the host event loop
+// whenever a tab's status changes, with the status the tab had before
+// and the one it has now. A tab removed with a status reports a change
+// to idle.
+func WithOnTabStatus(
+	fn func(uri workspaceapi.URI, prev, status programstatus.Summary),
+) Option {
+	return func(cfg *Config) {
+		cfg.OnTabStatus = fn
+	}
+}
+
+// WithOnTabRemoved registers fn to be called on the host event loop
+// once a tab is removed, before WithOnTabStatus reports the loss of its
+// status, if it had one.
+func WithOnTabRemoved(fn func(uri workspaceapi.URI)) Option {
+	return func(cfg *Config) {
+		cfg.OnTabRemoved = fn
+	}
+}
+
+// WithOnContentSeen registers fn to be called on the host event loop
+// each time the user comes to see the focus window, with what it shows,
+// as browser.Config.OnContentSeen describes.
+func WithOnContentSeen(fn func(content browserapi.Handler)) Option {
+	return func(cfg *Config) {
+		cfg.OnContentSeen = fn
 	}
 }
 
@@ -801,6 +906,20 @@ func WithEventPublisher(f func(term.Event) bool) Option {
 func WithOpenRouter(r OpenRouter) Option {
 	return func(cfg *Config) {
 		cfg.OpenRouter = r
+	}
+}
+
+// WithOnLinkClick sets Config.OnLinkClick.
+func WithOnLinkClick(fn func(*url.URL) bool) Option {
+	return func(cfg *Config) {
+		cfg.OnLinkClick = fn
+	}
+}
+
+// WithOpenURL sets Config.OpenURL.
+func WithOpenURL(fn func(*url.URL) error) Option {
+	return func(cfg *Config) {
+		cfg.OpenURL = fn
 	}
 }
 

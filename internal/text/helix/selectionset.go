@@ -172,6 +172,11 @@ func (h *helixHandlerImpl) setSelection(s selection) {
 	s = s.transform(func(r rng) rng {
 		r.anchor = clampDoc(buf, r.anchor)
 		r.head = clampDoc(buf, r.head)
+		// The end of the document is one position however it is
+		// written, so a range between its two forms is empty.
+		if docEOF(buf, r.anchor) == docEOF(buf, r.head) {
+			r.anchor = r.head
+		}
 		return r
 	})
 	if len(s.ranges) == 0 {
@@ -216,12 +221,11 @@ func (h *helixHandlerImpl) ensureInvariants(s selection) selection {
 		return s
 	}
 	buf := h.buf()
-	rows := buf.Rows()
 	return s.transform(func(r rng) rng {
 		if !r.isPoint() {
 			return r
 		}
-		if next, ok := nextPos(buf, r.head); ok && (next.Y == r.head.Y || next.Y < rows) {
+		if next, ok := nextPos(buf, r.head); ok {
 			r.head = next
 		}
 		return r
@@ -260,7 +264,7 @@ func (h *helixHandlerImpl) markSecondaries() {
 			continue
 		}
 		sels = append(sels, rowLocations(buf, r, term.Attributes{Attrs: term.AttrReverse})...)
-		c := clampCell(buf, r.cursor(buf))
+		c := clampInsert(buf, r.cursor(buf))
 		carets = append(carets, textapi.Location{
 			From: c, To: term.Coordinates{X: c.X + 1, Y: c.Y},
 			Attr: term.Attributes{Attrs: term.AttrReverse | term.AttrDim},
@@ -352,11 +356,15 @@ func (h *helixHandlerImpl) anchorClamped() bool {
 
 // docTo maps the far edge of a cell selection into document space. The
 // cursor reports it one column past the caret, which for a caret on the
-// line-ending slot lands past the last position the row has; that edge
-// is the line ending itself, so the range covers no more than the row.
+// line-ending slot lands past the last position the row has: the range
+// covers that line ending and ends at the next row's start. The last row
+// has no line ending, so there it ends at the end of the document.
 func docTo(buf *cell.Buffer, to term.Coordinates) term.Coordinates {
 	if to.Y < 0 || to.Y >= buf.Rows() || to.X <= buf.Columns(to.Y) {
 		return to
+	}
+	if to.Y < buf.Rows()-1 {
+		return term.Coordinates{Y: to.Y + 1}
 	}
 	return term.Coordinates{X: buf.Columns(to.Y), Y: to.Y}
 }
@@ -373,15 +381,15 @@ func lineShaped(r rng) bool {
 // costs nothing on the common path. In insert mode the cursor holds no
 // selection and the caret sits on the range's cursor, which is where
 // Helix inserts. Outside insert mode a point is the one-cell selection
-// anchored where the caret is, line-ending slot included: the next
-// event's bounds correction clamps it, as it does for a caret the IDE
-// parks there.
+// anchored where the caret is. Either way the caret sits on the range's
+// cursor character, which may be a line ending or the end of the
+// document, as Helix draws its block cursor there.
 func (h *helixHandlerImpl) installRange(r rng) {
 	buf := h.buf()
 	if buf.Rows() == 0 {
 		return
 	}
-	anchor, head := r.anchor, r.head
+	head := r.head
 	var anchorCell, caret term.Coordinates
 	mode := text.StandardSelection
 	switch {
@@ -394,29 +402,21 @@ func (h *helixHandlerImpl) installRange(r rng) {
 		h.cursor.MoveToScroll(caret)
 		return
 	case r.isPoint():
-		anchorCell = clampCell(buf, head)
+		anchorCell = clampInsert(buf, head)
 		caret = anchorCell
 	case lineShaped(r):
 		mode = text.LineSelection
-		first, last := r.from().Y, r.to().Y-1
-		lastCell := clampCell(buf, term.Coordinates{X: buf.Columns(last), Y: last})
+		first := r.from().Y
+		lastCell := clampInsert(buf, rng{anchor: r.from(), head: r.to()}.cursor(buf))
 		if r.backward() {
 			anchorCell, caret = lastCell, term.Coordinates{Y: first}
 		} else {
 			anchorCell, caret = term.Coordinates{Y: first}, lastCell
 		}
-	case coordinatesBefore(anchor, head):
-		last, ok := prevPos(buf, head)
-		if !ok {
-			last = anchor
-		}
-		anchorCell, caret = clampCell(buf, anchor), clampCell(buf, last)
+	case r.backward():
+		anchorCell, caret = clampInsert(buf, r.flipped().cursor(buf)), clampInsert(buf, head)
 	default:
-		first, ok := prevPos(buf, anchor)
-		if !ok {
-			first = head
-		}
-		anchorCell, caret = clampCell(buf, first), clampCell(buf, head)
+		anchorCell, caret = clampInsert(buf, r.anchor), clampInsert(buf, r.cursor(buf))
 	}
 	if h.cursorHolds(mode, anchorCell, caret) {
 		return
@@ -444,7 +444,8 @@ func (h *helixHandlerImpl) cursorHolds(mode text.SelectMode, anchor, caret term.
 }
 
 // clampInsert clamps a document position onto the cells the caret can
-// occupy in insert mode, which includes the slot past the last cell.
+// occupy, which include the slot past a row's last cell: its line
+// ending, or the end of the document on the last row.
 func clampInsert(buf *cell.Buffer, pos term.Coordinates) term.Coordinates {
 	rows := buf.Rows()
 	if rows == 0 {
@@ -465,11 +466,7 @@ func (h *helixHandlerImpl) clampCursor() {
 	if !h.config.cursorCorrections {
 		return
 	}
-	if h.mode() == insertMode {
-		h.cursor.MoveToBounds(1)
-		return
-	}
-	h.cursor.MoveToBounds(0)
+	h.cursor.MoveToBounds(1)
 }
 
 // --- fan-out ---
@@ -642,32 +639,26 @@ func (h *helixHandlerImpl) applyEdits(edits []edit) ([]rng, changeSet) {
 }
 
 // fragmentsData is the register value for the whole selection set:
-// the text under every range, linewise when the primary is.
+// the text under every range, linewise when the primary covers whole
+// lines through a line ending, which is when Helix pastes it as lines.
 func (h *helixHandlerImpl) fragmentsData() clipboard.Data {
+	frags := h.sel.fragments(h.buf())
 	mode := text.StandardSelection
-	if lineShaped(h.sel.primaryRange()) {
+	if lineShaped(h.sel.primaryRange()) && strings.HasSuffix(frags[h.sel.primary], "\n") {
 		mode = text.LineSelection
 	}
-	return registerData(mode, h.sel.fragments(h.buf()))
+	return registerData(mode, frags)
 }
 
 // deleteEdits is delete_by_selection: one deletion per range that
-// covers anything. A range over the empty row past the final line
-// ending has no text of its own and takes the line ending before it,
-// which is the row the cursor was really on.
+// covers anything.
 func (h *helixHandlerImpl) deleteEdits() []edit {
-	buf := h.buf()
-	rows := buf.Rows()
 	edits := make([]edit, 0, h.sel.len())
 	for _, r := range h.sel.ranges {
 		if r.isPoint() {
 			continue
 		}
-		from, to := r.from(), r.to()
-		if to == docEnd(buf) && from.Y == rows-1 && from.X == 0 && rows > 1 && buf.Columns(from.Y) == 0 {
-			from = term.Coordinates{X: buf.Columns(from.Y - 1), Y: from.Y - 1}
-		}
-		edits = append(edits, edit{from: from, to: to})
+		edits = append(edits, edit{from: r.from(), to: r.to()})
 	}
 	return edits
 }

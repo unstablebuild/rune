@@ -40,6 +40,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/extension/langext/langexttest"
+	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/walkdir"
 )
 
@@ -48,11 +49,12 @@ func TestFindProjectRoot(t *testing.T) {
 	markers := []string{"pyproject.toml", ".venv"}
 
 	cases := []struct {
-		name    string
-		paths   []string // file/dir markers present, relative to ws
-		file    string   // opened file, absolute
-		wantRel string
-		wantOK  bool
+		name      string
+		paths     []string // file/dir markers present, relative to ws
+		file      string   // opened file, absolute
+		outermost bool
+		wantRel   string
+		wantOK    bool
 	}{
 		{
 			name:    "nearest root wins over ancestor",
@@ -96,6 +98,37 @@ func TestFindProjectRoot(t *testing.T) {
 			wantRel: "",
 			wantOK:  false,
 		},
+		{
+			name:      "outermost ancestor wins over the nearest root",
+			paths:     []string{"pyproject.toml", "deploy/worker/pyproject.toml"},
+			file:      "/ws/deploy/worker/app/main.py",
+			outermost: true,
+			wantRel:   "",
+			wantOK:    true,
+		},
+		{
+			name:      "outermost walks past unmarked directories",
+			paths:     []string{"deploy/pyproject.toml", "deploy/worker/app/pyproject.toml"},
+			file:      "/ws/deploy/worker/app/main.py",
+			outermost: true,
+			wantRel:   "deploy",
+			wantOK:    true,
+		},
+		{
+			name:      "outermost with a single marker finds it",
+			paths:     []string{"deploy/worker/pyproject.toml"},
+			file:      "/ws/deploy/worker/main.py",
+			outermost: true,
+			wantRel:   "deploy/worker",
+			wantOK:    true,
+		},
+		{
+			name:      "outermost without a marker yields not found",
+			paths:     []string{"deploy/worker/app/main.py"},
+			file:      "/ws/deploy/worker/app/main.py",
+			outermost: true,
+			wantOK:    false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -113,7 +146,11 @@ func TestFindProjectRoot(t *testing.T) {
 			fileURI, err := workspaceapi.ParseURI("file://" + tc.file)
 			require.NoError(t, err)
 
-			root, ok := FindProjectRoot(mfs, wsURI, fileURI, markers)
+			find := FindProjectRoot
+			if tc.outermost {
+				find = FindOutermostProjectRoot
+			}
+			root, ok := find(mfs, wsURI, fileURI, markers)
 			assert.Equal(t, tc.wantOK, ok)
 			if !tc.wantOK {
 				return
@@ -276,6 +313,32 @@ func TestInitializerOpenTriggersOneInitRoot(t *testing.T) {
 	ed.fire(t, openEvent("/ws/svc/other.py"))
 	assertNoMoreRoots(t, roots)
 	assert.Equal(t, int32(1), calls.Load())
+}
+
+func TestInitializerOutermostSharesMonorepoRoot(t *testing.T) {
+	const ws = "/ws"
+	mfs := newMemFS(ws)
+	mfs.addFile("/ws/mono/pyproject.toml")
+	mfs.addFile("/ws/mono/packages/a/pyproject.toml")
+	mfs.addFile("/ws/mono/packages/b/pyproject.toml")
+
+	roots := make(chan Root, 4)
+	cfg := pyConfig(func(_ context.Context, r Root) error {
+		roots <- r
+		return nil
+	})
+	cfg.Outermost = true
+
+	ed := &fakeEditor{}
+	i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
+	require.NoError(t, i.Start())
+
+	ed.fire(t, openEvent("/ws/mono/packages/b/src/use.py"))
+	got := <-roots
+	assert.Equal(t, "mono", got.RelPath)
+
+	ed.fire(t, openEvent("/ws/mono/packages/a/src/lib.py"))
+	assertNoMoreRoots(t, roots)
 }
 
 func TestInitializerChangeTriggersInitRoot(t *testing.T) {
@@ -646,6 +709,44 @@ func TestInitializerNoMarkerDoesNotInitialize(t *testing.T) {
 	assert.Equal(t, int32(0), calls.Load())
 }
 
+func TestInitializerSkipsInMemoryWorkspace(t *testing.T) {
+	cases := []struct {
+		scheme   string
+		wantInit bool
+	}{
+		{scheme: workspace.FileScheme, wantInit: true},
+		{scheme: workspace.MemoryScheme},
+		{scheme: workspace.DocsScheme},
+	}
+	for _, tc := range cases {
+		t.Run(tc.scheme, func(t *testing.T) {
+			const ws = "/ws"
+			mfs := newMemFS(ws)
+			mfs.scheme = tc.scheme
+			mfs.addFile("/ws/pyproject.toml")
+
+			var calls atomic.Int32
+			cfg := pyConfig(func(context.Context, Root) error {
+				calls.Add(1)
+				return nil
+			})
+
+			ed := &fakeEditor{}
+			i := NewInitializer(context.Background(), mfs, ed, &langexttest.Installer{}, cfg)
+			require.NoError(t, i.Start())
+			require.NoError(t, i.InitializeAt(context.Background(), rootForDir(mfs, ws, ws)))
+
+			if tc.wantInit {
+				assert.NotEmpty(t, ed.subscribedTo)
+				assert.Equal(t, int32(1), calls.Load())
+			} else {
+				assert.Empty(t, ed.subscribedTo)
+				assert.Equal(t, int32(0), calls.Load())
+			}
+		})
+	}
+}
+
 func TestInitializeAtDedupedAgainstLaterEvents(t *testing.T) {
 	const ws = "/ws"
 	mfs := newMemFS(ws)
@@ -880,9 +981,10 @@ func (e *fakeEditor) SetDefaultAttributes(textapi.Handler, term.Attributes) erro
 
 // memFS is an in-memory workspaceapi.FileSystem with real path-join
 // semantics so the upward marker walk can be exercised without touching
-// disk.
+// disk. Its URIs carry scheme, file:// when unset.
 type memFS struct {
 	root     string
+	scheme   string
 	files    map[string]bool
 	dirs     map[string]bool
 	stats    atomic.Int32
@@ -904,7 +1006,11 @@ func (m *memFS) resolve(p string) string {
 }
 
 func (m *memFS) URI(p string) (workspaceapi.URI, error) {
-	return workspaceapi.ParseURI("file://" + m.resolve(p))
+	scheme := m.scheme
+	if scheme == "" {
+		scheme = workspace.FileScheme
+	}
+	return workspaceapi.ParseURI(scheme + "://" + m.resolve(p))
 }
 
 func (m *memFS) Stat(p string) (os.FileInfo, error) {

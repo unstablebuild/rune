@@ -17,15 +17,20 @@
 package handler
 
 import (
+	"image"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"go.uber.org/goleak"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/component/shader/shaderloop"
+	"unstable.build/rune/internal/handler/handlertest"
 )
 
 func newTestShadedTabs(cfg ShadedTabsConfig) *ShadedTabs {
@@ -101,6 +106,111 @@ func TestShadedTabsLeavesIconsAlone(t *testing.T) {
 	require.True(t, painted, "the effect never painted the active tab's name")
 }
 
+func TestShadedTabsColor(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	s := newTestShadedTabs(ShadedTabsConfig{
+		Shader: "pulse",
+		FPS:    100,
+		Params: shaderloop.Params{
+			Pulse: shaderloop.PulseParams{Color: term.NewRGBColor(0, 255, 0)},
+		},
+		DefAttr:     term.Attributes{Fg: term.NewRGBColor(0, 0, 0)},
+		Interrupter: term.NopInterrupter(),
+		Active:      func() []int { return []int{1} },
+	})
+	plain := drawShadedTabs(s)
+	require.True(t, s.SetRunning(true))
+	defer s.SetRunning(false)
+	painted := false
+	for deadline := time.Now().Add(5 * time.Second); !painted && time.Now().Before(deadline); {
+		cells := drawShadedTabs(s)
+		// beta's name sits at [11, 15).
+		for x := 11; x < 15; x++ {
+			if cells[x].Fg == plain[x].Fg {
+				continue
+			}
+			painted = true
+			r, g, b := cells[x].Fg.RGB()
+			assert.Truef(t, r == 0 && g > 0 && b == 0,
+				"cell %d blends toward green: rgb(%d, %d, %d)", x, r, g, b)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	require.True(t, painted, "the effect never painted the active tab's name")
+}
+
+func TestShadedTabsSetDefAttr(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	s := newTestShadedTabs(ShadedTabsConfig{
+		Shader: "pulse",
+		FPS:    100,
+		Params: shaderloop.Params{
+			Pulse: shaderloop.PulseParams{Color: term.NewRGBColor(0, 255, 0)},
+		},
+		DefAttr:     term.Attributes{Fg: term.NewRGBColor(255, 0, 0)},
+		Interrupter: term.NopInterrupter(),
+		Active:      func() []int { return []int{1} },
+	})
+	s.SetDefAttr(term.Attributes{Fg: term.NewRGBColor(0, 0, 0)})
+	plain := drawShadedTabs(s)
+	require.True(t, s.SetRunning(true))
+	defer s.SetRunning(false)
+	painted := false
+	for deadline := time.Now().Add(5 * time.Second); !painted && time.Now().Before(deadline); {
+		cells := drawShadedTabs(s)
+		// beta's name sits at [11, 15).
+		for x := 11; x < 15; x++ {
+			if cells[x].Fg == plain[x].Fg {
+				continue
+			}
+			painted = true
+			r, _, _ := cells[x].Fg.RGB()
+			assert.Zero(t, r, "cell %d blends from the attributes set last", x)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	require.True(t, painted, "the effect never painted the active tab's name")
+}
+
+func TestShadedTabsDrawsImagesWhileRunning(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	const uri = "file:///tab.png"
+	g := tcomponent.NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+	defer func() { assert.NoError(t, g.Close()) }()
+	g.Reload(map[string]image.Image{uri: image.NewRGBA(image.Rect(0, 0, 1, 1))})
+	img := g.Image(uri)
+	s := newTestShadedTabs(ShadedTabsConfig{
+		Shader:      "pulse",
+		Interrupter: term.NopInterrupter(),
+		Active:      func() []int { return []int{1} },
+	})
+	s.SetGraphics(g, &component.ButtonImages{
+		Idle: component.ButtonImage{Left: img, Middle: img, Right: img},
+	}, tcomponent.LineGraphics{})
+	draw := func() []term.Image {
+		w := &imageRecorder{StringWriter: term.NewStringWriter(20, 1)}
+		s.Draw(w)
+		return w.images
+	}
+	plain := draw()
+	require.NotEmpty(t, plain)
+
+	require.True(t, s.SetRunning(true))
+	defer s.SetRunning(false)
+	assert.Len(t, draw(), len(plain), "every tab image draws under the effect")
+}
+
+// imageRecorder records the images drawn on it.
+type imageRecorder struct {
+	*term.StringWriter
+	images []term.Image
+}
+
+func (w *imageRecorder) DrawImage(img term.Image) bool {
+	w.images = append(w.images, img)
+	return true
+}
+
 func TestShadedTabsWithoutShaderDrawsTabs(t *testing.T) {
 	active := func() []int { return []int{0} }
 	for _, tc := range []struct {
@@ -122,17 +232,6 @@ func TestShadedTabsWithoutShaderDrawsTabs(t *testing.T) {
 			assert.Equal(t, 'A', drawShadedTabs(s)[0].Ch)
 		})
 	}
-}
-
-func TestShadedTabsSetInterrupter(t *testing.T) {
-	s := newTestShadedTabs(ShadedTabsConfig{
-		Shader: "pulse",
-		Active: func() []int { return nil },
-	})
-	require.False(t, s.SetRunning(true))
-	s.SetInterrupter(term.NopInterrupter())
-	require.True(t, s.SetRunning(true))
-	require.True(t, s.SetRunning(false))
 }
 
 func TestShadedTabsHonoursConfiguredFPS(t *testing.T) {
@@ -183,4 +282,42 @@ func TestShadedTabsActiveRects(t *testing.T) {
 	assert.Equal(t, []shader.Rect{
 		{Offset: term.Coordinates{X: 2}, Width: 4, Height: 1},
 	}, s.activeRects(), "geometry follows the layout")
+}
+
+func TestShadedTabsActiveRectsSkipProgress(t *testing.T) {
+	active := []int{0, 1}
+	s := newTestShadedTabs(ShadedTabsConfig{
+		Active: func() []int { return active },
+	})
+	s.SetTabProgress(0, 40, term.Attributes{Fg: term.ColorGreen})
+	s.SetTabProgress(1, 100, term.Attributes{Fg: term.ColorGreen})
+	_ = drawShadedTabs(s)
+
+	assert.Equal(t, []shader.Rect{
+		{Offset: term.Coordinates{X: 4}, Width: 3, Height: 1},
+	}, s.activeRects(), "the effect runs over the unfinished part only")
+
+	s.ResetTabProgress(0)
+	s.ResetTabProgress(1)
+	_ = drawShadedTabs(s)
+	assert.Equal(t, []shader.Rect{
+		{Offset: term.Coordinates{X: 2}, Width: 5, Height: 1},
+		{Offset: term.Coordinates{X: 11}, Width: 4, Height: 1},
+	}, s.activeRects())
+}
+
+func TestShadedTabsPointerLeaves(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	for _, size := range [][2]int{{60, 15}, {60, 1}, {1, 1}} {
+		var clicks, iconClicks int
+		s := NewShadedTabs(newPointerTabs(&clicks, &iconClicks), ShadedTabsConfig{
+			Shader:      "pulse",
+			Interrupter: term.NopInterrupter(),
+			Active:      func() []int { return []int{1, 3, 11} },
+		})
+		handlertest.RunPointerLeaves(t, s, size[0], size[1])
+		require.True(t, s.SetRunning(true))
+		handlertest.RunPointerLeaves(t, s, size[0], size[1])
+		require.True(t, s.SetRunning(false))
+	}
 }

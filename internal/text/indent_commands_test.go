@@ -28,6 +28,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/syntax/treesitter"
 )
 
@@ -114,6 +115,25 @@ func TestIndentCommandWithoutIndentServiceReturnsError(t *testing.T) {
 		Name: CommandReindent,
 	})
 	require.EqualError(t, err, "auto-indentation not available at the current position")
+}
+
+func TestIndentCommandHandlerPointerLeaves(t *testing.T) {
+	t.Parallel()
+	cwd, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	uri := workspaceapi.Join(cwd, "indent.go")
+	wrap := func() Handler {
+		fileRegistry := NewFileCommandRegistry(cwd, newIndentTestWorkspaceRegistry())
+		ed := newPointerEditor(t, uri)
+		h, err := SubscribeIndentCommands(uri, fileRegistry, ed.cursor, IndentConfig{}, ed)
+		require.NoError(t, err)
+		return h
+	}
+	for _, size := range []struct{ width, height int }{{40, 10}, {1, 1}} {
+		handlertest.RunPointerLeaves(t, wrap(), size.width, size.height)
+	}
+	requirePointerLeavesKeepState(t, wrap(), 40, 10,
+		term.Coordinates{X: 3, Y: 2}, term.Coordinates{X: 12, Y: 4})
 }
 
 type indentTestWorkspaceRegistry struct {

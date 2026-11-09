@@ -20,6 +20,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
 	"github.com/unstablebuild/rune-go-sdk/term/graphemecluster"
+	"unstable.build/rune/internal/term/programstatus"
 )
 
 // HandlerWithLogging wraps a Handler and adds trace logging.
@@ -333,16 +334,22 @@ func (h loggingHandler) SetActiveCharset(index CharsetIndex) {
 
 func (h loggingHandler) ConfigureCharset(index CharsetIndex, charset StandardCharset) {
 	h.log("ConfigureCharset index=%v charset=%v", index, charset)
-
+	h.h.ConfigureCharset(index, charset)
 }
 
 func (h loggingHandler) ClipboardStore(register int, data []byte) {
 	h.log("ClipboardStore %d data=%d", register, len(data))
+	h.h.ClipboardStore(register, data)
 }
 
 func (h loggingHandler) ClipboardLoad(register int, data string) {
 	h.log("ClipboardLoad %d data=%d", register, len(data))
+	h.h.ClipboardLoad(register, data)
+}
 
+func (h loggingHandler) RequestTermcap(names []string) {
+	h.log("RequestTermcap %q", names)
+	h.h.RequestTermcap(names)
 }
 
 func (h loggingHandler) Decaln() {
@@ -424,6 +431,41 @@ func (h loggingHandler) ReportModifyOtherKeys() {
 func (h loggingHandler) GraphicsCommand(data []byte) {
 	h.log("GraphicsCommand len(data)=%d", len(data))
 	h.h.GraphicsCommand(data)
+}
+
+func (h loggingHandler) ProgramStatus(report programstatus.Report) {
+	h.log("ProgramStatus %+v", report)
+	h.h.ProgramStatus(report)
+}
+
+func (h loggingHandler) ProgramStatusQuery(terminator string) {
+	h.log("ProgramStatusQuery %q", terminator)
+	h.h.ProgramStatusQuery(terminator)
+}
+
+func (h loggingHandler) PromptStart() {
+	h.log("PromptStart")
+	h.h.PromptStart()
+}
+
+func (h loggingHandler) SetPointerShape(shape PointerShape) {
+	h.log("SetPointerShape %q", shape)
+	h.h.SetPointerShape(shape)
+}
+
+func (h loggingHandler) PushPointerShape(shape PointerShape) {
+	h.log("PushPointerShape %q", shape)
+	h.h.PushPointerShape(shape)
+}
+
+func (h loggingHandler) PopPointerShape() {
+	h.log("PopPointerShape")
+	h.h.PopPointerShape()
+}
+
+func (h loggingHandler) PointerShapeQuery(names []string, terminator string) {
+	h.log("PointerShapeQuery %q %q", names, terminator)
+	h.h.PointerShapeQuery(names, terminator)
 }
 
 func (h loggingHandler) log(line string, params ...any) {

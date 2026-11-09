@@ -102,6 +102,12 @@ func (e *PtyExecutor) Signal(workspaceapi.Pid, syscall.Signal) error {
 	return nil
 }
 
+// LookPath satisfies schemeapi.Executor. Fake processes run no file,
+// so it reports errors.ErrUnsupported.
+func (e *PtyExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 // Close satisfies schemeapi.Executor.
 func (e *PtyExecutor) Close() error {
 	return nil

@@ -1,9 +1,8 @@
 module unstable.build/rune
 
-go 1.27.1
+go 1.27.3
 
 require (
-	codeberg.org/readeck/go-readability/v2 v2.1.1
 	github.com/JohannesKaufmann/html-to-markdown v1.6.0
 	github.com/ProtonMail/go-crypto v1.3.0
 	github.com/PuerkitoBio/goquery v1.9.2
@@ -15,9 +14,11 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.57.0
 	github.com/aws/smithy-go v1.27.6
 	github.com/cespare/xxhash/v2 v2.3.0
+	github.com/coder/acp-go-sdk v0.13.5
 	github.com/disintegration/imaging v1.6.2
 	github.com/dustinkirkland/golang-petname v0.0.0-20260215035315-f0c533e9ce9b
-	github.com/ebitengine/purego v0.9.0
+	github.com/ebitengine/oto/v3 v3.5.1
+	github.com/ebitengine/purego v0.11.0
 	github.com/ernestrc/dom v0.2.5-0.20201125033726-789c946aa938
 	github.com/ernestrc/go-multierror v1.1.2
 	github.com/ernestrc/logd-go v0.0.0-20180509171507-65871c1d5504
@@ -27,11 +28,12 @@ require (
 	github.com/go-git/go-git/v6 v6.0.0-20250819122726-39261590f7f3
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/go-text/typesetting v0.3.4
+	github.com/google/codesearch v1.3.0-rc.1.0.20260830194954-74a12a911a79
 	github.com/google/go-dap v0.12.0
 	github.com/google/uuid v1.6.0
 	github.com/hajimehoshi/ebiten/v2 v2.7.4
 	github.com/junegunn/fzf v0.73.1
-	github.com/modelcontextprotocol/go-sdk v1.4.1
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/openai/openai-go/v2 v2.7.1
 	github.com/pion/mediadevices v0.10.0
 	github.com/pion/webrtc/v4 v4.2.20
@@ -43,13 +45,14 @@ require (
 	github.com/sourcegraph/go-diff v0.7.0
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.12.1
+	github.com/tailscale/hujson v0.0.0-20260302212456-ecc657c15afd
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
 	github.com/tree-sitter/go-tree-sitter v0.25.0
 	github.com/unstablebuild/blue v1.85.2
 	github.com/unstablebuild/notify v0.10.4
 	github.com/unstablebuild/pty v1.3.1
-	github.com/unstablebuild/rune-go-sdk v0.9.2
+	github.com/unstablebuild/rune-go-sdk v0.25.1
 	github.com/unstablebuild/tcell/v3 v3.6.5
 	github.com/yuin/goldmark v1.7.17
 	github.com/zalando/go-keyring v0.2.8
@@ -57,18 +60,18 @@ require (
 	go.uber.org/goleak v1.3.0
 	go.uber.org/mock v0.4.0
 	go.uber.org/multierr v1.11.0
-	golang.org/x/crypto v0.57.0
+	golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2
 	golang.org/x/image v0.45.0
 	golang.org/x/mod v0.41.0
-	golang.org/x/net v0.58.0
 	golang.org/x/oauth2 v0.36.0
-	golang.org/x/sys v0.48.0
-	golang.org/x/text v0.42.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/term v0.47.0
+	golang.org/x/text v0.43.0
 	google.golang.org/genai v1.59.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
-	mvdan.cc/sh/v3 v3.12.0
+	mvdan.cc/sh/v3 v3.14.1
 	oras.land/oras-go/v2 v2.6.2
 	tailscale.com v1.102.3
 )
@@ -85,7 +88,6 @@ require (
 	github.com/alexbrainman/sspi v0.0.0-20231016080023-1a75b4708caa // indirect
 	github.com/andybalholm/cascadia v1.3.3 // indirect
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be // indirect
-	github.com/araddon/dateparse v0.0.0-20210429162001-6b43995a97de // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.16 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.33 // indirect
@@ -132,21 +134,20 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/go-shiori/dom v0.0.0-20230515143342-73569d674e1c // indirect
 	github.com/go4org/hashtriemap v0.0.0-20251130024219-545ba229f689 // indirect
 	github.com/go4org/plan9netshell v0.0.0-20250324183649-788daa080737 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
-	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/go-tpm v0.9.4 // indirect
-	github.com/google/jsonschema-go v0.4.2 // indirect
+	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/nftables v0.2.1-0.20240414091927-5e242ec57806 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.15 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
+	github.com/hajimehoshi/go-mp3 v0.3.4 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hdevalence/ed25519consensus v0.2.0 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
@@ -156,6 +157,9 @@ require (
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/jellydator/ttlcache/v3 v3.1.0 // indirect
 	github.com/jezek/xgb v1.1.1 // indirect
+	github.com/jfreymuth/oggvorbis v1.0.5 // indirect
+	github.com/jfreymuth/pulse v0.1.3 // indirect
+	github.com/jfreymuth/vorbis v1.0.2 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/jsimonetti/rtnetlink v1.4.1 // indirect
 	github.com/junegunn/go-shellwords v0.0.0-20250127100254-2aa3b3277741 // indirect
@@ -210,7 +214,6 @@ require (
 	github.com/tailscale/certstore v0.1.1-0.20260409135935-3638fb84b77d // indirect
 	github.com/tailscale/gliderssh v0.3.4-0.20260716005906-1a0f895faf28 // indirect
 	github.com/tailscale/go-winio v0.0.0-20231025203758-c4f33415bf55 // indirect
-	github.com/tailscale/hujson v0.0.0-20260302212456-ecc657c15afd // indirect
 	github.com/tailscale/netlink v1.1.1-0.20240822203006-4d49adab4de7 // indirect
 	github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc // indirect
 	github.com/tailscale/web-client-prebuilt v0.0.0-20250124233751-d4cd19a26976 // indirect
@@ -237,10 +240,10 @@ require (
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/exp/typeparams v0.0.0-20240314144324-c7f7c6466f7f // indirect
-	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/term v0.46.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	golang.org/x/tools v0.49.0 // indirect
+	golang.org/x/tools v0.51.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
 	google.golang.org/api v0.278.0 // indirect
@@ -257,4 +260,6 @@ replace github.com/go-git/go-git/v6 => github.com/unstablebuild/go-git/v6 v6.0.1
 
 replace github.com/tree-sitter/go-tree-sitter => github.com/unstablebuild/go-tree-sitter v0.25.0-ub.2
 
-replace github.com/hajimehoshi/ebiten/v2 => github.com/unstablebuild/ebiten/v2 v2.7.5-ub.32
+replace github.com/hajimehoshi/ebiten/v2 => github.com/unstablebuild/ebiten/v2 v2.7.5-ub.34
+
+replace github.com/google/codesearch => github.com/unstablebuild/codesearch v1.4.0-ub.1

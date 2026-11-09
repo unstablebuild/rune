@@ -165,7 +165,7 @@ func (h *pageExplorerHandler) syncWidth() {
 	width, _ := h.comp.Dimensions()
 	// The shop browser always uses framed windows, so account for the frame.
 	width += 2
-	_ = h.root.b.SetWindowWidth(h.win, width)
+	_ = h.root.b.SetWindowDefaultWidth(h.win, width)
 }
 
 type pageFileSystem struct {
@@ -185,6 +185,8 @@ func (fsys pageFileSystem) OpenFile(string, int, os.FileMode) (workspaceapi.File
 }
 
 func (fsys pageFileSystem) Remove(string) error { return fs.ErrPermission }
+
+func (fsys pageFileSystem) Rename(string, string) error { return fs.ErrPermission }
 
 func (fsys pageFileSystem) Stat(path string) (os.FileInfo, error) {
 	path = strings.Trim(path, "/")

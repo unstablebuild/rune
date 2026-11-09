@@ -49,7 +49,7 @@ import (
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/extension/extutil"
 	"unstable.build/rune/internal/handler/command"
-	"unstable.build/rune/internal/ide/ideshell"
+	"unstable.build/rune/internal/ide/console/ideconsole"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/standard"
 )
@@ -132,12 +132,19 @@ func (h *replSubcommand) HandleCommand(
 		return fmt.Errorf("resolve module uri: %w", err)
 	}
 
+	uri, err := h.fs.URI(replTabURI)
+	if err != nil {
+		return fmt.Errorf("resolve repl uri: %w", err)
+	}
+
 	sched := newTickScheduler(h.interrupter)
 	editor, modal := h.resolveEditor()
-	shell, registry := ideshell.New(
+	shell, registry := ideconsole.New(
 		sched.schedule,
 		h.interrupter,
 		editor,
+		h.wm,
+		uri,
 		h.shellConfig(session, moduleURI, modal),
 	)
 	if err := registry.RegisterREPLCommand(
@@ -149,11 +156,6 @@ func (h *replSubcommand) HandleCommand(
 	); err != nil {
 		_ = shell.Close()
 		return fmt.Errorf("register go repl command: %w", err)
-	}
-
-	uri, err := h.fs.URI(replTabURI)
-	if err != nil {
-		return fmt.Errorf("resolve repl uri: %w", err)
 	}
 
 	wrapped := &drainHandler{Handler: shell, sched: sched}
@@ -201,13 +203,13 @@ func (h *replSubcommand) Complete(
 	return iterator.Empty[string](), nil
 }
 
-// shellConfig builds the ideshell configuration for the Go REPL. It
+// shellConfig builds the ideconsole configuration for the Go REPL. It
 // wires persistent history so reverse-search and recall work, and runs
 // the shell as a pure language REPL by routing every line to session.
 func (h *replSubcommand) shellConfig(
 	session *goSession, moduleURI workspaceapi.URI, modal bool,
-) ideshell.Config {
-	return ideshell.Config{
+) ideconsole.Config {
+	return ideconsole.Config{
 		DisableShellInterpreter: session,
 		Prompt:                  "go> ",
 		Modal:                   modal,
@@ -221,7 +223,7 @@ func (h *replSubcommand) shellConfig(
 }
 
 // commandEditor adapts a text.Editor to the command.Editor interface
-// ideshell.New expects. text.Handler (returned by text.Editor.Edit)
+// ideconsole.New expects. text.Handler (returned by text.Editor.Edit)
 // already satisfies command.EditHandler, so the bridge is a thin
 // per-buffer Edit call against a fresh in-memory URI.
 type commandEditor struct {
@@ -321,12 +323,12 @@ func (s *tickScheduler) drain() {
 }
 
 // drainHandler drains scheduled callbacks before delegating to the
-// embedded ideshell.Handler so async command output produced off the
+// embedded ideconsole.Handler so async command output produced off the
 // event loop is applied before the next Handle/Draw. Extensions only
 // have the interrupter, not the real event-loop tick scheduler, so the
 // queue must be drained here rather than by the host.
 type drainHandler struct {
-	*ideshell.Handler
+	*ideconsole.Handler
 	sched *tickScheduler
 }
 
@@ -561,7 +563,7 @@ func (s *goSession) Help(
 
 // reset discards all accumulated session state so the next input starts
 // a fresh program. It backs both the /clear builtin and the shell's
-// screen-clear (<c-l>) hook wired via ideshell.Config.ClearHook.
+// screen-clear (<c-l>) hook wired via ideconsole.Config.ClearHook.
 func (s *goSession) reset() {
 	s.imports = map[string]struct{}{}
 	s.decls = nil

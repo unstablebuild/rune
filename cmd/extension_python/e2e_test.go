@@ -21,6 +21,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -239,4 +240,8 @@ func TestE2E_PyHandler_PythonList(t *testing.T) {
 	out, err := iterator.ToSlice(context.Background(), it)
 	require.NoError(t, err)
 	require.Len(t, out, 1)
+}
+
+func (*successfulExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }

@@ -27,6 +27,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	sdkhandler "github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
@@ -79,7 +80,7 @@ func TestOptionToChoiceMapping(t *testing.T) {
 }
 
 func TestRenderPreset(t *testing.T) {
-	vim, err := renderPreset(editorVim, keymeta.Super, false, gui.AltModifierNone)
+	vim, err := renderPreset(editorVim, keymeta.Super, false, gui.AltModifierNone, false)
 	require.NoError(t, err)
 	require.NotContains(t, vim, "mode: standard",
 		"vim mode must not switch the editor into standard")
@@ -87,26 +88,26 @@ func TestRenderPreset(t *testing.T) {
 		"the preset written to the user config must not name the retired mode")
 	require.Contains(t, vim, "enabled: false",
 		"telemetry=false must render enabled: false")
-	std, err := renderPreset(editorStandard, keymeta.Super, true, gui.AltModifierNone)
+	std, err := renderPreset(editorStandard, keymeta.Super, true, gui.AltModifierNone, false)
 	require.NoError(t, err)
 	require.Contains(t, std, "mode: standard",
 		"the standard choice must switch the editor into standard")
 	require.Contains(t, std, "enabled: true",
 		"telemetry=true must render enabled: true")
 
-	deprecated, err := renderPreset(editorModeless, keymeta.Super, true, gui.AltModifierNone)
+	deprecated, err := renderPreset(editorModeless, keymeta.Super, true, gui.AltModifierNone, false)
 	require.NoError(t, err)
 	require.Equal(t, std, deprecated,
 		"the deprecated modeless alias must resolve to the standard preset")
 
-	ema, err := renderPreset(editorEmacs, keymeta.Super, false, gui.AltModifierNone)
+	ema, err := renderPreset(editorEmacs, keymeta.Super, false, gui.AltModifierNone, false)
 	require.NoError(t, err)
 	require.Contains(t, ema, "enabled: false",
 		"telemetry=false must render enabled: false")
 	require.Contains(t, ema, "mode: emacs",
 		"the emacs choice must switch the editor into emacs")
 
-	hx, err := renderPreset(editorHelix, keymeta.Super, true, gui.AltModifierNone)
+	hx, err := renderPreset(editorHelix, keymeta.Super, true, gui.AltModifierNone, false)
 	require.NoError(t, err)
 	require.Contains(t, hx, "mode: helix",
 		"the helix choice must switch the editor into helix")
@@ -162,7 +163,7 @@ func TestRenderPreset(t *testing.T) {
 		}
 	}
 
-	_, err = renderPreset("bogus", keymeta.Super, true, gui.AltModifierNone)
+	_, err = renderPreset("bogus", keymeta.Super, true, gui.AltModifierNone, false)
 	require.Error(t, err)
 }
 
@@ -174,7 +175,7 @@ func TestRenderPresetMetaKey(t *testing.T) {
 			for _, telemetry := range []bool{true, false} {
 				name := fmt.Sprintf("%s/%s/%t", editor, meta, telemetry)
 				t.Run(name, func(t *testing.T) {
-					body, err := renderPreset(editor, meta, telemetry, gui.AltModifierNone)
+					body, err := renderPreset(editor, meta, telemetry, gui.AltModifierNone, false)
 					if !slices.Contains(offered, meta) {
 						require.ErrorContains(t, err, "not offered")
 						return
@@ -475,6 +476,12 @@ func TestBootstrapMetaPrompt(t *testing.T) {
 			b.openVimPrompt()
 			prompter.prompts[0].handler.OnSelect(0, tc.option)
 			require.Equal(t, tc.editor, b.chosenEditor)
+			if tc.editor == editorVim || tc.editor == editorHelix {
+				require.Equal(t, []string{optCapsLockYes, optCapsLockNo},
+					prompter.prompts[1].options)
+				prompter.prompts[1].handler.OnSelect(1, optCapsLockNo)
+				prompter.prompts = slices.Delete(prompter.prompts, 1, 2)
+			}
 			require.Len(t, prompter.prompts, 2)
 
 			meta := prompter.prompts[1]
@@ -496,20 +503,6 @@ func TestBootstrapMetaPrompt(t *testing.T) {
 	}
 }
 
-func TestBootstrapAltModifierAppliesToRunningGUI(t *testing.T) {
-	var applied []gui.AltModifier
-	prompter := &fakeBootstrapPrompter{}
-	b := &bootstrapHandler{
-		prompter:       prompter,
-		setAltModifier: func(m gui.AltModifier) { applied = append(applied, m) },
-	}
-	b.openAltModifierPrompt()
-	prompter.prompts[0].handler.OnSelect(0, optAltRight)
-
-	require.Equal(t, []gui.AltModifier{gui.AltModifierRight}, applied,
-		"the chosen Alt key must reach the running GUI, not just the config")
-}
-
 func TestBootstrapAltModifierPrompt(t *testing.T) {
 	for _, tc := range []struct {
 		option string
@@ -529,6 +522,94 @@ func TestBootstrapAltModifierPrompt(t *testing.T) {
 			require.Equal(t, tc.want, b.chosenAltModifier)
 			require.Len(t, prompter.prompts, 2)
 		})
+	}
+}
+
+func TestBootstrapCapsLockPrompt(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		option   string
+		press    term.Event
+		wantName string
+		wantEsc  bool
+	}{
+		{"vim yes", optVimYes, keyEv('y', 0), "Vim", true},
+		{"vim no", optVimYes, keyEv('n', 0), "Vim", false},
+		{"vim esc means the system maps it", optVimYes, namedKeyEv(term.KeyEsc), "Vim", false},
+		{"helix yes", optHelix, keyEv('y', 0), "Helix", true},
+		{"helix no", optHelix, keyEv('n', 0), "Helix", false},
+		{"helix esc means the system maps it", optHelix, namedKeyEv(term.KeyEsc), "Helix", false},
+		{"standard is not asked", optStandard, term.Event{}, "", false},
+		{"emacs is not asked", optEmacs, term.Event{}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prompter := &fakeBootstrapPrompter{}
+			b := &bootstrapHandler{prompter: prompter, goos: "darwin"}
+			b.openVimPrompt()
+			prompter.prompts[0].handler.OnSelect(0, tc.option)
+			require.Len(t, prompter.prompts, 2)
+
+			if tc.wantName != "" {
+				caps := prompter.prompts[1]
+				require.Contains(t, caps.message, "## Use Caps Lock as Escape?")
+				require.Contains(t, caps.message, tc.wantName)
+				require.Contains(t, caps.message, "gui.key_mapping")
+				require.Contains(t, caps.message, "Press Caps Lock now to check")
+				require.Equal(t, []string{optCapsLockYes, optCapsLockNo}, caps.options)
+				require.Equal(t, bootstrapCapsLockKeys, caps.bindings)
+
+				p := sdkhandler.NewPrompt(sdkhandler.PromptConfig{
+					PromptConfig: component.PromptConfig{
+						Message: caps.message, Options: caps.options,
+					},
+					PromptHandler:  caps.handler,
+					OptionBindings: caps.bindings,
+				})
+				exit, handled := p.Handle(tc.press)
+				require.True(t, handled)
+				require.True(t, exit, "the key must close the Caps Lock prompt")
+				// The window manager closes a prompt whose Handle exits.
+				require.NoError(t, p.Close())
+				require.Len(t, prompter.prompts, 3,
+					"closing the Caps Lock prompt must open only the next prompt")
+			}
+
+			require.Equal(t, tc.wantEsc, b.chosenCapsLockEsc)
+			require.Contains(t, prompter.prompts[len(prompter.prompts)-1].message,
+				"## Choose your Alt/Option (\u2325) key")
+		})
+	}
+}
+
+func TestBootstrapCapsLockRoundTrip(t *testing.T) {
+	for _, editor := range []string{editorVim, editorHelix, editorStandard, editorEmacs} {
+		for _, esc := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/%t", editor, esc), func(t *testing.T) {
+				dir := t.TempDir()
+				b := &bootstrapHandler{
+					dataDir: dir, chosenEditor: editor, chosenCapsLockEsc: esc,
+				}
+				err := b.writePresetConfig()
+				if esc && editor != editorVim && editor != editorHelix {
+					require.ErrorContains(t, err, "gui.key_mapping does not map <capslock> to <esc>")
+					return
+				}
+				require.NoError(t, err)
+
+				cfg := mustLoadConfig(t, filepath.Join(dir, configFilename))
+				guiCfg, err := cfg.GetConfig("gui")
+				require.NoError(t, err)
+				ctrl := gomock.NewController(t)
+				got := getGUIKeyMapping(browsertest.NewMockBrowser(ctrl), guiCfg)
+				if esc {
+					require.Equal(t, map[term.KeyComb]term.KeyComb{
+						{Key: term.KeyCapsLock}: {Key: term.KeyEsc},
+					}, got)
+				} else {
+					require.Empty(t, got)
+				}
+			})
+		}
 	}
 }
 

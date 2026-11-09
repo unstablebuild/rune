@@ -18,6 +18,7 @@ package exoeditor
 
 import (
 	"context"
+	"errors"
 	"syscall"
 	"testing"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacetest"
@@ -54,6 +56,10 @@ func (stubWorkspace) Recover(
 	workspaceapi.URI, workspaceapi.URI, *cell.Buffer, bool,
 ) (workspace.FlusherCloser, error) {
 	return nil, nil
+}
+
+func (s stubWorkspace) LoaderFor(file workspaceapi.URI) (workspace.FileLoader, error) {
+	return workspace.FileLoaderOf(s, file), nil
 }
 
 func (stubWorkspace) Remove(string) error { return nil }
@@ -115,6 +121,10 @@ func (stubExecutor) StartCommand(context.Context, workspaceapi.Cmd) (workspaceap
 func (stubExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
 func (stubExecutor) Close() error                                  { return nil }
 
+func (stubExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 type stubTabManager struct{}
 
 func (stubTabManager) Tab(workspaceapi.URI, rune, string, browserapi.Handler) (
@@ -130,7 +140,8 @@ func (stubTabManager) OnTabExit(workspaceapi.URI) bool {
 	return false
 }
 
-func (stubTabManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (stubTabManager) SetTabStatus(workspaceapi.URI, programstatus.Report) error { return nil }
+func (stubTabManager) EndTabStatus(workspaceapi.URI) error                       { return nil }
 
 // stubReloader satisfies exoeditor.Reloader for tests that only need a
 // non-nil value to satisfy exoeditor.New's invariants.

@@ -18,9 +18,11 @@ package dialoguetui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -96,6 +98,41 @@ func (c *replacementCompleter) Candidates(
 }
 
 func (c *replacementCompleter) Resolve(candidate string) (Attachment, bool) {
+	return (&fakeCompleter{}).Resolve(candidate)
+}
+
+// gatedCompleter streams first, blocks until release is closed, then
+// streams rest, so a test can navigate while candidates are in flight.
+type gatedCompleter struct {
+	first   []string
+	rest    []string
+	release chan struct{}
+}
+
+func (g *gatedCompleter) Candidates(
+	context.Context, string,
+) (iterator.Iterator[string], error) {
+	i := 0
+	return iterator.FromFunc(func(ctx context.Context) (string, bool, error) {
+		if i == len(g.first) {
+			select {
+			case <-g.release:
+			case <-ctx.Done():
+				return "", false, ctx.Err()
+			}
+		}
+		if i >= len(g.first)+len(g.rest) {
+			return "", false, nil
+		}
+		i++
+		if i <= len(g.first) {
+			return g.first[i-1], true, nil
+		}
+		return g.rest[i-1-len(g.first)], true, nil
+	}, func() error { return nil }), nil
+}
+
+func (g *gatedCompleter) Resolve(candidate string) (Attachment, bool) {
 	return (&fakeCompleter{}).Resolve(candidate)
 }
 
@@ -491,6 +528,49 @@ func TestCompletionFocusUpSelectsAnotherCandidate(t *testing.T) {
 	require.Len(t, comp.Attachments(), 1)
 
 	assert.NotEqual(t, best, comp.Attachments()[0].Name)
+}
+
+func TestCompletionFocusSurvivesStreamingCandidates(t *testing.T) {
+	completer := &gatedCompleter{
+		first: []string{
+			fileCandidate("first-0.go"),
+			fileCandidate("first-1.go"),
+			fileCandidate("first-2.go"),
+		},
+		release: make(chan struct{}),
+	}
+	for i := range 4096 {
+		completer.rest = append(completer.rest,
+			fileCandidate(fmt.Sprintf("later-%d.go", i)))
+	}
+	h, comp := newCompletionHandlerWithCompleter(t, completer)
+
+	_, handled := h.Handle(term.Event{Type: term.EventKey, Ch: '#'})
+	require.True(t, handled)
+	list := h.compList
+	// The band lists bottom-up, so the first periodic sort parks focus on
+	// the last row; only from there can the user move up.
+	require.Eventually(t, func() bool {
+		return list.MatchCount() == len(completer.first) &&
+			list.FocusOffset() == len(completer.first)-1
+	}, 5*time.Second, time.Millisecond)
+
+	key(t, h, term.KeyArrowUp)
+	require.Equal(t, len(completer.first)-2, list.FocusOffset())
+	picked, ok := list.Focus()
+	require.True(t, ok)
+
+	close(completer.release)
+	<-h.compDone
+	list.Wait()
+	require.Equal(t, len(completer.first)+len(completer.rest), list.MatchCount())
+
+	key(t, h, term.KeyEnter)
+	require.Len(t, comp.Attachments(), 1)
+	want, ok := completer.Resolve(string(picked.Data()))
+	require.True(t, ok)
+	assert.Equal(t, want.Path, comp.Attachments()[0].Path,
+		"candidates streaming in after navigation must not move the focus")
 }
 
 func TestCompletionBandShrinksMessages(t *testing.T) {

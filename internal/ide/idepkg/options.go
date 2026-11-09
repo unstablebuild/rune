@@ -17,7 +17,6 @@
 package idepkg
 
 import (
-	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 )
 
@@ -28,13 +27,6 @@ type Option func(*Manager)
 func WithFrameCharSet(fcs component.FrameCharSet) Option {
 	return func(m *Manager) {
 		m.frameCharSet = fcs
-	}
-}
-
-// WithSyntaxParser sets the syntax parser for showing config changes.
-func WithSyntaxParser(parser syntaxapi.Parser) Option {
-	return func(m *Manager) {
-		m.parser = parser
 	}
 }
 

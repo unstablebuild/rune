@@ -49,6 +49,12 @@ type Manual struct {
 	// AliasOf defines this command as an alias of the
 	// given command or sequence of commands.
 	AliasOf []string
+
+	// RawArgs makes the prompt dispatch the arguments as typed, quotes
+	// and escapes included, so that joining them with spaces gives back
+	// the typed line. Commands that parse that line themselves, as a
+	// shell does, set it; the others receive the unquoted values.
+	RawArgs bool
 }
 
 const manualStringTemplate = `USAGE

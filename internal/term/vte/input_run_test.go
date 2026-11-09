@@ -479,7 +479,7 @@ func parserStateDumpBytes(
 	t.Helper()
 	ph := newInputParserHandler(t, false)
 	ph.Resize(width, height)
-	parser := vteparser.NewParser(ph, new(vteparser.StdTimeout))
+	parser := vteparser.NewParser(ph)
 	feed(parser, stream)
 	return dumpParserState(ph)
 }
@@ -491,7 +491,7 @@ func parserStateDump(
 	t.Helper()
 	ph := newInputParserHandler(t, false)
 	ph.Resize(24, 8)
-	parser := vteparser.NewParser(ph, new(vteparser.StdTimeout))
+	parser := vteparser.NewParser(ph)
 
 	data := []byte(stream)
 	for len(data) > 0 {

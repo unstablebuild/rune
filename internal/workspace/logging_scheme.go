@@ -78,6 +78,13 @@ func (t loggingScheme) Signal(p workspaceapi.Pid, s syscall.Signal) (err error) 
 	return
 }
 
+func (t loggingScheme) LookPath(ctx context.Context, name, dir string) (p string, err error) {
+	t.trace("LookPath(%q, %q)", name, dir)
+	p, err = t.other.LookPath(ctx, name, dir)
+	t.trace("LookPath(%q, %q): %q, %v", name, dir, p, err)
+	return
+}
+
 func (t loggingScheme) Chroot(path string) (schemeapi.Scheme, error) {
 	t.trace("Chroot(%s)", path)
 	fs, err := t.other.Chroot(path)

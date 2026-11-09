@@ -33,6 +33,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi/workspacerpc"
 	grpc "google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/workspace"
@@ -115,7 +117,8 @@ func (s *Server) StartCommand(stream workspacerpc.Executor_StartCommandServer) e
 	ctx, cancelCtx := context.WithCancel(s.ctx)
 	ctx = processctx.DeriveCommandContext(ctx, stream.Context())
 	streamer, err := newServerCommandStreamer(
-		ctx, cancelCtx, stream, start.GetName(), start.GetDir(), start.GetArgs(), start.GetEnv(),
+		ctx, cancelCtx, stream, start.GetName(), start.GetDir(), start.GetDescription(),
+		start.GetArgs(), start.GetEnv(),
 		start.GetStdin(), start.GetStdout(), start.GetStderr(),
 		start.GetStdinFd(), start.GetStdoutFd(), start.GetStderrFd(),
 		start.GetStdinName(), start.GetStdoutName(), start.GetStderrName(),
@@ -158,6 +161,23 @@ func (s *Server) Signal(ctx context.Context, req *workspacerpc.SignalRequest) (*
 	}
 	resp := new(workspacerpc.SignalResponse)
 	return resp, nil
+}
+
+// LookPath satisfies ExecutorServer. It answers Unimplemented when the
+// scheme cannot tell which file a command runs, as an older server does.
+func (s *Server) LookPath(
+	ctx context.Context, req *workspacerpc.LookPathRequest,
+) (*workspacerpc.LookPathResponse, error) {
+	p, err := s.s.LookPath(ctx, req.GetName(), req.GetDir())
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return &workspacerpc.LookPathResponse{IsNotExistErr: true}, nil
+	case errors.Is(err, errors.ErrUnsupported):
+		return nil, status.Error(codes.Unimplemented, err.Error())
+	case err != nil:
+		return nil, err
+	}
+	return &workspacerpc.LookPathResponse{Path: p}, nil
 }
 
 // URI satisfies SchemeServer

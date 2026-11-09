@@ -931,8 +931,8 @@ func TestCheckFileErrors(t *testing.T) {
 
 		assert.False(t, result.IsError)
 		// Error should come before warning (sorted by severity).
-		errIdx := indexOf(result.Content, "error:")
-		warnIdx := indexOf(result.Content, "warning:")
+		errIdx := strings.Index(result.Content, "error:")
+		warnIdx := strings.Index(result.Content, "warning:")
 		assert.Less(t, errIdx, warnIdx, "errors should appear before warnings")
 		assert.Contains(t, result.Content, "main.go:10:error:undeclared name: foo [compiler]")
 		assert.Contains(t, result.Content, "main.go:20:warning:unused variable [compiler]")

@@ -17,8 +17,11 @@
 package imageuri_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -234,6 +237,22 @@ abc⠅efg`},
 			wantFetches: 1,
 		},
 		{
+			name:   "draws nothing while loading when HideLoading",
+			source: "http", path: "pending.png",
+			width: 7, height: 1,
+			style: &imageuri.Style{HideLoading: true},
+			under: "abcdefg",
+			steps: []step{
+				{do: resize(7, 1), expected: `
+abcdefg`},
+				{do: awaitRequest, expected: `
+abcdefg`},
+				{expected: `
+abcdefg`},
+			},
+			wantFetches: 1,
+		},
+		{
 			name:   "re-encodes the image when resized",
 			source: "http", path: "sample.png",
 			width: 40, height: 10, images: true,
@@ -330,9 +349,22 @@ ab✗de`},
 			source: "fs", path: "missing.png",
 			width: 5, height: 1,
 			style: &imageuri.Style{},
+			under: "abcde",
 			steps: []step{
 				{do: seq(resize(5, 1), settle), expected: `
-     `},
+abcde`},
+			},
+			wantFetches: 1,
+		},
+		{
+			name:   "draws nothing for an empty problem art when the writer cannot draw images",
+			source: "fs", path: "sample.png",
+			width: 1, height: 1,
+			style: &imageuri.Style{},
+			under: "a",
+			steps: []step{
+				{do: seq(resize(1, 1), settle), expected: `
+a`},
 			},
 			wantFetches: 1,
 		},
@@ -387,6 +419,102 @@ ab✗de`},
 				}}
 			}
 			comptest.TestComponent(t, c, f.w, cases)
+			assert.Equal(t, tt.wantFetches, f.fetches.Load())
+			assert.Equal(t, f.opened.Load(), f.closes.Load(),
+				"every opened file is closed")
+		})
+	}
+}
+
+// blank40x10 and cross40x10 are a 40x10 writer before anything is
+// drawn and with a "✗" problem art drawn centered.
+const (
+	blank40x10 = `
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        `
+	cross40x10 = `
+                                        
+                                        
+                                        
+                                        
+                   ✗                    
+                                        
+                                        
+                                        
+                                        
+                                        `
+)
+
+func TestComponentStart(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	type testCase struct {
+		name         string
+		source, path string
+		// closeFirst closes the component before Start.
+		closeFirst  bool
+		wantSize    image.Point
+		wantSettled bool
+		// wantScreen is the first frame drawn once Start has settled.
+		wantScreen  string
+		wantFetches int32
+	}
+	var tests []testCase
+	for _, source := range []string{"http", "fs"} {
+		tests = append(tests,
+			testCase{
+				name:   "loads once without drawing from " + source,
+				source: source, path: "sample.png",
+				wantSize: image.Pt(194, 179), wantSettled: true,
+				wantScreen:  samplePNG40x10,
+				wantFetches: 1,
+			},
+			testCase{
+				name:   "settles with no size when not an image from " + source,
+				source: source, path: "page.html",
+				wantSettled: true,
+				wantScreen:  cross40x10,
+				wantFetches: 1,
+			},
+			testCase{
+				name:   "loads nothing after Close from " + source,
+				source: source, path: "sample.png",
+				closeFirst: true,
+				wantScreen: blank40x10,
+			},
+		)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t, tt.source, tt.path, 40, 10, true,
+				imageuri.Style{Fit: term.ImageFitContain, ProblemArt: "✗"})
+			size, settled := f.c.Size()
+			assert.Equal(t, image.Point{}, size)
+			assert.False(t, settled)
+
+			if tt.closeFirst {
+				require.NoError(t, f.c.Close())
+			}
+			f.c.Start()
+			f.c.Start()
+			if !tt.closeFirst {
+				awaitSettled(f)
+			}
+			size, settled = f.c.Size()
+			assert.Equal(t, tt.wantSize, size)
+			assert.Equal(t, tt.wantSettled, settled)
+
+			comptest.TestComponent(t, f.c, f.w, []comptest.TestCase{
+				{Action: func() { f.c.Resize(40, 10) }, Expected: tt.wantScreen},
+			})
 			assert.Equal(t, tt.wantFetches, f.fetches.Load())
 			assert.Equal(t, f.opened.Load(), f.closes.Load(),
 				"every opened file is closed")
@@ -464,10 +592,12 @@ func TestCloseCancelsTheRequest(t *testing.T) {
 
 func TestNew(t *testing.T) {
 	tests := []struct {
-		name    string
-		uri     string
-		ttl     time.Duration
-		wantErr string
+		name          string
+		uri           string
+		ttl           time.Duration
+		noStorage     bool
+		noInterrupter bool
+		wantErr       string
 	}{
 		{name: "file", uri: "file:///tmp/a.png", ttl: time.Hour},
 		{name: "http with zero ttl", uri: "http://example.com/a.png"},
@@ -478,16 +608,25 @@ func TestNew(t *testing.T) {
 		{name: "no scheme", uri: "/tmp/a.png", wantErr: `unsupported scheme ""`},
 		{name: "http without host", uri: "http:///a.png", wantErr: "no host"},
 		{name: "file without path", uri: "file:a.png", wantErr: "no path"},
+		{name: "nil storage", uri: "file:///tmp/a.png", noStorage: true, wantErr: "nil storage"},
+		{name: "nil interrupter", uri: "file:///tmp/a.png", noInterrupter: true, wantErr: "nil interrupter"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c, err := imageuri.New(tt.uri, tt.ttl,
-				storagestub.NewInMemoryService(), make(interrupts, 1), viewerStyle)
+			var storage storageapi.Service = storagestub.NewInMemoryService()
+			if tt.noStorage {
+				storage = nil
+			}
+			var irq term.Interrupter = make(interrupts, 1)
+			if tt.noInterrupter {
+				irq = nil
+			}
+			c, err := imageuri.New(tt.uri, tt.ttl, storage, irq, viewerStyle)
 			uriErr := imageuri.ValidateURI(tt.uri)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				assert.Nil(t, c)
-				if tt.ttl >= 0 {
+				if tt.ttl >= 0 && !tt.noStorage && !tt.noInterrupter {
 					assert.ErrorContains(t, uriErr, tt.wantErr,
 						"ValidateURI rejects what New rejects for the URI")
 				}
@@ -496,6 +635,47 @@ func TestNew(t *testing.T) {
 			require.NoError(t, err)
 			assert.NoError(t, uriErr)
 			require.NoError(t, c.Close())
+		})
+	}
+}
+
+func TestNewLoaded(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	img, err := png.Decode(bytes.NewReader(imageuritest.SamplePNG))
+	require.NoError(t, err)
+	missing := (&url.URL{Scheme: "file", Path: filepath.ToSlash(
+		filepath.Join(t.TempDir(), "missing.png"))}).String()
+
+	tests := []struct {
+		name       string
+		uri        string
+		wantErr    string
+		wantScreen string
+	}{
+		{name: "draws the image without fetching", uri: missing, wantScreen: samplePNG40x10},
+		{name: "invalid URI", uri: "ftp://example.com/a.png", wantErr: `unsupported scheme "ftp"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := imageuri.NewLoaded(tt.uri, img,
+				imageuri.Style{Fit: term.ImageFitContain, ProblemArt: "✗"})
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				assert.Nil(t, c)
+				return
+			}
+			require.NoError(t, err)
+			defer c.Close() //nolint:errcheck
+
+			size, settled := c.Size()
+			assert.Equal(t, image.Pt(194, 179), size)
+			assert.True(t, settled)
+			c.Start()
+			w := asciiart.NewStringWriter(40, 10, asciiart.DefaultConfig())
+			comptest.TestComponent(t, c, w, []comptest.TestCase{
+				{Action: func() { c.Resize(40, 10) }, Expected: tt.wantScreen},
+			})
 		})
 	}
 }
@@ -612,6 +792,22 @@ func awaitRequest(f *fixture) {
 	receive(f.t, f.arrived, "the request")
 }
 
+// awaitSettled waits on interrupts until the component's load settles.
+func awaitSettled(f *fixture) {
+	timeout := time.After(testTimeout)
+	for {
+		if _, settled := f.c.Size(); settled {
+			return
+		}
+		select {
+		case <-f.irq:
+		case <-timeout:
+			f.t.Error("timed out waiting for the image to settle")
+			return
+		}
+	}
+}
+
 // settle redraws on every interrupt, as the host event loop does, until
 // the component stops drawing the loading animation.
 func settle(f *fixture) {
@@ -699,4 +895,20 @@ type countingFile struct {
 func (c countingFile) Close() error {
 	c.closes.Add(1)
 	return c.File.Close()
+}
+
+func TestNewServesImageuritestCache(t *testing.T) {
+	storage := storagestub.NewInMemoryService()
+	const uri = "https://example.invalid/sample.png"
+	imageuritest.Cache(t, storage, uri, imageuritest.SamplePNG)
+	c, err := imageuri.New(uri, time.Hour, storage, term.NopInterrupter(), imageuri.Style{})
+	require.NoError(t, err)
+	defer c.Close() //nolint:errcheck
+	c.Start()
+	require.Eventually(t, func() bool {
+		_, settled := c.Size()
+		return settled
+	}, 10*time.Second, time.Millisecond)
+	size, _ := c.Size()
+	assert.Equal(t, image.Pt(194, 179), size)
 }

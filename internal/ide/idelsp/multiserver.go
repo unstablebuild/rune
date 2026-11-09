@@ -62,15 +62,17 @@ func (m *multiLangServer) allChildren() []server {
 // replaceChild swaps old for replacement by pointer identity. It is
 // used by the manager's restart supervisor when a single child
 // crashes and is re-spawned, leaving the other children untouched.
-func (m *multiLangServer) replaceChild(old, replacement server) {
+// It reports whether old was found.
+func (m *multiLangServer) replaceChild(old, replacement server) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i, c := range m.children {
 		if c == old {
 			m.children[i] = replacement
-			return
+			return true
 		}
 	}
+	return false
 }
 
 func (m *multiLangServer) call(

@@ -19,7 +19,11 @@ package search
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"math"
+	"math/rand"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +36,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"go.uber.org/goleak"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/debug"
 )
 
 type listConstructor func(ListConfig) (listIfc, *cell.Buffer)
@@ -370,6 +375,621 @@ func TestPushOuterCancelDoesNotUnblockDrainEarly(t *testing.T) {
 		require.NoError(t, l.Close())
 		require.Equal(t, total, count, "iteration %d", iter)
 	}
+}
+
+func TestDataResetDropsBufferedPush(t *testing.T) {
+	cfg := ListConfig{Interrupter: term.NopInterrupter()}
+	// Only the ticker and the batch size flush the consumer's buffer
+	// before cancel; keep both out of the way so "b" stays buffered.
+	cfg.interruptEvery = 24 * time.Hour
+	cfg.setFileCountEvery = 2
+	l := NewList(cfg)
+	defer l.Close()
+
+	ch := l.Push(context.Background())
+	ch <- []byte("a")
+	ch <- []byte("b")
+	require.Equal(t, 1, l.TotalCount())
+
+	l.DataReset()
+	l.Cancel()
+	l.Wait()
+	assert.Equal(t, 0, l.TotalCount())
+
+	ch = l.Push(context.Background())
+	ch <- []byte("c")
+	close(ch)
+	l.Wait()
+	assert.Equal(t, 1, l.TotalCount())
+}
+
+// listSnapshot copies the input and the match nodes under the lock.
+func listSnapshot(l *List) (input []string, nodes []Match) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	input = make([]string, len(l.input))
+	for i, b := range l.input {
+		input[i] = string(b)
+	}
+	l.list.Iterate(func(c tui.Component) {
+		nodes = append(nodes, c.(searchResultComponent).Match)
+	})
+	return input, nodes
+}
+
+// requireListConsistent checks a quiescent list: the counts agree with
+// the data, every match node points at the input it was built from, the
+// matches are what a fresh search over the input yields, and there is a
+// focus exactly when there are matches. It returns the input.
+func requireListConsistent(t *testing.T, l *List) []string {
+	t.Helper()
+	input, nodes := listSnapshot(l)
+	require.Equal(t, len(input), l.TotalCount(), "total count")
+	require.Equal(t, len(nodes), l.MatchCount(), "match count")
+	for _, m := range nodes {
+		require.True(t, m.idx >= 0 && m.idx < len(input),
+			"match %q has idx %d with %d inputs", m.data, m.idx, len(input))
+		require.Equal(t, input[m.idx], string(m.data),
+			"match idx %d points at another input", m.idx)
+	}
+
+	l.mu.Lock()
+	query := l.getSearchQuery()
+	algo, caseSensitive := l.cfg.algo, l.cfg.caseSensitive
+	l.mu.Unlock()
+	want := len(input)
+	if query != "" {
+		raw := make([][]byte, len(input))
+		for i, s := range input {
+			raw[i] = []byte(s)
+		}
+		want = len(simpleSearch(algo, raw, query, caseSensitive))
+	}
+	require.Equal(t, want, len(nodes), "matches for query %q over %d inputs", query, len(input))
+
+	_, ok := l.Focus()
+	require.Equal(t, len(nodes) > 0, ok, "focus with %d matches", len(nodes))
+	return input
+}
+
+// pushHarness scripts one List through an interleaving of pushes and
+// resets. Sends are synchronous, so once push returns the consumer has
+// received every element and is holding back whatever its batch size
+// has not flushed yet.
+type pushHarness struct {
+	t    *testing.T
+	l    *List
+	runs []pushRun
+}
+
+type pushRun struct {
+	ch     chan<- []byte
+	cancel context.CancelFunc
+}
+
+func (h *pushHarness) push(elems ...string) pushRun {
+	ctx, cancel := context.WithCancel(context.Background())
+	r := pushRun{ch: h.l.Push(ctx), cancel: cancel}
+	h.runs = append(h.runs, r)
+	r.send(elems...)
+	return r
+}
+
+// settle ends every push the way its owner would, by canceling its
+// context, and waits for the list. List.Cancel would also drop an
+// in-flight search, which no caller does without resetting afterwards.
+func (h *pushHarness) settle() {
+	for _, r := range h.runs {
+		r.cancel()
+	}
+	h.l.Wait()
+}
+
+func (r pushRun) send(elems ...string) {
+	for _, e := range elems {
+		r.ch <- []byte(e)
+	}
+}
+
+func (r pushRun) close() { close(r.ch) }
+
+func TestListPushDataResetInterleavings(t *testing.T) {
+	long := strings.Repeat("x", 4096)
+	cases := []struct {
+		name string
+		run  func(h *pushHarness)
+		want []string
+	}{
+		{"closed push keeps everything", func(h *pushHarness) {
+			h.push("a", "b", "c").close()
+		}, []string{"a", "b", "c"}},
+		{"list cancel keeps everything", func(h *pushHarness) {
+			h.push("a", "b", "c")
+			h.l.Cancel()
+		}, []string{"a", "b", "c"}},
+		{"outer cancel keeps everything once drained", func(h *pushHarness) {
+			r := h.push("a", "b", "c")
+			r.cancel()
+			h.push().close()
+		}, []string{"a", "b", "c"}},
+		{"new push flushes the one it replaces", func(h *pushHarness) {
+			h.push("a", "b", "c")
+			h.push("d").close()
+		}, []string{"a", "b", "c", "d"}},
+		{"reset drops a live push", func(h *pushHarness) {
+			h.push("a", "b", "c")
+			h.l.DataReset()
+		}, nil},
+		{"reset after a closed push", func(h *pushHarness) {
+			h.push("a", "b", "c").close()
+			h.l.DataReset()
+		}, nil},
+		{"reset drops what is sent to the old push afterwards", func(h *pushHarness) {
+			r := h.push("a")
+			h.l.DataReset()
+			r.send("b", "c")
+			r.close()
+		}, nil},
+		{"outer cancel then reset", func(h *pushHarness) {
+			r := h.push("a", "b", "c")
+			r.cancel()
+			h.l.DataReset()
+		}, nil},
+		{"reset then outer cancel", func(h *pushHarness) {
+			r := h.push("a", "b", "c")
+			h.l.DataReset()
+			r.cancel()
+		}, nil},
+		{"reset drops a paused push", func(h *pushHarness) {
+			h.push("a", "b", "c")
+			h.l.Pause()
+			h.l.DataReset()
+		}, nil},
+		{"double reset", func(h *pushHarness) {
+			h.push("a")
+			h.l.DataReset()
+			h.l.DataReset()
+		}, nil},
+		{"reset then a new push", func(h *pushHarness) {
+			h.push("a", "b", "c")
+			h.l.DataReset()
+			h.push("d", "e").close()
+		}, []string{"d", "e"}},
+		{"only the last push survives repeated resets", func(h *pushHarness) {
+			h.push("a")
+			h.l.DataReset()
+			h.push("b", "c")
+			h.l.DataReset()
+			h.push("d", "e", "f").close()
+		}, []string{"d", "e", "f"}},
+		{"reset then sync push", func(h *pushHarness) {
+			h.push("a", "b", "c")
+			h.l.DataReset()
+			h.l.PushSync([]byte("x"))
+		}, []string{"x"}},
+		{"sync push then a push", func(h *pushHarness) {
+			h.l.PushSync([]byte("x"))
+			h.push("a", "b").close()
+		}, []string{"x", "a", "b"}},
+		{"sync push while a push is live", func(h *pushHarness) {
+			r := h.push("a", "b")
+			h.l.PushSync([]byte("x"))
+			r.send("c")
+			r.close()
+		}, []string{"a", "b", "c", "x"}},
+		{"empty push", func(h *pushHarness) {
+			h.push().close()
+		}, nil},
+		{"empty element", func(h *pushHarness) {
+			h.push("").close()
+		}, []string{""}},
+		{"long element", func(h *pushHarness) {
+			h.push(long).close()
+		}, []string{long}},
+		{"non-ascii elements", func(h *pushHarness) {
+			h.push("héllo wörld", "日本語", "tab\tsep").close()
+		}, []string{"héllo wörld", "日本語", "tab\tsep"}},
+		{"duplicate elements", func(h *pushHarness) {
+			h.push("a", "a", "a").close()
+		}, []string{"a", "a", "a"}},
+		{"query before a push", func(h *pushHarness) {
+			h.l.Buffer().WriteString("b")
+			h.push("a", "b", "ab").close()
+		}, []string{"a", "b", "ab"}},
+		{"query during a push", func(h *pushHarness) {
+			r := h.push("a")
+			h.l.Buffer().WriteString("b")
+			r.send("b", "ab")
+			r.close()
+		}, []string{"a", "b", "ab"}},
+		{"query cleared during a push", func(h *pushHarness) {
+			h.l.Buffer().WriteString("b")
+			r := h.push("a", "b")
+			h.l.Buffer().Reset()
+			r.send("ab")
+			r.close()
+		}, []string{"a", "b", "ab"}},
+		{"query cleared on an equal-match list", func(h *pushHarness) {
+			h.l.Close()
+			cfg := ListConfig{Interrupter: term.NopInterrupter(), Algo: EqualMatch}
+			cfg.interruptEvery = h.l.cfg.interruptEvery
+			cfg.setFileCountEvery = h.l.cfg.setFileCountEvery
+			h.l.Init(cfg)
+			h.push("a", "b").close()
+			h.l.Buffer().WriteString("a")
+			h.l.Wait()
+			require.Equal(h.t, 1, h.l.MatchCount())
+			h.l.Buffer().Reset()
+		}, []string{"a", "b"}},
+		{"reset clears matches", func(h *pushHarness) {
+			h.l.Buffer().WriteString("b")
+			h.push("a", "b", "ab").close()
+			h.l.DataReset()
+		}, nil},
+		{"close drops a live push", func(h *pushHarness) {
+			h.push("a", "b", "c")
+			require.NoError(h.t, h.l.Close())
+		}, nil},
+	}
+	for _, batch := range []int{1, 2, 1024} {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("batch %d/%s", batch, tc.name), func(t *testing.T) {
+				cfg := ListConfig{Interrupter: term.NopInterrupter()}
+				cfg.interruptEvery = 24 * time.Hour
+				cfg.setFileCountEvery = batch
+				l := NewList(cfg)
+				h := &pushHarness{t: t, l: l}
+				tc.run(h)
+				h.settle()
+				assert.ElementsMatch(t, tc.want, requireListConsistent(t, l))
+				assertNoLeaks(t, l)
+			})
+		}
+	}
+}
+
+func TestListTickerFlushAfterDataResetIsDropped(t *testing.T) {
+	cfg := ListConfig{Interrupter: term.NopInterrupter()}
+	cfg.interruptEvery = time.Millisecond
+	cfg.setFileCountEvery = 1024
+	l := NewList(cfg)
+
+	ch := l.Push(context.Background())
+	ch <- []byte("a")
+	ch <- []byte("b")
+	l.DataReset()
+	// Leave the consumer's ticker time to flush what it still holds.
+	time.Sleep(20 * time.Millisecond)
+	assert.Equal(t, 0, l.TotalCount())
+
+	ch <- []byte("c")
+	close(ch)
+	l.Wait()
+	assert.Empty(t, requireListConsistent(t, l))
+	assertNoLeaks(t, l)
+}
+
+// A query edit starts a search without waiting for the one it cancels,
+// so toggling case sensitivity can overlap with a search still scanning.
+func TestListToggleCaseSensitivityDuringCanceledSearch(t *testing.T) {
+	l := NewList(ListConfig{Interrupter: term.NopInterrupter()})
+	defer l.Close()
+
+	// The overlap is short, so repeat it to give the race detector
+	// enough chances to catch the two accesses together.
+	for range 40 {
+		ch := l.Push(context.Background())
+		for i := range 5000 {
+			ch <- fmt.Appendf(nil, "element-%d", i)
+		}
+		close(ch)
+		l.Wait()
+
+		l.Buffer().WriteString("e")
+		l.DataReset()
+		l.Buffer().Reset()
+		l.ToggleCaseSensitivity()
+		l.Wait()
+		require.Equal(t, 0, l.TotalCount())
+	}
+}
+
+// stressPush is one Push and the producer feeding it. sent is complete
+// once done is closed.
+type stressPush struct {
+	gen    int
+	cancel context.CancelFunc
+	done   chan struct{}
+	sent   []string
+	closes bool
+}
+
+var stressWords = []string{
+	"alpha", "Beta", "gamma", "delta", "éclair", "日本", "zzz",
+	"a/b/c.go", "with space", "tab\tsep", "AbC", "abc", "",
+}
+
+var stressQueries = []string{
+	"a", "b", "g", "p", "al", "ab", "ZZ", "日", "g0", "-p", "xyz", "c.go", "A",
+}
+
+func stressWord(rng *rand.Rand) string {
+	if rng.Intn(3) == 0 {
+		b := make([]byte, 1+rng.Intn(4))
+		for i := range b {
+			b[i] = byte('a' + rng.Intn(26))
+		}
+		return string(b)
+	}
+	return stressWords[rng.Intn(len(stressWords))]
+}
+
+// TestListPushDataResetStress drives a List through random sequences of
+// pushes, resets, cancels, sync pushes, query edits, focus moves and
+// resizes under random batch sizes, ticker periods and producer timing,
+// with a second goroutine reading it the way a render loop does. At every
+// quiescent point the list must hold exactly what was pushed since the
+// last reset, and nothing may land after Close.
+func TestListPushDataResetStress(t *testing.T) {
+	seed := time.Now().UnixNano()
+	if s := os.Getenv("RUNE_LIST_STRESS_SEED"); s != "" {
+		var err error
+		seed, err = strconv.ParseInt(s, 10, 64)
+		require.NoError(t, err)
+	}
+	t.Logf("RUNE_LIST_STRESS_SEED=%d", seed)
+	rounds := 48
+	if testing.Short() {
+		rounds = 6
+	}
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent(),
+		goleak.IgnoreTopFunction("go.opencensus.io/stats/view.(*worker).start"))
+	for round := range rounds {
+		t.Run(strconv.Itoa(round), func(t *testing.T) {
+			runListStressRound(t, rand.New(rand.NewSource(seed+int64(round))))
+		})
+	}
+}
+
+func runListStressRound(t *testing.T, rng *rand.Rand) {
+	cfg := ListConfig{
+		Interrupter:     term.NopInterrupter(),
+		Algo:            []AlgoConfig{FuzzyMatch, EqualMatch, ContainsMatch}[rng.Intn(3)],
+		CaseSensitive:   rng.Intn(2) == 0,
+		BottomSearchBar: rng.Intn(2) == 0,
+		SyncSearch:      rng.Intn(4) == 0,
+	}
+	cfg.interruptEvery = []time.Duration{
+		24 * time.Hour, time.Millisecond, 100 * time.Microsecond, 10 * time.Microsecond,
+	}[rng.Intn(4)]
+	batch := []int{1, 2, 3, 5, 8, 64, 1024}[rng.Intn(7)]
+	cfg.setFileCountEvery = batch
+	t.Logf("algo=%d case=%v bottom=%v sync=%v interruptEvery=%s batch=%d",
+		cfg.Algo, cfg.CaseSensitive, cfg.BottomSearchBar, cfg.SyncSearch,
+		cfg.interruptEvery, batch)
+
+	l := NewList(cfg)
+	l.Resize(40, 12)
+
+	var pushes []*stressPush
+	readerCtx, stopReader := context.WithCancel(context.Background())
+	readerDone := make(chan struct{})
+	t.Cleanup(func() {
+		stopReader()
+		<-readerDone
+		_ = l.Close()
+		for _, p := range pushes {
+			p.cancel()
+			<-p.done
+		}
+		l.Wait()
+	})
+	go debug.CapturePanicReport(func() {
+		defer close(readerDone)
+		w := cell.NewBufferWriter(context.Background(), 40, 12)
+		for i := 0; readerCtx.Err() == nil; i++ {
+			l.TotalCount()
+			l.MatchCount()
+			l.Focus()
+			l.Draw(w)
+			l.IterateVisible(func(Match) {})
+			l.ElementAt(term.Coordinates{X: 1, Y: i % 12})
+			runtime.Gosched()
+		}
+	})
+
+	var (
+		gen      int
+		current  *stressPush
+		syncs    []string
+		removed  []string
+		nextPush int
+		nextSync int
+		lastElem string
+	)
+
+	// quiesce lets every producer of this generation finish, waits for
+	// the list to settle, and checks it holds exactly what was pushed.
+	quiesce := func() {
+		t.Helper()
+		if current != nil {
+			if current.closes {
+				<-current.done
+			} else {
+				current.cancel()
+			}
+			current = nil
+		}
+		l.Wait()
+		var want []string
+		for _, p := range pushes {
+			if p.gen != gen {
+				continue
+			}
+			<-p.done
+			want = append(want, p.sent...)
+		}
+		want = append(want, syncs...)
+		for _, r := range removed {
+			for i, w := range want {
+				if w == r {
+					want = append(want[:i], want[i+1:]...)
+					break
+				}
+			}
+		}
+		assert.ElementsMatch(t, want, requireListConsistent(t, l),
+			"generation %d after %d pushes", gen, nextPush)
+	}
+
+	nops := 30 + rng.Intn(50)
+	for range nops {
+		if t.Failed() {
+			break
+		}
+		switch r := rng.Intn(100); {
+		case r < 35:
+			n := []int{0, 1, 2, 3, batch - 1, batch, batch + 1, 2*batch + 1, rng.Intn(200)}[rng.Intn(9)]
+			elems := make([]string, n)
+			delays := make([]time.Duration, n)
+			for i := range elems {
+				elems[i] = fmt.Sprintf("g%d-p%d-%d-%s", gen, nextPush, i, stressWord(rng))
+				switch d := rng.Intn(100); {
+				case d < 10:
+					delays[i] = -1
+				case d < 25:
+					delays[i] = time.Duration(1+rng.Intn(40)) * time.Microsecond
+				}
+			}
+			if n > 0 {
+				lastElem = elems[rng.Intn(n)]
+			}
+			p := &stressPush{gen: gen, done: make(chan struct{}), closes: rng.Intn(2) == 0}
+			ctx, cancel := context.WithCancel(context.Background())
+			p.cancel = cancel
+			prev := current
+			cancelPrevFirst := prev != nil && rng.Intn(2) == 0
+			if cancelPrevFirst {
+				prev.cancel()
+			}
+			ch := l.Push(ctx)
+			if prev != nil && !cancelPrevFirst {
+				prev.cancel()
+			}
+			current = p
+			pushes = append(pushes, p)
+			nextPush++
+			go debug.CapturePanicReport(func() {
+				defer close(p.done)
+				for i, e := range elems {
+					switch d := delays[i]; {
+					case d < 0:
+						runtime.Gosched()
+					case d > 0:
+						time.Sleep(d)
+					}
+					select {
+					case ch <- []byte(e):
+						p.sent = append(p.sent, e)
+					case <-ctx.Done():
+						return
+					}
+				}
+				if p.closes {
+					close(ch)
+				}
+			})
+		case r < 50:
+			l.DataReset()
+			gen++
+			syncs, removed = nil, nil
+		case r < 57:
+			// Cancel is only ever followed by a reset; alone it would
+			// leave an interrupted search's matches missing.
+			if current != nil {
+				current.cancel()
+				current = nil
+			}
+			l.Cancel()
+			l.DataReset()
+			gen++
+			syncs, removed = nil, nil
+		case r < 64:
+			quiesce()
+		case r < 72:
+			s := fmt.Sprintf("g%d-s%d-%s", gen, nextSync, stressWord(rng))
+			nextSync++
+			l.PushSync([]byte(s))
+			syncs = append(syncs, s)
+		case r < 80:
+			switch rng.Intn(5) {
+			case 0:
+				l.Buffer().Reset()
+			case 1:
+				l.Buffer().WriteString(string(rune('a' + rng.Intn(26))))
+			case 2:
+				l.Buffer().Replace(lastElem)
+			case 3:
+				l.Buffer().Replace(strings.ToUpper(stressQueries[rng.Intn(len(stressQueries))]))
+			default:
+				l.Buffer().Replace(stressQueries[rng.Intn(len(stressQueries))])
+			}
+		case r < 83:
+			l.ToggleCaseSensitivity()
+		case r < 86:
+			l.Pause()
+		case r < 91:
+			switch rng.Intn(4) {
+			case 0:
+				l.FocusUp()
+			case 1:
+				l.FocusDown()
+			case 2:
+				l.FocusStart()
+			default:
+				l.FocusEnd()
+			}
+		case r < 94:
+			l.Resize(10+rng.Intn(60), 3+rng.Intn(20))
+		case r < 97:
+			quiesce()
+			if m, ok := l.Focus(); ok {
+				data := string(m.Data())
+				require.True(t, l.RemoveFocus())
+				removed = append(removed, data)
+				quiesce()
+			}
+		default:
+			switch rng.Intn(3) {
+			case 0:
+				runtime.Gosched()
+			case 1:
+				time.Sleep(time.Duration(rng.Intn(200)) * time.Microsecond)
+			default:
+				time.Sleep(time.Duration(1+rng.Intn(3)) * time.Millisecond)
+			}
+		}
+	}
+	quiesce()
+
+	// Nothing a live push holds may land after Close.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := l.Push(ctx)
+	for i := range 3 {
+		ch <- fmt.Appendf(nil, "g%d-close-%d", gen, i)
+	}
+	stopReader()
+	<-readerDone
+	require.NoError(t, l.Close())
+	for _, p := range pushes {
+		p.cancel()
+		<-p.done
+	}
+	l.Wait()
+	assert.Equal(t, 0, l.TotalCount())
+	time.Sleep(2 * cfg.interruptEvery % (10 * time.Millisecond))
+	assert.Equal(t, 0, l.TotalCount())
 }
 
 func focusIdx(t *testing.T, l *List) int {
@@ -770,6 +1390,32 @@ func testListLeak(t *testing.T, constructor listConstructor) {
 }
 
 func TestListRemoveFocus(t *testing.T) {
+	t.Run("remove focus keeps indices aligned when matches are sorted", func(t *testing.T) {
+		l := NewList(ListConfig{Interrupter: term.NopInterrupter(), SyncSearch: true})
+		l.Resize(8, 4)
+		defer l.Close()
+
+		// "ab" ranks above "ba" for "a", so the list order is the
+		// reverse of the input order.
+		l.PushSync([]byte("ba"))
+		l.PushSync([]byte("ab"))
+		l.Buffer().WriteString("a")
+		l.FocusStart()
+		m, ok := l.Focus()
+		require.True(t, ok)
+		require.Equal(t, "ab", string(m.Data()))
+
+		require.True(t, l.RemoveFocus())
+		m, ok = l.Focus()
+		require.True(t, ok)
+		assert.Equal(t, "ba", string(m.Data()))
+		assert.Equal(t, 0, m.idx)
+		assert.Equal(t, 1, l.TotalCount())
+
+		require.True(t, l.RemoveFocus())
+		assert.Equal(t, 0, l.TotalCount())
+		assert.Equal(t, 0, l.MatchCount())
+	})
 	t.Run("remove focus removes item, shifts the ones below up and idices are continuos", func(t *testing.T) {
 		l := NewList(ListConfig{BottomSearchBar: true})
 		l.Resize(8, 4)
@@ -992,7 +1638,7 @@ func benchmarkHandleSearch(b *testing.B, n int, bottomSearchBar bool) {
 		l.waitSearchCtx, l.cancelSearch = context.WithCancel(ctx)
 		l.list.Reset()
 		l.mu.Unlock()
-		l.handleSearch(context.Background(), func() {}, data, "D")
+		l.handleSearch(context.Background(), func() {}, data, "D", false)
 		l.Draw(w)
 	}
 }

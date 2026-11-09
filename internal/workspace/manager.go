@@ -120,19 +120,22 @@ func (m *Manager) Scheme(uri workspaceapi.URI) (schemeapi.SchemeFunc, error) {
 	return schemeFn, nil
 }
 
-// AddWorkspace returns a Workspace capable of managing resources on
-// the given URI. It returns an error if no Scheme has been registered
-// (previously via RegisterScheme) for the given workspace's scheme. Note that
-// the given URI should not be a file URI.
+// AcquireWorkspace returns a Workspace capable of managing resources on
+// the given URI and takes a reference to it; see
+// [WorkspaceManager.AcquireWorkspace]. It returns an error if no Scheme
+// has been registered (previously via RegisterScheme) for the given
+// workspace's scheme. Note that the given URI should not be a file URI.
 //
-// If a workspace has already been added for the given URI, then this
+// If a workspace is already registered under the given URI, then this
 // method returns it. This method does not follow the same semantics as
 // Workspace as the latter uses IsWorkspaceURI semantics and this
 // will create a new workspace if the uri strings are different.
-func (m *Manager) AddWorkspace(
+func (m *Manager) AcquireWorkspace(
 	ctx context.Context, uri workspaceapi.URI,
 ) (Workspace, error) {
-	if w, ok := m.workspaces[uri.String()]; ok {
+	key := uri.String()
+	if w, ok := m.workspaces[key]; ok {
+		m.refs[key]++
 		return w, nil
 	}
 
@@ -154,9 +157,10 @@ func (m *Manager) AddWorkspace(
 
 	workspace := m.workspaceFunc(uri, scheme, m.scheduleNextTick)
 	managerWorkspace := managerWorkspace{uri: uri, m: m, Workspace: workspace}
-	m.workspaces[uri.String()] = managerWorkspace
+	m.workspaces[key] = managerWorkspace
+	m.refs[key] = 1
 
-	m.log(log.DebugLevel, "AddWorkspace(%q)", uri.String())
+	m.log(log.DebugLevel, "AcquireWorkspace(%q)", key)
 
 	return managerWorkspace, nil
 }
@@ -185,52 +189,23 @@ func (m *Manager) HasWorkspace(uri workspaceapi.URI) bool {
 	return ok
 }
 
-// IncrementReference bumps the refcount for the workspace
-// registered under uri. See [WorkspaceManager.IncrementReference].
-// Calling IncrementReference for a uri that was never added via
-// AddWorkspace is a no-op so a stray increment cannot resurrect a
-// torn-down entry.
-func (m *Manager) IncrementReference(uri workspaceapi.URI) {
-	if _, ok := m.workspaces[uri.String()]; !ok {
-		return
-	}
-	m.refs[uri.String()]++
-}
-
-// DecrementReference decrements the refcount for the workspace at
-// uri and closes it once the count reaches zero. See
-// [WorkspaceManager.DecrementReference].
-func (m *Manager) DecrementReference(uri workspaceapi.URI) error {
+// ReleaseWorkspace releases a reference to the workspace registered
+// under uri. See [WorkspaceManager.ReleaseWorkspace]. The returned
+// workspace is unwrapped so closing it cannot touch the manager's
+// maps. Stale wrapped handles from before the release stay harmless:
+// their Close only evicts the entry they correspond to.
+func (m *Manager) ReleaseWorkspace(uri workspaceapi.URI) (Workspace, bool) {
 	key := uri.String()
-	count, referenced := m.refs[key]
-	if !referenced {
-		return nil
-	}
-	count--
-	if count > 0 {
-		m.refs[key] = count
-		return nil
-	}
 	w, ok := m.workspaces[key]
-	if !ok {
-		delete(m.refs, key)
-		return nil
-	}
-	return w.Close()
-}
-
-// RemoveWorkspace unregisters uri and returns the underlying
-// Workspace, unwrapped so closing it cannot touch the manager's maps.
-// Callers are responsible for calling Close on the returned
-// workspace. Stale wrapped handles from before the remove stay
-// harmless: their Close only evicts the entry they correspond to.
-func (m *Manager) RemoveWorkspace(uri workspaceapi.URI) (Workspace, bool) {
-	w, ok := m.workspaces[uri.String()]
 	if !ok {
 		return nil, false
 	}
+	if count := m.refs[key]; count > 1 {
+		m.refs[key] = count - 1
+		return nil, false
+	}
 	m.removeWorkspace(uri)
-	m.log(log.DebugLevel, "RemoveWorkspace(%q)", uri.String())
+	m.log(log.DebugLevel, "ReleaseWorkspace(%q)", key)
 	return w.Workspace, true
 }
 
@@ -276,7 +251,7 @@ func (w managerWorkspace) Close() error {
 // when present. The embedded Workspace interface field does not
 // promote OnDisconnect (RemoteScheme is an optional interface);
 // without this explicit forwarder, callers that type-assert the
-// value returned by Manager.AddWorkspace against RemoteScheme
+// value returned by Manager.AcquireWorkspace against RemoteScheme
 // would silently miss SSH transport drops and leave dead VTEs in
 // the reservoir after reconnect.
 func (w managerWorkspace) OnDisconnect() <-chan struct{} {

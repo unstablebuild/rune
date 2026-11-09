@@ -18,6 +18,8 @@ package texttest
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -28,9 +30,12 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
+	"github.com/unstablebuild/rune-go-sdk/mouse"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/text"
 )
@@ -738,6 +743,34 @@ func BenchmarkAuxBarRelativeMoveCursorSmall(b *testing.B) {
 	benchmarkAuxBar(b, 10, 10, false, true)
 }
 
+// Adding or removing a line rebuilds every absolute line number, so the cost of
+// an edit must grow linearly with the file's rows.
+func BenchmarkAuxBarAbsoluteRebuildOnNewLine(b *testing.B) {
+	for _, rows := range []int{1_000, 2_000, 4_000, 8_000, 16_000} {
+		b.Run(fmt.Sprintf("rows=%d", rows), func(b *testing.B) {
+			buf := cell.NewBuffer()
+			buf.WriteString(strings.Repeat("line\n", rows))
+			scroll := component.NewScroll(buf)
+			bar := text.WithAuxBar(newTestHandler(scroll), buf, scroll, text.AuxBarConfig{
+				LinesEnabled:     true,
+				AbsoluteLines:    true,
+				ScheduleNextTick: func(fn func()) bool { fn(); return true },
+			})
+			bar.Resize(80, 50)
+
+			newLine := false
+			for b.Loop() {
+				if newLine {
+					buf.Edit(context.Background(), term.Coordinates{}, term.Coordinates{Y: 1}, "")
+				} else {
+					buf.InsertString(term.Coordinates{}, "\n")
+				}
+				newLine = !newLine
+			}
+		})
+	}
+}
+
 func BenchmarkAuxBarRelativeMoveCursorMedium(b *testing.B) {
 	benchmarkAuxBar(b, 100, 100, false, true)
 }
@@ -1026,4 +1059,275 @@ func (d differ) RemoteURL(ctx context.Context, file workspaceapi.URI, remoteName
 
 func (d differ) RelPath(ctx context.Context, file string) (string, error) {
 	panic("Unimplemented")
+}
+
+func TestAuxBarPointerLeaves(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		absolute bool
+	}{
+		{name: "relative lines"},
+		{name: "absolute lines", absolute: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			for _, size := range pointerSizes {
+				bar, _, _ := newPointerAuxBar(t, tt.absolute)
+				handlertest.RunPointerLeaves(t, bar, size.width, size.height)
+			}
+
+			bar, scroll, settle := newPointerAuxBar(t, tt.absolute)
+			bar.Resize(40, 10)
+			settle()
+			fold, ok := screenRuneAt(pointerStateOf(bar, 40, 10).Screen, auxBarVisibleFoldIcon)
+			require.True(t, ok, "no fold to collapse")
+			ctx := term.ContextWithPointer(context.Background(), new(term.Pointer))
+			for _, key := range []term.Key{term.MouseLeft, term.MouseRelease} {
+				bar.Handle(term.Event{
+					Type: term.EventMouse, Key: key, MouseX: fold.X, MouseY: fold.Y, Context: ctx,
+				})
+			}
+			settle()
+			require.Contains(t, pointerStateOf(bar, 40, 10).Screen, string(auxBarHiddenFoldIcon))
+			hiddenLines := func() int {
+				bar.mu.Lock()
+				defer bar.mu.Unlock()
+				return scroll.HiddenLineCount()
+			}
+			hidden := hiddenLines()
+			require.NotZero(t, hidden)
+
+			requirePointerLeavesKeepState(t, bar, 40, 10,
+				term.Coordinates{X: 10, Y: 2}, term.Coordinates{X: 16, Y: 4}, settle)
+
+			// A parent that captures a drag keeps sending it, held, once
+			// the pointer is past the edges of the fold column: a drag
+			// for the editor, not a click on a fold.
+			far := 4*40 + 100
+			for _, y := range []int{-1, 10, -far, far} {
+				bar.Handle(term.Event{
+					Type: term.EventMouse, Key: term.MouseLeft, MouseX: fold.X, MouseY: y, Context: ctx,
+				})
+				require.Equal(t, hidden, hiddenLines(), "a drag held at row %d toggled a fold", y)
+			}
+		})
+	}
+}
+
+const (
+	auxBarHiddenFoldIcon  = '\uf44a'
+	auxBarVisibleFoldIcon = '\uf44b'
+)
+
+// newPointerAuxBar returns a pointerEditor in an aux bar with lines and
+// folds, serialized with the ticks the bar schedules as the event loop
+// does, the editor's scroll, and a func that waits for the bar to draw
+// its folds.
+func newPointerAuxBar(
+	t *testing.T, absolute bool,
+) (*lockedHandler, *component.Scroll, func()) {
+	ed := newPointerEditor()
+	fs := &testFoldsService{}
+	fs.view = ed.buf.WithView(fs)
+	mu := new(sync.Mutex)
+	bar := &lockedHandler{mu: mu, Handler: text.WithAuxBar(ed, ed.buf, ed.Scroll, text.AuxBarConfig{
+		LinesEnabled:  true,
+		FoldsEnabled:  true,
+		AbsoluteLines: absolute,
+		ScheduleNextTick: func(fn func()) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			fn()
+			return true
+		},
+	})}
+	settle := func() {
+		t.Helper()
+		require.Eventually(t, func() bool {
+			return strings.ContainsAny(pointerStateOf(bar, 40, 10).Screen,
+				string([]rune{auxBarHiddenFoldIcon, auxBarVisibleFoldIcon}))
+		}, 5*time.Second, time.Millisecond, "the bar never drew its folds")
+	}
+	return bar, ed.Scroll, settle
+}
+
+// lockedHandler holds mu while it calls Handler.
+type lockedHandler struct {
+	tui.Handler
+	mu *sync.Mutex
+}
+
+func (h *lockedHandler) Handle(ev term.Event) (bool, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.Handler.Handle(ev)
+}
+
+func (h *lockedHandler) Draw(w term.Writer) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.Handler.Draw(w)
+}
+
+func (h *lockedHandler) Resize(width, height int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.Handler.Resize(width, height)
+}
+
+func (h *lockedHandler) Cursor() (term.Coordinates, term.CursorStyle, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.Handler.Cursor()
+}
+
+func (h *lockedHandler) Selection() (string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.Handler.Selection()
+}
+
+var pointerSizes = []struct{ width, height int }{{40, 10}, {1, 1}}
+
+// pointerContent has more rows and columns than the windows the pointer
+// leave tests draw it in, wide runes whose cells a pointer can split, and
+// the rows testFoldsService folds.
+const pointerContent = `package main
+
+// 日本語のコメント と 絵文字 🙂🎉 in a line wider than any window drawn here
+import (
+	"fmt"
+	"strings"
+)
+
+func main() {
+	s := "日本語🙂"
+	for i := range 3 {
+		fmt.Println(strings.Repeat(s, i), "a long line that goes past the right edge")
+	}
+}
+`
+
+// pointerEditor is a text.Handler that handles the mouse the way the
+// editors do: a mouse.Mouse drives its text.Cursor through
+// text.CursorMouseDelegate.
+type pointerEditor struct {
+	*testHandler
+	buf    *cell.Buffer
+	cursor *text.Cursor
+	mouse  *mouse.Mouse
+}
+
+func newPointerEditor() *pointerEditor {
+	buf := cell.NewBuffer()
+	buf.WriteString(pointerContent)
+	scroll := component.NewScroll(buf)
+	cursor := text.NewCursor(scroll, nil)
+	return &pointerEditor{
+		testHandler: newTestHandler(scroll),
+		buf:         buf,
+		cursor:      cursor,
+		mouse:       mouse.New(text.CursorMouseDelegate(cursor)),
+	}
+}
+
+func (e *pointerEditor) Handle(ev term.Event) (bool, bool) { return e.mouse.Handle(ev) }
+func (e *pointerEditor) CursorAtScroll() term.Coordinates  { return e.cursor.CursorAtScroll() }
+func (e *pointerEditor) CellView() cell.View               { return e.buf.View() }
+func (e *pointerEditor) CellEditor() cell.Editor           { return e.buf.Editor() }
+
+func (e *pointerEditor) SetCursorAtScroll(pos term.Coordinates) bool {
+	_, ok := e.cursor.MoveToScroll(pos)
+	return ok
+}
+
+func (e *pointerEditor) Cursor() (term.Coordinates, term.CursorStyle, bool) {
+	return e.cursor.Coordinates(), term.CursorStyleDefault, true
+}
+
+func (e *pointerEditor) Selection() (string, bool) {
+	s := e.cursor.Selection()
+	return s, s != ""
+}
+
+// pointerState is what a handler draws and reports to the frame.
+type pointerState struct {
+	Screen    string
+	Cursor    term.Coordinates
+	Style     term.CursorStyle
+	Shown     bool
+	Selection string
+	Selected  bool
+}
+
+func pointerStateOf(h tui.Handler, width, height int) pointerState {
+	w := term.NewStringWriter(width, height)
+	h.Draw(w)
+	_ = w.Flush()
+	s := pointerState{Screen: w.String()}
+	s.Cursor, s.Style, s.Shown = h.Cursor()
+	s.Selection, s.Selected = h.Selection()
+	return s
+}
+
+// screenRuneAt returns the cell of screen, as drawn by pointerStateOf,
+// that holds r.
+func screenRuneAt(screen string, r rune) (term.Coordinates, bool) {
+	for y, row := range strings.Split(screen, "\n") {
+		for x, ch := range []rune(row) {
+			if ch == r {
+				return term.Coordinates{X: x, Y: y}, true
+			}
+		}
+	}
+	return term.Coordinates{}, false
+}
+
+// requirePointerLeavesKeepState selects from press to drag in h, sized
+// width by height, then requires that the pointer leaving h to any side
+// changes nothing h draws or reports, both once the button is released
+// and while it is still held. settle, if not nil, waits for the work h
+// defers to later ticks before each check.
+func requirePointerLeavesKeepState(
+	t *testing.T, h tui.Handler, width, height int, press, drag term.Coordinates,
+	settle func(),
+) {
+	t.Helper()
+	if settle == nil {
+		settle = func() {}
+	}
+	h.Resize(width, height)
+	ctx := term.ContextWithPointer(context.Background(), new(term.Pointer))
+	mouseAt := func(key term.Key, at term.Coordinates) term.Event {
+		return term.Event{
+			Type: term.EventMouse, Key: key, MouseX: at.X, MouseY: at.Y, Context: ctx,
+		}
+	}
+	h.Handle(mouseAt(term.MouseLeft, press))
+	h.Handle(mouseAt(term.MouseLeft, drag))
+	h.Handle(mouseAt(term.MouseRelease, drag))
+	requireLeavesKeepState(t, h, width, height, "released", settle)
+	h.Handle(mouseAt(term.MouseLeft, press))
+	requireLeavesKeepState(t, h, width, height, "held", settle)
+}
+
+func requireLeavesKeepState(
+	t *testing.T, h tui.Handler, width, height int, phase string, settle func(),
+) {
+	t.Helper()
+	far := 4*max(width, height) + 100
+	for _, out := range []term.Coordinates{
+		{X: -1, Y: height / 2}, {X: width, Y: height / 2},
+		{X: width / 2, Y: -1}, {X: width / 2, Y: height},
+		{X: -1, Y: -1}, {X: width, Y: height}, {X: -far, Y: -far}, {X: far, Y: far},
+	} {
+		settle()
+		before := pointerStateOf(h, width, height)
+		h.Handle(term.Event{Type: term.EventMouse, MouseX: out.X, MouseY: out.Y})
+		settle()
+		require.Equal(t, before, pointerStateOf(h, width, height),
+			"button %s, then a leave to %v", phase, out)
+	}
 }

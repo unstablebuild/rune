@@ -918,6 +918,7 @@ func TestFileBufferInit(t *testing.T) {
 
 		f, mock := newTestFileBuffer(ctrl)
 		mock.EXPECT().Stat().Return(testFileInfo{mode: os.ModeSocket}, nil)
+		mock.EXPECT().Close().Return(nil)
 
 		assert.Equal(t, workspaceapi.ErrFileIsNotRegular, f.init("fjkelw", cell.NewBuffer(), "", false))
 	})
@@ -928,6 +929,7 @@ func TestFileBufferInit(t *testing.T) {
 
 		f, mock := newTestFileBuffer(ctrl)
 		mock.EXPECT().Stat().Return(testFileInfo{isDir: true}, nil)
+		mock.EXPECT().Close().Return(nil)
 
 		assert.Equal(t, workspaceapi.ErrFileIsNotRegular, f.init("fjkelw", cell.NewBuffer(), "", false))
 	})
@@ -965,6 +967,7 @@ func TestFileBufferInit(t *testing.T) {
 
 		origFileMock.EXPECT().Stat().Return(testFileInfo{}, nil)
 		origFileMock.EXPECT().Name().Return(fileName).AnyTimes()
+		origFileMock.EXPECT().Close().Return(nil)
 
 		assert.Equal(t, accessDeniedErr, f.init(fileName, cell.NewBuffer(), "", false))
 	})
@@ -994,6 +997,8 @@ func TestFileBufferInit(t *testing.T) {
 		mock.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (n int, err error) {
 			return 0, accessDeniedErr
 		})
+		// The original and the swap share this mock.
+		mock.EXPECT().Close().Return(nil).Times(2)
 
 		assert.Error(t, f.init(fileName, cell.NewBuffer(), "", false))
 		assert.Equal(t, 1, i)
@@ -1017,6 +1022,8 @@ func TestFileBufferInit(t *testing.T) {
 		mock.EXPECT().Read(gomock.Any()).DoAndReturn(func(buf []byte) (int, error) {
 			return 0, accessDeniedErr
 		})
+		// The original and the swap share this mock.
+		mock.EXPECT().Close().Return(nil).Times(2)
 
 		assert.Error(t, f.init(fileName, cell.NewBuffer(), "", false))
 		assert.Equal(t, 1, i)
@@ -1052,6 +1059,8 @@ func TestFileBufferInit(t *testing.T) {
 		mock.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (n int, err error) {
 			return 0, accessDeniedErr
 		})
+		// The original and the swap share this mock.
+		mock.EXPECT().Close().Return(nil).Times(2)
 
 		assert.Error(t, f.init(fileName, cell.NewBuffer(), "", false))
 		assert.Equal(t, 1, i)
@@ -1226,6 +1235,75 @@ func TestFileNotCreatedBufferClose(t *testing.T) {
 		assert.NoError(t, f.Close())
 		assert.Error(t, f.Close())
 	})
+}
+
+func TestFailedOpenReleasesTheFilesItOpened(t *testing.T) {
+	dir := t.TempDir()
+	dirURI, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	fileURI, err := workspaceapi.ParseURI("file://" + dir + "/file.txt")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "file.txt"), []byte("x\n"), 0o644))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "sub"), 0o755))
+	subURI, err := workspaceapi.ParseURI("file://" + dir + "/sub")
+	require.NoError(t, err)
+	swapDir, err := workspaceapi.ParseURI("file://" + t.TempDir())
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		open func(t *testing.T, ws Workspace) error
+	}{
+		{
+			name: "load of a file whose swap already exists",
+			open: func(t *testing.T, ws Workspace) error {
+				_, err := ws.Load(fileURI, cell.NewBuffer(), swapDir, false)
+				require.ErrorIs(t, err, workspaceapi.ErrFileAlreadyOpen)
+				return err
+			},
+		},
+		{
+			name: "read-only load of a directory",
+			open: func(t *testing.T, ws Workspace) error {
+				_, err := ws.Load(subURI, cell.NewBuffer(), swapDir, true)
+				require.ErrorIs(t, err, workspaceapi.ErrFileIsNotRegular)
+				return err
+			},
+		},
+		{
+			name: "recover from a swap that does not exist",
+			open: func(t *testing.T, ws Workspace) error {
+				missing, err := workspaceapi.ParseURI("file://" + dir + "/.missing.swp")
+				require.NoError(t, err)
+				_, err = ws.Recover(fileURI, missing, cell.NewBuffer(), false)
+				require.ErrorIs(t, err, os.ErrNotExist)
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme, err := newFileScheme(dirURI, "", "")
+			require.NoError(t, err)
+			fs := scheme.(*fileScheme)
+			ws := NewSchemeWorkspace(dirURI, fs, inlineSchedule)
+			t.Cleanup(func() { _ = ws.Close() })
+
+			held, err := ws.Load(fileURI, cell.NewBuffer(), swapDir, false)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = held.Close() })
+
+			openFiles := func() (n int) {
+				fs.files.Range(func(any, any) bool { n++; return true })
+				return n
+			}
+			before := openFiles()
+			require.Error(t, tt.open(t, ws))
+			assert.Equal(t, before, openFiles(),
+				"a failed open must close every file it opened; the scheme "+
+					"keeps them open until it closes")
+		})
+	}
 }
 
 func testFileBufferFlush(t *testing.T, newBuffer newBufferFunc) {

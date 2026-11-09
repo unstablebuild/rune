@@ -18,15 +18,22 @@ package llamaserver
 
 import (
 	"context"
+	"errors"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 )
 
 func TestService_Acquire_FailsFastOnEarlyExit(t *testing.T) {
+	hook := logtest.NewGlobal()
+	t.Cleanup(hook.Reset)
 	exec := &fakeExecutor{
 		exitBeforeReady: true,
 		emitLines: []string{
@@ -58,6 +65,10 @@ func TestService_Acquire_FailsFastOnEarlyExit(t *testing.T) {
 	assert.Contains(t, msgs[0], "failed to load model qwen")
 	assert.Contains(t, msgs[0], "missing tensor 'blk.64.ssm_conv1d.weight'")
 	assert.NotContains(t, notis.levels(), browserapi.LevelSuccess)
+	assert.True(t, slices.ContainsFunc(hook.AllEntries(), func(e *log.Entry) bool {
+		return e.Level == log.ErrorLevel && strings.Contains(e.Message, "failed to load model qwen") &&
+			strings.Contains(e.Message, "llama_model_loader: loaded meta data")
+	}), "the failure is logged with llama-server's output")
 }
 
 func TestService_Acquire_EarlyExit_NoDoubleNotify(t *testing.T) {
@@ -75,6 +86,30 @@ func TestService_Acquire_EarlyExit_NoDoubleNotify(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	assert.Len(t, notis.errorMessages(), 1,
 		"exit and timeout paths must not double-notify")
+}
+
+func TestService_Acquire_FailureFinishesTheStartingNotification(t *testing.T) {
+	tests := []struct {
+		name string
+		exec *fakeExecutor
+	}{
+		{"start fails", &fakeExecutor{failStart: errors.New("context canceled")}},
+		{"exits before ready", &fakeExecutor{exitBeforeReady: true, emitLines: []string{"error loading model: bad"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, notis := newTestService(t, tt.exec, Config{StartupTimeout: time.Minute})
+			_, _, err := svc.acquire(context.Background(), testModel("m"))
+			require.Error(t, err)
+			require.Eventually(t, func() bool {
+				records := notis.progressRecords()
+				last := len(records) - 1
+				return last >= 0 && records[last].progress == records[last].total &&
+					records[last].message == "Could not start local model m"
+			}, 2*time.Second, 10*time.Millisecond, "the progress notification stays open: %+v",
+				notis.progressRecords())
+		})
+	}
 }
 
 func TestSummarizeLoadFailure(t *testing.T) {

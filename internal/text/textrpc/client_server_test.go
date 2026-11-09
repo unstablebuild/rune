@@ -46,6 +46,9 @@ import (
 	tbrowserrpc "unstable.build/rune/internal/browser/browserrpc"
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/handler/handlerrpc"
+	"unstable.build/rune/internal/handler/handlerrpc/handlerrpctest"
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/term/sh"
 	"unstable.build/rune/internal/text"
@@ -60,7 +63,7 @@ func TestClientServerIntegration(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, nopLocker{})
+		s := NewServer(nopNotifications{}, ed, nopLocker{}, handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -77,7 +80,7 @@ func TestClientServerIntegration(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, nopLocker{})
+		s := NewServer(nopNotifications{}, ed, nopLocker{}, handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -93,7 +96,7 @@ func TestClientServerIntegration(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, nopLocker{})
+		s := NewServer(nopNotifications{}, ed, nopLocker{}, handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -111,7 +114,7 @@ func TestClientServerIntegration(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, nopLocker{})
+		s := NewServer(nopNotifications{}, ed, nopLocker{}, handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -185,7 +188,7 @@ func TestClientServerIntegration(t *testing.T) {
 			t.Run(tcase.name, func(t *testing.T) {
 				var wg sync.WaitGroup
 				ed := texttest.NopEditorWithCallback(wg.Done)
-				s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+				s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 				client, closeFn := setupIntTest(t, s)
 				defer closeFn()
@@ -228,7 +231,7 @@ func TestClientServerIntegration(t *testing.T) {
 	t.Run("calls unsubscribe if event stream completes", func(t *testing.T) {
 		var wg sync.WaitGroup
 		ed := texttest.NopEditorWithCallback(wg.Done)
-		s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+		s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -261,7 +264,7 @@ func TestClientServerIntegration(t *testing.T) {
 	t.Run("event handler drops messages if event handler server is not processing events", func(t *testing.T) {
 		var wg sync.WaitGroup
 		ed := texttest.NopEditorWithCallback(wg.Done)
-		s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+		s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -321,7 +324,7 @@ func TestClientServerIntegration(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+		s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -354,7 +357,7 @@ func TestClientServerIntegration(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+		s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -387,7 +390,7 @@ func TestClientServerIntegration(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, nopLocker{})
+		s := NewServer(nopNotifications{}, ed, nopLocker{}, handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -424,7 +427,7 @@ func TestClientServerIntegration(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, nopLocker{})
+		s := NewServer(nopNotifications{}, ed, nopLocker{}, handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -453,7 +456,7 @@ func TestClientServerIntegration(t *testing.T) {
 	t.Run("dispatches commands to subscribed command handler", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+		s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 		var wg sync.WaitGroup
 
 		client, closeFn := setupIntTest(t, s)
@@ -534,7 +537,7 @@ func TestClientServerIntegration(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		ed := texttest.NewMockEditor(ctrl)
 		noti := browsertest.NewMockNotifications(ctrl)
-		s := NewServer(noti, ed, new(sync.Mutex))
+		s := NewServer(noti, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -582,7 +585,7 @@ func TestClientServerIntegration(t *testing.T) {
 	t.Run("returns subscribe error", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+		s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -605,7 +608,7 @@ func TestClientServerIntegration(t *testing.T) {
 	t.Run("completes commands", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+		s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -663,7 +666,7 @@ func TestClientServerIntegration(t *testing.T) {
 	t.Run("returns complete error", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+		s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -709,7 +712,7 @@ func TestClientServerIntegration(t *testing.T) {
 	t.Run("returns iterator error", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+		s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -756,7 +759,7 @@ func TestClientServerIntegration(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+		s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -819,6 +822,8 @@ func TestClientServerIntegration(t *testing.T) {
 		wg.Wait()
 		require.Len(t, out, 1)
 		assert.Equal(t, "ok", renderResponsiveString(out[0], 80))
+
+		waitForUnregisterREPLCommand(t, ed, client, "status")
 	})
 
 	// A dispatcher that takes the editor lock the moment the server releases
@@ -830,7 +835,7 @@ func TestClientServerIntegration(t *testing.T) {
 		defer ctrl.Finish()
 		ed := texttest.NewMockEditor(ctrl)
 		lock := &dispatchOnUnlockLocker{}
-		s := NewServer(nopNotifications{}, ed, lock)
+		s := NewServer(nopNotifications{}, ed, lock, handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -866,7 +871,7 @@ func TestClientServerIntegration(t *testing.T) {
 		defer ctrl.Finish()
 		ed := texttest.NewMockEditor(ctrl)
 		lock := &dispatchOnUnlockLocker{}
-		s := NewServer(nopNotifications{}, ed, lock)
+		s := NewServer(nopNotifications{}, ed, lock, handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -895,6 +900,9 @@ func TestClientServerIntegration(t *testing.T) {
 				}
 				return nil
 			})
+		// Stream teardown unregisters the command; on the failing path it
+		// runs after the client has already given up on the stream.
+		ed.EXPECT().UnregisterREPLCommand(gomock.Any()).Return(nil).AnyTimes()
 
 		wg.Add(1)
 		require.NoError(t, client.RegisterREPLCommand(textapi.CommandManual{Name: "status"}, handler))
@@ -905,7 +913,7 @@ func TestClientServerIntegration(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+		s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -947,13 +955,15 @@ func TestClientServerIntegration(t *testing.T) {
 		require.NoError(t, err)
 		wg.Wait()
 		assert.Equal(t, []string{"--all", "--json"}, out)
+
+		waitForUnregisterREPLCommand(t, ed, client, "status")
 	})
 
 	t.Run("returns repl help output", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+		s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -997,13 +1007,15 @@ func TestClientServerIntegration(t *testing.T) {
 		wg.Wait()
 		require.Len(t, out, 1)
 		assert.Equal(t, "usage: status sub", renderResponsiveString(out[0], 80))
+
+		waitForUnregisterREPLCommand(t, ed, client, "status")
 	})
 
 	t.Run("returns repl registration error", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+		s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -1034,7 +1046,7 @@ func TestClientServerIntegration(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		ed := texttest.NewMockEditor(ctrl)
-		s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+		s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 		client, closeFn := setupIntTest(t, s)
 		defer closeFn()
@@ -1087,6 +1099,8 @@ func TestClientServerIntegration(t *testing.T) {
 		assert.Equal(t, int64(100), last.progress)
 		assert.Equal(t, int64(100), last.total)
 		assert.Equal(t, "B", last.units)
+
+		waitForUnregisterREPLCommand(t, ed, client, "dl")
 	})
 }
 
@@ -1094,7 +1108,7 @@ func TestClientServer_ShellProgressE2E(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	ed := texttest.NewMockEditor(ctrl)
-	s := NewServer(nopNotifications{}, ed, new(sync.Mutex))
+	s := NewServer(nopNotifications{}, ed, new(sync.Mutex), handlerrpc.GraphicsConfig{})
 
 	client, closeFn := setupIntTest(t, s)
 	defer closeFn()
@@ -1151,6 +1165,8 @@ func TestClientServer_ShellProgressE2E(t *testing.T) {
 	assert.Equal(t, int64(100), last.progress)
 	assert.Equal(t, int64(100), last.total)
 	assert.Equal(t, "B", last.units)
+
+	waitForUnregisterREPLCommand(t, ed, client, "dl")
 }
 
 // replByNameHandler adapts a textapi.REPLHandler into a
@@ -1261,6 +1277,20 @@ func waitForReplaceCommand(
 	wg.Wait()
 }
 
+func waitForUnregisterREPLCommand(
+	t *testing.T, ed *texttest.MockEditor, client *Client, expectCmd string,
+) {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	ed.EXPECT().UnregisterREPLCommand(expectCmd).DoAndReturn(
+		func(string) error {
+			wg.Done()
+			return nil
+		})
+	require.NoError(t, client.Close())
+	wg.Wait()
+}
+
 func TestRPCTab(t *testing.T) {
 	testTabIntegration(t, func(ed text.Editor, mu *sync.Mutex) (*text.Component, browserapi.WindowManager, error) {
 		c, err := newTestComponentErr(ed)
@@ -1268,7 +1298,7 @@ func TestRPCTab(t *testing.T) {
 			return nil, nil, err
 		}
 
-		s := tbrowserrpc.NewServer(c, mu)
+		s := tbrowserrpc.NewServer(c, mu, handlerrpc.GraphicsConfig{})
 		s.SetSyncMode()
 
 		client, closeFn := setupWmIntTest(t, s)
@@ -1378,6 +1408,10 @@ func (t *testLoader) Signal(workspaceapi.Pid, syscall.Signal) error {
 	panic("unimplemented")
 }
 
+func (*testLoader) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (t *testLoader) Close() error {
 	panic("unimplemented")
 }
@@ -1439,6 +1473,11 @@ func (t *testLoader) Recover(
 ) (workspace.FlusherCloser, error) {
 	return t.Load(file, buf, workspaceapi.URI{}, false)
 }
+
+func (t *testLoader) LoaderFor(file workspaceapi.URI) (workspace.FileLoader, error) {
+	return workspace.FileLoaderOf(t, file), nil
+}
+
 func (t *testLoader) URI(path string) (workspaceapi.URI, error) {
 	panic("unused")
 }
@@ -1459,6 +1498,10 @@ func (t *testLoader) Stat(path string) (os.FileInfo, error) {
 
 func (t *testLoader) ReadDir(name string) ([]os.DirEntry, error) {
 	panic("unused")
+}
+
+func (t *testLoader) PathCaseSensitive() bool {
+	return true
 }
 
 func newTestComponentErr(ed text.Editor) (*text.Component, error) {
@@ -1545,6 +1588,21 @@ func (f openerFunc) OpenResource(
 	return f(ctx, uri)
 }
 
+func (f openerFunc) CompleteResource(context.Context, string) (iterator.Iterator[string], error) {
+	return iterator.Empty[string](), nil
+}
+
+type completingOpener struct {
+	openerFunc
+	complete func(context.Context, string) (iterator.Iterator[string], error)
+}
+
+func (o completingOpener) CompleteResource(
+	ctx context.Context, prefix string,
+) (iterator.Iterator[string], error) {
+	return o.complete(ctx, prefix)
+}
+
 // stringHandler is what an extension returns for a resource: content that
 // draws str, and records its Close.
 func stringHandler(str string, closed chan<- struct{}) browserapi.Handler {
@@ -1584,7 +1642,7 @@ func TestResourceOpenerClientServer(t *testing.T) {
 		c, err := newTestComponentErr(texttest.NopEditor())
 		require.NoError(t, err)
 		mu := new(sync.Mutex)
-		s := NewServer(nopNotifications{}, c, mu)
+		s := NewServer(nopNotifications{}, c, mu, handlerrpc.GraphicsConfig{})
 		s.SetSyncMode()
 		conn, closeFn := doSetupIntTest(t, func(g *grpc.Server) {
 			textrpc.RegisterEditorServer(g, s)
@@ -1747,4 +1805,320 @@ func TestResourceOpenerClientServer(t *testing.T) {
 		assert.Contains(t, drawn(h, 10, 1), "second")
 		require.NoError(t, h.Close())
 	})
+}
+
+func TestResourceOpenerClientServerComplete(t *testing.T) {
+	const scheme = "fake"
+	setup := func(
+		t *testing.T, complete func(context.Context, string) (iterator.Iterator[string], error),
+	) (textapi.ResourceOpenHandler, *Client) {
+		c, err := newTestComponentErr(texttest.NopEditor())
+		require.NoError(t, err)
+		mu := new(sync.Mutex)
+		s := NewServer(nopNotifications{}, c, mu, handlerrpc.GraphicsConfig{})
+		s.SetSyncMode()
+		conn, closeFn := doSetupIntTest(t, func(g *grpc.Server) {
+			textrpc.RegisterEditorServer(g, s)
+		})
+		client := NewClient(context.Background(), conn)
+		t.Cleanup(func() {
+			_ = client.Close()
+			_ = s.Close()
+			closeFn()
+		})
+		require.NoError(t, client.RegisterResourceOpener(scheme, completingOpener{
+			openerFunc: func(_ context.Context, uri workspaceapi.URI) (browserapi.Handler, error) {
+				return stringHandler(uri.String(), make(chan struct{})), nil
+			},
+			complete: complete,
+		}))
+		mu.Lock()
+		defer mu.Unlock()
+		opener, ok := c.ResourceOpener(scheme)
+		require.True(t, ok)
+		return opener, client
+	}
+	failure := errors.New("listing failed")
+	collect := func(it iterator.Iterator[string]) ([]string, error) {
+		defer it.Close()
+		var got []string
+		for {
+			value, ok := it.Next(context.Background())
+			if !ok {
+				return got, it.Err()
+			}
+			got = append(got, value)
+		}
+	}
+	// blocking yields its prefix, then waits for the completion to be
+	// canceled, and still yields "late" once it is.
+	blocking := func(canceled chan<- struct{}) func(context.Context, string) (iterator.Iterator[string], error) {
+		return func(ctx context.Context, prefix string) (iterator.Iterator[string], error) {
+			if prefix != "fake://blocked" {
+				return iterator.FromSlice([]string{prefix}), nil
+			}
+			step := 0
+			return iterator.FromFunc(func(context.Context) (string, bool, error) {
+				step++
+				switch step {
+				case 1:
+					return prefix, true, nil
+				case 2:
+					<-ctx.Done()
+					close(canceled)
+					return "fake://late", true, nil
+				}
+				return "", false, nil
+			}, func() error { return nil }), nil
+		}
+	}
+
+	for _, tt := range []struct {
+		name     string
+		prefix   string
+		complete func(context.Context, string) (iterator.Iterator[string], error)
+		want     []string
+		wantErr  error
+	}{
+		{
+			name:   "streams values verbatim and in order",
+			prefix: "fake:///a%20b",
+			complete: func(_ context.Context, prefix string) (iterator.Iterator[string], error) {
+				return iterator.FromSlice([]string{prefix + "/'$x", "fake://b", "", prefix}), nil
+			},
+			want: []string{"fake:///a%20b/'$x", "fake://b", "", "fake:///a%20b"},
+		},
+		{
+			name:   "ends without values",
+			prefix: "fake://",
+			complete: func(context.Context, string) (iterator.Iterator[string], error) {
+				return iterator.Empty[string](), nil
+			},
+		},
+		{
+			name:   "fails to start",
+			prefix: "fake://",
+			complete: func(context.Context, string) (iterator.Iterator[string], error) {
+				return nil, failure
+			},
+			wantErr: failure,
+		},
+		{
+			name:   "fails after values",
+			prefix: "fake://",
+			complete: func(context.Context, string) (iterator.Iterator[string], error) {
+				return iterator.Aggregate(iterator.FromSlice([]string{"fake://a"}),
+					iterator.Error[string](failure)), nil
+			},
+			want:    []string{"fake://a"},
+			wantErr: failure,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			opener, _ := setup(t, tt.complete)
+			it, err := opener.CompleteResource(context.Background(), tt.prefix)
+			require.NoError(t, err)
+			got, err := collect(it)
+			assert.Equal(t, tt.want, got)
+			if tt.wantErr != nil {
+				require.ErrorContains(t, err, tt.wantErr.Error())
+			} else {
+				require.NoError(t, err)
+			}
+
+			uri, err := workspaceapi.ParseURI("fake://opened")
+			require.NoError(t, err)
+			h, err := opener.OpenResource(context.Background(), uri)
+			require.NoError(t, err, "completing must leave the opener able to open")
+			assert.Contains(t, drawn(h, 20, 1), "fake://opened")
+			require.NoError(t, h.Close())
+		})
+	}
+
+	t.Run("serves completions concurrently and drops values after close", func(t *testing.T) {
+		canceled := make(chan struct{})
+		opener, _ := setup(t, blocking(canceled))
+		ctx := context.Background()
+		blocked, err := opener.CompleteResource(ctx, "fake://blocked")
+		require.NoError(t, err)
+		value, ok := blocked.Next(ctx)
+		require.True(t, ok)
+		require.Equal(t, "fake://blocked", value)
+
+		other, err := opener.CompleteResource(ctx, "fake://other")
+		require.NoError(t, err)
+		got, err := collect(other)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"fake://other"}, got)
+
+		require.NoError(t, blocked.Close())
+		select {
+		case <-canceled:
+		case <-time.After(5 * time.Second):
+			t.Fatal("closing the iterator must cancel the extension's completion")
+		}
+		_, ok = blocked.Next(ctx)
+		assert.False(t, ok)
+
+		after, err := opener.CompleteResource(ctx, "fake://after")
+		require.NoError(t, err)
+		got, err = collect(after)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"fake://after"}, got, "a late value must not leak into later completions")
+	})
+
+	t.Run("disconnecting ends a waiting completion", func(t *testing.T) {
+		opener, client := setup(t, blocking(make(chan struct{})))
+		ctx := context.Background()
+		it, err := opener.CompleteResource(ctx, "fake://blocked")
+		require.NoError(t, err)
+		defer it.Close()
+		_, ok := it.Next(ctx)
+		require.True(t, ok)
+		require.NoError(t, client.Close())
+		done := make(chan bool)
+		go func() {
+			_, ok := it.Next(ctx)
+			done <- ok
+		}()
+		select {
+		case ok := <-done:
+			assert.False(t, ok)
+			require.ErrorContains(t, it.Err(), "extension disconnected")
+		case <-time.After(5 * time.Second):
+			t.Fatal("a completion must end when its extension disconnects")
+		}
+	})
+
+	t.Run("an opener that does not advertise completion is not asked", func(t *testing.T) {
+		c, err := newTestComponentErr(texttest.NopEditor())
+		require.NoError(t, err)
+		mu := new(sync.Mutex)
+		s := NewServer(nopNotifications{}, c, mu, handlerrpc.GraphicsConfig{})
+		s.SetSyncMode()
+		conn, closeFn := doSetupIntTest(t, func(g *grpc.Server) {
+			textrpc.RegisterEditorServer(g, s)
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(func() {
+			cancel()
+			_ = s.Close()
+			closeFn()
+		})
+		lookup := func() (textapi.ResourceOpenHandler, bool) {
+			mu.Lock()
+			defer mu.Unlock()
+			return c.ResourceOpener(scheme)
+		}
+
+		// The stream subscribes and serves opens as an SDK that predates
+		// completion does, which half-closes the stream on any other
+		// message.
+		stream, err := textrpc.NewEditorClient(conn).SubscribeResourceOpener(ctx)
+		require.NoError(t, err)
+		require.NoError(t, stream.Send(&textrpc.ClientResourceOpenerMessage{
+			Type:    textrpc.ClientResourceOpenerMessage_Request,
+			Request: &textrpc.SubscribeResourceOpenerRequest{Scheme: scheme},
+		}))
+		resp, err := stream.Recv()
+		require.NoError(t, err)
+		require.Equal(t, textrpc.ServerResourceOpenerMessage_Response, resp.GetType())
+		go debug.CapturePanicReport(func() {
+			for {
+				msg, err := stream.Recv()
+				if err != nil {
+					return
+				}
+				if msg.GetType() != textrpc.ServerResourceOpenerMessage_Open {
+					_ = stream.CloseSend()
+					return
+				}
+				_ = stream.Send(&textrpc.ClientResourceOpenerMessage{
+					Type: textrpc.ClientResourceOpenerMessage_Open,
+					Open: &textrpc.OpenResourceResponse{
+						Id: msg.GetOpen().GetId(), Error: "opened by the extension",
+					},
+				})
+			}
+		})
+		opener, ok := lookup()
+		require.True(t, ok)
+
+		it, err := opener.CompleteResource(ctx, "fake://")
+		require.NoError(t, err)
+		got, err := collect(it)
+		require.NoError(t, err)
+		assert.Empty(t, got)
+
+		require.Never(t, func() bool {
+			_, ok := lookup()
+			return !ok
+		}, 200*time.Millisecond, 10*time.Millisecond,
+			"completing must not end the extension's subscription")
+		uri, err := workspaceapi.ParseURI("fake://opened")
+		require.NoError(t, err)
+		_, err = opener.OpenResource(ctx, uri)
+		require.EqualError(t, err, "opened by the extension")
+	})
+}
+
+func TestResourceOpenerClientServerDrawsImages(t *testing.T) {
+	const scheme = "fake"
+	uri, err := workspaceapi.ParseURI("fake://host/page")
+	require.NoError(t, err)
+	c, err := newTestComponentErr(texttest.NopEditor())
+	require.NoError(t, err)
+	mu := new(sync.Mutex)
+	s := NewServer(nopNotifications{}, c, mu, handlerrpc.GraphicsConfig{ArenaRoot: t.TempDir()})
+	published := make(chan term.Event, 64)
+	s.SetEventPublisher(func(ev term.Event) error {
+		published <- ev
+		return nil
+	})
+	conn, closeFn := doSetupIntTest(t, func(g *grpc.Server) {
+		textrpc.RegisterEditorServer(g, s)
+	})
+	t.Cleanup(func() {
+		_ = s.Close()
+		closeFn()
+	})
+	client := NewClient(context.Background(), conn)
+	t.Cleanup(func() { _ = client.Close() })
+
+	ext := handlerrpctest.NewRasterHandler()
+	require.NoError(t, client.RegisterResourceOpener(scheme, openerFunc(
+		func(context.Context, workspaceapi.URI) (browserapi.Handler, error) {
+			return ext, nil
+		})))
+	mu.Lock()
+	opener, ok := c.ResourceOpener(scheme)
+	mu.Unlock()
+	require.True(t, ok)
+	h, err := opener.OpenResource(context.Background(), uri)
+	require.NoError(t, err)
+	defer h.Close()
+
+	sized := func(ctx context.Context) context.Context {
+		return term.ContextWithCellPixelSize(ctx, 8.5, 17.25)
+	}
+	h.Resize(4, 2)
+	h.Draw(&handlerrpctest.ImageRecorder{Ctx: sized(context.Background())})
+	var frame context.Context
+	for frame == nil {
+		select {
+		case ev := <-published:
+			if ev.Type == term.EventInterrupt && ev.Raw != nil {
+				frame = term.ContextWithPayload(context.Background(), ev.Raw)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the extension's frame did not arrive")
+		}
+	}
+	w := &handlerrpctest.ImageRecorder{Ctx: sized(frame)}
+	h.Draw(w)
+	require.Len(t, w.Images, 1)
+	assert.Equal(t, ext.Raster().Pix, w.Images[0].Pix)
+	assert.Equal(t, []bool{true}, ext.Shown())
+	assert.Equal(t, []handlerrpctest.CellPixelSize{{Width: 8.5, Height: 17.25}},
+		ext.CellPixelSizes(), "the extension must draw with the frame's cell size")
 }

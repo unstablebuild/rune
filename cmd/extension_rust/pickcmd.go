@@ -111,7 +111,7 @@ func (d pickDeps) present(
 	}
 	view := &pickerView{ch: ch, interrupt: interrupt}
 	picker := locationpicker.New(
-		d.pickerEntries(base, entries), d.wm, d.fs, view.tick, d.parser,
+		d.pickerEntries(base, entries), d.fs, view.tick, d.parser,
 		locationpicker.DefaultConfig(), nil)
 	picker.SetOnSelect(func(idx int) { ch <- idx })
 	view.Picker = picker

@@ -17,16 +17,23 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
+	"image/png"
 	"math"
+	"net/url"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	compapi "github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/handler"
@@ -52,8 +59,8 @@ func prepareTest(width, height int, frame bool, root tui.Handler) (
 	writer := term.NewStringWriter(width, height)
 	cfg := DefaultWindowManagerConfig()
 	cfg.Frame = frame
-	cfg.ScrollBarChar = '|'
-	cfg.ScrollBarHoverChar = 'X'
+	cfg.ScrollBarCharSet = compapi.ScrollBarCharSet{Middle: '|'}
+	cfg.ScrollBarHoverCharSet = compapi.ScrollBarCharSet{Middle: 'X'}
 	cfg.WindowBar = false
 	handler := NewWindowManager(root, cfg)
 	handler.Resize(width, height)
@@ -63,6 +70,151 @@ func prepareTest(width, height int, frame bool, root tui.Handler) (
 
 func TestWindowManagerSetFocusFrame(t *testing.T) {
 	testWindowManagerSetFocus(t, true)
+}
+
+func TestWindowManagerFocusFrameGraphics(t *testing.T) {
+	dir := t.TempDir()
+	every := func(uri string) compapi.FrameCharSetGraphics {
+		return compapi.FrameCharSetGraphics{
+			TopLeft: uri, TopRight: uri, BottomLeft: uri, BottomRight: uri,
+			HorizontalTop: uri, HorizontalBottom: uri,
+			VerticalLeft: uri, VerticalRight: uri,
+		}
+	}
+
+	cfg := DefaultWindowManagerConfig()
+	cfg.WindowBar = false
+	cfg.FrameCharSet.Graphics = every(grayImageURI(t, dir, "frame.png", 128))
+	cfg.FocusFrameCharSet.Graphics = every(grayImageURI(t, dir, "focus.png", 200))
+	cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	irq := make(chan struct{}, 2)
+	cfg.Interrupter = interruptFunc(func() { irq <- struct{}{} })
+	wm := NewWindowManager(handler.NewTestHandler(), cfg)
+	t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+	wm.Resize(12, 4)
+	left := wm.Focus()
+	b := handler.NewTestHandler()
+	b.Ch = 'B'
+	right, ok := wm.SplitVertical(left, b)
+	require.True(t, ok)
+
+	wm.Draw(term.NewStringWriter(12, 4))
+	for range 2 {
+		select {
+		case <-irq:
+		case <-time.After(5 * time.Second):
+			require.FailNow(t, "timed out waiting for the frame images")
+		}
+	}
+
+	comptest.TestComponent(t, wm, asciiart.NewStringWriter(12, 4, asciiart.DefaultConfig()),
+		[]comptest.TestCase{
+			{Expected: `
+666666aaaaaa
+6AAAA6aBBBBa
+6AAAA6aBBBBa
+666666aaaaaa`},
+			{Action: func() { wm.SetFocus(right) }, Expected: `
+aaaaaa666666
+aAAAAa6BBBB6
+aAAAAa6BBBB6
+aaaaaa666666`},
+		})
+}
+
+func TestWindowManagerScrollBarHoverGraphics(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultWindowManagerConfig()
+	cfg.WindowBar = false
+	cfg.ScrollBarCharSet = compapi.ScrollBarCharSet{
+		Top: 't', Middle: 'm', Bottom: 'b',
+		Graphics: compapi.ScrollBarCharSetGraphics{
+			Top:    grayImageURI(t, dir, "top.png", 40),
+			Middle: grayImageURI(t, dir, "middle.png", 128),
+		},
+	}
+	cfg.ScrollBarHoverCharSet = compapi.ScrollBarCharSet{
+		Middle: 'X',
+		Graphics: compapi.ScrollBarCharSetGraphics{
+			Middle: grayImageURI(t, dir, "hover.png", 200),
+		},
+	}
+	cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	irq := make(chan struct{}, 4)
+	cfg.Interrupter = interruptFunc(func() { irq <- struct{}{} })
+	buf := cell.NewBuffer()
+	buf.WriteString("A\nB\nC\nD\nE\nF\nG\nH\n")
+	wm := NewWindowManager(scrollableHandler{Scrollable: component.NewScroll(buf)}, cfg)
+	t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+	wm.Resize(5, 7)
+
+	waitImages := func(n int) {
+		for range n {
+			select {
+			case <-irq:
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "timed out waiting for the scroll bar images")
+			}
+		}
+	}
+	wm.Draw(term.NewStringWriter(5, 7))
+	waitImages(2)
+
+	comptest.TestComponent(t, wm, asciiart.NewStringWriter(5, 7, asciiart.DefaultConfig()),
+		[]comptest.TestCase{
+			{Expected: `
+┌───┐
+│A  _
+│B  a
+│C  a
+│D  │
+│E  │
+└───┘`},
+			{Action: func() { wm.Handle(mouseEv(term.MouseRelease, 4, 2)) }, Expected: `
+┌───┐
+│A  _
+│B  X
+│C  b
+│D  │
+│E  │
+└───┘`},
+			{Action: func() { waitImages(1) }, Expected: `
+┌───┐
+│A  _
+│B  6
+│C  6
+│D  │
+│E  │
+└───┘`},
+			{Action: func() { wm.Handle(mouseEv(term.MouseRelease, 1, 2)) }, Expected: `
+┌───┐
+│A  _
+│B  a
+│C  a
+│D  │
+│E  │
+└───┘`},
+		})
+}
+
+// grayImageURI writes a PNG of a single gray of luminance y to name in
+// dir, and returns its file URI.
+func grayImageURI(t *testing.T, dir, name string, y uint8) string {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	draw.Draw(img, img.Rect, image.NewUniform(color.Gray{Y: y}), image.Point{}, draw.Src)
+	var b bytes.Buffer
+	require.NoError(t, png.Encode(&b, img))
+	path := filepath.Join(dir, name)
+	require.NoError(t, os.WriteFile(path, b.Bytes(), 0o600))
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+}
+
+type interruptFunc func()
+
+func (f interruptFunc) Interrupt(context.Context) error {
+	f()
+	return nil
 }
 
 type recordingWMWriter struct {
@@ -877,6 +1029,7 @@ func TestWindowManagerMouseDrag(t *testing.T) {
 			expect: []dispatch{
 				to("L", term.MouseLeft, 1, 1),
 				to("L", term.MouseRelease, 1, 1),
+				to("L", 0, 14, 1),
 				to("R", term.MouseLeft, 2, 1),
 				to("R", term.MouseRelease, 2, 1),
 			},
@@ -897,6 +1050,7 @@ func TestWindowManagerMouseDrag(t *testing.T) {
 				to("L", term.MouseLeft, 1, 1),
 				to("L", term.MouseLeft, 9, 1),
 				to("L", term.MouseRelease, 9, 1),
+				to("L", 0, 19, 3),
 				to("R", term.MouseLeft, 7, 3),
 			},
 		},
@@ -994,6 +1148,126 @@ func TestWindowManagerMouseUnderFocusedFloat(t *testing.T) {
 
 	wm.Handle(term.Event{Type: term.EventMouse, Key: term.MouseWheelUp, MouseX: 1, MouseY: 1})
 	assert.Equal(t, []string{"F"}, seen)
+}
+
+func TestWindowManagerPointerLeaves(t *testing.T) {
+	const width, height = 20, 6
+	type setup struct {
+		wm       *WindowManager
+		windows  map[string]Window
+		got      *[]dispatch
+		mouse    func(ev mouseEvent)
+		frameOff int
+	}
+	newSetup := func(t *testing.T, frame bool) setup {
+		wm, handlers, windows := vsplitLayout("L", "R")(t, width, height, frame)
+		fh := handler.NewTestHandler()
+		handlers["F"] = fh
+		windows["F"] = wm.FloatingWindow(handler.StaticFloating(fh, 2, 2), component.FloatingConfig{})
+		wm.SetFocus(windows["L"])
+		got := new([]dispatch)
+		for name, h := range handlers {
+			h.HandleOverride = func(ev term.Event) (bool, bool) {
+				if ev.Type == term.EventMouse {
+					*got = append(*got, to(name, ev.Key, ev.MouseX, ev.MouseY))
+				}
+				return false, true
+			}
+		}
+		s := setup{wm: wm, windows: windows, got: got}
+		if frame {
+			s.frameOff = 1
+		}
+		s.mouse = func(ev mouseEvent) {
+			wm.Handle(term.Event{Type: term.EventMouse, Key: ev.key, MouseX: ev.x, MouseY: ev.y})
+		}
+		return s
+	}
+	// leave is what name's window is sent when the pointer leaves it for x, y.
+	leave := func(s setup, name string, x, y int) dispatch {
+		pos := s.windows[name].Position()
+		return to(name, 0, x-pos.X-s.frameOff, y-pos.Y-s.frameOff)
+	}
+
+	for _, frame := range []bool{false, true} {
+		t.Run(fmt.Sprintf("frame=%t", frame), func(t *testing.T) {
+			t.Run("onto another window", func(t *testing.T) {
+				s := newSetup(t, frame)
+				require.NoError(t, s.windows["F"].Close())
+				s.mouse(hover(2, 2))
+				*s.got = nil
+				s.mouse(hover(15, 2))
+				require.Len(t, *s.got, 2)
+				assert.Equal(t, leave(s, "L", 15, 2), (*s.got)[0], "L is told first")
+				assert.Equal(t, "R", (*s.got)[1].owner)
+				assert.GreaterOrEqual(t, (*s.got)[0].localX, s.windows["L"].Width()-2*s.frameOff,
+					"the leave lands outside L")
+			})
+			t.Run("within a window", func(t *testing.T) {
+				s := newSetup(t, frame)
+				require.NoError(t, s.windows["F"].Close())
+				s.mouse(hover(2, 2))
+				s.mouse(hover(3, 3))
+				assert.Equal(t, []string{"L", "L"}, owners(*s.got))
+			})
+			t.Run("off every window", func(t *testing.T) {
+				s := newSetup(t, frame)
+				require.NoError(t, s.windows["F"].Close())
+				s.mouse(hover(15, 2))
+				*s.got = nil
+				s.mouse(hover(width+3, 2))
+				s.mouse(hover(width+4, 2))
+				assert.Equal(t, []dispatch{leave(s, "R", width+3, 2)}, *s.got)
+			})
+			t.Run("past a focused float", func(t *testing.T) {
+				s := newSetup(t, frame)
+				s.wm.SetFocus(s.windows["F"])
+				fpos := s.windows["F"].Position()
+				fx, fy := fpos.X+s.frameOff, fpos.Y+s.frameOff
+				s.mouse(hover(fx, fy))
+				require.Equal(t, []string{"F"}, owners(*s.got))
+				*s.got = nil
+				s.mouse(hover(15, height-1))
+				s.mouse(hover(16, height-1))
+				assert.Equal(t, []dispatch{leave(s, "F", 15, height-1)}, *s.got,
+					"the float is told, the tile it keeps the hover from is not")
+				*s.got = nil
+				s.mouse(hover(fx, fy))
+				assert.Equal(t, []string{"F"}, owners(*s.got))
+			})
+			t.Run("not while a drag is held", func(t *testing.T) {
+				s := newSetup(t, frame)
+				require.NoError(t, s.windows["F"].Close())
+				s.mouse(press(2, 2))
+				s.mouse(drag(15, 2))
+				s.mouse(release(15, 2))
+				assert.Equal(t, []string{"L", "L", "L"}, owners(*s.got),
+					"the drag and its release stay with L")
+				*s.got = nil
+				s.mouse(hover(15, 2))
+				require.Len(t, *s.got, 2)
+				assert.Equal(t, leave(s, "L", 15, 2), (*s.got)[0])
+				assert.Equal(t, "R", (*s.got)[1].owner)
+			})
+			t.Run("not to a closed window", func(t *testing.T) {
+				s := newSetup(t, frame)
+				require.NoError(t, s.windows["F"].Close())
+				s.mouse(hover(15, 2))
+				require.NoError(t, s.windows["R"].Close())
+				*s.got = nil
+				require.NotPanics(t, func() { s.mouse(hover(2, 2)) })
+				assert.Equal(t, []string{"L"}, owners(*s.got))
+			})
+		})
+	}
+}
+
+func owners(ds []dispatch) []string {
+	ret := make([]string, len(ds))
+	for i, d := range ds {
+		ret[i] = d.owner
+	}
+	return ret
 }
 
 func TestWindowManagerMouseExitFromUnfocusedWindow(t *testing.T) {
@@ -1924,6 +2198,12 @@ func runDragCase(t *testing.T, tc dragCase) {
 	actual := make([]dispatch, 0, len(tc.events))
 	si := 0
 	for _, ev := range tc.events {
+		// The window the pointer leaves for ev's is told first.
+		for ev.key != 0 && si < len(seen) && seen[si].ev.Key == 0 {
+			s := seen[si]
+			actual = append(actual, to(s.owner, 0, s.ev.MouseX, s.ev.MouseY))
+			si++
+		}
 		if si < len(seen) && eventMatchesIntent(ev, seen[si].ev) {
 			s := seen[si]
 			actual = append(actual, dispatch{
@@ -2097,6 +2377,131 @@ func TestWindowManagerScrollBar(t *testing.T) {
 	handlertest.TestHandler(t, wm, cases, writer)
 }
 
+func TestWindowManagerRestyle(t *testing.T) {
+	newScroll := func(text string) tui.Handler {
+		buf := cell.NewBuffer()
+		buf.WriteString(text)
+		return scrollableHandler{Scrollable: component.NewScroll(buf)}
+	}
+	writer, wm := prepareTest(12, 4, true, newScroll("A\nB\nC\n"))
+	left := wm.Focus()
+	right, ok := wm.SplitVertical(left, newScroll("a\nb\nc\n"))
+	require.True(t, ok)
+
+	frameAttr := term.Attributes{Fg: term.ColorBlue}
+	focusAttr := term.Attributes{Fg: term.ColorYellow}
+	style := wm.config
+	style.FrameAttr = frameAttr
+	style.FrameCharSet = compapi.FrameCharSet{
+		TopLeft: '+', TopRight: '+', BottomLeft: '+', BottomRight: '+',
+		HorizontalTop: '-', HorizontalBottom: '-', VerticalLeft: '|', VerticalRight: '|',
+	}
+	style.FocusFrameAttr = focusAttr
+	style.FocusFrameCharSet = compapi.FrameCharSet{
+		TopLeft: '#', TopRight: '#', BottomLeft: '#', BottomRight: '#',
+		HorizontalTop: '=', HorizontalBottom: '=', VerticalLeft: '!', VerticalRight: '!',
+	}
+	style.ScrollBarCharSet = compapi.ScrollBarCharSet{Middle: 's'}
+	style.ScrollBarHoverCharSet = compapi.ScrollBarCharSet{Middle: 'H'}
+	style.Dim = !wm.config.Dim
+
+	comptest.TestComponent(t, wm, writer, []comptest.TestCase{
+		{Action: func() { wm.Restyle(style) }, Expected: `
+#====#+----+
+!A   s|a   s
+!B   !|b   |
+#====#+----+`},
+		{Action: func() { wm.Handle(mouseEv(term.MouseRelease, 11, 1)) }, Expected: `
+#====#+----+
+!A   s|a   H
+!B   !|b   |
+#====#+----+`},
+	})
+	assert.NotEqual(t, style.Dim, wm.config.Dim, "Dim is not style")
+	attr, ok := left.FrameAttr()
+	require.True(t, ok)
+	assert.Equal(t, focusAttr, attr)
+	attr, ok = right.FrameAttr()
+	require.True(t, ok)
+	assert.Equal(t, frameAttr, attr)
+}
+
+func TestWindowManagerScrollBarOutset(t *testing.T) {
+	const normal = `
+┌───┐
+│A  |
+│B  |
+│C  |
+│D  │
+│E  │
+└───┘`
+	const hovered = `
+┌───┐
+│A  X
+│B  X
+│C  X
+│D  │
+│E  │
+└───┘`
+	tests := []struct {
+		name     string
+		graphics compapi.ScrollBarCharSetGraphics
+		outset   int
+		cases    []handlertest.SingleTestCase
+	}{
+		{
+			name:     "the cells the images reach are the bar",
+			graphics: compapi.ScrollBarCharSetGraphics{Middle: "file:///bar.png"},
+			outset:   1,
+			cases: []handlertest.SingleTestCase{
+				{Event: mouseEv(term.MouseRelease, 3, 2), Expected: hovered},
+				{Event: mouseEv(term.MouseRelease, 2, 2), Expected: normal},
+				{Event: mouseEv(term.MouseLeft, 3, 1), Expected: hovered},
+				{Event: mouseEv(term.MouseLeft, 3, 2), Expected: `
+┌───┐
+│B  X
+│C  X
+│D  X
+│E  │
+│F  │
+└───┘`},
+			},
+		},
+		{
+			name:     "the outset stops at the left edge of the frame",
+			graphics: compapi.ScrollBarCharSetGraphics{Middle: "file:///bar.png"},
+			outset:   10,
+			cases: []handlertest.SingleTestCase{
+				{Event: mouseEv(term.MouseRelease, 0, 2), Expected: hovered},
+			},
+		},
+		{
+			name:   "without images the outset is the content",
+			outset: 1,
+			cases: []handlertest.SingleTestCase{
+				{Event: mouseEv(term.MouseRelease, 3, 2), Expected: normal},
+				{Event: mouseEv(term.MouseRelease, 4, 2), Expected: hovered},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultWindowManagerConfig()
+			cfg.WindowBar = false
+			cfg.ScrollBarCharSet = compapi.ScrollBarCharSet{Middle: '|', Graphics: tt.graphics}
+			cfg.ScrollBarHoverCharSet = compapi.ScrollBarCharSet{Middle: 'X'}
+			cfg.ScrollBarOutset = tt.outset
+			buf := cell.NewBuffer()
+			buf.WriteString("A\nB\nC\nD\nE\nF\nG\nH\n")
+			wm := NewWindowManager(scrollableHandler{Scrollable: component.NewScroll(buf)}, cfg)
+			wm.Resize(5, 7)
+
+			cases := append([]handlertest.SingleTestCase{{Expected: normal}}, tt.cases...)
+			handlertest.TestHandler(t, wm, cases, term.NewStringWriter(5, 7))
+		})
+	}
+}
+
 func mouseEv(key term.Key, x, y int) term.Event {
 	return term.Event{Type: term.EventMouse, Key: key, MouseX: x, MouseY: y}
 }
@@ -2224,6 +2629,70 @@ func TestWindowBarCloseClick(t *testing.T) {
 	})
 }
 
+func TestWindowCloseNotifiesOwner(t *testing.T) {
+	key := term.Event{Type: term.EventKey, Key: term.KeyEnter}
+	tests := []struct {
+		name string
+		// close returns the window it closed, or the zero Window when the
+		// close must fail.
+		close func(t *testing.T, wm *WindowManager) Window
+	}{
+		{"floating content exits", func(t *testing.T, wm *WindowManager) Window {
+			win := wm.FloatingWindow(handler.StaticFloating(&handler.TestHandler{Exit: true}, 6, 3),
+				component.FloatingConfig{})
+			wm.SetFocus(win)
+			wm.Handle(key)
+			return win
+		}},
+		{"tiled content exits", func(t *testing.T, wm *WindowManager) Window {
+			win, ok := wm.SplitVertical(wm.Focus(), &handler.TestHandler{Exit: true})
+			require.True(t, ok)
+			wm.SetFocus(win)
+			wm.Handle(key)
+			return win
+		}},
+		{"bar close falls back to the manager", func(t *testing.T, wm *WindowManager) Window {
+			win := wm.FloatingWindow(handler.StaticFloating(handler.NewTestHandler(), 6, 3),
+				component.FloatingConfig{})
+			wm.SetFocus(win)
+			require.Equal(t, term.Coordinates{}, win.Position())
+			wm.Handle(mouseEv(term.MouseLeft, component.WindowBarCloseIconX, 0))
+			return win
+		}},
+		{"explicit close", func(t *testing.T, wm *WindowManager) Window {
+			win, ok := wm.SplitVertical(wm.Focus(), handler.NewTestHandler())
+			require.True(t, ok)
+			require.NoError(t, win.Close())
+			return win
+		}},
+		{"closing the last tile fails", func(t *testing.T, wm *WindowManager) Window {
+			require.Error(t, wm.Focus().Close())
+			return Window{}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &windowCloseRecorder{}
+			cfg := DefaultWindowManagerConfig()
+			cfg.FloatingBar = &testFloatingBar{}
+			cfg.WindowClose = rec
+			wm := NewWindowManager(handler.NewTestHandler(), cfg)
+			wm.Resize(30, 12)
+
+			win := tt.close(t, wm)
+
+			if win == (Window{}) {
+				assert.Empty(t, *rec, "a failed close must not notify")
+				return
+			}
+			require.True(t, win.Closed())
+			require.Len(t, *rec, 1)
+			assert.Equal(t, win.ID(), (*rec)[0].ID())
+			assert.True(t, (*rec)[0].Closed(), "the window must be out of the layout")
+		})
+	}
+}
+
 func TestWindowBarMoveDrag(t *testing.T) {
 	wm, root, float, _, floatWin := prepareWindowBarTest(t)
 	var contentEvents, rootEvents int
@@ -2248,20 +2717,244 @@ func TestWindowBarMoveDrag(t *testing.T) {
 	assert.True(t, handled)
 	assert.Equal(t, term.Coordinates{X: 6, Y: 3}, floatWin.Position())
 	// drag across the root tile: the pin must survive crossing windows
-	// and the position is clamped to keep the window fully visible
+	// and the window may hang past the bottom edge
 	_, handled = wm.Handle(mouseEv(term.MouseLeft, 20, 8))
 	assert.True(t, handled)
-	assert.Equal(t, term.Coordinates{X: 16, Y: 7}, floatWin.Position())
+	assert.Equal(t, term.Coordinates{X: 16, Y: 8}, floatWin.Position())
 	_, handled = wm.Handle(mouseEv(term.MouseRelease, 20, 8))
 	assert.True(t, handled)
-	assert.Equal(t, term.Coordinates{X: 16, Y: 7}, floatWin.Position())
+	assert.Equal(t, term.Coordinates{X: 16, Y: 8}, floatWin.Position())
 
 	assert.Zero(t, contentEvents, "drag events must not leak into float content")
 	assert.Zero(t, rootEvents, "drag events must not leak into tile content")
 
 	// after release, a fresh press inside content dispatches normally
-	wm.Handle(mouseEv(term.MouseLeft, 17, 8))
+	wm.Handle(mouseEv(term.MouseLeft, 17, 9))
 	assert.Equal(t, 1, contentEvents)
+}
+
+func xy(x, y int) term.Coordinates {
+	return term.Coordinates{X: x, Y: y}
+}
+
+// The window bar tests below drive the 8x5 float of prepareWindowBarTest
+// in its 30x12 manager, where the float may hang past any edge as long
+// as three cells of its bar stay on screen: its x is kept within -5 and
+// 27, and its y within 0 and 11.
+
+func TestWindowBarMoveDragPastEdges(t *testing.T) {
+	// The float is grabbed by its bar at (4, 0).
+	suite := []struct {
+		name  string
+		drags []term.Coordinates
+		want  term.Coordinates
+	}{
+		{"past the left edge", []term.Coordinates{xy(1, 3)}, xy(-3, 3)},
+		{"past the right edge", []term.Coordinates{xy(29, 3)}, xy(25, 3)},
+		{"past the bottom edge", []term.Coordinates{xy(10, 11)}, xy(6, 11)},
+		{"past the bottom-left corner", []term.Coordinates{xy(0, 11)}, xy(-4, 11)},
+		{"past the bottom-right corner", []term.Coordinates{xy(29, 11)}, xy(25, 11)},
+		{"far past the left edge keeps three bar cells on screen",
+			[]term.Coordinates{xy(-20, 3)}, xy(-5, 3)},
+		{"far past the right edge keeps three bar cells on screen",
+			[]term.Coordinates{xy(60, 3)}, xy(27, 3)},
+		{"above the top edge keeps the bar row on screen",
+			[]term.Coordinates{xy(10, -2)}, xy(6, 0)},
+		{"below the bottom edge keeps the bar row on screen",
+			[]term.Coordinates{xy(10, 20)}, xy(6, 11)},
+		{"back on screen from past the bottom edge",
+			[]term.Coordinates{xy(10, 11), xy(10, 4)}, xy(6, 4)},
+		{"back on screen from far past the left edge keeps the grab offset",
+			[]term.Coordinates{xy(-20, 3), xy(10, 3)}, xy(6, 3)},
+		{"back on screen from far past the right edge keeps the grab offset",
+			[]term.Coordinates{xy(60, 3), xy(10, 3)}, xy(6, 3)},
+	}
+	for _, test := range suite {
+		t.Run(test.name, func(t *testing.T) {
+			wm, _, _, _, floatWin := prepareWindowBarTest(t)
+			wm.Handle(mouseEv(term.MouseLeft, 4, 0))
+			for _, at := range test.drags {
+				_, handled := wm.Handle(mouseEv(term.MouseLeft, at.X, at.Y))
+				require.True(t, handled)
+			}
+			last := test.drags[len(test.drags)-1]
+			wm.Handle(mouseEv(term.MouseRelease, last.X, last.Y))
+
+			assert.Equal(t, test.want, floatWin.Position())
+			assert.Equal(t, 8, floatWin.Width(), "the window keeps its size")
+			assert.Equal(t, 5, floatWin.Height(), "the window keeps its size")
+		})
+	}
+}
+
+func TestWindowBarStaysGrabbablePastEdges(t *testing.T) {
+	suite := []struct {
+		name   string
+		place  term.Coordinates
+		placed term.Coordinates
+		// press is on a visible cell of the bar that moves the window.
+		press, to term.Coordinates
+		want      term.Coordinates
+	}{
+		{"past the bottom edge", xy(10, 20), xy(10, 11), xy(14, 11), xy(14, 5), xy(10, 5)},
+		{"past the left edge", xy(-20, 3), xy(-5, 3), xy(1, 3), xy(10, 3), xy(4, 3)},
+		{"past the right edge", xy(40, 3), xy(27, 3), xy(29, 3), xy(20, 3), xy(18, 3)},
+		{"past the bottom-left corner",
+			xy(-20, 20), xy(-5, 11), xy(1, 11), xy(10, 4), xy(4, 4)},
+		{"past the bottom-right corner",
+			xy(40, 20), xy(27, 11), xy(29, 11), xy(20, 4), xy(18, 4)},
+	}
+	for _, test := range suite {
+		t.Run(test.name, func(t *testing.T) {
+			wm, _, _, _, floatWin := prepareWindowBarTest(t)
+			require.True(t, wm.comp.MoveWindow(floatWin.Window, test.place))
+			require.Equal(t, test.placed, floatWin.Position())
+
+			_, handled := wm.Handle(mouseEv(term.MouseLeft, test.press.X, test.press.Y))
+			require.True(t, handled)
+			require.Equal(t, winDragMove, wm.winDrag)
+			wm.Handle(mouseEv(term.MouseLeft, test.to.X, test.to.Y))
+			wm.Handle(mouseEv(term.MouseRelease, test.to.X, test.to.Y))
+			assert.Equal(t, test.want, floatWin.Position())
+		})
+	}
+}
+
+func TestWindowBarPressPastEdges(t *testing.T) {
+	// At its rightmost, the float shows its top-left corner, close icon
+	// and one bar cell; at its leftmost, two bar cells and its top-right
+	// corner.
+	suite := []struct {
+		name       string
+		place      term.Coordinates
+		press      term.Coordinates
+		wantDrag   winDragMode
+		wantClosed bool
+	}{
+		{"the corner past the right edge resizes",
+			xy(27, 3), xy(27, 3), winDragTop | winDragLeft, false},
+		{"the close icon past the right edge closes", xy(27, 3), xy(28, 3), 0, true},
+		{"the last bar cell past the right edge moves", xy(27, 3), xy(29, 3), winDragMove, false},
+		{"the first bar cell past the left edge moves", xy(-5, 3), xy(0, 3), winDragMove, false},
+		{"the second bar cell past the left edge moves", xy(-5, 3), xy(1, 3), winDragMove, false},
+		{"the corner past the left edge resizes",
+			xy(-5, 3), xy(2, 3), winDragTop | winDragRight, false},
+	}
+	for _, test := range suite {
+		t.Run(test.name, func(t *testing.T) {
+			wm, _, _, _, floatWin := prepareWindowBarTest(t)
+			require.True(t, wm.comp.MoveWindow(floatWin.Window, test.place))
+			require.Equal(t, test.place, floatWin.Position())
+
+			_, handled := wm.Handle(mouseEv(term.MouseLeft, test.press.X, test.press.Y))
+			assert.True(t, handled)
+			assert.Equal(t, test.wantDrag, wm.winDrag)
+			assert.Equal(t, test.wantClosed, floatWin.Closed())
+		})
+	}
+}
+
+func TestWindowResizeDragPastEdges(t *testing.T) {
+	suite := []struct {
+		name      string
+		place     term.Coordinates
+		press, to term.Coordinates
+		wantDrag  winDragMode
+		want      term.Coordinates
+		w, h      int
+	}{
+		{"the top-left corner of a window past the bottom edge pins its bottom edge",
+			xy(10, 9), xy(10, 9), xy(8, 7), winDragTop | winDragLeft, xy(8, 7), 10, 7},
+		{"the left edge of a window past the bottom edge pins its right edge",
+			xy(10, 9), xy(10, 10), xy(6, 10), winDragLeft, xy(6, 9), 12, 5},
+		{"the top-left corner of a window past the right edge pins its right edge",
+			xy(25, 4), xy(25, 4), xy(23, 2), winDragTop | winDragLeft, xy(23, 2), 10, 7},
+		{"the left edge of a window past the right edge pins its right edge",
+			xy(25, 4), xy(25, 6), xy(20, 6), winDragLeft, xy(20, 4), 13, 5},
+		{"the right edge of a window past the left edge pins its left edge",
+			xy(-3, 4), xy(4, 6), xy(9, 6), winDragRight, xy(-3, 4), 13, 5},
+		{"the bottom edge of a window past the left edge pins its top edge",
+			xy(-3, 4), xy(2, 8), xy(2, 10), winDragBottom, xy(-3, 4), 8, 7},
+	}
+	for _, test := range suite {
+		t.Run(test.name, func(t *testing.T) {
+			wm, _, _, _, floatWin := prepareWindowBarTest(t)
+			require.True(t, wm.comp.MoveWindow(floatWin.Window, test.place))
+			require.Equal(t, test.place, floatWin.Position())
+
+			_, handled := wm.Handle(mouseEv(term.MouseLeft, test.press.X, test.press.Y))
+			require.True(t, handled)
+			require.Equal(t, test.wantDrag, wm.winDrag)
+			wm.Handle(mouseEv(term.MouseLeft, test.to.X, test.to.Y))
+			wm.Handle(mouseEv(term.MouseRelease, test.to.X, test.to.Y))
+
+			assert.Equal(t, test.want, floatWin.Position())
+			assert.Equal(t, test.w, floatWin.Width())
+			assert.Equal(t, test.h, floatWin.Height())
+		})
+	}
+}
+
+func TestWindowManagerCursorHiddenPastEdges(t *testing.T) {
+	minimizeAnother := func(
+		minimize func(component.Window, int) bool,
+	) func(*testing.T, *WindowManager) {
+		return func(t *testing.T, wm *WindowManager) {
+			win := wm.FloatingWindow(
+				handler.StaticFloating(handler.NewTestHandler(), 2, 2),
+				component.FloatingConfig{})
+			require.True(t, minimize(win.Window, 0))
+		}
+	}
+	// The framed content starts one cell into the float, so its cursor
+	// at content (x, y) sits at the float's position plus (x+1, y+1).
+	suite := []struct {
+		name   string
+		setup  func(t *testing.T, wm *WindowManager)
+		place  term.Coordinates
+		cursor term.Coordinates
+		want   term.Coordinates
+		show   bool
+	}{
+		{name: "on screen", place: xy(4, 3), cursor: xy(1, 1), want: xy(6, 5), show: true},
+		{name: "outside the content", place: xy(4, 3), cursor: xy(6, 1), want: xy(11, 5)},
+		{name: "on the last column before the right edge",
+			place: xy(23, 3), cursor: xy(5, 1), want: xy(29, 5), show: true},
+		{name: "past the right edge", place: xy(24, 3), cursor: xy(5, 1), want: xy(30, 5)},
+		{name: "on the first column after the left edge",
+			place: xy(-3, 3), cursor: xy(2, 1), want: xy(0, 5), show: true},
+		{name: "past the left edge", place: xy(-3, 3), cursor: xy(1, 1), want: xy(-1, 5)},
+		{name: "on the last row before the bottom edge",
+			place: xy(4, 9), cursor: xy(1, 1), want: xy(6, 11), show: true},
+		{name: "past the bottom edge", place: xy(4, 9), cursor: xy(1, 2), want: xy(6, 12)},
+		{name: "behind a window minimized below",
+			setup: minimizeAnother(component.Window.MinimizeDown),
+			place: xy(4, 8), cursor: xy(1, 2), want: xy(6, 11)},
+		{name: "above a window minimized below",
+			setup: minimizeAnother(component.Window.MinimizeDown),
+			place: xy(4, 8), cursor: xy(1, 1), want: xy(6, 10), show: true},
+		{name: "behind a window minimized to the left",
+			setup: minimizeAnother(component.Window.MinimizeLeft),
+			place: xy(-2, 3), cursor: xy(1, 1), want: xy(0, 5)},
+		{name: "beside a window minimized to the left",
+			setup: minimizeAnother(component.Window.MinimizeLeft),
+			place: xy(-2, 3), cursor: xy(2, 1), want: xy(1, 5), show: true},
+	}
+	for _, test := range suite {
+		t.Run(test.name, func(t *testing.T) {
+			wm, _, float, _, floatWin := prepareWindowBarTest(t)
+			if test.setup != nil {
+				test.setup(t, wm)
+			}
+			float.CursorPos = test.cursor
+			require.True(t, wm.comp.MoveWindow(floatWin.Window, test.place))
+			require.Equal(t, test.place, floatWin.Position())
+
+			pos, _, show := wm.Cursor()
+			assert.Equal(t, test.want, pos)
+			assert.Equal(t, test.show, show)
+		})
+	}
 }
 
 // prepareFloatingBarTest builds a 30x12 manager with one tile and a
@@ -2308,6 +3001,15 @@ func TestFloatingBarDragLifecycle(t *testing.T) {
 				mouseEv(term.MouseRelease, 12, 5),
 			},
 			want: []barEvent{barDrag(10, 3), barDrag(12, 5), barDrop(12, 5)},
+		},
+		{
+			name: "a drag past the bottom edge drops where the mouse is",
+			seq: []term.Event{
+				mouseEv(term.MouseLeft, 4, 0),
+				mouseEv(term.MouseLeft, 10, 11),
+				mouseEv(term.MouseRelease, 10, 11),
+			},
+			want: []barEvent{barDrag(10, 11), barDrop(10, 11)},
 		},
 		{
 			name: "a release without a move cancels instead of dropping",
@@ -2709,11 +3411,22 @@ func TestWindowBarDoubleClickMaximize(t *testing.T) {
 	t.Run("slow clicks start a move drag instead", func(t *testing.T) {
 		wm, _, _, _, floatWin := prepareWindowBarTest(t)
 		click(wm, 4, 0)
-		wm.winBarPressTime = time.Now().Add(-time.Second)
+		wm.winPressTime = time.Now().Add(-time.Second)
 		wm.Handle(mouseEv(term.MouseLeft, 4, 0))
 		assert.Equal(t, winDragMove, wm.winDrag)
 		assert.Equal(t, 8, floatWin.Width())
 		wm.Handle(mouseEv(term.MouseRelease, 4, 0))
+	})
+	t.Run("a press that moved the window does not start a double click", func(t *testing.T) {
+		wm, _, _, _, floatWin := prepareWindowBarTest(t)
+		wm.Handle(mouseEv(term.MouseLeft, 4, 0))
+		wm.Handle(mouseEv(term.MouseLeft, 6, 0))
+		wm.Handle(mouseEv(term.MouseRelease, 6, 0))
+		require.Equal(t, term.Coordinates{X: 2}, floatWin.Position())
+		wm.Handle(mouseEv(term.MouseLeft, 6, 0))
+		assert.Equal(t, winDragMove, wm.winDrag)
+		assert.Equal(t, 8, floatWin.Width())
+		wm.Handle(mouseEv(term.MouseRelease, 6, 0))
 	})
 	t.Run("close icon clicks do not maximize", func(t *testing.T) {
 		wm, _, _, _, floatWin := prepareWindowBarTest(t)
@@ -2756,6 +3469,367 @@ func TestTileEdgeResizeDrag(t *testing.T) {
 		wm.Draw(term.NewStringWriter(30, 12))
 		assert.Equal(t, 9, tw.Height())
 	})
+	t.Run("nested edges move the divider they lie on", func(t *testing.T) {
+		// [[a|b] / c] | d: b's right edge is the outer divider, not a|b
+		wm := NewWindowManager(handler.NewTestHandler(), DefaultWindowManagerConfig())
+		wm.Resize(40, 12)
+		a := wm.Focus()
+		d, ok := wm.SplitVertical(a, handler.NewTestHandler())
+		require.True(t, ok)
+		c, ok := wm.SplitHorizontal(a, handler.NewTestHandler())
+		require.True(t, ok)
+		b, ok := wm.SplitVertical(a, handler.NewTestHandler())
+		require.True(t, ok)
+		wm.Draw(term.NewStringWriter(40, 12))
+		require.Equal(t, 10, a.Width())
+		require.Equal(t, 10, b.Width())
+		require.Equal(t, 20, d.Width())
+
+		wm.Handle(mouseEv(term.MouseLeft, 19, 1))
+		wm.Handle(mouseEv(term.MouseLeft, 24, 1))
+		wm.Handle(mouseEv(term.MouseRelease, 24, 1))
+		wm.Draw(term.NewStringWriter(40, 12))
+		assert.Equal(t, 12, a.Width())
+		assert.Equal(t, 13, b.Width())
+		assert.Equal(t, 25, c.Width())
+		assert.Equal(t, 15, d.Width())
+	})
+	t.Run("edges of the manager do not resize", func(t *testing.T) {
+		for _, press := range []term.Coordinates{xy(29, 5), xy(5, 11), xy(29, 11)} {
+			lh, rh := handler.NewTestHandler(), handler.NewTestHandler()
+			var presses []term.Coordinates
+			for _, h := range []*handler.TestHandler{lh, rh} {
+				h.HandleOverride = func(ev term.Event) (bool, bool) {
+					presses = append(presses, xy(ev.MouseX, ev.MouseY))
+					return false, true
+				}
+			}
+			wm := NewWindowManager(lh, DefaultWindowManagerConfig())
+			wm.Resize(30, 12)
+			_, ok := wm.SplitVertical(wm.Focus(), rh)
+			require.True(t, ok)
+
+			wm.Handle(mouseEv(term.MouseLeft, press.X, press.Y))
+			assert.Zero(t, wm.winDrag, "press at %v", press)
+			assert.Len(t, presses, 1, "the press at %v reaches the content", press)
+		}
+	})
+}
+
+func TestTileEdgeDoubleClickReset(t *testing.T) {
+	// [a / b] | c
+	newLayout := func(t *testing.T) (*WindowManager, [3]Window) {
+		t.Helper()
+		wm := NewWindowManager(handler.NewTestHandler(), DefaultWindowManagerConfig())
+		wm.Resize(30, 12)
+		a := wm.Focus()
+		c, ok := wm.SplitVertical(a, handler.NewTestHandler())
+		require.True(t, ok)
+		b, ok := wm.SplitHorizontal(a, handler.NewTestHandler())
+		require.True(t, ok)
+		return wm, [3]Window{a, b, c}
+	}
+	sizes := func(wm *WindowManager, wins [3]Window) (ret [3][2]int) {
+		wm.Draw(term.NewStringWriter(30, 12))
+		for i, win := range wins {
+			ret[i] = [2]int{win.Width(), win.Height()}
+		}
+		return ret
+	}
+	click := func(wm *WindowManager, at term.Coordinates) {
+		wm.Handle(mouseEv(term.MouseLeft, at.X, at.Y))
+		wm.Handle(mouseEv(term.MouseRelease, at.X, at.Y))
+	}
+	drag := func(wm *WindowManager, wins [3]Window, from, to term.Coordinates) {
+		wm.Handle(mouseEv(term.MouseLeft, from.X, from.Y))
+		wm.Handle(mouseEv(term.MouseLeft, to.X, to.Y))
+		wm.Handle(mouseEv(term.MouseRelease, to.X, to.Y))
+		sizes(wm, wins)
+	}
+	initial := [3][2]int{{15, 6}, {15, 6}, {15, 12}}
+	widened := [3][2]int{{20, 6}, {20, 6}, {10, 12}}
+
+	tests := []struct {
+		name         string
+		defaultWidth map[int]int
+		drags        [][2]term.Coordinates
+		click        term.Coordinates
+		want         [3][2]int
+	}{
+		{
+			name:  "right edge",
+			drags: [][2]term.Coordinates{{xy(14, 2), xy(19, 2)}},
+			click: xy(19, 2),
+			want:  initial,
+		},
+		{
+			name:  "bottom edge",
+			drags: [][2]term.Coordinates{{xy(2, 5), xy(2, 8)}},
+			click: xy(2, 8),
+			want:  initial,
+		},
+		{
+			name:  "corner resets both edges",
+			drags: [][2]term.Coordinates{{xy(14, 5), xy(19, 8)}},
+			click: xy(19, 8),
+			want:  initial,
+		},
+		{
+			name:  "other dividers keep their sizes",
+			drags: [][2]term.Coordinates{{xy(14, 2), xy(19, 2)}, {xy(2, 5), xy(2, 8)}},
+			click: xy(2, 8),
+			want:  widened,
+		},
+		{
+			name:         "default width",
+			defaultWidth: map[int]int{2: 8},
+			drags:        [][2]term.Coordinates{{xy(21, 2), xy(15, 2)}},
+			click:        xy(15, 2),
+			want:         [3][2]int{{22, 6}, {22, 6}, {8, 12}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wm, wins := newLayout(t)
+			for i, width := range tt.defaultWidth {
+				require.True(t, wm.SetDefaultWidth(wins[i], width))
+			}
+			sizes(wm, wins)
+			for _, d := range tt.drags {
+				drag(wm, wins, d[0], d[1])
+			}
+			click(wm, tt.click)
+			_, handled := wm.Handle(mouseEv(term.MouseLeft, tt.click.X, tt.click.Y))
+			assert.True(t, handled)
+			assert.Zero(t, wm.winDrag)
+			wm.Handle(mouseEv(term.MouseRelease, tt.click.X, tt.click.Y))
+			assert.Equal(t, tt.want, sizes(wm, wins))
+		})
+	}
+
+	t.Run("slow clicks start a drag", func(t *testing.T) {
+		wm, wins := newLayout(t)
+		drag(wm, wins, xy(14, 2), xy(19, 2))
+		click(wm, xy(19, 2))
+		wm.winPressTime = time.Now().Add(-time.Second)
+		wm.Handle(mouseEv(term.MouseLeft, 19, 2))
+		assert.Equal(t, winDragRight, wm.winDrag)
+		wm.Handle(mouseEv(term.MouseRelease, 19, 2))
+		assert.Equal(t, widened, sizes(wm, wins))
+	})
+	t.Run("a press that dragged does not start a double click", func(t *testing.T) {
+		wm, wins := newLayout(t)
+		drag(wm, wins, xy(14, 2), xy(19, 2))
+		wm.Handle(mouseEv(term.MouseLeft, 19, 2))
+		assert.Equal(t, winDragRight, wm.winDrag)
+		wm.Handle(mouseEv(term.MouseRelease, 19, 2))
+		assert.Equal(t, widened, sizes(wm, wins))
+	})
+	t.Run("presses on different edges", func(t *testing.T) {
+		wm, wins := newLayout(t)
+		drag(wm, wins, xy(14, 2), xy(19, 2))
+		click(wm, xy(19, 2))
+		wm.Handle(mouseEv(term.MouseLeft, 2, 5))
+		assert.Equal(t, winDragBottom, wm.winDrag)
+		wm.Handle(mouseEv(term.MouseRelease, 2, 5))
+		assert.Equal(t, widened, sizes(wm, wins))
+	})
+}
+
+func setsTextPointer(ev term.Event) (bool, bool) {
+	term.SetPointerShape(ev, term.PointerText)
+	return false, false
+}
+
+func textPointerHandler() *handler.TestHandler {
+	h := handler.NewTestHandler()
+	h.HandleOverride = setsTextPointer
+	return h
+}
+
+// handleWithPointer dispatches ev to wm carrying a fresh Pointer, as the
+// runtime does, and returns it.
+func handleWithPointer(wm *WindowManager, ev term.Event) *term.Pointer {
+	p := new(term.Pointer)
+	ev.Context = term.ContextWithPointer(context.Background(), p)
+	wm.Handle(ev)
+	return p
+}
+
+func TestWindowManagerPointerShape(t *testing.T) {
+	tiles := func(
+		split func(*WindowManager, Window, tui.Handler) (Window, bool),
+	) func(*testing.T) *WindowManager {
+		return func(t *testing.T) *WindowManager {
+			wm := NewWindowManager(textPointerHandler(), DefaultWindowManagerConfig())
+			wm.Resize(30, 12)
+			_, ok := split(wm, wm.Focus(), textPointerHandler())
+			require.True(t, ok)
+			return wm
+		}
+	}
+	vsplit := tiles((*WindowManager).SplitVertical)
+	hsplit := tiles((*WindowManager).SplitHorizontal)
+	// grid splits the left tile of vsplit, so the bottom-right corner of
+	// the top-left tile at (14, 5) sits between two dividers.
+	grid := func(t *testing.T) *WindowManager {
+		wm := vsplit(t)
+		_, ok := wm.SplitHorizontal(wm.Focus(), textPointerHandler())
+		require.True(t, ok)
+		return wm
+	}
+	// floatOverSplit is vsplit with a focused 8x5 float at (0, 0).
+	floatOverSplit := func(t *testing.T) *WindowManager {
+		wm := vsplit(t)
+		win := wm.FloatingWindow(
+			handler.StaticFloating(textPointerHandler(), 6, 3), component.FloatingConfig{})
+		wm.SetFocus(win)
+		require.Equal(t, xy(0, 0), win.Position())
+		return wm
+	}
+	// float is the 8x5 float of prepareWindowBarTest at (0, 0), focused
+	// over a single tile.
+	floatWith := func(cfg component.FloatingConfig) func(*testing.T) *WindowManager {
+		return func(t *testing.T) *WindowManager {
+			wm, root, _, _, _ := prepareWindowBarTest(t)
+			root.HandleOverride = setsTextPointer
+			wm.Iterate(func(win Window) {
+				if win.IsFloating() {
+					require.NoError(t, win.Close())
+				}
+			})
+			win := wm.FloatingWindow(
+				handler.StaticFloating(textPointerHandler(), 6, 3), cfg)
+			wm.SetFocus(win)
+			require.Equal(t, xy(0, 0), win.Position())
+			return wm
+		}
+	}
+	float := floatWith(component.FloatingConfig{})
+	noBarFloat := floatWith(component.FloatingConfig{NoBar: true})
+	minimizedFloat := func(t *testing.T) *WindowManager {
+		wm := float(t)
+		require.True(t, wm.Focus().MinimizeDown(0))
+		require.Equal(t, xy(0, 11), wm.Focus().Position())
+		return wm
+	}
+	scrollBar := func(t *testing.T) *WindowManager {
+		buf := cell.NewBuffer()
+		buf.WriteString("a\nb\nc\nd\ne\nf\n")
+		cfg := DefaultWindowManagerConfig()
+		cfg.ScrollBarCharSet = compapi.ScrollBarCharSet{Middle: '|'}
+		wm := NewWindowManager(textPointerHandler(), cfg)
+		wm.Resize(12, 4)
+		rw, ok := wm.SplitVertical(wm.Focus(),
+			scrollableHandler{Scrollable: component.NewScroll(buf)})
+		require.True(t, ok)
+		wm.SetFocus(rw)
+		wm.Draw(term.NewStringWriter(12, 4))
+		frame, ok := rw.Frame()
+		require.True(t, ok)
+		bar, _, ok := frame.ScrollBar()
+		require.True(t, ok)
+		require.Equal(t, xy(11, 1), xy(rw.Position().X+bar.X, rw.Position().Y+bar.Y))
+		return wm
+	}
+	hover := func(x, y int) term.Event { return mouseEv(0, x, y) }
+	press := func(x, y int) term.Event { return mouseEv(term.MouseLeft, x, y) }
+
+	suite := []struct {
+		name  string
+		setup func(*testing.T) *WindowManager
+		// The shape is the one of the last event.
+		events []term.Event
+		want   term.PointerShape
+		set    bool
+	}{
+		{"tile column divider", vsplit, []term.Event{hover(14, 5)},
+			term.PointerColResize, true},
+		{"tile row divider", hsplit, []term.Event{hover(5, 5)},
+			term.PointerRowResize, true},
+		{"tile corner between dividers", grid, []term.Event{hover(14, 5)},
+			term.PointerResizeNWSE, true},
+		{"tile corner on the bottom edge of the manager", vsplit,
+			[]term.Event{hover(14, 11)}, term.PointerColResize, true},
+		{"tile corner on the right edge of the manager", hsplit,
+			[]term.Event{hover(29, 5)}, term.PointerRowResize, true},
+		{"tile on the right edge of the manager", vsplit, []term.Event{hover(29, 5)},
+			term.PointerText, true},
+		{"tile on the bottom edge of the manager", vsplit, []term.Event{hover(5, 11)},
+			term.PointerText, true},
+		{"tile on the outer corner of the manager", vsplit, []term.Event{hover(29, 11)},
+			term.PointerText, true},
+		{"tile left edge", vsplit, []term.Event{hover(15, 5)}, term.PointerText, true},
+		{"tile top edge", hsplit, []term.Event{hover(5, 6)}, term.PointerText, true},
+		{"tile content", vsplit, []term.Event{hover(5, 5)}, term.PointerText, true},
+		{"tile divider past a focused float", floatOverSplit, []term.Event{hover(14, 8)},
+			term.PointerColResize, true},
+		{"tile edge of the manager past a focused float", float,
+			[]term.Event{hover(29, 8)}, term.PointerDefault, false},
+		{"float left edge", float, []term.Event{hover(0, 2)}, term.PointerResizeEW, true},
+		{"float right edge", float, []term.Event{hover(7, 2)}, term.PointerResizeEW, true},
+		{"float bottom edge", float, []term.Event{hover(3, 4)}, term.PointerResizeNS, true},
+		{"float top edge without a bar", noBarFloat, []term.Event{hover(3, 0)},
+			term.PointerResizeNS, true},
+		{"float top-left corner without a bar", noBarFloat, []term.Event{hover(0, 0)},
+			term.PointerResizeNWSE, true},
+		{"float bar left corner", float, []term.Event{hover(0, 0)},
+			term.PointerResizeNWSE, true},
+		{"float bar right corner", float, []term.Event{hover(7, 0)},
+			term.PointerResizeNESW, true},
+		{"float bottom-left corner", float, []term.Event{hover(0, 4)},
+			term.PointerResizeNESW, true},
+		{"float bottom-right corner", float, []term.Event{hover(7, 4)},
+			term.PointerResizeNWSE, true},
+		{"float bar", float, []term.Event{hover(4, 0)}, term.PointerMove, true},
+		{"float bar close icon", float,
+			[]term.Event{hover(component.WindowBarCloseIconX, 0)}, term.PointerLink, true},
+		{"float content", float, []term.Event{hover(3, 2)}, term.PointerText, true},
+		{"minimized float", minimizedFloat, []term.Event{hover(0, 11)},
+			term.PointerText, true},
+		{"scroll bar", scrollBar, []term.Event{hover(11, 1)}, term.PointerDefault, false},
+		{"frame press", float, []term.Event{press(7, 2)}, term.PointerResizeEW, true},
+		{"resize drag past the edge", float, []term.Event{press(7, 2), press(20, 2)},
+			term.PointerResizeEW, true},
+		{"resize drag release", float,
+			[]term.Event{press(7, 2), press(20, 2), mouseEv(term.MouseRelease, 20, 2)},
+			term.PointerResizeEW, true},
+		{"move drag", float, []term.Event{press(4, 0), press(10, 5)},
+			term.PointerMove, true},
+		{"content drag onto the frame", vsplit, []term.Event{press(5, 5), press(14, 5)},
+			term.PointerText, true},
+	}
+	for _, test := range suite {
+		t.Run(test.name, func(t *testing.T) {
+			wm := test.setup(t)
+			var p *term.Pointer
+			for _, ev := range test.events {
+				p = handleWithPointer(wm, ev)
+			}
+			shape, set := p.Shape()
+			assert.Equal(t, test.want.String(), shape.String())
+			assert.Equal(t, test.set, set)
+		})
+	}
+}
+
+func TestWindowManagerFramePointerIgnoresLateChildShapes(t *testing.T) {
+	var child *term.Pointer
+	lh := handler.NewTestHandler()
+	lh.HandleOverride = func(ev term.Event) (bool, bool) {
+		child, _ = term.PointerFromContext(ev.Context)
+		return false, false
+	}
+	wm := NewWindowManager(lh, DefaultWindowManagerConfig())
+	wm.Resize(30, 12)
+	_, ok := wm.SplitVertical(wm.Focus(), handler.NewTestHandler())
+	require.True(t, ok)
+
+	p := handleWithPointer(wm, mouseEv(0, 14, 5))
+	require.NotNil(t, child)
+	child.SetShape(term.PointerText)
+	shape, _ := p.Shape()
+	assert.Equal(t, term.PointerColResize, shape)
 }
 
 func TestWindowBarScrollBarPrecedence(t *testing.T) {
@@ -2763,7 +3837,7 @@ func TestWindowBarScrollBarPrecedence(t *testing.T) {
 	buf.WriteString("a\nb\nc\nd\ne\nf\n")
 	sh := scrollableHandler{Scrollable: component.NewScroll(buf)}
 	cfg := DefaultWindowManagerConfig()
-	cfg.ScrollBarChar = '|'
+	cfg.ScrollBarCharSet = compapi.ScrollBarCharSet{Middle: '|'}
 	wm := NewWindowManager(handler.NewTestHandler(), cfg)
 	wm.Resize(12, 4)
 	lw := wm.Focus()
@@ -2785,4 +3859,32 @@ func TestWindowBarScrollBarPrecedence(t *testing.T) {
 	assert.Equal(t, 0, int(wm.winDrag), "scroll bar press must not start a resize drag")
 	assert.True(t, wm.prevMouseScrollBarDrag)
 	wm.Handle(mouseEv(term.MouseRelease, pos.X+barPos.X, pos.Y+barPos.Y))
+}
+
+func TestWindowManagerPointerLeavesBattery(t *testing.T) {
+	for _, frame := range []bool{false, true} {
+		for _, size := range [][2]int{{60, 15}, {8, 4}} {
+			cfg := DefaultWindowManagerConfig()
+			cfg.Frame = frame
+			cfg.WindowBar = true
+			wm := NewWindowManager(newPointerLess(t), cfg)
+			wm.Resize(60, 15)
+			left := wm.Focus()
+			var clicks, iconClicks int
+			right, ok := wm.SplitVertical(left, newPointerTabs(&clicks, &iconClicks))
+			require.True(t, ok)
+			_, ok = wm.SplitHorizontal(right, newPointerLess(t))
+			require.True(t, ok)
+			wm.FloatingWindow(handler.StaticFloating(newPointerLess(t), 20, 6),
+				component.FloatingConfig{})
+			wm.SetFocus(left)
+			handlertest.RunPointerLeaves(t, wm, size[0], size[1])
+		}
+	}
+}
+
+type windowCloseRecorder []Window
+
+func (r *windowCloseRecorder) OnWindowClose(win Window) {
+	*r = append(*r, win)
 }

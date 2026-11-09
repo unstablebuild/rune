@@ -36,6 +36,9 @@ type ShadedTabsConfig struct {
 	// shaderloop.DefaultFPS and shaderloop.DefaultLoop.
 	FPS  int
 	Loop time.Duration
+	// Params tunes the colour and strength of the effects that blend
+	// text toward a colour.
+	Params shaderloop.Params
 	// DefAttr resolves term.ColorDefault cells for the effect.
 	DefAttr term.Attributes
 	// Interrupter drives the animation. Without one the bar is never
@@ -62,15 +65,15 @@ func NewShadedTabs(tabs *Tabs, config ShadedTabsConfig) *ShadedTabs {
 	return &ShadedTabs{Tabs: tabs, config: config}
 }
 
-// SetInterrupter replaces the interrupter used the next time the effect
-// starts.
-func (s *ShadedTabs) SetInterrupter(i term.Interrupter) {
-	s.config.Interrupter = i
-}
-
 // Running reports whether the effect is running.
 func (s *ShadedTabs) Running() bool {
 	return s.shader != nil
+}
+
+// SetDefAttr sets the attributes that resolve term.ColorDefault cells
+// for the effect from the next time it starts.
+func (s *ShadedTabs) SetDefAttr(attr term.Attributes) {
+	s.config.DefAttr = attr
 }
 
 // SetRunning starts or stops the effect. It reports whether the state
@@ -95,7 +98,7 @@ func (s *ShadedTabs) SetRunning(running bool) bool {
 	if loop <= 0 {
 		loop = shaderloop.DefaultLoop
 	}
-	inner, ok := shaderloop.New(s.config.Shader, s.config.DefAttr, fps, loop)
+	inner, ok := shaderloop.New(s.config.Shader, s.config.DefAttr, s.config.Params, loop)
 	if !ok {
 		return false
 	}
@@ -109,7 +112,7 @@ func (s *ShadedTabs) activeRects() []shader.Rect {
 	active := s.config.Active()
 	rects := make([]shader.Rect, 0, len(active))
 	for _, idx := range active {
-		offset, width, ok := s.TabRect(idx)
+		offset, width, ok := s.TabShadeRect(idx)
 		if !ok {
 			continue
 		}

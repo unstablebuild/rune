@@ -45,7 +45,7 @@ import (
 
 const (
 	// Scheme represents the URL scheme that this package implements
-	Scheme = "ssh"
+	Scheme = workspace.SSHScheme
 
 	// remotePathEnv is prepended to every remote exec string so the
 	// supported install location (install.sh symlinks the binary to

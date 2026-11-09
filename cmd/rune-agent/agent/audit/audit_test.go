@@ -61,8 +61,71 @@ func (s *stubAuditService) GetModel(_ context.Context, m llmapi.ModelEntry) (llm
 	return m, nil
 }
 
+func (s *stubAuditService) CanGenerateImages(context.Context, llmapi.ModelEntry) (bool, error) {
+	return false, nil
+}
+
+func (s *stubAuditService) GenerateImage(context.Context, llmapi.ModelEntry, llmapi.ImageRequest) (llmapi.Image, error) {
+	return llmapi.Image{}, llmapi.ErrImageGenerationUnsupported
+}
+
 func testModel() llmapi.ModelEntry {
 	return llmapi.ModelEntry{Name: "test-model", Provider: "test-provider"}
+}
+
+type stubImageService struct {
+	stubAuditService
+	ctx       context.Context
+	model     llmapi.ModelEntry
+	request   llmapi.ImageRequest
+	available bool
+	image     llmapi.Image
+	err       error
+}
+
+func (s *stubImageService) CanGenerateImages(ctx context.Context, model llmapi.ModelEntry) (bool, error) {
+	s.ctx, s.model = ctx, model
+	return s.available, s.err
+}
+
+func (s *stubImageService) GenerateImage(ctx context.Context, model llmapi.ModelEntry, request llmapi.ImageRequest) (llmapi.Image, error) {
+	s.ctx, s.model, s.request = ctx, model, request
+	return s.image, s.err
+}
+
+func TestAuditImageForwarding(t *testing.T) {
+	ctx := WithAuditDialogueID(context.Background(), "images")
+	for _, fail := range []bool{false, true} {
+		for _, model := range []llmapi.ModelEntry{{}, {Name: "override", Provider: "other"}} {
+			inner := &stubImageService{available: true, image: llmapi.Image{PNG: []byte("png"), GenerationID: "generation", RequestID: "request"}}
+			if fail {
+				inner.err = errors.New("provider failure")
+			}
+			generator := NewService(inner, nil, testModel())
+			wantModel := model
+			available, err := generator.CanGenerateImages(ctx, model)
+			assert.Equal(t, inner.available, available)
+			assert.Equal(t, inner.err, err)
+			assert.Equal(t, ctx, inner.ctx)
+			assert.Equal(t, wantModel, inner.model)
+			req := llmapi.ImageRequest{Prompt: "draw", TransparentBackground: true, Images: [][]byte{[]byte("reference")}}
+			image, err := generator.GenerateImage(ctx, model, req)
+			assert.Equal(t, inner.image, image)
+			assert.Equal(t, inner.err, err)
+			assert.Equal(t, ctx, inner.ctx)
+			assert.Equal(t, wantModel, inner.model)
+			assert.Equal(t, req, inner.request)
+		}
+	}
+	t.Run("unsupported", func(t *testing.T) {
+		generator := NewService(&stubAuditService{}, nil, testModel())
+		available, err := generator.CanGenerateImages(ctx, testModel())
+		require.NoError(t, err)
+		assert.False(t, available)
+		image, err := generator.GenerateImage(ctx, testModel(), llmapi.ImageRequest{})
+		require.ErrorIs(t, err, llmapi.ErrImageGenerationUnsupported)
+		assert.Empty(t, image)
+	})
 }
 
 func TestAuditService(t *testing.T) {

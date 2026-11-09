@@ -33,3 +33,27 @@ send_key(w, "<space><space>")
 out = render(w, width = 40, height = 6)
 if "count=3" not in out:
     fail("expected count=3 after three <space>, got:\n" + out)
+
+# A click at a cell of the last render lands in the panel there, at the
+# position it has in the panel, and a paste arrives as its keys between a
+# paste start and a paste end.
+r = send_mouse(w, "<mouse-left><mouse-release>", x = 25, y = 4)
+if r["quit"]:
+    fail("expected the click not to request exit")
+out = render(w, width = 40, height = 6)
+if "click 4,1" not in out:
+    fail("expected the click in the render, got:\n" + out)
+if not send_paste(w, "hi there")["handled"]:
+    fail("expected the paste to be handled")
+out = render(w, width = 40, height = 6)
+if "paste hi there" not in out:
+    fail("expected the paste in the render, got:\n" + out)
+if not send_event(w, "focus")["handled"]:
+    fail("expected focus to be handled")
+out = render(w, width = 40, height = 6)
+if "focus" not in out:
+    fail("expected focus in the render, got:\n" + out)
+
+# The panel has no selection to copy.
+if selection(w) != None:
+    fail("expected no selection")

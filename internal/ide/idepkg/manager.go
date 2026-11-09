@@ -29,6 +29,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -43,15 +44,15 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
-	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"gopkg.in/yaml.v3"
 	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/ide/gitpkg"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/hostenv"
+	"unstable.build/rune/internal/ide/idepkg/gitpkg"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/ide/starlarkconfig"
 	"unstable.build/rune/internal/workspace/walkdir"
 )
@@ -88,6 +89,10 @@ var (
 	// but has no published bundles to resolve a latest version from.
 	ErrNoReleases = errors.New("package has no releases")
 )
+
+// errInstallInFlight is returned by install for an install of the
+// package in flight that it does not wait for.
+var errInstallInFlight = errors.New("an install of the package is in flight")
 
 // translatePackageErr maps a *cdnrelease.StatusError on a
 // package-scoped call into a user-facing wrapped sentinel. Errors
@@ -158,7 +163,7 @@ func NewManager(
 	n browserapi.Notifications, m release.Manager,
 	storage storageapi.Service, trust *pkgtrust.Store,
 	scheme schemeapi.Scheme, dataDir string,
-	configPath string, wm browserapi.WindowManager,
+	configPath string, prompter browserapi.Prompter,
 	scheduleNextTick func(func()) bool,
 	interrupter term.Interrupter, opts ...Option,
 ) *Manager {
@@ -181,14 +186,15 @@ func NewManager(
 		schemeURI:        schemeURI,
 		interrupter:      interrupter,
 		frameCharSet:     component.FrameCharSetDefault(),
-		wm:               wm,
+		prompter:         prompter,
 		scheduleNextTick: scheduleNextTick,
 		n:                n,
 		m:                m,
 		storage:          storage,
 		trust:            trust,
 	}
-	ret.iterators.m = make(map[string]*sync.Mutex)
+	ret.iterators.m = make(map[string]*inFlightInstall)
+	ret.iterators.waiting = make(map[*installTree]*installTree)
 	for _, opt := range opts {
 		opt(ret)
 	}
@@ -201,11 +207,12 @@ func NewManager(
 // Note that OS/system is managed by having a separate Manager that points
 // to a different underlying release.Manager.
 type Manager struct {
-	n                browserapi.Notifications
-	m                release.Manager
-	interrupter      term.Interrupter
-	wm               browserapi.WindowManager
-	parser           syntaxapi.Parser
+	n           browserapi.Notifications
+	m           release.Manager
+	interrupter term.Interrupter
+	// prompter is called on the event loop, which scheduleNextTick
+	// schedules on.
+	prompter         browserapi.Prompter
 	frameCharSet     component.FrameCharSet
 	scheduleNextTick func(func()) bool
 	storage          storageapi.Service
@@ -227,10 +234,32 @@ type Manager struct {
 	// written to the user config file. See WithAfterConfigMerge.
 	afterConfigMerge func(ConfigMergeEvent) (ConfigMergeResult, error)
 
+	// iterators gates the installs of each package. m holds the install
+	// in flight of each package, and waiting holds, for each install
+	// tree waiting for one of them, the tree that install belongs to.
 	iterators struct {
 		sync.Mutex
-		m map[string]*sync.Mutex
+		m       map[string]*inFlightInstall
+		waiting map[*installTree]*installTree
 	}
+}
+
+// installTree is an install that was not asked for by another install,
+// together with the requirement installs it makes, one at a time.
+type installTree struct {
+	// pkgID is the package of the first install. A non-zero size also
+	// keeps distinct trees at distinct addresses.
+	pkgID string
+}
+
+type installTreeKey struct{}
+
+// inFlightInstall is an install of a package that has not ended. ready
+// is held, and done open, until it does.
+type inFlightInstall struct {
+	ready *sync.Mutex
+	done  chan struct{}
+	tree  *installTree
 }
 
 // LibDir returns an iterator to the lib directory of the given package.
@@ -240,9 +269,9 @@ func (m *Manager) LibDir(ctx context.Context, pkgID string) (iterator.Iterator[s
 	defer m.iterators.Unlock()
 
 	libDir := makePackageLibDirname(m.dataDir, pkgID)
-	ready, ok := m.iterators.m[pkgID]
+	f, ok := m.iterators.m[pkgID]
 	if ok {
-		return newPendingIterator(ready, m.scheme, m.schemeURI, libDir), nil
+		return newPendingIterator(f.ready, m.scheme, m.schemeURI, libDir), nil
 	}
 
 	_, err := os.Stat(libDir)
@@ -255,7 +284,7 @@ func (m *Manager) LibDir(ctx context.Context, pkgID string) (iterator.Iterator[s
 
 // DescribePackage fetches a Package manifest.
 func (m *Manager) DescribePackage(ctx context.Context, pkgID string) (release.Package, error) {
-	if err := validatePkgPath(pkgID); err != nil {
+	if err := validatePkgID(pkgID); err != nil {
 		return release.Package{}, fmt.Errorf("package id: %w", err)
 	}
 	pkg, err := m.m.GetPackage(ctx, pkgID)
@@ -269,7 +298,7 @@ func (m *Manager) DescribePackage(ctx context.Context, pkgID string) (release.Pa
 func (m *Manager) DescribeRelease(ctx context.Context, pkgID string, version string) (
 	release.Bundle, error,
 ) {
-	if err := validatePkgPath(pkgID); err != nil {
+	if err := validatePkgID(pkgID); err != nil {
 		return release.Bundle{}, fmt.Errorf("package id: %w", err)
 	}
 	if err := validatePkgPath(version); err != nil {
@@ -298,7 +327,7 @@ func (m *Manager) ListPackages(ctx context.Context, filters map[string]string) (
 func (m *Manager) ListPackageVersions(ctx context.Context, pkgID string, filters map[string]string) (
 	iterator.Iterator[release.Bundle], error,
 ) {
-	if err := validatePkgPath(pkgID); err != nil {
+	if err := validatePkgID(pkgID); err != nil {
 		return nil, fmt.Errorf("package id: %w", err)
 	}
 	it, err := m.m.List(ctx, pkgID, filters)
@@ -355,37 +384,67 @@ func (m *Manager) LatestVersion(ctx context.Context, pkgID string) (release.Vers
 // InstallPackageVersion downloads and installs a package bundle by name
 // and version, reporting progress via the ProgressWriter. It blocks
 // until the install finishes and returns the first error encountered, so
-// callers can report success or failure directly.
+// callers can report success or failure directly. While another install
+// of pkgID is in flight, it returns nil without waiting for it.
 func (m *Manager) InstallPackageVersion(
 	ctx context.Context, pkgID string, version release.Version,
 	pw repl.ProgressWriter,
 ) error {
+	_, err := m.install(ctx, pkgID, version, pw)
+	if errors.Is(err, errInstallInFlight) {
+		return nil
+	}
+	return err
+}
+
+// install is InstallPackageVersion returning the version that was in use
+// before, empty when none was. A requirement install, made by another
+// install, waits for an install of pkgID in flight to end and tries
+// again, unless that install waits for this one, directly or through
+// others. It then returns errInstallInFlight, as any install does for an
+// install of pkgID in flight.
+func (m *Manager) install(
+	ctx context.Context, pkgID string, version release.Version,
+	pw repl.ProgressWriter,
+) (release.Version, error) {
 	if pkgID == "" || version == "" {
-		return errors.New("package and version must not be empty")
+		return "", errors.New("package and version must not be empty")
 	}
 	if pw == nil {
 		pw = repl.NopProgressWriter()
 	}
 
-	if err := validatePkgPath(pkgID); err != nil {
-		return fmt.Errorf("package id: %w", err)
+	if err := validatePkgID(pkgID); err != nil {
+		return "", fmt.Errorf("package id: %w", err)
 	}
 	if err := validatePkgPath(string(version)); err != nil {
-		return fmt.Errorf("release version: %w", err)
+		return "", fmt.Errorf("release version: %w", err)
 	}
 
+	tree, nested := ctx.Value(installTreeKey{}).(*installTree)
 	m.iterators.Lock()
-	_, ok := m.iterators.m[pkgID]
-	if ok {
-		m.log(log.InfoLevel, "there's already an ongoing install of package: %s", pkgID)
+	for {
+		f, ok := m.iterators.m[pkgID]
+		if !ok {
+			break
+		}
+		if !nested || m.closesWaitCycleLocked(tree, f.tree) {
+			m.log(log.InfoLevel, "there's already an ongoing install of package: %s", pkgID)
+			m.iterators.Unlock()
+			return "", errInstallInFlight
+		}
+		m.log(log.InfoLevel, "waiting for the ongoing install of package %s", pkgID)
+		m.iterators.waiting[tree] = f.tree
 		m.iterators.Unlock()
-		return nil
+		<-f.done
+		m.iterators.Lock()
+		delete(m.iterators.waiting, tree)
 	}
 
 	tarfile, err := os.CreateTemp("", "")
 	if err != nil {
 		m.iterators.Unlock()
-		return fmt.Errorf("create temp: %w", err)
+		return "", fmt.Errorf("create temp: %w", err)
 	}
 
 	key := m.makeDownloadKey(pkgID, version)
@@ -402,23 +461,42 @@ func (m *Manager) InstallPackageVersion(
 			if err != nil {
 				m.cleanupFile(tarfile)
 				m.iterators.Unlock()
-				return fmt.Errorf("version %s of package %s has "+
+				return "", fmt.Errorf("version %s of package %s has "+
 					"already been installed: %w", version, pkgID,
 					ErrAlreadyInstalled)
 			}
 		} else {
 			m.cleanupFile(tarfile)
 			m.iterators.Unlock()
-			return fmt.Errorf("store package version: %w", err)
+			return "", fmt.Errorf("store package version: %w", err)
 		}
 	}
 
-	mu := new(sync.Mutex)
-	m.iterators.m[pkgID] = mu
-	mu.Lock() // block calls to iterator
+	if !nested {
+		tree = &installTree{pkgID: pkgID}
+		ctx = context.WithValue(ctx, installTreeKey{}, tree)
+	}
+	f := &inFlightInstall{ready: new(sync.Mutex), done: make(chan struct{}), tree: tree}
+	f.ready.Lock() // block calls to iterator
+	m.iterators.m[pkgID] = f
 	m.iterators.Unlock()
 
-	return m.download(ctx, pkgID, version, tarfile, pw, key)
+	// pkgID was validated, so reading its in-use version cannot fail.
+	replaced, _, _ := m.PackageVersionInUse(ctx, pkgID)
+	return replaced, m.download(ctx, pkgID, version, tarfile, pw, key)
+}
+
+// closesWaitCycleLocked reports whether tree waiting for an install in
+// flight in owner would close a cycle of install trees waiting for each
+// other. That includes owner being tree: a tree makes one install at a
+// time, so its install in flight is an ancestor of the asking one.
+func (m *Manager) closesWaitCycleLocked(tree, owner *installTree) bool {
+	for t := owner; t != nil; t = m.iterators.waiting[t] {
+		if t == tree {
+			return true
+		}
+	}
+	return false
 }
 
 // DeletePackageVersion deletes a package version from local storage. This method is idempotent.
@@ -428,7 +506,7 @@ func (m *Manager) DeletePackageVersion(
 	if pkgID == "" || version == "" {
 		return errors.New("package and version must not be empty")
 	}
-	if err := validatePkgPath(pkgID); err != nil {
+	if err := validatePkgID(pkgID); err != nil {
 		return fmt.Errorf("package id: %w", err)
 	}
 	if err := validatePkgPath(string(version)); err != nil {
@@ -484,7 +562,7 @@ func (m *Manager) DeletePackage(
 	if pkgID == "" {
 		return errors.New("package and version must not be empty")
 	}
-	if err := validatePkgPath(pkgID); err != nil {
+	if err := validatePkgID(pkgID); err != nil {
 		return fmt.Errorf("package id: %w", err)
 	}
 	it, err := m.ListInstalledPackageVersions(ctx, pkgID)
@@ -601,7 +679,7 @@ func (m *Manager) ListInstalledPackageVersions(ctx context.Context, pkgID string
 	if pkgID == "" {
 		return nil, errors.New("package must not be empty")
 	}
-	if err := validatePkgPath(pkgID); err != nil {
+	if err := validatePkgID(pkgID); err != nil {
 		return nil, fmt.Errorf("package id: %w", err)
 	}
 	dit, err := m.storage.List(ctx, []storageapi.Filter{{
@@ -628,7 +706,7 @@ func (m *Manager) ListInstalledPackageVersions(ctx context.Context, pkgID string
 func (m *Manager) UsePackageVersion(
 	ctx context.Context, pkgID string, version release.Version,
 ) error {
-	if err := validatePkgPath(pkgID); err != nil {
+	if err := validatePkgID(pkgID); err != nil {
 		return fmt.Errorf("package id: %w", err)
 	}
 	if err := validatePkgPath(string(version)); err != nil {
@@ -670,7 +748,7 @@ func (m *Manager) UsePackageVersion(
 func (m *Manager) PackageVersionInUse(
 	_ context.Context, pkgID string,
 ) (release.Version, bool, error) {
-	if err := validatePkgPath(pkgID); err != nil {
+	if err := validatePkgID(pkgID); err != nil {
 		return "", false, fmt.Errorf("package id: %w", err)
 	}
 	libDir := makePackageLibDirname(m.dataDir, pkgID)
@@ -697,6 +775,21 @@ func (m *Manager) isPackageVersionInUse(
 	}
 	isInUse = os.SameFile(infodirname, infolibdirname)
 	return
+}
+
+// versionInstalled reports whether version of pkgID is fully installed.
+func (m *Manager) versionInstalled(
+	ctx context.Context, pkgID string, version release.Version,
+) (bool, error) {
+	var val pkgVersionValue
+	err := m.storage.Get(ctx, m.makeDownloadKey(pkgID, version), &val)
+	if errors.Is(err, storageapi.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return val.Complete, nil
 }
 
 func (m *Manager) cleanupFile(file *os.File) {
@@ -836,13 +929,18 @@ func (m *Manager) runDownload(
 	return nil
 }
 
-// installRequirements installs the Rune packages listed under the
-// top-level `requirements` key of the staged package config. It runs
-// before the dependent package is promoted so each requirement's full
-// install — including its config merge and gui.env live-apply —
-// completes first and the dependent extension starts with the
-// requirement's environment in place. A failed requirement install
-// aborts the dependent install.
+// installRequirements installs, or upgrades to their latest version,
+// the Rune packages listed under the top-level `requirements` key of
+// the staged package config, and reports each change with
+// ReportRequirement. It runs before the dependent package is promoted
+// so each requirement's full install — including its config merge and
+// gui.env live-apply — completes first and the dependent extension
+// starts with the requirement's environment in place. A requirement
+// whose latest version is installed but not in use was pinned by the
+// user and stays put. A requirement in flight in another install is
+// waited for, unless that install waits for this one, as in a cycle of
+// requirements. A failed requirement install aborts the dependent
+// install.
 func (m *Manager) installRequirements(
 	ctx context.Context, pkgID string, version release.Version,
 	configFile string, pw repl.ProgressWriter,
@@ -858,36 +956,59 @@ func (m *Manager) installRequirements(
 		return fmt.Errorf("read staged config: %w", err)
 	}
 	reqs, err := pkgConfigRequirements(
-		configFile, data, pkgID, version, m.dataDir, m.editorMode,
+		configFile, data, pkgID, version, m.editorMode,
 	)
 	if err != nil {
 		return fmt.Errorf("parse requirements: %w", err)
 	}
 	for _, req := range reqs {
-		if err := validatePkgPath(req); err != nil {
+		if err := validatePkgID(req); err != nil {
 			return fmt.Errorf("requirement id: %w", err)
 		}
 		if req == pkgID {
 			continue
 		}
-		_, installed, err := m.PackageVersionInUse(ctx, req)
+		inUse, installed, err := m.PackageVersionInUse(ctx, req)
 		if err != nil {
 			return fmt.Errorf("requirement %s in use: %w", req, err)
 		}
-		if installed {
-			continue
-		}
-		reqVersion, err := m.LatestVersion(ctx, req)
+		latest, err := m.LatestVersion(ctx, req)
 		if err != nil {
 			return fmt.Errorf("resolve requirement %s: %w", req, err)
 		}
-		m.log(log.InfoLevel, "installing requirement %s version %s of package %s",
-			req, reqVersion, pkgID)
-		err = m.InstallPackageVersion(ctx, req, reqVersion,
+		if installed && inUse == latest {
+			continue
+		}
+		if installed {
+			pinned, err := m.versionInstalled(ctx, req, latest)
+			if err != nil {
+				return fmt.Errorf("requirement %s installed: %w", req, err)
+			}
+			if pinned {
+				m.log(log.InfoLevel, "leaving requirement %s of package %s at %s: "+
+					"%s is installed but not in use", req, pkgID, inUse, latest)
+				continue
+			}
+			m.log(log.InfoLevel, "upgrading requirement %s from %s to %s for package %s",
+				req, inUse, latest, pkgID)
+		} else {
+			m.log(log.InfoLevel, "installing requirement %s version %s of package %s",
+				req, latest, pkgID)
+		}
+		replaced, err := m.install(ctx, req, latest,
 			requirementProgressWriter{pkgID: req, pw: pw})
-		if err != nil && !errors.Is(err, ErrAlreadyInstalled) {
+		switch {
+		case errors.Is(err, errInstallInFlight), errors.Is(err, ErrAlreadyInstalled):
+			// req is in flight in an install waiting for this one, which
+			// finishes it, or the install of req this one waited for
+			// installed latest and reported it.
+			continue
+		case err != nil:
 			return fmt.Errorf("install requirement %s: %w", req, err)
 		}
+		ReportRequirement(m.ui(ctx), pw, RequirementChange{
+			Package: req, From: replaced, To: latest, RequiredBy: pkgID,
+		})
 	}
 	return nil
 }
@@ -916,12 +1037,13 @@ func (m *Manager) finishDownload(pkgID string) {
 	m.iterators.Lock()
 	defer m.iterators.Unlock()
 
-	ready, ok := m.iterators.m[pkgID]
+	f, ok := m.iterators.m[pkgID]
 	if !ok {
 		panic("iterator for package not found")
 	}
 	delete(m.iterators.m, pkgID)
-	ready.Unlock()
+	f.ready.Unlock()
+	close(f.done)
 }
 
 func (m *Manager) abortDownload(
@@ -985,6 +1107,8 @@ func (m *Manager) promptConfigChange(
 	ui.PromptConfig(ConfigPrompt{
 		Message: message,
 		Options: []PromptOption{{Label: "Allow", Key: 'a'}, {Label: "Deny", Key: 'd'}},
+		// the settings read best on their own lines, unwrapped
+		MaxWidth: 120,
 	}, func(approved bool) {
 		if !approved {
 			return
@@ -1026,30 +1150,6 @@ func (m *Manager) promptExtensionPathChange(
 		_, _ = ui.Notify(browserapi.LevelSuccess,
 			"updated %s extension path. Restart the program to load the changes.", pkgID)
 	})
-}
-
-func boundedFloatingMessage(
-	newMessage func(string) component.Floating, maxWidth int,
-) func(string) component.Floating {
-	return func(message string) component.Floating {
-		return &maxWidthFloating{
-			Floating: newMessage(message),
-			maxWidth: maxWidth,
-		}
-	}
-}
-
-type maxWidthFloating struct {
-	component.Floating
-	maxWidth int
-}
-
-func (f *maxWidthFloating) Dimensions() (width, height int) {
-	width, height = f.Floating.Dimensions()
-	if width <= f.maxWidth {
-		return width, height
-	}
-	return f.maxWidth, f.Floating.(component.Responsive).Height(f.maxWidth)
 }
 
 // ConfigMergeEvent describes a package config merge that was just written to
@@ -1320,7 +1420,7 @@ func loadIdePkgConfigFile(path string, base map[string]any) (map[string]any, err
 	if err != nil {
 		return nil, err
 	}
-	return loadIdePkgConfigFromBytes(path, data, base, "", "", "", "")
+	return loadIdePkgConfigFromBytes(path, data, base, "", "", "")
 }
 
 // configBaseTree returns the editor's default config tree to predeclare as
@@ -1377,14 +1477,13 @@ func loneSubdir(dir string) (string, bool) {
 	return filepath.Join(dir, entries[0].Name()), true
 }
 
+// idePkgStarlarkParams binds RUNE_DATADIR to its own placeholder so a
+// config.star that builds paths from it yields "$RUNE_DATADIR/..." and the
+// host that uses the value resolves it.
 func idePkgStarlarkParams(
-	pkgID string, pkgVersion release.Version, dataDir string,
-	editorMode string,
+	pkgID string, pkgVersion release.Version, editorMode string,
 ) map[string]any {
-	params := map[string]any{}
-	if dataDir != "" {
-		params["RUNE_DATADIR"] = dataDir
-	}
+	params := map[string]any{"RUNE_DATADIR": "$" + hostenv.DataDirVar}
 	if pkgID != "" {
 		params["RUNE_PKG_ID"] = pkgID
 	}
@@ -1399,8 +1498,7 @@ func idePkgStarlarkParams(
 
 func loadIdePkgConfigFromBytes(
 	filename string, data []byte, base map[string]any,
-	pkgID string, pkgVersion release.Version, dataDir string,
-	editorMode string,
+	pkgID string, pkgVersion release.Version, editorMode string,
 ) (map[string]any, error) {
 	if strings.HasSuffix(strings.ToLower(filename), ".star") {
 		// User configs are authored as overlays that mutate a
@@ -1414,7 +1512,7 @@ func loadIdePkgConfigFromBytes(
 		cfg, err := starlarkconfig.Decode(starlarkconfig.Source{
 			Src:      data,
 			Filename: filename,
-			Params:   idePkgStarlarkParams(pkgID, pkgVersion, dataDir, editorMode),
+			Params:   idePkgStarlarkParams(pkgID, pkgVersion, editorMode),
 			Base:     base,
 		})
 		if errors.Is(err, starlarkconfig.ErrMissingConfig) {
@@ -1434,19 +1532,18 @@ func loadIdePkgConfigFromBytes(
 
 func loadIdePkgConfigOverlay(
 	filename string, data []byte, base map[string]any,
-	pkgID string, pkgVersion release.Version, dataDir string,
-	editorMode string,
+	pkgID string, pkgVersion release.Version, editorMode string,
 ) (map[string]any, error) {
 	if strings.HasSuffix(strings.ToLower(filename), ".star") {
 		return starlarkconfig.Decode(starlarkconfig.Source{
 			Src:      data,
 			Filename: filename,
-			Params:   idePkgStarlarkParams(pkgID, pkgVersion, dataDir, editorMode),
+			Params:   idePkgStarlarkParams(pkgID, pkgVersion, editorMode),
 			Base:     base,
 		})
 	}
 	return loadIdePkgConfigFromBytes(filename, data, base, pkgID, pkgVersion,
-		dataDir, editorMode)
+		editorMode)
 }
 
 func normalizeIdePkgConfig(v any) any {
@@ -1477,8 +1574,11 @@ func normalizeIdePkgConfig(v any) any {
 // idePkgConfigDiff classifies overlay keys against the user config into two
 // disjoint subsets:
 //
-//   - newCfg: overlay key paths absent from the user config. These can be
-//     auto-applied without prompting.
+//   - newCfg: overlay key paths absent from the user config, plus user values
+//     that only differ from the overlay in spelling the data directory (an
+//     absolute path where the overlay has $RUNE_DATADIR, written by releases
+//     that expanded it at install time). These can be auto-applied without
+//     prompting.
 //   - conflictCfg: overlay scalar leaves that already exist in the user config
 //     with a different value and must be approved. Outside gui.env only
 //     version-dependent leaves qualify (RUNE-225); under gui.env every
@@ -1489,7 +1589,7 @@ func normalizeIdePkgConfig(v any) any {
 // Either returned map is nil when its subset is empty.
 func idePkgConfigDiff(
 	user, overlay map[string]any, versionDependent map[string]any,
-	keyPath []string,
+	dataDir string, keyPath []string,
 ) (newCfg, conflictCfg map[string]any) {
 	for key, overlayVal := range overlay {
 		userVal, ok := user[key]
@@ -1503,24 +1603,35 @@ func idePkgConfigDiff(
 		overlayMap, overlayIsMap := overlayVal.(map[string]any)
 		userMap, userIsMap := userVal.(map[string]any)
 		if !overlayIsMap || !userIsMap {
-			if isScalar(userVal) && isScalar(overlayVal) {
-				conflictVal, conflict := scalarConflict(
+			var val any
+			change := valueSame
+			switch {
+			case isScalar(userVal) && isScalar(overlayVal):
+				val, change = scalarChange(
 					append(keyPath, key),
 					isVersionDependentScalar(versionDependent, key),
-					userVal, overlayVal,
+					userVal, overlayVal, dataDir,
 				)
-				if conflict {
-					if conflictCfg == nil {
-						conflictCfg = map[string]any{}
-					}
-					conflictCfg[key] = conflictVal
+			case listRespelled(userVal, overlayVal, dataDir):
+				val, change = overlayVal, valueRespelled
+			}
+			switch change {
+			case valueRespelled:
+				if newCfg == nil {
+					newCfg = map[string]any{}
 				}
+				newCfg[key] = val
+			case valueConflict:
+				if conflictCfg == nil {
+					conflictCfg = map[string]any{}
+				}
+				conflictCfg[key] = val
 			}
 			continue
 		}
 		nestedVersionDependent, _ := versionDependent[key].(map[string]any)
 		nestedNew, nestedConflict := idePkgConfigDiff(
-			userMap, overlayMap, nestedVersionDependent, append(keyPath, key),
+			userMap, overlayMap, nestedVersionDependent, dataDir, append(keyPath, key),
 		)
 		if nestedNew != nil {
 			if newCfg == nil {
@@ -1538,25 +1649,91 @@ func idePkgConfigDiff(
 	return newCfg, conflictCfg
 }
 
-func scalarConflict(
-	keyPath []string, versionDependent bool, userVal, overlayVal any,
-) (any, bool) {
+type valueChange int
+
+const (
+	// valueSame keeps the user value.
+	valueSame valueChange = iota
+	// valueRespelled replaces the user value without asking: it is the
+	// overlay as a release that expanded $RUNE_DATADIR at install time
+	// wrote it.
+	valueRespelled
+	// valueConflict replaces the user value only with the user's approval.
+	valueConflict
+)
+
+func scalarChange(
+	keyPath []string, versionDependent bool, userVal, overlayVal any, dataDir string,
+) (any, valueChange) {
 	if isGUIEnvPathLeaf(keyPath) {
-		merged, changed := mergePathValue(
-			fmt.Sprint(userVal), fmt.Sprint(overlayVal),
+		merged, respelled, added := mergePathValue(
+			fmt.Sprint(userVal), fmt.Sprint(overlayVal), dataDir,
 		)
-		if !changed {
-			return nil, false
+		switch {
+		case added:
+			return merged, valueConflict
+		case respelled:
+			return merged, valueRespelled
 		}
-		return merged, true
+		return nil, valueSame
 	}
-	if fmt.Sprint(overlayVal) == fmt.Sprint(userVal) {
-		return nil, false
+	userStr, overlayStr := fmt.Sprint(userVal), fmt.Sprint(overlayVal)
+	if overlayStr == userStr {
+		return nil, valueSame
+	}
+	if expandedAtInstall(userStr, overlayStr, dataDir) {
+		return overlayVal, valueRespelled
+	}
+	if sameAfterDataDir(userStr, overlayStr, dataDir) {
+		return nil, valueSame
 	}
 	if isGUIEnvLeaf(keyPath) || versionDependent {
-		return overlayVal, true
+		return overlayVal, valueConflict
 	}
-	return nil, false
+	return nil, valueSame
+}
+
+// expandedAtInstall reports whether userStr is overlayStr with $RUNE_DATADIR
+// expanded with dataDir, as older releases merged it. Any other spelling of
+// the same value, such as ${RUNE_DATADIR}, is the user's to keep.
+func expandedAtInstall(userStr, overlayStr, dataDir string) bool {
+	return dataDir != "" && userStr != overlayStr &&
+		userStr == hostenv.ExpandDataDir(overlayStr, dataDir)
+}
+
+// sameAfterDataDir reports whether the user and overlay spellings name the
+// same value on this host once $RUNE_DATADIR is expanded with dataDir.
+func sameAfterDataDir(userStr, overlayStr, dataDir string) bool {
+	return dataDir != "" &&
+		hostenv.ExpandDataDir(userStr, dataDir) == hostenv.ExpandDataDir(overlayStr, dataDir)
+}
+
+// listRespelled reports whether two lists of scalars differ only in elements
+// that a release expanded $RUNE_DATADIR in at install time.
+func listRespelled(userVal, overlayVal any, dataDir string) bool {
+	userList, ok := userVal.([]any)
+	if !ok {
+		return false
+	}
+	overlayList, ok := overlayVal.([]any)
+	if !ok || len(userList) != len(overlayList) {
+		return false
+	}
+	differ := false
+	for i := range overlayList {
+		if !isScalar(userList[i]) || !isScalar(overlayList[i]) {
+			return false
+		}
+		userStr, overlayStr := fmt.Sprint(userList[i]), fmt.Sprint(overlayList[i])
+		if userStr == overlayStr {
+			continue
+		}
+		if !expandedAtInstall(userStr, overlayStr, dataDir) {
+			return false
+		}
+		differ = true
+	}
+	return differ
 }
 
 func isGUIEnvLeaf(keyPath []string) bool {
@@ -1581,9 +1758,14 @@ func isScalar(v any) bool {
 	}
 }
 
-func mergePathValue(userPath, pkgPath string) (string, bool) {
+// mergePathValue merges the package's PATH chunks into the user's. A user
+// chunk that is a package chunk with $RUNE_DATADIR expanded with dataDir is
+// rewritten in place to the package spelling (respelled); a user chunk naming
+// the same directory in another spelling counts as present; package chunks
+// the user lacks are prepended in package order (added).
+func mergePathValue(userPath, pkgPath, dataDir string) (merged string, respelled, added bool) {
 	if pkgPath == "" {
-		return userPath, false
+		return userPath, false, false
 	}
 	userChunks := strings.Split(userPath, ":")
 	present := make(map[string]struct{}, len(userChunks))
@@ -1596,15 +1778,40 @@ func mergePathValue(userPath, pkgPath string) (string, bool) {
 			continue
 		}
 		present[chunk] = struct{}{}
-		missing = append(missing, chunk)
+		i, same := userChunkFor(userChunks, chunk, dataDir)
+		switch {
+		case i >= 0:
+			userChunks[i] = chunk
+			respelled = true
+		case !same:
+			missing = append(missing, chunk)
+		}
 	}
+	userPath = strings.Join(userChunks, ":")
 	if len(missing) == 0 {
-		return userPath, false
+		return userPath, respelled, false
 	}
 	if userPath == "" {
-		return strings.Join(missing, ":"), true
+		return strings.Join(missing, ":"), respelled, true
 	}
-	return strings.Join(missing, ":") + ":" + userPath, true
+	return strings.Join(missing, ":") + ":" + userPath, respelled, true
+}
+
+// userChunkFor returns the index of the user chunk to respell to pkgChunk, or
+// -1 when there is none, and whether some user chunk names pkgChunk's
+// directory already.
+func userChunkFor(userChunks []string, pkgChunk, dataDir string) (int, bool) {
+	if !strings.Contains(pkgChunk, hostenv.DataDirVar) {
+		return -1, false
+	}
+	same := false
+	for i, chunk := range userChunks {
+		if expandedAtInstall(chunk, pkgChunk, dataDir) {
+			return i, true
+		}
+		same = same || sameAfterDataDir(chunk, pkgChunk, dataDir)
+	}
+	return -1, same
 }
 
 func versionDependentKeys(overlay map[string]any) map[string]any {
@@ -1640,14 +1847,14 @@ const versionDependentSentinel = "\x00rune-version-sentinel\x00"
 
 func versionDependentOverlayKeys(
 	filename string, data []byte, overlay map[string]any,
-	pkgID string, dataDir, editorMode string,
+	pkgID, editorMode string,
 ) (map[string]any, error) {
 	if !strings.HasSuffix(strings.ToLower(filename), ".star") {
 		return versionDependentKeys(overlay), nil
 	}
 	sentinel, err := loadIdePkgConfigOverlay(
 		filename, data, map[string]any{},
-		pkgID, versionDependentSentinel, dataDir, editorMode,
+		pkgID, versionDependentSentinel, editorMode,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("decode package config (version probe): %w", err)
@@ -1826,7 +2033,7 @@ func untar(dst string, r io.Reader, onProgress func()) ([]executableEntry, pkgtr
 
 		target := filepath.Join(dst, filepath.Clean(hdr.Name))
 		entry := pkgtrust.Entry{Path: filepath.ToSlash(hdr.Name), Mode: hdr.FileInfo().Mode()}
-		if isExecutable(hdr.FileInfo()) && !isHidden(hdr.Name) {
+		if isExecutable(hdr.FileInfo()) && isPackageBin(hdr.Name) {
 			executables = append(executables, executableEntry{
 				Name: hdr.Name,
 				Mode: hdr.Mode,
@@ -1873,6 +2080,11 @@ func untar(dst string, r io.Reader, onProgress func()) ([]executableEntry, pkgtr
 func copyExecutables(files []executableEntry, dirname, targetdirname string) error {
 	var ret error
 	for _, executable := range files {
+		// Install records written by older releases list executables
+		// found anywhere in the package.
+		if !isPackageBin(executable.Name) {
+			continue
+		}
 		name := filepath.Clean(executable.Name)
 		orig := filepath.Join(dirname, name)
 		origfile, err := os.OpenFile(orig, os.O_RDONLY, 0)
@@ -1918,8 +2130,9 @@ func swapExecutable(orig *os.File, targetdirname, name string, mode int64) error
 	return nil
 }
 
-func isHidden(file string) bool {
-	return strings.HasPrefix(filepath.Base(file), ".")
+func isPackageBin(name string) bool {
+	dir, file := path.Split(path.Clean(name))
+	return dir == "bin/" && !strings.HasPrefix(file, ".")
 }
 
 func removeExecutables(files []executableEntry, targetdirname string) error {
@@ -2172,6 +2385,17 @@ func validatePkgPath(val string) error {
 		}
 	}
 	return nil
+}
+
+// validatePkgID is validatePkgPath for package ids, rejecting a git
+// remote URL with the package id to use instead: a URL fails
+// validatePkgPath with an opaque segment error or, in the scp-like SSH
+// form, passes it and is looked up as an official package.
+func validatePkgID(id string) error {
+	if err := gitpkg.RemoteURLError(id); err != nil {
+		return err
+	}
+	return validatePkgPath(id)
 }
 
 // Reconcile cleans up incomplete installs left by a previous crash.

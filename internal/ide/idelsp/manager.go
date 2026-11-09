@@ -17,6 +17,7 @@
 package idelsp
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +56,78 @@ type serverKey struct {
 	languageID string
 	rootURI    string
 }
+
+// serverID identifies one backend of a serverKey, a slot that outlives
+// the restarts of its process.
+type serverID struct {
+	key  serverKey
+	name string
+}
+
+// initSpec is what Initialize was asked to bring up for a serverKey,
+// kept so the server can be brought up again on request.
+type initSpec struct {
+	cfg        langConfig
+	alternates map[string]string
+	params     semanticapi.InitializeParams
+}
+
+// ServerState is the lifecycle state of a language server.
+type ServerState string
+
+const (
+	// ServerStarting means the process is being spawned and initialized.
+	ServerStarting ServerState = "starting"
+	// ServerRunning means the server completed the initialize handshake.
+	ServerRunning ServerState = "running"
+	// ServerRestarting means the process exited unexpectedly and the
+	// server is being brought back up.
+	ServerRestarting ServerState = "restarting"
+	// ServerFailed means the server could not be brought up.
+	ServerFailed ServerState = "failed"
+	// ServerStopped means the server was stopped on request, or its
+	// process exited cleanly on its own and was not restarted.
+	ServerStopped ServerState = "stopped"
+)
+
+// ServerStatus is a snapshot of one language server: a backend serving
+// a language at a project root, which outlives the restarts of its
+// process.
+type ServerStatus struct {
+	// Language is the language id the server was initialized for.
+	Language string
+	// Name identifies the backend. It is the language id unless the
+	// language is served by several backends, where it is the base name
+	// of the backend's command.
+	Name    string
+	RootURI string
+	// Path, Args and Env are what the server process runs with.
+	Path  string
+	Args  []string
+	Env   []string
+	State ServerState
+	// Pid is the current or last process of the server on the
+	// workspace host, 0 if none was started. A failed or stopped server
+	// keeps its last pid so the output of that process can be found.
+	Pid workspaceapi.Pid
+	// Started is when the current or last process was started.
+	Started time.Time
+	// Restarts counts how many times the server was brought up again
+	// since it was initialized.
+	Restarts int
+	// LastError is the most recent failure: why the server could not
+	// start, or why its process last exited. It is nil if none.
+	LastError error
+	// Params is the initialize request sent to the server, as JSON.
+	Params json.RawMessage
+	// Result is the initialize response of the server, as JSON. It is
+	// nil until the handshake of the current process completes.
+	Result json.RawMessage
+}
+
+// errExitedCleanly is the LastError of a server whose process exited
+// with status 0 without being asked to.
+var errExitedCleanly = errors.New("process exited with status 0")
 
 // rootContains reports whether the file URI fileURI lives inside the
 // root URI rootURI. Both are file:// URIs as produced by convertURI.
@@ -140,6 +214,8 @@ type Manager struct {
 	callback      Callback
 	maxRetries    uint
 	servers       map[serverKey]server
+	specs         map[serverKey]initSpec
+	statuses      map[serverID]ServerStatus
 	files         map[string]*file
 	pendingOpens  map[string]textapi.Event
 	pullTimers    map[string]*time.Timer
@@ -205,6 +281,8 @@ func New(
 		callback:      cfg.Callback,
 		maxRetries:    cfg.MaxRetries,
 		servers:       make(map[serverKey]server),
+		specs:         make(map[serverKey]initSpec),
+		statuses:      make(map[serverID]ServerStatus),
 		files:         make(map[string]*file),
 		pendingOpens:  make(map[string]textapi.Event),
 		pullTimers:    make(map[string]*time.Timer),
@@ -734,7 +812,7 @@ func (m *Manager) withEnsuredOpen(
 		semanticapi.DidOpenTextDocumentParams{
 			TextDocument: semanticapi.TextDocumentItem{
 				URI:        uri,
-				LanguageID: lang.id,
+				LanguageID: lang.documentID,
 				Version:    firstFileVersion,
 				Text:       content,
 			},
@@ -773,6 +851,10 @@ func (m *Manager) ensureFile(
 		}
 		return f, nil
 	}
+	lang, err := languageForFile(uri)
+	if err != nil {
+		return nil, err
+	}
 	if content == "" {
 		read, err := m.readFileContent(uri.Path())
 		if err != nil {
@@ -783,7 +865,7 @@ func (m *Manager) ensureFile(
 		// editor trims last EOL but LSP servers expect it
 		content += "\n"
 	}
-	f = newFile(uri, content, key.languageID, key)
+	f = newFile(uri, content, lang.documentID, key)
 	m.mu.Lock()
 	m.files[uriStr] = f
 	m.mu.Unlock()
@@ -810,7 +892,30 @@ func (m *Manager) ensureServer(
 	ctx, cancel := context.WithTimeout(m.ctx, m.cfg.InitializeTimeout)
 	defer cancel()
 	key := serverKey{languageID: lang.id, rootURI: m.rootURI}
-	return m.initializeServer(ctx, lang, key, autoInitParams(m.rootURI))
+	spec := initSpec{cfg: lang, params: autoInitParams(m.rootURI)}
+	m.mu.Lock()
+	m.specs[key] = spec
+	m.mu.Unlock()
+	return m.bringUp(ctx, key, spec)
+}
+
+// bringUp starts the server or servers spec describes for key and
+// registers them.
+func (m *Manager) bringUp(
+	ctx context.Context, key serverKey, spec initSpec,
+) (server, error) {
+	if len(spec.alternates) == 0 {
+		srv, err := m.initializeServer(ctx, spec.cfg, key, spec.params)
+		if err != nil {
+			return nil, err
+		}
+		return srv, nil
+	}
+	srv, err := m.initializeMultiServer(ctx, spec.cfg, key, spec.alternates, spec.params)
+	if err != nil {
+		return nil, err
+	}
+	return srv, nil
 }
 
 func (m *Manager) initializeServer(
@@ -821,9 +926,12 @@ func (m *Manager) initializeServer(
 		return nil, errors.New("language configuration with empty command")
 	}
 	srv := m.buildChild(ctx, lang, lang.id, key.rootURI, params)
+	m.trackStarting(srv)
 	if err := srv.start(ctx); err != nil {
+		m.trackFailed(srv, err)
 		return nil, err
 	}
+	m.trackRunning(srv, false)
 
 	m.mu.Lock()
 	m.servers[key] = srv
@@ -926,16 +1034,28 @@ func (m *Manager) initializeMultiServer(
 		mls.children[i] = c
 	}
 
+	for _, c := range children {
+		m.trackStarting(c)
+	}
 	if err := mls.start(ctx); err != nil {
+		for _, c := range children {
+			m.trackFailed(c, err)
+		}
 		return nil, err
+	}
+	for _, c := range children {
+		m.trackRunning(c, false)
 	}
 
 	m.mu.Lock()
 	m.servers[key] = mls
 	m.mu.Unlock()
 
+	// Pending opens are drained once through mls so the notify fans
+	// out to every child; draining per child would let the first one
+	// consume them and leave the rest rejecting later didChanges.
+	m.sendPendingOpens(key, mls)
 	for _, child := range children {
-		m.sendPendingOpens(key, child)
 		watched := child
 		go debug.CapturePanicReport(func() {
 			m.watchServer(&lang, watched)
@@ -948,15 +1068,23 @@ func (m *Manager) initializeMultiServer(
 // manager's routing for key. When the root is backed by a
 // multiLangServer, only the crashed child is replaced (by pointer
 // identity) so the other children keep running; otherwise the
-// single registered server is replaced wholesale.
-func (m *Manager) installRestarted(key serverKey, old, restarted *langServer) {
+// single registered server is replaced wholesale. It installs nothing
+// and reports false when old is no longer registered under key, as
+// when the server was stopped or replaced while it was restarting.
+func (m *Manager) installRestarted(key serverKey, old, restarted *langServer) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if mls, ok := m.servers[key].(*multiLangServer); ok {
-		mls.replaceChild(old, restarted)
-		return
+	switch cur := m.servers[key].(type) {
+	case *multiLangServer:
+		return cur.replaceChild(old, restarted)
+	case *langServer:
+		if cur != old {
+			return false
+		}
+		m.servers[key] = restarted
+		return true
 	}
-	m.servers[key] = restarted
+	return false
 }
 
 // sendPendingOpens sends didOpen for files that were opened before this
@@ -965,7 +1093,7 @@ func (m *Manager) installRestarted(key serverKey, old, restarted *langServer) {
 // the workspace root entirely (no root can ever contain them, so the
 // first same-language server claims them); the rest stay in
 // pendingOpens for a future server init.
-func (m *Manager) sendPendingOpens(key serverKey, srv *langServer) {
+func (m *Manager) sendPendingOpens(key serverKey, srv server) {
 	m.mu.Lock()
 	var opens []textapi.Event
 	for uri, ev := range m.pendingOpens {
@@ -1053,36 +1181,31 @@ func (m *Manager) watchServer(
 	case <-m.ctx.Done():
 		return
 	case err := <-ch:
+		if srv.wasStopped() {
+			m.log.Debug("server exited after stop", "language", lang.id, "pid", srv.pid)
+			return
+		}
 		if err == nil {
-			m.log.Debug("server exited gracefully", "language", lang.id)
+			m.log.Warn("language server exited on its own",
+				srv.logAttrs("error", errExitedCleanly)...)
+			m.trackStopped(srv, errExitedCleanly)
 			return
 		}
-		m.log.Warn("server crashed",
-			"language", lang.id, "error", err)
-		srv.mu.Lock()
-		stopCalled := srv.stopCalled
-		srv.mu.Unlock()
-		if stopCalled {
-			return
-		}
+		m.trackRestarting(srv, fmt.Errorf("process %d exited: %w", srv.pid, err))
 	case <-srv.conn.Done():
 		// The jsonrpc2 connection died (e.g. read or write error)
 		// while the child process is still running. This leaves the
 		// editor unable to communicate even though the server looks
 		// alive. Kill the orphaned process and fall through into the
 		// restart loop.
-		srv.mu.Lock()
-		stopCalled := srv.stopCalled
-		srv.mu.Unlock()
-		if stopCalled {
+		if srv.wasStopped() {
 			return
 		}
-		m.log.Warn("jsonrpc2 connection died, killing orphan process",
-			"language", lang.id, "pid", srv.pid)
 		if err := m.executor.Signal(srv.pid, syscall.SIGKILL); err != nil {
 			m.log.Warn("kill orphan lsp process",
 				"language", lang.id, "pid", srv.pid, "error", err)
 		}
+		m.trackRestarting(srv, srv.withExitStatus(errors.New("connection to server lost")))
 	}
 
 	strategy := retry.CombinedStrategy(
@@ -1090,12 +1213,18 @@ func (m *Manager) watchServer(
 		retry.ExponentialStrategy(500*time.Millisecond, 5*time.Second),
 	)
 
+	var attempts int
+	var lastErr error
 	retryErr := retry.Retry(m.ctx, strategy,
 		func(ctx context.Context) (bool, error) {
+			if srv.wasStopped() {
+				return false, nil
+			}
 			ctx, cancel := context.WithTimeout(ctx, m.cfg.InitializeTimeout)
 			defer cancel()
 
-			m.log.Debug("restarting lsp server", "language", lang.id)
+			attempts++
+			m.log.Info("restarting language server", srv.logAttrs("attempt", attempts)...)
 			newSrv := newLangServer(
 				m.ctx, srv.cfg, srv.binPath, m.executor, srv.rootURI,
 				newCallbackAdapter(m.callback, srv.serverName, srv.rootURI),
@@ -1104,9 +1233,17 @@ func (m *Manager) watchServer(
 			newSrv.serverName = srv.serverName
 
 			if err := newSrv.start(ctx); err != nil {
+				lastErr = err
+				m.trackRestartFailed(newSrv, err)
 				return true, err
 			}
-			m.installRestarted(srv.key(), srv, newSrv)
+			if !m.installRestarted(srv.key(), srv, newSrv) {
+				m.log.Info("language server stopped while restarting",
+					newSrv.logAttrs()...)
+				m.shutdown(m.ctx, newSrv)
+				return false, nil
+			}
+			m.trackRunning(newSrv, true)
 
 			m.reopenFiles(ctx, newSrv.key(), newSrv)
 			go debug.CapturePanicReport(func() {
@@ -1115,14 +1252,16 @@ func (m *Manager) watchServer(
 			return false, nil
 		})
 
-	if retryErr != nil && m.notifications != nil {
-		m.cfg.ScheduleNextTick(func() {
-			_, _ = m.notifications.Notify(
-				browserapi.LevelError,
-				"LSP server %s failed after %d retries: %s",
-				lang.command, m.maxRetries, retryErr,
-			)
-		})
+	if retryErr != nil {
+		if lastErr == nil {
+			lastErr = retryErr
+		}
+		m.trackFailed(srv, fmt.Errorf("gave up restarting after %d attempts: %w",
+			attempts, lastErr))
+		m.notify(browserapi.LevelError,
+			"LSP server %s failed after %d retries: %s",
+			lang.command, m.maxRetries, retryErr,
+		)
 	}
 }
 
@@ -1130,21 +1269,28 @@ func (m *Manager) reopenFiles(
 	ctx context.Context, key serverKey,
 	srv *langServer,
 ) {
+	m.reopen(ctx, srv, m.filesOf(key))
+}
+
+func (m *Manager) filesOf(key serverKey) []*file {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	var files []*file
 	for _, file := range m.files {
 		if file.serverKey == key {
 			files = append(files, file)
 		}
 	}
-	m.mu.Unlock()
+	return files
+}
 
+func (m *Manager) reopen(ctx context.Context, srv server, files []*file) {
 	for _, f := range files {
 		_ = srv.notify(ctx, "textDocument/didOpen",
 			semanticapi.DidOpenTextDocumentParams{
 				TextDocument: semanticapi.TextDocumentItem{
 					URI:        f.docID.URI,
-					LanguageID: key.languageID,
+					LanguageID: f.languageID,
 					Version:    f.version,
 					Text:       f.content,
 				},
@@ -1201,9 +1347,44 @@ func (m *Manager) serverForURI(uri string) (server, error) {
 		}
 	}
 	if broadest == nil {
-		return nil, fmt.Errorf("%w: server %s not running", ErrNoServer, cfg.id)
+		return nil, fmt.Errorf("%w: server %s not running%s",
+			ErrNoServer, cfg.id, m.notRunningReason(cfg.id, uri))
 	}
 	return broadest, nil
+}
+
+// notRunningReason explains, from the recorded lifecycle, why no server
+// of languageID serves uri, preferring the server of the most specific
+// root containing uri. It returns "" when nothing was recorded. m.mu
+// must be held.
+func (m *Manager) notRunningReason(languageID, uri string) string {
+	var st ServerStatus
+	var found, contains bool
+	for id, s := range m.statuses {
+		if id.key.languageID != languageID {
+			continue
+		}
+		c := rootContains(id.key.rootURI, uri)
+		if !found || (c && !contains) ||
+			(c == contains && len(id.key.rootURI) > len(st.RootURI)) {
+			st, found, contains = s, true, c
+		}
+	}
+	if !found {
+		return ""
+	}
+	switch st.State {
+	case ServerFailed:
+		return fmt.Sprintf(": last start failed: %v", st.LastError)
+	case ServerStopped:
+		if st.LastError != nil {
+			return fmt.Sprintf(": stopped: %v", st.LastError)
+		}
+		return ": stopped"
+	case ServerStarting:
+		return ": still starting"
+	}
+	return ""
 }
 
 func (m *Manager) allServers() []server {
@@ -1231,6 +1412,258 @@ func (m *Manager) AnyServerRunning() bool {
 		}
 	}
 	return false
+}
+
+// RootURI returns the file URI of the workspace root, which contains
+// the root of every server of this Manager.
+func (m *Manager) RootURI() string {
+	return m.rootURI
+}
+
+// Servers returns the status of every language server initialized in
+// this Manager, including those that failed to start or were stopped,
+// ordered by language, root and name.
+func (m *Manager) Servers() []ServerStatus {
+	m.mu.Lock()
+	ret := make([]ServerStatus, 0, len(m.statuses))
+	for _, st := range m.statuses {
+		st.Args = slices.Clone(st.Args)
+		st.Env = slices.Clone(st.Env)
+		ret = append(ret, st)
+	}
+	m.mu.Unlock()
+	slices.SortFunc(ret, func(a, b ServerStatus) int {
+		return cmp.Or(
+			strings.Compare(a.Language, b.Language),
+			strings.Compare(a.RootURI, b.RootURI),
+			strings.Compare(a.Name, b.Name),
+		)
+	})
+	return ret
+}
+
+// Stop shuts down the language server of languageID rooted at rootURI.
+// It stays down until Start or Restart is called, or its language
+// extension initializes it again. It returns ErrNoServer if the server
+// is not running.
+func (m *Manager) Stop(ctx context.Context, languageID, rootURI string) error {
+	key := serverKey{languageID: languageID, rootURI: rootURI}
+	m.mu.Lock()
+	srv, ok := m.servers[key]
+	delete(m.servers, key)
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("%w: server %s not running at %s", ErrNoServer, languageID, rootURI)
+	}
+	m.shutdown(ctx, srv)
+	for _, child := range childServers(srv) {
+		m.trackStopped(child, nil)
+	}
+	return nil
+}
+
+// Start brings up the language server of languageID rooted at rootURI
+// with the parameters it was last initialized with, and reopens the
+// files it served. It fails if the server is running, and returns
+// ErrNoServer if it was never initialized.
+func (m *Manager) Start(ctx context.Context, languageID, rootURI string) error {
+	key := serverKey{languageID: languageID, rootURI: rootURI}
+	m.mu.Lock()
+	_, running := m.servers[key]
+	spec, known := m.specs[key]
+	m.mu.Unlock()
+	if running {
+		return fmt.Errorf("language server %s is already running at %s", languageID, rootURI)
+	}
+	if !known {
+		return fmt.Errorf("%w: server %s was never initialized at %s",
+			ErrNoServer, languageID, rootURI)
+	}
+	// Snapshot before bring-up, which opens pending files itself.
+	files := m.filesOf(key)
+	srv, err := m.bringUp(ctx, key, spec)
+	if err != nil {
+		return err
+	}
+	m.reopen(ctx, srv, files)
+	return nil
+}
+
+// Restart stops the language server of languageID rooted at rootURI if
+// it is running, then starts it as Start does.
+func (m *Manager) Restart(ctx context.Context, languageID, rootURI string) error {
+	key := serverKey{languageID: languageID, rootURI: rootURI}
+	m.mu.Lock()
+	srv, running := m.servers[key]
+	delete(m.servers, key)
+	m.mu.Unlock()
+	if running {
+		m.shutdown(ctx, srv)
+	}
+	if err := m.Start(ctx, languageID, rootURI); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, st := range m.statuses {
+		if id.key == key {
+			st.Restarts++
+			m.statuses[id] = st
+		}
+	}
+	return nil
+}
+
+// shutdown asks srv to shut down, bounded by the close timeout, and
+// releases its connection; the process is killed if it does not exit.
+func (m *Manager) shutdown(ctx context.Context, srv server) {
+	ctx, cancel := context.WithTimeout(ctx, m.cfg.CloseTimeout)
+	defer cancel()
+	if err := srv.stop(ctx); err != nil {
+		m.log.Warn("stop language server", "error", err)
+	}
+	if err := srv.Close(); err != nil {
+		m.log.Warn("close language server", "error", err)
+	}
+}
+
+// childServers returns the language server processes behind srv.
+func childServers(srv server) []*langServer {
+	switch s := srv.(type) {
+	case *langServer:
+		return []*langServer{s}
+	case *multiLangServer:
+		var ret []*langServer
+		for _, c := range s.allChildren() {
+			if ls, ok := c.(*langServer); ok {
+				ret = append(ret, ls)
+			}
+		}
+		return ret
+	}
+	return nil
+}
+
+// dropStatuses forgets the lifecycle of the servers of key. m.mu must
+// be held.
+func (m *Manager) dropStatuses(key serverKey) {
+	for id := range m.statuses {
+		if id.key == key {
+			delete(m.statuses, id)
+		}
+	}
+}
+
+func (m *Manager) updateStatus(srv *langServer, update func(*ServerStatus)) {
+	id := serverID{key: srv.key(), name: srv.name()}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.statuses[id]
+	update(&st)
+	m.statuses[id] = st
+}
+
+func (m *Manager) trackStarting(srv *langServer) {
+	params, err := json.Marshal(srv.initializeRequest())
+	if err != nil {
+		m.log.Warn("encode initialize request", srv.logAttrs("error", err)...)
+	}
+	m.updateStatus(srv, func(st *ServerStatus) {
+		st.Language = srv.cfg.id
+		st.Name = srv.name()
+		st.RootURI = srv.rootURI
+		st.Path = srv.binPath
+		st.Args = srv.cfg.args
+		st.Env = srv.cfg.env
+		st.State = ServerStarting
+		st.Pid = 0
+		st.Started = time.Now()
+		st.Params = params
+		st.Result = nil
+	})
+}
+
+// trackRunning records a completed handshake. A fresh bring-up clears
+// the last error, while an automatic restart keeps the one that caused
+// it.
+func (m *Manager) trackRunning(srv *langServer, restarted bool) {
+	m.log.Info("language server initialized", srv.logAttrs("restarted", restarted)...)
+	m.updateStatus(srv, func(st *ServerStatus) {
+		st.State = ServerRunning
+		st.Pid = srv.pid
+		st.Result = srv.initRaw
+		if restarted {
+			st.Started = time.Now()
+			st.Restarts++
+		} else {
+			st.LastError = nil
+		}
+	})
+}
+
+func (m *Manager) trackFailed(srv *langServer, err error) {
+	m.log.Error("language server failed", srv.logAttrs("error", err)...)
+	m.updateStatus(srv, func(st *ServerStatus) {
+		st.State = ServerFailed
+		st.Pid = srv.pid
+		st.LastError = err
+	})
+}
+
+func (m *Manager) trackRestarting(srv *langServer, err error) {
+	m.log.Warn("language server exited unexpectedly, restarting",
+		srv.logAttrs("error", err)...)
+	m.updateStatus(srv, func(st *ServerStatus) {
+		st.State = ServerRestarting
+		st.LastError = err
+	})
+}
+
+// trackRestartFailed records a failed restart attempt of the server
+// whose replacement is next; the server stays restarting.
+func (m *Manager) trackRestartFailed(next *langServer, err error) {
+	m.log.Warn("restart language server", next.logAttrs("error", err)...)
+	m.updateStatus(next, func(st *ServerStatus) {
+		if next.pid != 0 {
+			st.Pid = next.pid
+		}
+		st.LastError = err
+	})
+}
+
+// trackStopped records that srv is down without a restart. err is why,
+// if it was not stopped on request.
+func (m *Manager) trackStopped(srv *langServer, err error) {
+	m.log.Info("language server stopped", srv.logAttrs()...)
+	m.updateStatus(srv, func(st *ServerStatus) {
+		st.State = ServerStopped
+		if err != nil {
+			st.LastError = err
+		}
+	})
+}
+
+// notify delivers a notification, on the host event loop when one is
+// configured.
+func (m *Manager) notify(level browserapi.NotificationLevel, msg string, args ...any) {
+	m.deliver(func(n browserapi.Notifications) { _, _ = n.Notify(level, msg, args...) })
+}
+
+// notifyOnce is notify for messages that may repeat, such as the same
+// start failure on every retry by a language extension.
+func (m *Manager) notifyOnce(level browserapi.NotificationLevel, msg string, args ...any) {
+	m.deliver(func(n browserapi.Notifications) { _, _ = n.NotifyOnce(level, msg, args...) })
+}
+
+func (m *Manager) deliver(fn func(browserapi.Notifications)) {
+	if m.notifications == nil {
+		return
+	}
+	if m.cfg.ScheduleNextTick == nil {
+		fn(m.notifications)
+		return
+	}
+	m.cfg.ScheduleNextTick(func() { fn(m.notifications) })
 }
 
 func (m *Manager) broadcastNotify(

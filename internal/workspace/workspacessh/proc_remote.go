@@ -149,6 +149,12 @@ func (s *procSession) Signal(pid workspaceapi.Pid, sig syscall.Signal) error {
 	return s.executor.Signal(pid, sig)
 }
 
+// LookPath reports errors.ErrUnsupported: the session hands its command
+// to the login shell of the remote user, which alone decides what runs.
+func (s *procSession) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (s *procSession) Close() (ret error) {
 	return ret
 }

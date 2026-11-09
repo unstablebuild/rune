@@ -75,6 +75,24 @@ func TestExpanderNonAliasPreservesURIAndCursor(t *testing.T) {
 	assert.Equal(t, []string{"file.go"}, got[0].Args)
 }
 
+func TestExpanderExpandAliasBindsArgsVerbatim(t *testing.T) {
+	t.Setenv("RUNE_TEST_SECRET", "leaked")
+	exp := newExpander(map[string]text.CommandAlias{
+		"registered": {Commands: []string{"edit registered"}},
+	}, nil)
+	alias := text.CommandAlias{Commands: []string{"edit $1", "! open $1"}}
+	cmd := textapi.Command{Name: "registered", Args: []string{"$RUNE_TEST_SECRET"}}
+
+	it, err := exp.ExpandAlias(context.Background(), cmd, alias)
+	require.NoError(t, err)
+	got, iterErr := collect(context.Background(), it, nil)
+	require.NoError(t, iterErr)
+	assertCmdSequence(t, []wantCmd{
+		{"edit", []string{"$RUNE_TEST_SECRET"}},
+		{"!", []string{"open '$RUNE_TEST_SECRET'"}},
+	}, got)
+}
+
 func TestExpanderChainCaptureFlowsAcrossSteps(t *testing.T) {
 	aliases := map[string]text.CommandAlias{
 		"chain": {Commands: []string{
@@ -209,6 +227,52 @@ func expanderCases() []expanderCase {
 			want: []wantCmd{{"edit", []string{""}}},
 		},
 		{
+			name:    "leaf ! substitutes a value as data",
+			env:     mapEnv(map[string]string{"FILE": "x; touch pwned"}),
+			cmdName: "!",
+			cmdArgs: []string{"grep", "-n", "$FILE"},
+			want:    []wantCmd{{"!", []string{"grep -n 'x; touch pwned'"}}},
+		},
+		{
+			name:    "leaf !! substitutes a value as data",
+			env:     mapEnv(map[string]string{"SELECTION": "$(id)"}),
+			cmdName: "!!",
+			cmdArgs: []string{"echo", "--text=$SELECTION"},
+			want:    []wantCmd{{"!!", []string{"echo --text='$(id)'"}}},
+		},
+		{
+			name:    "leaf ! keeps a plain substituted line as separate args",
+			env:     mapEnv(map[string]string{"FILE": "main.go"}),
+			cmdName: "!",
+			cmdArgs: []string{"vim", "$FILE"},
+			want:    []wantCmd{{"!", []string{"vim", "main.go"}}},
+		},
+		{
+			name:    "leaf ! without references keeps its args",
+			cmdName: "!",
+			cmdArgs: []string{"echo", "hi", "|", "tee", "$(date)"},
+			want:    []wantCmd{{"!", []string{"echo", "hi", "|", "tee", "$(date)"}}},
+		},
+		{
+			name:    "leaf ! without args toggles the companion terminal",
+			cmdName: "!",
+			want:    []wantCmd{{"!", nil}},
+		},
+		{
+			name:    "leaf ! leaves positional references to the shell",
+			cmdName: "!",
+			cmdArgs: []string{"sh", "-c", "echo $1"},
+			want:    []wantCmd{{"!", []string{"sh", "-c", "echo $1"}}},
+		},
+		{
+			name:            "leaf ! refuses a value that changes the structure",
+			env:             mapEnv(map[string]string{"FILE": "1"}),
+			cmdName:         "!",
+			cmdArgs:         []string{"a[$FILE]=x"},
+			wantExpandErr:   true,
+			wantErrContains: "array subscript",
+		},
+		{
 			name: "simple single-step alias",
 			aliases: map[string]text.CommandAlias{
 				"myedit": {Commands: []string{"edit $1 fixed"}},
@@ -251,6 +315,28 @@ func expanderCases() []expanderCase {
 			cmdArgs: []string{"used", "extra1", "extra2"},
 			want: []wantCmd{{"cmd", []string{
 				"used", "extra1", "extra2",
+			}}},
+		},
+		{
+			name: "unused tail args are quoted for a ! step",
+			aliases: map[string]text.CommandAlias{
+				"g": {Commands: []string{"! grep -n"}},
+			},
+			cmdName: "g",
+			cmdArgs: []string{"x; touch pwned", "plain"},
+			want: []wantCmd{{"!", []string{
+				"grep -n", "'x; touch pwned'", "plain",
+			}}},
+		},
+		{
+			name: "unused tail args after $1 are quoted for a !! step",
+			aliases: map[string]text.CommandAlias{
+				"g": {Commands: []string{"!! grep $1"}},
+			},
+			cmdName: "g",
+			cmdArgs: []string{"-n", "a b", "x; id"},
+			want: []wantCmd{{"!!", []string{
+				"grep -n", "'a b'", "'x; id'",
 			}}},
 		},
 		{

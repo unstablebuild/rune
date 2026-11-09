@@ -19,7 +19,9 @@ package runenet
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 
 	multierr "github.com/ernestrc/go-multierror"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
@@ -55,7 +57,14 @@ type Config struct {
 	// the OS hostname.
 	Hostname string
 	// ControlURL is the coordination server. Empty uses Tailscale's.
+	// See CustomControl for whether it is the user's own.
 	ControlURL string
+	// CustomControl is set when ControlURL is the user's own Tailscale
+	// or Headscale server, which `rune --headless --control-url` joins.
+	// Such a node has no Rune account behind it: it signs in by URL,
+	// never with a key, and keeps its identity apart from the one it
+	// holds on Rune's network.
+	CustomControl bool
 	// AuthKey pre-authorizes this node so the first start does not
 	// need an interactive browser login. Empty falls back to the login
 	// URL reported by `network status`.
@@ -71,6 +80,11 @@ type Config struct {
 	// from the account looks like from here. It runs on a background
 	// goroutine and must not block.
 	OnNeedsLogin func()
+	// OnAuthURL is called with every new sign-in URL the coordination
+	// server issues, including one already pending when the node
+	// starts. A URL is reported once. It runs on a background
+	// goroutine and must not block.
+	OnAuthURL func(url string)
 	// Port is the tailnet-side listening port. See DefaultPort.
 	Port int
 	// Dir is the data directory the node persists its identity under.
@@ -113,4 +127,20 @@ func FromConfig(cfg config.Config, dir string) (ret Config, retErr error) {
 		ret.AuthKey = os.Getenv(EnvAuthKey)
 	}
 	return ret, nil
+}
+
+// ParseControlURL normalizes the URL of the user's own coordination
+// server: an http:// or https:// URL with a host, without a trailing
+// slash.
+func ParseControlURL(raw string) (string, error) {
+	raw = strings.TrimSuffix(strings.TrimSpace(raw), "/")
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("control URL %q: %w", raw, err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", fmt.Errorf(
+			"control URL %q: want an http:// or https:// URL with a host", raw)
+	}
+	return raw, nil
 }

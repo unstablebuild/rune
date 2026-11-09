@@ -31,8 +31,8 @@ import (
 	"github.com/unstablebuild/blue/release"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"unstable.build/rune/internal/ide/gitpkg"
 	"unstable.build/rune/internal/ide/idepkg"
+	"unstable.build/rune/internal/ide/idepkg/gitpkg"
 )
 
 type goPackages struct {
@@ -61,6 +61,9 @@ func TestServedPackagesWaitForTheEditor(t *testing.T) {
 
 func TestHostPackageManagerInstallsPackage(t *testing.T) {
 	const pkgID = "github.com/unstablebuild/test-extension"
+	// Hiding git from PATH keeps the install on the built-in go-git
+	// client, so this test stays hermetic.
+	t.Setenv("PATH", "")
 	repoDir := t.TempDir()
 	repo, err := git.PlainInit(repoDir, false)
 	require.NoError(t, err)

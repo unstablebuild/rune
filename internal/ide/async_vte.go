@@ -18,6 +18,8 @@ package ide
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 	"sync/atomic"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -26,39 +28,25 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/term/vte/vtereservoir"
 )
 
-// asyncVTELoadingTitle is the tab title shown while the underlying
-// terminal is being spawned.
 const asyncVTELoadingTitle = "terminal (connecting…)"
 
-// maxQueuedAsyncVTEEvents bounds the typed-ahead key events queued
-// while the underlying terminal is still spawning.
 const maxQueuedAsyncVTEEvents = 256
 
-// asyncVTEURICounter distinguishes concurrent placeholder URIs. The
-// real vte URI is the pty slave name, which only exists after the
-// spawn completes, so the wrapper needs its own stable identity.
 var asyncVTEURICounter atomic.Uint64
 
 var _ vtereservoir.VTE = (*asyncVTE)(nil)
 
-// tabNameAliaser is a browser.TabManager decorator that rewrites
-// SetTabName URIs through an alias table. Terminal tabs are keyed by
-// the URI their creator saw at tab-creation time (an asyncVTE
-// placeholder URI, or a terminal-session URI on restore), while the
-// vte issues dynamic title updates under its own pty URI, which only
-// exists after the spawn completes. Aliases map the vte URI to the
-// tab key so those updates reach the tab.
-//
-// Everything but SetTabName must be called on the host event loop,
-// which owns the alias table.
 type tabNameAliaser struct {
 	browser.TabManager
-	sched func(func()) bool
-	alias map[string]workspaceapi.URI
+	sched   func(func()) bool
+	alias   map[string]workspaceapi.URI
+	pending map[string][]programstatus.Report
+	closed  map[string]bool
 }
 
 func newTabNameAliaser(
@@ -68,13 +56,11 @@ func newTabNameAliaser(
 		TabManager: tm,
 		sched:      sched,
 		alias:      make(map[string]workspaceapi.URI),
+		pending:    make(map[string][]programstatus.Report),
+		closed:     make(map[string]bool),
 	}
 }
 
-// SetTabName satisfies browser.TabManager. It may be called from any
-// goroutine, as vte parsers do: the name reaches the tab on the next
-// tick of the event loop, resolved through the aliases it has by
-// then, so it never reports an error.
 func (a *tabNameAliaser) SetTabName(
 	uri workspaceapi.URI, name string, attr term.Attributes,
 ) error {
@@ -88,8 +74,36 @@ func (a *tabNameAliaser) OnTabExit(uri workspaceapi.URI) bool {
 	return a.TabManager.OnTabExit(a.resolve(uri))
 }
 
-// resolve follows alias chains (pty URI -> placeholder URI -> session
-// URI). The iteration bound is cycle insurance.
+func (a *tabNameAliaser) SetTabStatus(
+	uri workspaceapi.URI, report programstatus.Report,
+) error {
+	a.sched(func() {
+		if a.closed[uri.String()] {
+			return
+		}
+		a.retainStatus(a.resolve(uri), report)
+		_ = a.TabManager.SetTabStatus(a.resolve(uri), report)
+	})
+	return nil
+}
+
+func (a *tabNameAliaser) EndTabStatus(uri workspaceapi.URI) error {
+	a.sched(func() {
+		if a.closed[uri.String()] {
+			return
+		}
+		uri = a.resolve(uri)
+		a.pending[uri.String()] = slices.DeleteFunc(a.pending[uri.String()], func(r programstatus.Report) bool {
+			return r.State == programstatus.Working || r.State == programstatus.Blocked || r.State == programstatus.Idle
+		})
+		if len(a.pending[uri.String()]) == 0 {
+			delete(a.pending, uri.String())
+		}
+		_ = a.TabManager.EndTabStatus(a.resolve(uri))
+	})
+	return nil
+}
+
 func (a *tabNameAliaser) resolve(uri workspaceapi.URI) workspaceapi.URI {
 	for range 4 {
 		next, ok := a.alias[uri.String()]
@@ -106,14 +120,50 @@ func (a *tabNameAliaser) addAlias(from, to workspaceapi.URI) {
 		return
 	}
 	a.alias[from.String()] = to
+	delete(a.closed, from.String())
+	if reports := a.pending[from.String()]; len(reports) != 0 {
+		delete(a.pending, from.String())
+		_ = a.TabManager.SetTabStatus(from, programstatus.Report{State: programstatus.Clear})
+		for _, report := range reports {
+			a.retainStatus(a.resolve(to), report)
+			_ = a.TabManager.SetTabStatus(a.resolve(to), report)
+		}
+	}
+}
+
+// retainStatus preserves live raw reports in update order across identity
+// changes. Detached terminals must still report immediately.
+func (a *tabNameAliaser) retainStatus(uri workspaceapi.URI, report programstatus.Report) {
+	key := uri.String()
+	reports := a.pending[key]
+	reports = slices.DeleteFunc(reports, func(r programstatus.Report) bool {
+		return r.ID == report.ID || report.State == programstatus.Clear &&
+			(report.ID == "" || strings.HasPrefix(r.ID, report.ID+"/"))
+	})
+	if report.State != programstatus.Clear {
+		if len(reports) == programstatus.MaxRecords {
+			reports = slices.Delete(reports, 0, 1)
+		}
+		reports = append(reports, report)
+	}
+	if len(reports) == 0 {
+		delete(a.pending, key)
+	} else {
+		a.pending[key] = reports
+	}
+}
+
+func (a *tabNameAliaser) discardStatus(uri workspaceapi.URI) {
+	delete(a.pending, uri.String())
+	delete(a.pending, a.resolve(uri).String())
+	a.closed[uri.String()] = true
+	_ = a.TabManager.SetTabStatus(a.resolve(uri), programstatus.Report{State: programstatus.Clear})
 }
 
 func (a *tabNameAliaser) removeAlias(from workspaceapi.URI) {
 	delete(a.alias, from.String())
 }
 
-// removeAliasesTo drops every alias that resolves directly to target.
-// Called when the placeholder goes away.
 func (a *tabNameAliaser) removeAliasesTo(target workspaceapi.URI) {
 	for from, to := range a.alias {
 		if to.String() == target.String() {
@@ -124,13 +174,7 @@ func (a *tabNameAliaser) removeAliasesTo(target workspaceapi.URI) {
 
 // asyncVTE is a permanent vtereservoir.VTE wrapper that runs the
 // blocking VTE factory (reservoir warm-up waits, NewPty/StartCommand
-// RPCs) off the host event loop. It renders a loading animation until
-// the factory settles, then forwards every call to the real VTE. On a
-// remote workspace this keeps the UI responsive while terminal spawn
-// RPCs are in flight against a possibly slow or wedged transport.
-//
-// All mutable state is event-loop-owned: the factory goroutine hands
-// its result back through ScheduleNextTick, so no locking is needed.
+// RPCs) off the host event loop.
 type asyncVTE struct {
 	e   *ex
 	uri workspaceapi.URI
@@ -153,9 +197,6 @@ type asyncVTE struct {
 	errComp component.String
 }
 
-// newAsyncVTE returns immediately with a placeholder VTE and runs
-// factory on a background goroutine. The result is installed on the
-// host event loop via e.sched.
 func newAsyncVTE(e *ex, factory func() (vtereservoir.VTE, error)) *asyncVTE {
 	av := &asyncVTE{e: e}
 	uri, err := workspaceapi.ParseURI(fmt.Sprintf(
@@ -183,13 +224,13 @@ func newAsyncVTE(e *ex, factory func() (vtereservoir.VTE, error)) *asyncVTE {
 	return av
 }
 
-// complete installs the factory result. It runs on the host event
-// loop.
+// complete installs the factory result. It runs on the host event loop.
 func (av *asyncVTE) complete(v vtereservoir.VTE, err error) {
 	if av.closed {
 		// Only a successful build hands over an owned, fully
 		// initialized VTE; closing anything else is unsafe.
 		if err == nil && v != nil {
+			av.e.tabAliases.discardStatus(v.URI())
 			_ = v.Close()
 		}
 		return
@@ -429,6 +470,9 @@ func (av *asyncVTE) Close() error {
 	}
 	av.closed = true
 	av.stopAnimation()
+	if av.real != nil {
+		av.e.tabAliases.discardStatus(av.real.URI())
+	}
 	// Drop both directions: the vte URI pointing at this placeholder
 	// and this placeholder pointing at a session tab key.
 	av.e.tabAliases.removeAliasesTo(av.uri)

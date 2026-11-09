@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -36,7 +37,7 @@ import (
 )
 
 var _ io.Writer = (*protocol)(nil)
-var _ io.Reader = (*protocol)(nil)
+var _ io.ReadCloser = (*protocol)(nil)
 
 const extensionTokenExpiresIn = 10 * 24 * 365 * time.Hour
 
@@ -46,6 +47,8 @@ type protocol struct {
 	readiness         *extensionReadiness
 	grantor           extension.Grantor
 	readCh            chan struct{}
+	closed            chan struct{}
+	closeOnce         sync.Once
 	extensionID       string
 	socket            string
 	dataDir           string
@@ -70,6 +73,7 @@ func newProtocol(
 	})
 	return &protocol{
 		readCh:            make(chan struct{}),
+		closed:            make(chan struct{}),
 		extensionID:       extensionID,
 		dataDir:           dataDir,
 		installDir:        installDir,
@@ -176,12 +180,24 @@ func matchesPublisherKey(developerKey, fingerprint string) bool {
 	return developerKey == fingerprint || strings.HasSuffix(fingerprint, developerKey)
 }
 
+// Read returns the extension's config once its metadata is granted, and
+// EOF once the protocol is closed without it.
 func (p *protocol) Read(b []byte) (int, error) {
-	<-p.readCh
+	select {
+	case <-p.readCh:
+	case <-p.closed:
+		return 0, io.EOF
+	}
 	if p.read.Len() == 0 {
 		return 0, io.EOF
 	}
 	return p.read.Read(b)
+}
+
+// Close ends a Read waiting for an extension that will not answer.
+func (p *protocol) Close() error {
+	p.closeOnce.Do(func() { close(p.closed) })
+	return nil
 }
 
 func validateMetadata(extensionID string, meta extensionapi.Metadata) error {

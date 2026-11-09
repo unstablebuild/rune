@@ -28,6 +28,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/text/texttest"
 )
 
@@ -186,6 +187,46 @@ func TestAsyncPlugin(t *testing.T) {
 		assert.Contains(t, out, "stalled transport")
 		require.NoError(t, ap.Close())
 	})
+}
+
+func TestAsyncPluginPointerLeaves(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	for _, tc := range []struct {
+		name    string
+		factory func() (pluginHandler, error)
+	}{
+		{name: "loading", factory: func() (pluginHandler, error) {
+			<-release
+			return nil, errors.New("abandoned")
+		}},
+		{name: "failed", factory: func() (pluginHandler, error) {
+			return nil, errors.New("spawn failed")
+		}},
+		{name: "running", factory: func() (pluginHandler, error) {
+			return &replayPlugin{testVte: newTestVte()}, nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := newExForTesting(t, texttest.NopEditor())
+			t.Cleanup(func() { _ = b.Close() })
+			ap := newAsyncPlugin(b.ex, "make test", 100, tc.factory)
+			if tc.name != "loading" {
+				b.waitAsyncVTELoads()
+				b.flushScheduled()
+			}
+			unlock := b.lock()
+			defer unlock()
+			for _, size := range []term.Coordinates{{X: 80, Y: 24}, {X: 2, Y: 2}} {
+				handlertest.RunPointerLeaves(t, ap, size.X, size.Y)
+				if tc.name == "loading" {
+					assert.Empty(t, ap.queuedEvents, "the mouse is not queued for the plugin")
+				}
+			}
+		})
+	}
 }
 
 func TestExecutePluginDoesNotBlockOnSlowSpawn(t *testing.T) {

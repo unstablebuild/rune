@@ -19,7 +19,9 @@ package treesitter
 import (
 	"context"
 	"errors"
+	"maps"
 	"math"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -39,6 +41,7 @@ type countingPkgManager struct {
 	mu    sync.Mutex
 	calls int
 	files []string
+	err   error
 }
 
 func (m *countingPkgManager) LibDir(context.Context, string) (iterator.Iterator[string], error) {
@@ -46,6 +49,9 @@ func (m *countingPkgManager) LibDir(context.Context, string) (iterator.Iterator[
 	m.calls++
 	files := append([]string(nil), m.files...)
 	m.mu.Unlock()
+	if m.err != nil {
+		return nil, m.err
+	}
 	return iterator.FromSlice(files), nil
 }
 
@@ -67,6 +73,92 @@ func TestCachingPkgManagerReturnsCachedFiles(t *testing.T) {
 
 	assert.Equal(t, []string{"tree-sitter.so", "highlights.scm"}, files)
 	assert.Equal(t, 0, root.Calls())
+}
+
+func TestParserGrammarFingerprint(t *testing.T) {
+	base := map[string]string{
+		ParserFilename:     "grammar v1",
+		LocalsFilename:     "(identifier) @local.reference",
+		HighlightsFilename: "(identifier) @variable",
+	}
+	tests := []struct {
+		name      string
+		mutate    func(files map[string]string)
+		libDirErr error
+		wantEqual bool
+		wantErr   bool
+	}{
+		{
+			name:      "identical files",
+			mutate:    func(map[string]string) {},
+			wantEqual: true,
+		},
+		{
+			name: "locals query changed",
+			mutate: func(f map[string]string) {
+				f[LocalsFilename] += "\n(identifier) @local.definition.var"
+			},
+		},
+		{
+			name:   "grammar changed",
+			mutate: func(f map[string]string) { f[ParserFilename] = "grammar v2" },
+		},
+		{
+			name:      "only highlights changed",
+			mutate:    func(f map[string]string) { f[HighlightsFilename] = "(identifier) @type" },
+			wantEqual: true,
+		},
+		{
+			name:    "grammar missing",
+			mutate:  func(f map[string]string) { delete(f, ParserFilename) },
+			wantErr: true,
+		},
+		{
+			name:    "locals query missing",
+			mutate:  func(f map[string]string) { delete(f, LocalsFilename) },
+			wantErr: true,
+		},
+		{
+			name:      "lib dir unavailable",
+			mutate:    func(map[string]string) {},
+			libDirErr: errors.New("package not installed"),
+			wantErr:   true,
+		},
+	}
+	// Every install lands in its own directory, so equal fingerprints
+	// cannot come from equal paths.
+	fingerprint := func(t *testing.T, files map[string]string, libDirErr error) (string, error) {
+		t.Helper()
+		dir := t.TempDir()
+		pkg := &countingPkgManager{err: libDirErr}
+		for name, content := range files {
+			path := filepath.Join(dir, name)
+			require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+			pkg.files = append(pkg.files, path)
+		}
+		return Parser{pkg: pkg}.GrammarFingerprint(context.Background(), "go")
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want, err := fingerprint(t, base, nil)
+			require.NoError(t, err)
+			require.NotEmpty(t, want)
+
+			files := maps.Clone(base)
+			tt.mutate(files)
+			got, err := fingerprint(t, files, tt.libDirErr)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			if tt.wantEqual {
+				assert.Equal(t, want, got)
+			} else {
+				assert.NotEqual(t, want, got)
+			}
+		})
+	}
 }
 
 type recordingProgress struct {

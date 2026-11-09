@@ -42,7 +42,9 @@ import (
 // applyLoneAction applies a sole result without confirmation, which
 // suits a subcommand whose name already states the one thing it does.
 // A caller that maps to a broad kind leaves it false, since there the
-// command name says nothing about which of the family will run.
+// command name says nothing about which of the family will run. A sole
+// result that would change nothing also notifies noActionHint, since
+// servers answer an already organized file with such an action.
 func CodeActionHandler(
 	lsp semanticapi.LSP, editor textapi.Editor,
 	notify browserapi.Notifications,
@@ -128,6 +130,10 @@ func (h *codeActionCmd) HandleCommand(
 	}
 
 	if len(actions) == 1 && h.applyLoneAction {
+		if a := actions[0]; a.Command == nil && (a.Edit == nil || !h.editChangesText(cmd.URI, a.Edit)) {
+			_, _ = h.notify.Notify(browserapi.LevelInfo, h.noActionHint)
+			return nil
+		}
 		return h.applyAction(ctx, cmd.URI, actions[0])
 	}
 

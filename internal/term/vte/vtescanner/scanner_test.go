@@ -445,6 +445,48 @@ func TestScanner(t *testing.T) {
 		assert.Equal(t, NUM_BYTES+len(input_END), len(osc.params[1]))
 	})
 
+	t.Run("osc beyond 64 KiB dispatched whole", func(t *testing.T) {
+		var d testDispatcher
+		scanner := NewScanner(&d)
+		payload := bytes.Repeat([]byte("a"), 1<<16+40)
+		for _, b := range []byte("\x1b]52;c;") {
+			scanner.Advance(b)
+		}
+		for _, b := range payload {
+			scanner.Advance(b)
+		}
+		scanner.Advance(0x07)
+
+		require.Len(t, d.dispatched, 1)
+		osc, ok := d.dispatched[0].(dispatchedOsc)
+		require.True(t, ok)
+		require.Len(t, osc.params, 3)
+		assert.Equal(t, []byte("52"), osc.params[0])
+		assert.Equal(t, []byte("c"), osc.params[1])
+		assert.Equal(t, payload, osc.params[2])
+	})
+
+	t.Run("osc beyond MaxOSCLen dropped whole", func(t *testing.T) {
+		var d testDispatcher
+		scanner := NewScanner(&d)
+		for _, b := range []byte("\x1b]52;c;") {
+			scanner.Advance(b)
+		}
+		for range MaxOSCLen + 1 {
+			scanner.Advance('a')
+		}
+		scanner.Advance(0x07)
+		assert.Empty(t, d.dispatched)
+
+		for _, b := range []byte("\x1b]2;after\x07") {
+			scanner.Advance(b)
+		}
+		require.Len(t, d.dispatched, 1)
+		osc, ok := d.dispatched[0].(dispatchedOsc)
+		require.True(t, ok)
+		assert.Equal(t, [][]byte{[]byte("2"), []byte("after")}, osc.params)
+	})
+
 	t.Run("parse CSI max params", func(t *testing.T) {
 		var buf bytes.Buffer
 		buf.WriteString("\x1b[")

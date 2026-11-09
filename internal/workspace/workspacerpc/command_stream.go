@@ -30,7 +30,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi/workspacerpc"
 	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/procattr"
+	"unstable.build/rune/internal/ide/procattr"
 )
 
 type serverCommandStreamer struct {
@@ -52,7 +52,7 @@ func newServerCommandStreamer(
 	ctx context.Context,
 	cancelCtx func(),
 	stream workspacerpc.Executor_StartCommandServer,
-	path, dir string, args, env []string,
+	path, dir, description string, args, env []string,
 	stdinSet, stdoutSet, stderrSet bool,
 	stdinFd, stdoutFd, stderrFd uint32,
 	stdinName, stdoutName, stderrName string,
@@ -68,6 +68,7 @@ func newServerCommandStreamer(
 		Env:         env,
 		Watcher:     workspaceapi.ChanProcessWatcher(doneCh),
 		SysProcAttr: procattr.NewSession(setsid, setctty),
+		Description: description,
 	}
 
 	ret := new(serverCommandStreamer)

@@ -26,6 +26,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	"unstable.build/rune/cmd/rune-agent/hooks"
 )
 
@@ -54,6 +55,17 @@ type agentTool struct {
 	agents        []agent.AgentSummary
 	childEvents   chan<- agent.ChildEvent
 	skillRegistry *skills.SkillRegistry
+	// policy hides and forbids the sub-agent types the agent may not
+	// spawn.
+	policy toolpolicy.Policy
+}
+
+// WithPolicy implements agent.PolicyTool: the copy only lists and spawns
+// the sub-agent types p allows.
+func (t *agentTool) WithPolicy(p toolpolicy.Policy) agent.Tool {
+	c := *t
+	c.policy = p
+	return &c
 }
 
 type agentArgs struct {
@@ -102,35 +114,43 @@ func (t *agentTool) Definition() llmapi.Tool {
 	}
 }
 
+// availableAgents returns the agents and agent skills the tool may spawn.
+func (t *agentTool) availableAgents() []agent.AgentSummary {
+	var ret []agent.AgentSummary
+	for _, a := range t.agents {
+		if t.policy.AllowsAgent(a.ID) {
+			ret = append(ret, a)
+		}
+	}
+	if t.skillRegistry != nil {
+		for _, s := range t.skillRegistry.List() {
+			if s.Type == "agent" && t.policy.AllowsAgent(s.Name) {
+				ret = append(ret, agent.AgentSummary{ID: s.Name, Name: s.Description})
+			}
+		}
+	}
+	return ret
+}
+
 func (t *agentTool) buildDescription() string {
 	var b strings.Builder
 	b.WriteString(`Launch a new agent to handle complex, multi-step tasks autonomously.
 
 The agent tool launches specialized agents that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.`)
 
-	// Collect agent-type skills from the registry.
-	var skillSummaries []agent.AgentSummary
-	if t.skillRegistry != nil {
-		for _, s := range t.skillRegistry.List() {
-			if s.Type == "agent" {
-				skillSummaries = append(skillSummaries, agent.AgentSummary{
-					ID: s.Name, Name: s.Description,
-				})
-			}
-		}
-	}
-
-	if len(t.agents) > 0 || len(skillSummaries) > 0 {
+	if available := t.availableAgents(); len(available) > 0 {
 		b.WriteString("\n\nAvailable agent types:\n")
-		for _, a := range t.agents {
+		for _, a := range available {
 			fmt.Fprintf(&b, "- %s: %s\n", a.ID, a.Name)
 		}
-		for _, a := range skillSummaries {
-			fmt.Fprintf(&b, "- %s: %s\n", a.ID, a.Name)
+		if t.policy.ConstrainsAgents() {
+			b.WriteString("\nWhen using the agent tool, specify a subagent_type parameter " +
+				"to select which agent type to use. It is required.")
+		} else {
+			b.WriteString("\nWhen using the agent tool, specify a subagent_type parameter " +
+				"to select which agent type to use. If omitted, the caller's own " +
+				"agent type is used.")
 		}
-		b.WriteString("\nWhen using the agent tool, specify a subagent_type parameter " +
-			"to select which agent type to use. If omitted, the caller's own " +
-			"agent type is used.")
 	}
 
 	b.WriteString(`
@@ -180,6 +200,23 @@ func (t *agentTool) Execute(
 	if args.Prompt == "" {
 		return agent.ToolResult{
 			Content: "error: prompt is required",
+			IsError: true,
+		}
+	}
+	if t.policy.ConstrainsAgents() && (args.SubagentType == "" || !t.policy.AllowsAgent(args.SubagentType)) {
+		var ids []string
+		for _, a := range t.availableAgents() {
+			ids = append(ids, a.ID)
+		}
+		msg := "error: subagent_type is required"
+		if args.SubagentType != "" {
+			msg = fmt.Sprintf("error: this agent may not spawn %q sub-agents", args.SubagentType)
+		}
+		if len(ids) == 0 {
+			return agent.ToolResult{Content: msg + "; this agent may not spawn sub-agents", IsError: true}
+		}
+		return agent.ToolResult{
+			Content: fmt.Sprintf("%s; use one of: %s", msg, strings.Join(ids, ", ")),
 			IsError: true,
 		}
 	}

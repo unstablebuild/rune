@@ -37,8 +37,9 @@ type Scanner struct {
 	params          params
 	param           uint16
 	oscRaw          []byte
-	oscParams       [MaxOSCParams][2]uint16
+	oscParams       [MaxOSCParams][2]int
 	oscNumParams    int
+	oscOverflow     bool
 	apcRaw          []byte
 	apcOverflow     bool
 	ignoring        bool
@@ -239,7 +240,16 @@ func (p *Scanner) performAction(action Action, ch byte) {
 	case OSCStart:
 		p.oscRaw = p.oscRaw[:0]
 		p.oscNumParams = 0
+		p.oscOverflow = false
 	case OSCPut:
+		if p.oscOverflow {
+			return
+		}
+		if len(p.oscRaw) >= MaxOSCLen {
+			p.oscOverflow = true
+			p.oscRaw = p.oscRaw[:0]
+			return
+		}
 		if ch != ';' {
 			p.oscRaw = append(p.oscRaw, ch)
 			return
@@ -251,24 +261,28 @@ func (p *Scanner) performAction(action Action, ch byte) {
 			return
 		case 0:
 			// first param is special
-			p.oscParams[0] = [2]uint16{0, uint16(idx)}
+			p.oscParams[0] = [2]int{0, idx}
 		default:
 			// the rest depend on previous indexing
 			prev := p.oscParams[paramIdx-1]
-			p.oscParams[paramIdx] = [2]uint16{prev[1], uint16(idx)}
+			p.oscParams[paramIdx] = [2]int{prev[1], idx}
 		}
 		p.oscNumParams++
 	case OSCEnd:
+		if p.oscOverflow {
+			p.oscOverflow = false
+			return
+		}
 		paramIdx := p.oscNumParams
 		idx := len(p.oscRaw)
 		switch paramIdx {
 		case MaxOSCParams:
 		case 0:
-			p.oscParams[0] = [2]uint16{0, uint16(idx)}
+			p.oscParams[0] = [2]int{0, idx}
 			p.oscNumParams++
 		default:
 			prev := p.oscParams[paramIdx-1]
-			p.oscParams[paramIdx] = [2]uint16{prev[1], uint16(idx)}
+			p.oscParams[paramIdx] = [2]int{prev[1], idx}
 			p.oscNumParams++
 		}
 		p.oscDispatch(ch)
@@ -339,6 +353,9 @@ func (p *Scanner) oscDispatch(ch byte) {
 	}
 
 	p.driver.OSCDispatch(slices[:p.oscNumParams], ch == 0x07)
+	if cap(p.oscRaw) > 64*1024 {
+		p.oscRaw = nil
+	}
 }
 
 func (p *Scanner) log(level log.Level, msg string, args ...any) {

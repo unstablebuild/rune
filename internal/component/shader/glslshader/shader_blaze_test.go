@@ -19,11 +19,13 @@ package glslshader
 import (
 	"testing"
 
+	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/component/shader/shadertest"
 )
 
 func TestBlaze(t *testing.T) {
-	sh := Blaze(DefaultBlazeParams(), 30)
+	sh := Blaze(DefaultBlazeParams())
 	shadertest.TestShader(t, sh)
 }
 
@@ -32,7 +34,7 @@ func TestBlazePaintForeground(t *testing.T) {
 	params.PaintForeground = true
 
 	t.Run("suite", func(t *testing.T) {
-		shadertest.TestShader(t, Blaze(params, 30))
+		shadertest.TestShader(t, Blaze(params))
 	})
 
 	t.Run("paints the channel it was asked for", func(t *testing.T) {
@@ -46,12 +48,35 @@ func TestBlazePaintForeground(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				p := DefaultBlazeParams()
 				p.PaintForeground = tc.paintForeground
-				assertPaintsChannel(t, Blaze(p, 30), tc.paintForeground)
+				assertPaintsChannel(t, Blaze(p), tc.paintForeground)
 			})
 		}
 	})
 
 	t.Run("leaves background glyphs bare", func(t *testing.T) {
-		assertPaintsOnlyText(t, Blaze(params, 30))
+		assertPaintsOnlyText(t, Blaze(params))
 	})
+}
+
+func TestBlazeColor(t *testing.T) {
+	assertTurnsHue(t, func(col term.Color) shader.Shader {
+		p := DefaultBlazeParams()
+		p.Color = col
+		return Blaze(p)
+	})
+}
+
+func TestBlazeDependsOnProgressOnly(t *testing.T) {
+	build := func() shader.Shader { return Blaze(DefaultBlazeParams()) }
+	shadertest.AssertProgressOnly(t, build, paintTestCells())
+	shadertest.AssertOrderIndependent(t, build, paintTestCells(), 20)
+}
+
+func TestBlazeSeamless(t *testing.T) {
+	shadertest.AssertSeamless(t, func() shader.Shader { return Blaze(DefaultBlazeParams()) },
+		seamTotal, seamCanvases()...)
+}
+
+func TestBlazeIsPeriodic(t *testing.T) {
+	assertPeriodic(t, Blaze(DefaultBlazeParams()).(*blaze).color)
 }

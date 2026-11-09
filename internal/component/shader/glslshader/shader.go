@@ -27,6 +27,11 @@ import (
 	"unstable.build/rune/internal/debug"
 )
 
+// tunedSteps is how many steps the timings of flames, embers and
+// incendium count a run in: they were tuned as frames of a 90-frame run,
+// which any run now stands for.
+const tunedSteps = 90.0
+
 // paintsText reports whether a foreground-only effect should touch a
 // cell. A blank has no foreground to show, and a glyph that renders as
 // background, such as a fade block, is scenery rather than text.
@@ -38,12 +43,12 @@ type cellRunner interface {
 	// runCell adapts the shader interface to be closer to pixel-shader.
 	//
 	// For instance Shadertoy's fragCoord would be fragCoordX and fragCoordY,
-	// iResolution would be resolutionX and resolutionY and iTime would be
-	// time (which is in seconds too).
+	// iResolution would be resolutionX and resolutionY. iTime is for the
+	// shader to derive from frame and total.
 	//
 	// The original cell indices are passed along (cellCoords).
 	runCell(
-		frame, total int, fps float, time float,
+		frame, total int,
 		cellCoords term.Coordinates,
 		fragCoordX, fragCoordY int,
 		resolutionX, resolutionY int,
@@ -67,9 +72,7 @@ type shadeRequest struct {
 	wg            *sync.WaitGroup
 	y, rows, cols int
 	row           []term.Cell
-	time          float
 	frame, total  int
-	fps           float
 	in            [][]term.Cell
 	shader        cellRunner
 }
@@ -81,11 +84,16 @@ type shadeRequest struct {
 // aspect is taken into account, since pixels are squared and cells aren't.
 //
 // Intended to be run by the Shade() method of any pixel shader.
+// Nothing is shaded when total is not positive or frame is past it,
+// and frames before 0 shade as frame 0.
 func (g *glslHelper) shadeGLSL(
-	frame, total int, fps float, in [][]term.Cell, shader cellRunner,
+	frame, total int, in [][]term.Cell, shader cellRunner,
 ) {
-	if frame >= total {
+	if total <= 0 || frame >= total || len(in) == 0 {
 		return
+	}
+	if frame < 0 {
+		frame = 0
 	}
 
 	if g.workersChan == nil {
@@ -95,18 +103,15 @@ func (g *glslHelper) shadeGLSL(
 	rows := len(in)
 	cols := len(in[0])
 
-	time := float(frame) / fps
-
 	var wg sync.WaitGroup
 	wg.Add(len(in))
 	for y, row := range in {
 		g.workersChan <- shadeRequest{
 			wg: &wg,
 			y:  y, rows: rows, cols: cols,
-			row:   row,
-			time:  time,
-			frame: frame, total: total,
-			fps:    fps,
+			row:    row,
+			frame:  frame,
+			total:  total,
 			in:     in,
 			shader: shader,
 		}
@@ -124,8 +129,7 @@ func (g *glslHelper) initWorkers() {
 					return
 				}
 				shadeRow(req.wg, req.y, req.rows, req.cols,
-					req.row, req.time, req.frame, req.total,
-					req.fps, req.in, req.shader)
+					req.row, req.frame, req.total, req.in, req.shader)
 			}
 		})
 	}
@@ -139,8 +143,8 @@ func (g *glslHelper) initWorkers() {
 }
 
 func shadeRow(
-	wg *sync.WaitGroup, y, rows, cols int, row []term.Cell, time float,
-	frame, total int, fps float, in [][]term.Cell, shader cellRunner,
+	wg *sync.WaitGroup, y, rows, cols int, row []term.Cell,
+	frame, total int, in [][]term.Cell, shader cellRunner,
 ) {
 	defer wg.Done()
 
@@ -150,7 +154,7 @@ func shadeRow(
 
 	for x := range row {
 		char, fg, bg := shader.runCell(
-			frame, total, fps, time,
+			frame, total,
 			term.Coordinates{X: x, Y: y},
 			x, fragCoordY,
 			resolutionX, resolutionY,

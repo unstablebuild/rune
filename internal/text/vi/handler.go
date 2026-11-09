@@ -136,6 +136,12 @@ type viHandlerImpl struct {
 	pendingInsertNormal   bool
 	insertCompletion      insertCompletionState
 	suppressCopyDelete    bool
+	// paragraphAtEnd is whether the last } ran into the end of the buffer,
+	// which makes it inclusive for an operator.
+	paragraphAtEnd bool
+	// changeLines holds the lines a linewise change replaces: the register
+	// takes them whole while the delete keeps the first line's indent.
+	changeLines *clipboard.Data
 }
 
 type statusBar interface {
@@ -160,6 +166,7 @@ func (vi *viHandlerImpl) init(buf *cell.Buffer, cfg viConfig) {
 	scroll.Subscribe(vi)
 	vi.cursor.Init(vi.less.Scroll(), vi.config.scheduleNextTick)
 	vi.cursor.RightInclusiveSemantics = true
+	vi.cursor.VimWords = true
 	vi.repeater.Init(&vi.cursor, buf)
 
 	vi.anchor = vi.cursorAtScroll()
@@ -188,6 +195,7 @@ func (vi *viHandlerImpl) initWithScroll(scroll *component.Scroll, opts ...Option
 	// vi.repeater.Init(&vi.cursor, scroll.Buffer())
 	vi.cursor.InitPerformance(vi.less.Scroll())
 	vi.cursor.RightInclusiveSemantics = true
+	vi.cursor.VimWords = true
 	vi.anchor = vi.cursorAtScroll()
 	vi.setMode(normalMode)
 	vi.resetCount()
@@ -457,7 +465,7 @@ func (vi *viHandlerImpl) setShiftMode(fn func(), repeat rune) {
 	vi.beginOperatorPending()
 	vi.pendingGoMotion = false
 	vi.textObjectPending = false
-	vi.shiftFn = fn
+	vi.shiftFn = func() { vi.withoutRegisters(fn) }
 	vi.shiftRepeat = repeat
 	vi.setMode(shiftMode)
 }
@@ -672,10 +680,43 @@ func (vi *viHandlerImpl) pasteClipboard(after bool) bool {
 	if vi.currMode == visualLineMode {
 		mode = text.LineSelection
 	}
+	charwise := mode == text.StandardSelection || (mode == text.NoSelection && !strings.HasSuffix(str, "\n"))
+
+	if count := max(1, vi.count); count > 1 && mode != text.BlockSelection {
+		if len(str) > maxPutLen/count {
+			vi.logError(fmt.Errorf("put: %d copies of %d bytes is too long", count, len(str)))
+			return false
+		}
+		str = strings.Repeat(str, count)
+	}
+
+	// A multi-line charwise put leaves the cursor at the start of the text.
+	start := vi.cursor.CursorAtScroll()
+	if from, to, ok := vi.cursor.SelectionBounds(); ok {
+		start, _ = term.CoordinatesSort(from, to)
+	} else if after && start.Y < vi.less.Buffer().Rows() && vi.less.Buffer().Columns(start.Y) > 0 {
+		start.X++
+	}
 
 	vi.cursor.Paste(str, mode, after)
+	switch {
+	case !charwise:
+		if mode != text.BlockSelection {
+			// A linewise put leaves it on the first non-blank it put.
+			vi.cursor.MoveStartLineNonBlank()
+		}
+	case str == "":
+	case strings.Contains(str, "\n"):
+		vi.cursor.MoveToScroll(start)
+	default:
+		// One that fits on a line leaves it on the last character.
+		vi.cursor.MoveLeft()
+	}
 	return true
 }
+
+// maxPutLen bounds the text a counted put inserts.
+const maxPutLen = 1 << 26
 
 func (vi *viHandlerImpl) pasteClipboardLeaveCursorAfter(after bool) bool {
 	paste, err := vi.readRegister(vi.consumeActiveRegister())
@@ -868,16 +909,38 @@ func (vi *viHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 				}
 			}
 		case 'f':
-			by := vi.less.Scroll().SizeHeight() - pagePadding
-			handled = vi.cursor.MoveDownLines(by)
-			if handled {
-				vi.cursor.RepositionTop()
+			scroll := vi.less.Scroll()
+			if scroll.Width() == 0 || scroll.SizeHeight() == 0 {
+				break
+			}
+			by := max(1, scroll.SizeHeight()-pagePadding)
+			offset := scroll.Offset()
+			if scroll.InvertOffset {
+				offset.Y = max(0, offset.Y-by)
+			} else {
+				last, _ := scroll.ScrollToWindowCoordinates(term.Coordinates{Y: max(0, scroll.Buffer().Rows()-1)})
+				if last.Y < scroll.SizeHeight() {
+					by = max(0, last.Y)
+				}
+				offset.Y += by
+			}
+			if handled = scroll.SetOffset(offset); handled {
+				vi.cursor.MoveToWindowTop()
 			}
 		case 'b':
-			by := vi.less.Scroll().SizeHeight() - pagePadding
-			handled = vi.cursor.MoveUpLines(by)
-			if handled {
-				vi.cursor.RepositionBottom()
+			scroll := vi.less.Scroll()
+			if scroll.Width() == 0 || scroll.SizeHeight() == 0 {
+				break
+			}
+			by := max(1, scroll.SizeHeight()-pagePadding)
+			offset := scroll.Offset()
+			if scroll.InvertOffset {
+				offset.Y = min(scroll.MaxSeekOffset(), offset.Y+by)
+			} else {
+				offset.Y = max(0, offset.Y-by)
+			}
+			if handled = scroll.SetOffset(offset); handled {
+				vi.cursor.MoveToWindowBottom()
 			}
 		case 'd':
 			handled = vi.cursor.MoveDownLines(vi.less.Scroll().SizeHeight() / 2)
@@ -938,12 +1001,18 @@ func (vi *viHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 		case ',':
 			event := term.Event{Type: term.EventKey, Ch: vi.moveChar}
 			mode := reverseDirection(vi.lastMoveMode)
+			start := vi.cursor.CursorAtScroll()
 			vi.nudgeCursorForTillRepeat(mode)
-			vi.handleMoveToCharacter(mode, event)
+			if _, _, found := vi.moveToCharacter(mode, event); !found {
+				vi.cursor.MoveToScroll(start)
+			}
 		case ';':
 			event := term.Event{Type: term.EventKey, Ch: vi.moveChar}
+			start := vi.cursor.CursorAtScroll()
 			vi.nudgeCursorForTillRepeat(vi.lastMoveMode)
-			vi.handleMoveToCharacter(vi.lastMoveMode, event)
+			if _, _, found := vi.moveToCharacter(vi.lastMoveMode, event); !found {
+				vi.cursor.MoveToScroll(start)
+			}
 		case 'f':
 			vi.setMoveToCharacterMode(moveToNext)
 			doResetCount = false
@@ -998,6 +1067,12 @@ func (vi *viHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 			vi.pasteClipboard(false)
 		case '^':
 			vi.cursor.MoveStartLineNonBlank()
+		case '+':
+			vi.moveLineNonBlank(vi.motionCount())
+		case '-':
+			vi.moveLineNonBlank(-vi.motionCount())
+		case '_':
+			vi.moveLineNonBlank(vi.motionCount() - 1)
 		case '$':
 			vi.cursor.MoveEndLine()
 		case 'H':
@@ -1089,35 +1164,31 @@ func (vi *viHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 		case 'C':
 			if vi.cursor.Select() {
 				vi.cursor.MoveEndLine()
-				vi.cursor.DeleteSelection()
+				vi.deleteSelection(true)
 			}
 			vi.setInsertMode()
 		case 'D':
 			if vi.cursor.Select() {
 				vi.cursor.MoveEndLine()
-				vi.cursor.DeleteSelection()
+				vi.deleteSelection(false)
 			}
 		case 'X':
-			for range vi.count {
-				if !vi.cursor.Backspace() {
-					break
+			if !vi.deleteChars(vi.count, true) {
+				for range vi.count {
+					if !vi.cursor.Backspace() {
+						break
+					}
 				}
 			}
 		case 'x':
-			vi.cursor.Delete()
+			vi.deleteChars(vi.count, false)
 		case '~':
 			vi.cursor.ToggleCase()
 		case 's':
-			vi.cursor.Delete()
+			vi.deleteChars(vi.count, false)
 			vi.setInsertMode()
 		case 'S':
-			vi.cursor.MoveStartLine()
-			if vi.cursor.Select() {
-				vi.cursor.MoveEndLine()
-				vi.cursor.DeleteSelection()
-				vi.cursor.TryIndent(vi.config.indentRune, vi.config.indentTabspaces)
-			}
-			vi.setInsertMode()
+			vi.changeLine()
 		case 'v':
 			vi.setVisualMode()
 			if vi.count > 1 {
@@ -1143,7 +1214,13 @@ func (vi *viHandlerImpl) handleNormal(ev term.Event) (quit, handled bool) {
 		case '{':
 			vi.cursor.MovePrevParagraphs(vi.count)
 		case '}':
-			vi.cursor.MoveNextParagraphs(vi.count)
+			vi.paragraphAtEnd = vi.moveNextParagraphs(vi.motionCount())
+		case '(':
+			vi.repeatMotion(vi.cursor.MovePrevSentence)
+		case ')':
+			vi.repeatMotion(vi.cursor.MoveNextSentence)
+		case '|':
+			vi.moveToScreenColumn(vi.motionCount())
 		case '?':
 			vi.searchMode = moveToPrev
 			if !vi.config.disableSearch {
@@ -1388,7 +1465,8 @@ func (vi *viHandlerImpl) resetCount() {
 }
 
 func (vi *viHandlerImpl) parseOperatorCountDigit(ev term.Event) bool {
-	if ev.Type != term.EventKey || ev.Mod != 0 {
+	// After f/t/F/T a digit is the character to find, not a count.
+	if ev.Type != term.EventKey || ev.Mod != 0 || vi.moveMode != moveNone {
 		return false
 	}
 	if ev.Ch == '0' && vi.countDigits == "" {
@@ -1438,6 +1516,81 @@ func (vi *viHandlerImpl) repeatMotion(fn func() bool) bool {
 	return ok
 }
 
+// moveLineNonBlank is Vim's +, - and _: it moves dy lines down, or up when
+// negative, to the first non-blank character. A count past the first or last
+// line stops there, but the motion fails without moving when there is no line
+// that way at all.
+func (vi *viHandlerImpl) moveLineNonBlank(dy int) bool {
+	rows := vi.less.Buffer().Rows()
+	if rows == 0 {
+		return false
+	}
+	y := min(vi.cursor.CursorAtScroll().Y, rows-1)
+	dy = max(-rows, min(dy, rows))
+	target := max(0, min(y+dy, rows-1))
+	if dy != 0 && target == y {
+		return false
+	}
+	vi.cursor.MoveToScroll(term.Coordinates{Y: target})
+	vi.cursor.MoveStartLineNonBlank()
+	return true
+}
+
+// moveNextParagraphs moves as Vim's } does: to the count-th blank line
+// after a non-blank one or, when the buffer ends first, onto its last
+// character, which it reports so operators include that character. It
+// stays put when the buffer ends with paragraphs to go.
+func (vi *viHandlerImpl) moveNextParagraphs(count int) (atEnd bool) {
+	start := vi.cursor.CursorAtScroll()
+	last := vi.less.Buffer().Rows() - 1
+	for i := range count {
+		vi.cursor.MoveNextParagraph()
+		pos := vi.cursor.CursorAtScroll()
+		if pos.Y < last || vi.blankLine(last) {
+			continue
+		}
+		if i < count-1 {
+			vi.cursor.MoveToScroll(start)
+			return false
+		}
+		pos.X = max(0, vi.less.Buffer().Columns(last)-1)
+		vi.cursor.MoveToScroll(pos)
+		return true
+	}
+	return false
+}
+
+func (vi *viHandlerImpl) blankLine(y int) bool {
+	return vi.inIndent(term.Coordinates{Y: y, X: vi.less.Buffer().Columns(y)})
+}
+
+// moveToScreenColumn moves to the cell drawn over the 1-based screen
+// column col of the cursor line, or to the line's last cell when it is
+// narrower, as Vim's | does.
+func (vi *viHandlerImpl) moveToScreenColumn(col int) {
+	pos := vi.cursor.CursorAtScroll()
+	buf := vi.less.Buffer()
+	if pos.Y >= buf.Rows() {
+		return
+	}
+	row := buf.Row(pos.Y)
+	tabspaces := vi.less.Scroll().Tabspaces()
+	pos.X = max(0, len(row)-1)
+	width := 0
+	for x, cell := range row {
+		if cell.Ch == '\t' {
+			width += max(1, tabspaces)
+		} else {
+			width += max(1, int(cell.Width))
+		}
+		if width >= col {
+			pos.X = x
+			break
+		}
+	}
+	vi.cursor.MoveToScroll(pos)
+}
+
 // repeatJoin applies a join command count-1 times, with a minimum of
 // one: Vim's J counts lines to join, not joins to perform.
 func (vi *viHandlerImpl) repeatJoin(fn func() bool) bool {
@@ -1474,10 +1627,15 @@ func (vi *viHandlerImpl) joinSelection(fn func() bool) bool {
 }
 
 func (vi *viHandlerImpl) selectLineCount() bool {
+	count := vi.motionCount()
+	// As in Vim, a count reaching past the last line selects up to it,
+	// but there is nothing below the last line to count from.
+	if count > 1 && vi.cursor.CursorAtScroll().Y >= vi.less.Buffer().Rows()-1 {
+		return false
+	}
 	if !vi.cursor.SelectLine() {
 		return false
 	}
-	count := vi.motionCount()
 	for i := 1; i < count && vi.cursor.MoveLineDown(); i++ {
 	}
 	return true
@@ -1617,6 +1775,15 @@ func (vi *viHandlerImpl) handleInsert(ev term.Event) (quit, handled bool) {
 				vi.cursor.Backspace()
 			}
 			handled = true
+		case term.KeyDelete:
+			pos := vi.cursor.CursorAtScroll()
+			buf := vi.less.Buffer()
+			if pos.X == buf.Columns(pos.Y) && pos.Y+1 < buf.Rows() {
+				vi.cursor.Conflate()
+			} else {
+				vi.cursor.Delete()
+			}
+			handled = true
 		case term.KeyEsc:
 			vi.exitInsert()
 			handled = true
@@ -1688,10 +1855,9 @@ func (vi *viHandlerImpl) handleInsert(ev term.Event) (quit, handled bool) {
 }
 
 func (vi *viHandlerImpl) copySelection() {
-	mode, _ := vi.cursor.SelectionMode()
-	data := clipboard.Data{Text: vi.cursor.Selection(), Metadata: mode}
+	data := vi.selectionRegisterData()
 	reg := vi.consumeActiveRegister()
-	_, err := vi.cursor.CopySelection(registerNameToID(reg), vi.config.clipboard)
+	_, err := vi.cursor.CopySelection(registerNameToID(reg), fixedCopy{vi.config.clipboard, data})
 	if err != nil {
 		vi.logError(err)
 	}
@@ -1707,18 +1873,172 @@ func (vi *viHandlerImpl) copySelection() {
 	}
 }
 
+// yankRange yanks the range an operator motion selected and, as in Vim,
+// leaves the cursor at its start, which is where the motion ended when it
+// moved backward.
+func (vi *viHandlerImpl) yankRange() {
+	from, to, ok := vi.cursor.SelectionBounds()
+	vi.copySelection()
+	if ok {
+		start, _ := term.CoordinatesSort(from, to)
+		vi.cursor.MoveToScroll(start)
+	}
+}
+
 func (vi *viHandlerImpl) copySuppressed() bool {
 	return vi.suppressCopyDelete
 }
 
+// withoutRegisters runs an edit that, as in Vim, leaves the registers alone
+// even though it removes text, such as shifting lines left.
+func (vi *viHandlerImpl) withoutRegisters(edit func()) {
+	vi.suppressCopyDelete = true
+	defer func() { vi.suppressCopyDelete = false }()
+	edit()
+}
+
+// deleteSelection writes the selection to the active register and deletes
+// it. The copy-on-delete subscriber is held off so it cannot overwrite the
+// registers just written or fill the unnamed one on a black hole delete.
+// A linewise delete removes the lines as Vim does, except for a change,
+// which keeps a line to insert into.
+func (vi *viHandlerImpl) deleteSelection(change bool) {
+	mode, _ := vi.cursor.SelectionMode()
+	vi.copySelectionForDelete()
+	linewise := mode == text.LineSelection && !change
+	if linewise {
+		vi.selectLineBreakBeforeEnd()
+	}
+	vi.suppressCopyDelete = true
+	vi.cursor.DeleteSelection()
+	vi.suppressCopyDelete = false
+	if linewise {
+		// Vim leaves a linewise delete on the first non-blank of the line
+		// that takes the place of the deleted ones.
+		vi.cursor.MoveStartLineNonBlank()
+	}
+}
+
+// selectLineBreakBeforeEnd widens a selection of lines that run to the end
+// of the buffer over the line break before them, which Vim deletes along
+// with the lines so that the line above becomes the last one. The buffer's
+// own line delete keeps that line break unless the lines are only the last.
+func (vi *viHandlerImpl) selectLineBreakBeforeEnd() {
+	from, to, ok := vi.cursor.SelectionBounds()
+	if !ok {
+		return
+	}
+	from, to = term.CoordinatesSort(from, to)
+	buf := vi.less.Buffer()
+	last := buf.Rows() - 1
+	if from.Y == 0 || from.Y > last || to.Y < last {
+		return
+	}
+	vi.cursor.SelectRange(
+		term.Coordinates{Y: from.Y - 1, X: buf.Columns(from.Y - 1)},
+		term.Coordinates{Y: last, X: buf.Columns(last)})
+}
+
+// deleteChars deletes up to n characters of the cursor line into the
+// active register: those from the cursor on as x does, or those before it
+// as X does. It reports whether there was any to delete.
+func (vi *viHandlerImpl) deleteChars(n int, before bool) bool {
+	pos := vi.cursor.CursorAtScroll()
+	if pos.Y >= vi.less.Buffer().Rows() {
+		vi.consumeActiveRegister()
+		return false
+	}
+	from, to := pos, pos
+	if before {
+		from.X -= min(n, pos.X)
+	} else {
+		to.X += min(n, vi.less.Buffer().Columns(pos.Y)-pos.X)
+	}
+	if from.X >= to.X {
+		vi.consumeActiveRegister()
+		return false
+	}
+	vi.cursor.SelectRange(from, to)
+	vi.deleteSelection(false)
+	return true
+}
+
+// changeLine empties the cursor line for an insert, as cc and S do: the
+// register takes the whole line and the line is indented afresh.
+func (vi *viHandlerImpl) changeLine() {
+	y := vi.cursor.CursorAtScroll().Y
+	vi.captureChangeLines(y, y)
+	vi.cursor.MoveStartLine()
+	if vi.cursor.Select() {
+		vi.cursor.MoveEndLine()
+		vi.deleteSelection(true)
+		vi.cursor.TryIndent(vi.config.indentRune, vi.config.indentTabspaces)
+	}
+	vi.changeLines = nil
+	vi.setInsertMode()
+}
+
+// captureChangeLines keeps lines fromY through toY for the register of the
+// linewise change about to delete their text.
+func (vi *viHandlerImpl) captureChangeLines(fromY, toY int) {
+	pos := vi.cursor.CursorAtScroll()
+	vi.cursor.Unselect()
+	vi.cursor.MoveToScroll(term.Coordinates{Y: fromY})
+	if vi.cursor.SelectLine() {
+		vi.cursor.MoveToScroll(term.Coordinates{Y: toY})
+		data := vi.selectionRegisterData()
+		vi.changeLines = &data
+	}
+	vi.cursor.Unselect()
+	vi.cursor.MoveToScroll(pos)
+}
+
+// selectionRegisterData returns the selection as register contents.
+func (vi *viHandlerImpl) selectionRegisterData() clipboard.Data {
+	mode, _ := vi.cursor.SelectionMode()
+	data := clipboard.Data{Text: vi.cursor.Selection(), Metadata: mode}
+	if _, _, ok := vi.cursor.SelectionRange(); ok && mode == text.LineSelection && data.Text == "" {
+		// A single empty line still holds its line break.
+		data.Text = "\n"
+	}
+	return data
+}
+
+// fixedCopy is a clipboard.Register that copies data whatever it is asked
+// to copy, so Cursor.CopySelection can store selectionRegisterData.
+type fixedCopy struct {
+	clipboard.Register
+	data clipboard.Data
+}
+
+func (f fixedCopy) Copy(registerID string, _ clipboard.Data) error {
+	return f.Register.Copy(registerID, f.data)
+}
+
+// changeCase applies a case operator to the selection. As in Vim, it leaves
+// the registers alone and the cursor at the start of the range.
+func (vi *viHandlerImpl) changeCase(fn func() bool) {
+	from, to, ok := vi.cursor.SelectionBounds()
+	vi.suppressCopyDelete = true
+	fn()
+	vi.suppressCopyDelete = false
+	if ok {
+		start, _ := term.CoordinatesSort(from, to)
+		vi.cursor.MoveToScroll(start)
+	}
+}
+
 func (vi *viHandlerImpl) copySelectionForDelete() {
+	data := vi.selectionRegisterData()
+	if vi.changeLines != nil {
+		data = *vi.changeLines
+		vi.changeLines = nil
+	}
 	reg := vi.consumeActiveRegister()
 	if reg == blackHoleRegister {
 		return
 	}
 
-	mode, _ := vi.cursor.SelectionMode()
-	data := clipboard.Data{Text: vi.cursor.Selection(), Metadata: mode}
 	if reg != unnamedRegister {
 		if err := vi.writeRegister(reg, data); err != nil {
 			vi.logError(err)
@@ -1727,7 +2047,7 @@ func (vi *viHandlerImpl) copySelectionForDelete() {
 	if err := vi.writeRegister(unnamedRegister, data); err != nil {
 		vi.logError(err)
 	}
-	if mode != text.LineSelection {
+	if data.Metadata != text.LineSelection {
 		if err := vi.writeRegister('-', data); err != nil {
 			vi.logError(err)
 		}
@@ -1920,13 +2240,19 @@ func (vi *viHandlerImpl) handleVisual(ev term.Event) (quit, handled bool) {
 				vi.cursor.SwapSelectionEnd()
 			}
 		case '>':
-			vi.cursor.ShiftSelectionRight(vi.config.indentRune, vi.config.indentTabspaces)
+			vi.withoutRegisters(func() {
+				vi.cursor.ShiftSelectionRight(vi.config.indentRune, vi.config.indentTabspaces)
+			})
 			vi.setNormalMode()
 		case '<':
-			vi.cursor.ShiftSelectionLeft(vi.config.indentRune, vi.config.indentTabspaces)
+			vi.withoutRegisters(func() {
+				vi.cursor.ShiftSelectionLeft(vi.config.indentRune, vi.config.indentTabspaces)
+			})
 			vi.setNormalMode()
 		case '=':
-			vi.cursor.ReindentSelection(vi.config.indentRune, vi.config.indentTabspaces)
+			vi.withoutRegisters(func() {
+				vi.cursor.ReindentSelection(vi.config.indentRune, vi.config.indentTabspaces)
+			})
 			vi.setNormalMode()
 		case 'y':
 			vi.copySelection()
@@ -1935,32 +2261,37 @@ func (vi *viHandlerImpl) handleVisual(ev term.Event) (quit, handled bool) {
 			vi.joinSelection(vi.cursor.Join)
 			vi.setNormalMode()
 		case 'd', 'x':
-			mode, modeOk := vi.cursor.SelectionMode()
-			vi.copySelectionForDelete()
-			// A block delete runs one edit per row; hold the
-			// copy-on-delete writes so only the copy above lands.
-			vi.suppressCopyDelete = modeOk && mode == text.BlockSelection
-			vi.cursor.DeleteSelection()
-			vi.suppressCopyDelete = false
+			vi.deleteSelection(false)
 			vi.setNormalMode()
 		case 's', 'c':
 			switch vi.mode() {
 			case visualBlockMode:
 				vi.handleVisualBlockChangeStart()
 			default:
-				vi.copySelectionForDelete()
-				vi.cursor.DeleteSelection()
+				vi.deleteSelection(true)
 				vi.setInsertMode()
 			}
 		case 'u':
-			vi.cursor.LowercaseSelection()
+			vi.changeCase(vi.cursor.LowercaseSelection)
 			vi.setNormalMode()
 		case 'U':
-			vi.cursor.UppercaseSelection()
+			vi.changeCase(vi.cursor.UppercaseSelection)
 			vi.setNormalMode()
 		case '~':
-			vi.cursor.ToggleCaseSelection()
+			vi.changeCase(vi.cursor.ToggleCaseSelection)
 			vi.setNormalMode()
+		case 'v', 'V':
+			// The key of the current visual mode leaves it; the other
+			// key switches modes in handleNormal.
+			current := visualMode
+			if ev.Ch == 'V' {
+				current = visualLineMode
+			}
+			if vi.mode() == current {
+				vi.setNormalMode()
+			} else {
+				handled = false
+			}
 		case 'I':
 			switch vi.mode() {
 			case visualBlockMode:
@@ -1986,6 +2317,12 @@ func (vi *viHandlerImpl) handleVisual(ev term.Event) (quit, handled bool) {
 		default:
 			handled = false
 		}
+	case term.ModCtrl:
+		if ev.Ch == 'v' && vi.mode() == visualBlockMode {
+			vi.setNormalMode()
+		} else {
+			handled = false
+		}
 	default:
 		handled = false
 	}
@@ -2009,39 +2346,31 @@ func (vi *viHandlerImpl) handleVisual(ev term.Event) (quit, handled bool) {
 }
 
 func (vi *viHandlerImpl) handleMoveToCharacter(mode moveMode, ev term.Event) (exit, handled bool) {
+	exit, handled, _ = vi.moveToCharacter(mode, ev)
+	return
+}
+
+// moveToCharacter completes an f/t/F/T motion with the character in ev
+// and reports whether it found count of them. As in Vim, the cursor stays
+// put when it finds fewer.
+func (vi *viHandlerImpl) moveToCharacter(mode moveMode, ev term.Event) (exit, handled, found bool) {
+	prevMode := vi.currMode
 	switch ev.Mod {
 	case 0:
 		switch ev.Type {
 		case term.EventKey:
-			switch ev.Key {
-			case term.KeySpace:
-				ev.Ch = ' '
-			case term.KeyTab:
-				ev.Ch = '\t'
-			case term.KeyEnter:
-				ev.Ch = '\n'
-			}
-			var ok bool
-			switch mode {
-			case moveToNext:
-				ok = vi.repeatMotion(func() bool { return vi.cursor.MoveToNextChar(ev.Ch) })
-			case moveToPrev:
-				ok = vi.repeatMotion(func() bool { return vi.cursor.MoveToPrevChar(ev.Ch) })
-			case moveTillNext:
-				if ok = vi.repeatMotion(func() bool { return vi.cursor.MoveToNextChar(ev.Ch) }); ok {
-					vi.cursor.MoveLeft()
-				}
-			case moveTillPrev:
-				if ok = vi.repeatMotion(func() bool { return vi.cursor.MoveToPrevChar(ev.Ch) }); ok {
-					vi.cursor.MoveRight()
-				}
-			case moveNone:
+			ev.Ch = findTarget(ev)
+			if mode == moveNone {
 				return
 			}
-			if ok {
+			if found = vi.findChar(mode, ev.Ch); found {
 				vi.moveChar = ev.Ch
 			}
 			vi.setNormalMode()
+			switch prevMode {
+			case visualMode, visualLineMode, visualBlockMode:
+				vi.setMode(prevMode)
+			}
 			handled = true
 		default:
 			vi.setMode(vi.mode())
@@ -2049,6 +2378,41 @@ func (vi *viHandlerImpl) handleMoveToCharacter(mode moveMode, ev term.Event) (ex
 		}
 	}
 	return
+}
+
+func (vi *viHandlerImpl) findChar(mode moveMode, ch rune) bool {
+	start := vi.cursor.CursorAtScroll()
+	move := vi.cursor.MoveToNextChar
+	if mode == moveToPrev || mode == moveTillPrev {
+		move = vi.cursor.MoveToPrevChar
+	}
+	for range vi.motionCount() {
+		if !move(ch) {
+			vi.cursor.MoveToScroll(start)
+			return false
+		}
+	}
+	switch mode {
+	case moveTillNext:
+		vi.cursor.MoveLeft()
+	case moveTillPrev:
+		vi.cursor.MoveRight()
+	}
+	return true
+}
+
+// findTarget returns the character an f/t/F/T key event searches for.
+func findTarget(ev term.Event) rune {
+	switch ev.Key {
+	case term.KeySpace:
+		return ' '
+	case term.KeyTab:
+		return '\t'
+	case term.KeyEnter:
+		return '\n'
+	default:
+		return ev.Ch
+	}
 }
 
 func (vi *viHandlerImpl) handleReplace(ev term.Event) (quit, handled bool) {
@@ -2099,11 +2463,27 @@ func (vi *viHandlerImpl) handleMetaNormal(ev term.Event) (quit, handled, done bo
 
 	prevMode := vi.moveMode
 	count := vi.motionCount()
+	// Read before the motion runs: a completed f/t/F/T resets the mode.
+	change := vi.currMode == deleteMode && vi.deleteInsert
+	kind := vi.operatorMotionKind(ev, prevMode)
+	plain := prevMode == moveNone && ev.Mod == 0
+	vi.paragraphAtEnd = false
 	quit, handled = vi.handleNormal(ev)
 	isMoveSwitch := prevMode == moveNone && vi.moveMode != moveNone
 	after := vi.cursor.CursorAtScroll()
+	// As in Vim, } running into the end of the buffer includes its last
+	// character, and so does w with no word left to move to.
+	atEnd := plain && ev.Ch == '}' && vi.paragraphAtEnd
+	if plain && (ev.Ch == 'w' || ev.Ch == 'W') && before == after {
+		_, atEnd = vi.cursor.Cell()
+	}
+	if atEnd {
+		kind = motionInclusive
+	}
+	// Linewise jumps such as G act on the cursor line when they land on it.
+	inPlace := plain && (strings.ContainsRune("GHML", ev.Ch) || (ev.Ch == '_' && count == 1))
 
-	if before == after {
+	if before == after && !atEnd && !inPlace && !vi.tillTargetAdjacent(prevMode, ev, before) {
 		vi.cursor.Unselect()
 		if !isMoveSwitch {
 			handled = false
@@ -2113,37 +2493,150 @@ func (vi *viHandlerImpl) handleMetaNormal(ev term.Event) (quit, handled, done bo
 	}
 
 	done = true
-
-	// handle <op>wWeEbB idiosyncrasies
-	after = vi.cursor.CursorAtScroll()
-	switch ev.Mod {
-	case 0:
-		switch ev.Ch {
-		case 'e', 'E':
-		case 'w', 'W':
-			// After f/t/F/T, w is the character to find, not a word motion.
-			if prevMode == moveNone {
-				vi.selectWordOperatorRange(before, after, count, ev.Ch == 'W')
-			}
-		case 'b', 'B':
-			if before.Y > after.Y {
-				vi.cursor.MoveLeftStartWord()
-			}
-		default:
-			if before.Y != after.Y {
-				vi.cursor.SelectLine()
-			}
-		}
+	switch {
+	case atEnd:
+	case plain && (ev.Ch == 'w' || ev.Ch == 'W'):
+		vi.selectWordOperatorRange(before, after, count, ev.Ch == 'W', change)
+	case kind == motionExclusive:
+		start, end := term.CoordinatesSort(before, after)
+		vi.selectExclusiveRange(start, end, change)
+	case kind == motionLinewise && change:
+		start, end := term.CoordinatesSort(before, after)
+		vi.selectLinewiseRange(start, end.Y, true)
+	case kind == motionLinewise:
+		vi.cursor.SelectLine()
 	}
 	return
+}
+
+// tillTargetAdjacent reports whether ev completes a t motion whose target
+// sits right after pos: the motion succeeds without moving the cursor.
+func (vi *viHandlerImpl) tillTargetAdjacent(prevMode moveMode, ev term.Event, pos term.Coordinates) bool {
+	if prevMode != moveTillNext || pos.Y >= vi.less.Buffer().Rows() {
+		return false
+	}
+	row := vi.less.Buffer().Row(pos.Y)
+	return pos.X+1 < len(row) && row[pos.X+1].Ch == findTarget(ev)
+}
+
+// motionKind is how an operator treats the text a motion moves over.
+type motionKind uint8
+
+const (
+	motionInclusive motionKind = iota
+	motionExclusive
+	motionLinewise
+)
+
+// findMotionKind returns the kind of an f/t/F/T motion: forward finds
+// include the character they stop on, backward finds do not.
+func findMotionKind(mode moveMode) motionKind {
+	switch mode {
+	case moveToPrev, moveTillPrev:
+		return motionExclusive
+	default:
+		return motionInclusive
+	}
+}
+
+// operatorMotionKind classifies the motion ev completes for an operator as
+// in Vim's :h exclusive and :h linewise. prevMode is the f/t/F/T mode
+// pending when ev arrived, which makes ev the character to find.
+func (vi *viHandlerImpl) operatorMotionKind(ev term.Event, prevMode moveMode) motionKind {
+	if prevMode != moveNone {
+		return findMotionKind(prevMode)
+	}
+	switch ev.Mod {
+	case 0:
+	case term.ModCtrl:
+		return motionLinewise
+	default:
+		return motionInclusive
+	}
+	switch ev.Key {
+	case term.KeyArrowLeft, term.KeyArrowRight:
+		return motionExclusive
+	case term.KeyArrowUp, term.KeyArrowDown:
+		return motionLinewise
+	}
+	switch ev.Ch {
+	case 'h', 'l', '0', '^', '|', 'b', 'B', 'w', 'W', '(', ')', '{', '}', 'n', 'N', '*', '#':
+		return motionExclusive
+	case 'j', 'k', 'G', 'H', 'M', 'L', '+', '-', '_':
+		return motionLinewise
+	case ';':
+		return findMotionKind(vi.lastMoveMode)
+	case ',':
+		return findMotionKind(reverseDirection(vi.lastMoveMode))
+	default:
+		return motionInclusive
+	}
+}
+
+// selectExclusiveRange selects [start, end) for an exclusive motion. As in
+// Vim's :h exclusive, an end in column 0 of a later line moves to the end of
+// the previous line, and the range turns linewise if start is also within
+// its line's indent.
+func (vi *viHandlerImpl) selectExclusiveRange(start, end term.Coordinates, change bool) bool {
+	if end.X == 0 && end.Y > start.Y {
+		end.Y--
+		if vi.inIndent(start) {
+			return vi.selectLinewiseRange(start, end.Y, change)
+		}
+		end.X = vi.less.Buffer().Columns(end.Y)
+	}
+	return vi.cursor.SelectRange(start, end)
+}
+
+// selectLinewiseRange selects lines start.Y through endY, anchored at start,
+// so start stays the first position of the selection.
+// A change keeps one line to insert into, with its indent, so it selects
+// the text of those lines instead and keeps the lines for the register.
+func (vi *viHandlerImpl) selectLinewiseRange(start term.Coordinates, endY int, change bool) bool {
+	if change {
+		vi.captureChangeLines(start.Y, endY)
+		buf := vi.less.Buffer()
+		indent := 0
+		for _, cell := range buf.Row(start.Y) {
+			if cell.Ch != ' ' && cell.Ch != '\t' {
+				break
+			}
+			indent++
+		}
+		return vi.cursor.SelectRange(term.Coordinates{Y: start.Y, X: indent},
+			term.Coordinates{Y: endY, X: buf.Columns(endY)})
+	}
+	vi.cursor.Unselect()
+	vi.cursor.MoveToScroll(start)
+	if !vi.cursor.SelectLine() {
+		return false
+	}
+	if endY != start.Y {
+		vi.cursor.MoveToScroll(term.Coordinates{Y: endY})
+	}
+	return true
+}
+
+// inIndent reports whether only blanks precede pos on its line.
+func (vi *viHandlerImpl) inIndent(pos term.Coordinates) bool {
+	row := vi.less.Buffer().Row(pos.Y)
+	for x := 0; x < pos.X && x < len(row); x++ {
+		if row[x].Ch != ' ' && row[x].Ch != '\t' {
+			return false
+		}
+	}
+	return true
 }
 
 // selectWordOperatorRange selects what an operator acts on for count w/W
 // motions from before to after. As in Vim, the last word stops at the end of
 // the line it starts on instead of the next line's first word, and an end in
 // column 0 is pulled back onto the previous line, turning linewise when the
-// operator starts in the indent.
-func (vi *viHandlerImpl) selectWordOperatorRange(before, after term.Coordinates, count int, bigWord bool) {
+// operator starts in the indent. When no word follows at the end of the
+// buffer, the range includes the last character.
+func (vi *viHandlerImpl) selectWordOperatorRange(
+	before, after term.Coordinates, count int, bigWord, change bool,
+) {
 	move := vi.cursor.MoveRightStartWord
 	if bigWord {
 		move = vi.cursor.MoveRightStartWordGroup
@@ -2160,7 +2653,10 @@ func (vi *viHandlerImpl) selectWordOperatorRange(before, after term.Coordinates,
 	buf := vi.less.Buffer()
 	if after.Y == last.Y {
 		vi.cursor.MoveToScroll(after)
-		vi.cursor.MoveLeft()
+		atBufferEnd := after.Y == buf.Rows()-1 && after.X >= buf.Columns(after.Y)-1
+		if !atBufferEnd || vi.cursor.AtStartWord(bigWord) {
+			vi.cursor.MoveLeft()
+		}
 		return
 	}
 	if cols := buf.Columns(last.Y); cols > 0 {
@@ -2169,45 +2665,36 @@ func (vi *viHandlerImpl) selectWordOperatorRange(before, after term.Coordinates,
 	}
 
 	// The last word is the empty line last.Y, so the motion ends at column 0
-	// of the following line and is pulled back to exclude it.
-	indent := 0
-	for _, cell := range buf.Row(before.Y) {
-		if cell.Ch != ' ' && cell.Ch != '\t' {
-			break
-		}
-		indent++
-	}
-	end := term.Coordinates{Y: last.Y}
-	switch {
-	case before.X > indent:
-		vi.cursor.SelectRange(before, end)
-	case vi.mode() == deleteMode && vi.deleteInsert:
-		// A linewise change keeps one line to insert into, with its indent.
-		vi.cursor.SelectRange(term.Coordinates{Y: before.Y, X: indent}, end)
-	default:
-		vi.cursor.MoveToScroll(before)
-		vi.cursor.SelectLine()
-		for y := before.Y; y < last.Y && vi.cursor.MoveLineDown(); y++ {
-		}
-	}
+	// of the following line.
+	vi.selectExclusiveRange(before, term.Coordinates{Y: last.Y + 1}, change)
 }
 
 func (vi *viHandlerImpl) handleMetaGo(ev term.Event) (quit, handled, done bool) {
+	if ev.Mod == 0 && (ev.Ch == 'j' || ev.Ch == 'k') && !vi.less.Scroll().Wrap {
+		// Without wrapping, display lines are buffer lines, and Vim's gj
+		// and gk are j and k, linewise.
+		return vi.handleMetaNormal(ev)
+	}
 	before := vi.cursor.CursorAtScroll()
 	vi.cursor.Select()
+	change := vi.currMode == deleteMode && vi.deleteInsert
+	kind := motionInclusive
+	failed := false
 
 	switch ev.Mod {
 	case 0:
 		switch ev.Ch {
 		case 'g':
+			count := vi.motionCount()
 			vi.cursor.MoveToScroll(vi.anchor)
-			if vi.count == 1 {
+			if count == 1 {
 				vi.cursor.MoveFirstLine()
 			} else {
-				target := max(0, min(vi.count-1, vi.less.Buffer().Rows()-1))
+				target := max(0, min(count-1, vi.less.Buffer().Rows()-1))
 				vi.setCursorAtScroll(term.Coordinates{Y: target})
 			}
 			vi.resetCount()
+			kind = motionLinewise
 			handled = true
 		case 'e':
 			vi.repeatMotion(vi.cursor.MoveLeftEndWord)
@@ -2215,11 +2702,22 @@ func (vi *viHandlerImpl) handleMetaGo(ev term.Event) (quit, handled, done bool) 
 		case 'E':
 			vi.repeatMotion(vi.cursor.MoveLeftEndWordGroup)
 			handled = true
-		case 'j':
-			vi.repeatMotion(vi.cursor.MoveDisplayDown)
-			handled = true
-		case 'k':
-			vi.repeatMotion(vi.cursor.MoveDisplayUp)
+		case 'j', 'k':
+			move := vi.cursor.MoveDisplayDown
+			if ev.Ch == 'k' {
+				move = vi.cursor.MoveDisplayUp
+			}
+			// As in Vim, an operator is cancelled when the count runs past
+			// the buffer.
+			for range vi.motionCount() {
+				if !move() {
+					failed = true
+					break
+				}
+			}
+			// Vim's cursor cannot rest past a line's last character.
+			vi.cursor.MoveToBounds(0)
+			kind = motionExclusive
 			handled = true
 		case '_':
 			vi.cursor.MoveEndLineNonBlank()
@@ -2228,7 +2726,8 @@ func (vi *viHandlerImpl) handleMetaGo(ev term.Event) (quit, handled, done bool) 
 	}
 
 	after := vi.cursor.CursorAtScroll()
-	if before == after {
+	// gg acts on the cursor line when it is already on the target line.
+	if failed || (before == after && kind != motionLinewise) {
 		vi.cursor.Unselect()
 		handled = false
 		vi.setNormalMode()
@@ -2236,15 +2735,42 @@ func (vi *viHandlerImpl) handleMetaGo(ev term.Event) (quit, handled, done bool) 
 	}
 
 	done = true
+	start, end := term.CoordinatesSort(before, after)
+	switch {
+	case kind == motionExclusive:
+		vi.selectExclusiveRange(start, end, change)
+	case kind == motionLinewise && change:
+		vi.selectLinewiseRange(start, end.Y, true)
+	case kind == motionLinewise:
+		vi.cursor.SelectLine()
+	}
 	return
+}
+
+// handleOperatorGoMotion completes the g-prefixed motion an operator waits
+// on (gg, ge, gE, gj, gk or g_) and runs apply on the range it selects.
+func (vi *viHandlerImpl) handleOperatorGoMotion(ev term.Event, apply func()) (quit, handled bool) {
+	vi.pendingGoMotion = false
+	switch ev.Ch {
+	case 'g', 'e', 'E', 'j', 'k', '_':
+	default:
+		vi.setNormalMode()
+		return false, true
+	}
+	quit, handled, done := vi.handleMetaGo(ev)
+	if !done {
+		return quit, handled
+	}
+	apply()
+	return quit, true
 }
 
 func (vi *viHandlerImpl) handleYank(ev term.Event) (quit, handled bool) {
 	if ev.Ch == 'y' && ev.Mod == 0 {
 		if vi.selectLineCount() {
 			vi.copySelection()
-			handled = true
 		}
+		handled = true
 		vi.setNormalMode()
 		return
 	}
@@ -2254,61 +2780,10 @@ func (vi *viHandlerImpl) handleYank(ev term.Event) (quit, handled bool) {
 
 	if vi.moveMode == moveNone && ev.Mod == 0 {
 		if vi.pendingGoMotion {
-			vi.pendingGoMotion = false
-			switch ev.Ch {
-			case 'g':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'g'})
-				if !done {
-					return quit, handled
-				}
-				vi.commentFn()
-				vi.cursor.Unselect()
+			return vi.handleOperatorGoMotion(ev, func() {
+				vi.yankRange()
 				vi.setNormalMode()
-				return quit, true
-			case 'e':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'e'})
-				if !done {
-					return quit, handled
-				}
-				vi.copySelection()
-				vi.setNormalMode()
-				return quit, true
-			case 'E':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'E'})
-				if !done {
-					return quit, handled
-				}
-				vi.copySelection()
-				vi.setNormalMode()
-				return quit, true
-			case 'j':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'j'})
-				if !done {
-					return quit, handled
-				}
-				vi.copySelection()
-				vi.setNormalMode()
-				return quit, true
-			case 'k':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'k'})
-				if !done {
-					return quit, handled
-				}
-				vi.copySelection()
-				vi.setNormalMode()
-				return quit, true
-			case '_':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: '_'})
-				if !done {
-					return quit, handled
-				}
-				vi.copySelection()
-				vi.setNormalMode()
-				return quit, true
-			default:
-				vi.setNormalMode()
-				return false, true
-			}
+			})
 		}
 
 		if vi.textObjectPending {
@@ -2359,7 +2834,7 @@ func (vi *viHandlerImpl) handleYank(ev term.Event) (quit, handled bool) {
 		return
 	}
 
-	vi.copySelection()
+	vi.yankRange()
 	vi.setNormalMode()
 	return
 }
@@ -2387,61 +2862,10 @@ func (vi *viHandlerImpl) handleShift(ev term.Event) (quit, handled bool) {
 
 	if vi.moveMode == moveNone && ev.Mod == 0 {
 		if vi.pendingGoMotion {
-			vi.pendingGoMotion = false
-			switch ev.Ch {
-			case 'g':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'g'})
-				if !done {
-					return quit, handled
-				}
-				vi.commentFn()
-				vi.cursor.Unselect()
-				vi.setNormalMode()
-				return quit, true
-			case 'e':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'e'})
-				if !done {
-					return quit, handled
-				}
+			return vi.handleOperatorGoMotion(ev, func() {
 				vi.shiftFn()
 				vi.setNormalMode()
-				return quit, true
-			case 'E':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'E'})
-				if !done {
-					return quit, handled
-				}
-				vi.shiftFn()
-				vi.setNormalMode()
-				return quit, true
-			case 'j':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'j'})
-				if !done {
-					return quit, handled
-				}
-				vi.shiftFn()
-				vi.setNormalMode()
-				return quit, true
-			case 'k':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'k'})
-				if !done {
-					return quit, handled
-				}
-				vi.shiftFn()
-				vi.setNormalMode()
-				return quit, true
-			case '_':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: '_'})
-				if !done {
-					return quit, handled
-				}
-				vi.shiftFn()
-				vi.setNormalMode()
-				return quit, true
-			default:
-				vi.setNormalMode()
-				return false, true
-			}
+			})
 		}
 
 		if vi.textObjectPending {
@@ -2500,10 +2924,14 @@ func (vi *viHandlerImpl) handleShift(ev term.Event) (quit, handled bool) {
 func (vi *viHandlerImpl) handleCaseChange(ev term.Event) (quit, handled bool) {
 	// double-key: guu, gUU, g~~ = apply to whole line
 	if ev.Ch == vi.caseChangeRepeat && ev.Mod == 0 && vi.moveMode == moveNone {
-		vi.cursor.MoveStartLine()
-		if vi.cursor.Select() {
-			vi.cursor.MoveEndLine()
-			vi.caseChangeFn()
+		origin := vi.cursor.CursorAtScroll()
+		if vi.selectLineCount() {
+			// Vim's motion ends on the first non-blank of the last line, and
+			// the cursor lands on whichever of that and the origin comes first.
+			vi.cursor.MoveStartLineNonBlank()
+			start, _ := term.CoordinatesSort(origin, vi.cursor.CursorAtScroll())
+			vi.changeCase(vi.caseChangeFn)
+			vi.cursor.MoveToScroll(start)
 			handled = true
 		}
 		vi.setNormalMode()
@@ -2515,52 +2943,10 @@ func (vi *viHandlerImpl) handleCaseChange(ev term.Event) (quit, handled bool) {
 
 	if vi.moveMode == moveNone && ev.Mod == 0 {
 		if vi.pendingGoMotion {
-			vi.pendingGoMotion = false
-			switch ev.Ch {
-			case 'e':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'e'})
-				if !done {
-					return quit, handled
-				}
-				vi.caseChangeFn()
+			return vi.handleOperatorGoMotion(ev, func() {
+				vi.changeCase(vi.caseChangeFn)
 				vi.setNormalMode()
-				return quit, true
-			case 'E':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'E'})
-				if !done {
-					return quit, handled
-				}
-				vi.caseChangeFn()
-				vi.setNormalMode()
-				return quit, true
-			case 'j':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'j'})
-				if !done {
-					return quit, handled
-				}
-				vi.caseChangeFn()
-				vi.setNormalMode()
-				return quit, true
-			case 'k':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'k'})
-				if !done {
-					return quit, handled
-				}
-				vi.caseChangeFn()
-				vi.setNormalMode()
-				return quit, true
-			case '_':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: '_'})
-				if !done {
-					return quit, handled
-				}
-				vi.caseChangeFn()
-				vi.setNormalMode()
-				return quit, true
-			default:
-				vi.setNormalMode()
-				return false, true
-			}
+			})
 		}
 
 		if vi.textObjectPending {
@@ -2576,7 +2962,7 @@ func (vi *viHandlerImpl) handleCaseChange(ev term.Event) (quit, handled bool) {
 				vi.setNormalMode()
 				return false, true
 			}
-			vi.caseChangeFn()
+			vi.changeCase(vi.caseChangeFn)
 			vi.setNormalMode()
 			return false, true
 		}
@@ -2611,7 +2997,7 @@ func (vi *viHandlerImpl) handleCaseChange(ev term.Event) (quit, handled bool) {
 		return
 	}
 
-	vi.caseChangeFn()
+	vi.changeCase(vi.caseChangeFn)
 	vi.setNormalMode()
 	return
 }
@@ -2632,66 +3018,11 @@ func (vi *viHandlerImpl) handleComment(ev term.Event) (quit, handled bool) {
 
 	if vi.moveMode == moveNone && ev.Mod == 0 {
 		if vi.pendingGoMotion {
-			vi.pendingGoMotion = false
-			switch ev.Ch {
-			case 'g':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'g'})
-				if !done {
-					return quit, handled
-				}
+			return vi.handleOperatorGoMotion(ev, func() {
 				vi.commentFn()
 				vi.cursor.Unselect()
 				vi.setNormalMode()
-				return quit, true
-			case 'e':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'e'})
-				if !done {
-					return quit, handled
-				}
-				vi.commentFn()
-				vi.cursor.Unselect()
-				vi.setNormalMode()
-				return quit, true
-			case 'E':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'E'})
-				if !done {
-					return quit, handled
-				}
-				vi.commentFn()
-				vi.cursor.Unselect()
-				vi.setNormalMode()
-				return quit, true
-			case 'j':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'j'})
-				if !done {
-					return quit, handled
-				}
-				vi.commentFn()
-				vi.cursor.Unselect()
-				vi.setNormalMode()
-				return quit, true
-			case 'k':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'k'})
-				if !done {
-					return quit, handled
-				}
-				vi.commentFn()
-				vi.cursor.Unselect()
-				vi.setNormalMode()
-				return quit, true
-			case '_':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: '_'})
-				if !done {
-					return quit, handled
-				}
-				vi.commentFn()
-				vi.cursor.Unselect()
-				vi.setNormalMode()
-				return quit, true
-			default:
-				vi.setNormalMode()
-				return false, true
-			}
+			})
 		}
 
 		if vi.textObjectPending {
@@ -2820,7 +3151,7 @@ func (vi *viHandlerImpl) beginCommentSearchOp(direction moveMode) {
 // Yank with `/` or `?` is charwise.
 func (vi *viHandlerImpl) beginYankSearchOp(direction moveMode) {
 	vi.beginSearchOp(direction, false,
-		vi.copySelection,
+		vi.yankRange,
 		func() { vi.setNormalMode() },
 	)
 }
@@ -2831,10 +3162,7 @@ func (vi *viHandlerImpl) beginYankSearchOp(direction moveMode) {
 func (vi *viHandlerImpl) beginDeleteSearchOp(direction moveMode) {
 	deleteInsert := vi.deleteInsert
 	vi.beginSearchOp(direction, false,
-		func() {
-			vi.copySelectionForDelete()
-			vi.cursor.DeleteSelection()
-		},
+		func() { vi.deleteSelection(deleteInsert) },
 		func() {
 			if deleteInsert {
 				vi.setInsertMode()
@@ -2860,7 +3188,7 @@ func (vi *viHandlerImpl) beginShiftSearchOp(direction moveMode) {
 func (vi *viHandlerImpl) beginCaseChangeSearchOp(direction moveMode) {
 	caseChangeFn := vi.caseChangeFn
 	vi.beginSearchOp(direction, false,
-		func() { caseChangeFn() },
+		func() { vi.changeCase(caseChangeFn) },
 		func() { vi.setNormalMode() },
 	)
 }
@@ -2929,9 +3257,11 @@ func (vi *viHandlerImpl) completeSearchOp() {
 		}
 		from = term.Coordinates{Y: from.Y}
 		to = term.Coordinates{Y: to.Y, X: vi.less.Buffer().Columns(to.Y)}
-	}
-
-	if !vi.cursor.SelectRange(from, to) {
+		if !vi.cursor.SelectRange(from, to) {
+			vi.cancelSearchOp()
+			return
+		}
+	} else if !vi.selectExclusiveRange(from, to, vi.currMode == deleteMode && vi.deleteInsert) {
 		vi.cancelSearchOp()
 		return
 	}
@@ -2996,35 +3326,31 @@ func (vi *viHandlerImpl) handleMarkOp(ev term.Event) (quit, handled bool) {
 		vi.cancelMarkOp()
 		return false, true
 	}
-	if linewise {
-		// Linewise selection: anchor at the starting line, then
-		// extend down or up to the mark line. SelectLine produces a
-		// proper line selection (including trailing newline) that
-		// operators like d, c, y can act on as whole-line ranges.
+	change := vi.currMode == deleteMode && vi.deleteInsert
+	if linewise && change {
+		from, to := term.CoordinatesSort(before, after)
+		if !vi.selectLinewiseRange(from, to.Y, true) {
+			vi.cancelMarkOp()
+			return false, true
+		}
+	} else if linewise {
+		// Linewise selection: anchor at the starting line, then extend to
+		// the mark line's first non-blank, where a yank leaves the cursor
+		// when the mark is above. SelectLine produces a proper line
+		// selection (including trailing newline) that operators like d, c,
+		// y can act on as whole-line ranges.
 		vi.cursor.MoveToScroll(before)
 		if !vi.cursor.SelectLine() {
 			vi.cancelMarkOp()
 			return false, true
 		}
-		if after.Y > before.Y {
-			for i := before.Y; i < after.Y; i++ {
-				if !vi.cursor.MoveLineDown() {
-					break
-				}
-			}
-		} else if after.Y < before.Y {
-			for i := before.Y; i > after.Y; i-- {
-				if !vi.cursor.MoveLineUp() {
-					break
-				}
-			}
-		}
+		vi.cursor.MoveToScroll(after)
 	} else {
 		from, to := before, after
 		if to.Y < from.Y || (to.Y == from.Y && to.X < from.X) {
 			from, to = to, from
 		}
-		if !vi.cursor.SelectRange(from, to) {
+		if !vi.selectExclusiveRange(from, to, change) {
 			vi.cancelMarkOp()
 			return false, true
 		}
@@ -3056,7 +3382,7 @@ func (vi *viHandlerImpl) beginCommentMarkOp(linewise bool) {
 // beginYankMarkOp arms the mark-pending state for the y operator.
 func (vi *viHandlerImpl) beginYankMarkOp(linewise bool) {
 	vi.beginMarkOp(linewise, false,
-		vi.copySelection,
+		vi.yankRange,
 		func() { vi.setNormalMode() },
 	)
 }
@@ -3065,10 +3391,7 @@ func (vi *viHandlerImpl) beginYankMarkOp(linewise bool) {
 func (vi *viHandlerImpl) beginDeleteMarkOp(linewise bool) {
 	deleteInsert := vi.deleteInsert
 	vi.beginMarkOp(linewise, false,
-		func() {
-			vi.copySelectionForDelete()
-			vi.cursor.DeleteSelection()
-		},
+		func() { vi.deleteSelection(deleteInsert) },
 		func() {
 			if deleteInsert {
 				vi.setInsertMode()
@@ -3093,37 +3416,23 @@ func (vi *viHandlerImpl) beginShiftMarkOp(linewise bool) {
 func (vi *viHandlerImpl) beginCaseChangeMarkOp(linewise bool) {
 	caseChangeFn := vi.caseChangeFn
 	vi.beginMarkOp(linewise, false,
-		func() { caseChangeFn() },
+		func() { vi.changeCase(caseChangeFn) },
 		func() { vi.setNormalMode() },
 	)
 }
 
 func (vi *viHandlerImpl) handleDelete(ev term.Event) (quit, handled bool) {
 	if !vi.deleteInsert && vi.moveMode == moveNone && ev.Ch == 'd' && ev.Mod == 0 {
-		if !vi.cursor.SelectLine() {
-			return
+		if vi.selectLineCount() {
+			vi.deleteSelection(false)
 		}
-		count := vi.motionCount()
-		if count > 1 {
-			for i := 0; i < count && vi.cursor.MoveLineDown(); i++ {
-			}
-		}
-		vi.copySelectionForDelete()
-		vi.cursor.DeleteSelection()
 		vi.setNormalMode()
 		handled = true
 		return
 	}
 
 	if vi.deleteInsert && vi.moveMode == moveNone && ev.Ch == 'c' && ev.Mod == 0 {
-		vi.cursor.MoveStartLine()
-		if vi.cursor.Select() {
-			vi.cursor.MoveEndLine()
-			vi.copySelectionForDelete()
-			vi.cursor.DeleteSelection()
-			vi.cursor.TryIndent(vi.config.indentRune, vi.config.indentTabspaces)
-		}
-		vi.setInsertMode()
+		vi.changeLine()
 		handled = true
 		return
 	}
@@ -3133,77 +3442,14 @@ func (vi *viHandlerImpl) handleDelete(ev term.Event) (quit, handled bool) {
 
 	if vi.moveMode == moveNone && ev.Mod == 0 {
 		if vi.pendingGoMotion {
-			vi.pendingGoMotion = false
-			switch ev.Ch {
-			case 'e':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'e'})
-				if !done {
-					return quit, handled
-				}
-				vi.copySelectionForDelete()
-				vi.cursor.DeleteSelection()
+			return vi.handleOperatorGoMotion(ev, func() {
+				vi.deleteSelection(vi.deleteInsert)
 				if vi.deleteInsert {
 					vi.setInsertMode()
 				} else {
 					vi.setNormalMode()
 				}
-				return quit, true
-			case 'E':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'E'})
-				if !done {
-					return quit, handled
-				}
-				vi.copySelectionForDelete()
-				vi.cursor.DeleteSelection()
-				if vi.deleteInsert {
-					vi.setInsertMode()
-				} else {
-					vi.setNormalMode()
-				}
-				return quit, true
-			case 'j':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'j'})
-				if !done {
-					return quit, handled
-				}
-				vi.copySelectionForDelete()
-				vi.cursor.DeleteSelection()
-				if vi.deleteInsert {
-					vi.setInsertMode()
-				} else {
-					vi.setNormalMode()
-				}
-				return quit, true
-			case 'k':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: 'k'})
-				if !done {
-					return quit, handled
-				}
-				vi.copySelectionForDelete()
-				vi.cursor.DeleteSelection()
-				if vi.deleteInsert {
-					vi.setInsertMode()
-				} else {
-					vi.setNormalMode()
-				}
-				return quit, true
-			case '_':
-				quit, handled, done := vi.handleMetaGo(term.Event{Type: ev.Type, Mod: ev.Mod, Ch: '_'})
-				if !done {
-					return quit, handled
-				}
-				vi.copySelectionForDelete()
-				vi.cursor.DeleteSelection()
-				if vi.deleteInsert {
-					vi.setInsertMode()
-				} else {
-					vi.setNormalMode()
-				}
-				return quit, true
-			default:
-				vi.setNormalMode()
-				return false, true
-			}
+			})
 		}
 
 		if vi.textObjectPending {
@@ -3219,8 +3465,7 @@ func (vi *viHandlerImpl) handleDelete(ev term.Event) (quit, handled bool) {
 				vi.setNormalMode()
 				return false, true
 			}
-			vi.copySelectionForDelete()
-			vi.cursor.DeleteSelection()
+			vi.deleteSelection(vi.deleteInsert)
 			if vi.deleteInsert {
 				vi.setInsertMode()
 			} else {
@@ -3264,8 +3509,7 @@ func (vi *viHandlerImpl) handleDelete(ev term.Event) (quit, handled bool) {
 		return
 	}
 
-	vi.copySelectionForDelete()
-	vi.cursor.DeleteSelection()
+	vi.deleteSelection(vi.deleteInsert)
 	if vi.deleteInsert {
 		vi.setInsertMode()
 	} else {
@@ -3459,6 +3703,11 @@ func (vi *viHandlerImpl) Handle(ev term.Event) (quit, handled bool) {
 		return
 	}
 
+	// Edits made elsewhere can leave the cursor past the end of its line
+	// or of the buffer; commands start from the nearest character, as the
+	// cursor Vim keeps on the text would.
+	vi.clampCursor()
+
 	if vi.pendingSearchOp != nil {
 		mode := vi.mode()
 		defer vi.doneHandle(mode)
@@ -3537,7 +3786,10 @@ func (vi *viHandlerImpl) doMoveToBounds() {
 	if vi.cursor.CursorAtScroll().Y < vi.less.Buffer().Rows() {
 		vi.anchor = vi.cursorAtScroll()
 	}
+	vi.clampCursor()
+}
 
+func (vi *viHandlerImpl) clampCursor() {
 	switch vi.mode() {
 	case normalMode, yankMode, searchMode, zMode, gMode, deleteMode, caseChangeMode, shiftMode, commentMode:
 		if vi.config.cursorCorrections {

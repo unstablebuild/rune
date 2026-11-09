@@ -484,11 +484,13 @@ func (a testBrowserAdapter) CloseWindow(w browserapi.Window) error {
 	return win.Close()
 }
 
-func (a testBrowserAdapter) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (a testBrowserAdapter) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
 
 func (a testBrowserAdapter) Open(uri workspaceapi.URI) (browserapi.Handler, error) {
 	return a.component.Open(uri)
 }
+
+func (a testBrowserAdapter) Show(workspaceapi.URI) error { return nil }
 
 func (a testBrowserAdapter) window(w browserapi.Window) (browser.Window, error) {
 	win, ok := a.component.Window(w.WindowID())
@@ -511,7 +513,7 @@ func (m testWorkspaceManager) UnregisterScheme(string) error {
 	return nil
 }
 
-func (m testWorkspaceManager) AddWorkspace(context.Context, workspaceapi.URI) (workspace.Workspace, error) {
+func (m testWorkspaceManager) AcquireWorkspace(context.Context, workspaceapi.URI) (workspace.Workspace, error) {
 	return m.workspace, nil
 }
 
@@ -519,11 +521,7 @@ func (m testWorkspaceManager) Workspace(uri workspaceapi.URI) (workspace.Workspa
 	return m.workspace, workspaceapi.HasPrefix(uri, m.workspaceURI), nil
 }
 
-func (testWorkspaceManager) IncrementReference(workspaceapi.URI) {}
-
-func (testWorkspaceManager) DecrementReference(workspaceapi.URI) error { return nil }
-
-func (testWorkspaceManager) RemoveWorkspace(workspaceapi.URI) (workspace.Workspace, bool) {
+func (testWorkspaceManager) ReleaseWorkspace(workspaceapi.URI) (workspace.Workspace, bool) {
 	return nil, false
 }
 

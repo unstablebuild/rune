@@ -86,7 +86,7 @@ func BenchmarkPtyWriterBlocked(b *testing.B) {
 			}
 
 			ph := newBenchParserHandler(tc.width, height)
-			parser := vteparser.NewParser(ph, new(vteparser.StdTimeout))
+			parser := vteparser.NewParser(ph)
 			done := make(chan struct{})
 			go debug.CapturePanicReport(func() {
 				defer close(done)

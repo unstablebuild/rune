@@ -18,12 +18,16 @@ package dialoguetui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"image"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/component/template"
@@ -77,6 +81,19 @@ const (
 	DefaultStatusBarBackground = term.ColorGray
 	DefaultStatusBarForeground = term.ColorSilver
 )
+
+// DefaultStatusBarConfig is the bar a chat gets when nothing configures
+// it. The layout and the gauge palette are left zero so the bar supplies
+// its own shipped defaults.
+func DefaultStatusBarConfig() StatusBarConfig {
+	return StatusBarConfig{
+		Enabled:          true,
+		BackgroundColor:  DefaultStatusBarBackground,
+		ForegroundColor:  DefaultStatusBarForeground,
+		ContextGaugeFill: DefaultContextGaugeFill,
+		CacheGaugeFill:   DefaultCacheGaugeFill,
+	}
+}
 
 // The gauge track sits flush with the bar; the caps are what mark its
 // extent, and its foreground doubles as the label colour over the
@@ -266,6 +283,14 @@ type StatusBarConfig struct {
 	// DurationPrecision, when positive, truncates the elapsed time to
 	// this granularity.
 	DurationPrecision time.Duration
+	// Storage caches the images the layout downloads. It is required
+	// when Layout has a StatusBarImage component, and is used as-is: the
+	// caller owns its partitioning and lifetime.
+	Storage storageapi.Service
+	// Images holds images read already, by URI. A StatusBarImage
+	// component whose URI it holds draws its image from the first frame
+	// and never downloads it.
+	Images map[string]image.Image
 }
 
 // StatusBarState is everything the status bar reports. It is replaced
@@ -332,13 +357,20 @@ type StatusBar struct {
 	segments map[StatusBarComponentType]*statusBarSegment
 	barLeft  component.Virtual[component.Floating]
 	barRight component.Virtual[component.Floating]
+	// leftItems and rightItems are the elements barLeft and barRight
+	// lay out.
+	leftItems, rightItems []component.Floating
+	// images are in the order they are drawn: by z_index, then layout.
+	images []*template.ImageElement
+	// interrupter repaints the images as they load.
+	interrupter lateInterrupter
 
 	cancel func()
 }
 
 // NewStatusBar allocates a status bar for the given layout. The
-// interrupter drives the repaint ticker; a nil interrupter leaves the
-// bar static, which is what tests want.
+// interrupter drives the repaint ticker and the images; a nil
+// interrupter leaves the bar static, which is what tests want.
 func NewStatusBar(cfg StatusBarConfig, interrupter term.Interrupter) *StatusBar {
 	if cfg.GaugeWidth <= 0 {
 		cfg.GaugeWidth = defaultGaugeWidth
@@ -377,9 +409,7 @@ func NewStatusBar(cfg StatusBarConfig, interrupter term.Interrupter) *StatusBar 
 	}
 	b.initLayout()
 	b.rebuild()
-	if interrupter != nil {
-		b.startTicker(interrupter)
-	}
+	b.start(interrupter)
 	return b
 }
 
@@ -389,33 +419,61 @@ func (b *StatusBar) initLayout() {
 	var left, right []component.Floating
 	var shifted bool
 	for _, comp := range b.cfg.Layout {
-		if comp.Type == StatusBarVoid {
+		var item component.Floating
+		switch comp.Type {
+		case StatusBarVoid:
 			shifted = true
 			continue
+		case StatusBarImage:
+			img, err := b.newImage(comp)
+			if err != nil {
+				slog.Warn("dialoguetui: status bar image", "error", err)
+				continue
+			}
+			b.images = append(b.images, img)
+			item = img
+		default:
+			seg, ok := b.segments[comp.Type]
+			if !ok {
+				seg = &statusBarSegment{ref: component.NewFloatingReference(nil)}
+				b.segments[comp.Type] = seg
+			}
+			seg.template = comp
+			item = seg.ref
 		}
-		seg, ok := b.segments[comp.Type]
-		if !ok {
-			seg = &statusBarSegment{ref: component.NewFloatingReference(nil)}
-			b.segments[comp.Type] = seg
-		}
-		seg.template = comp
 		if shifted {
-			right = append(right, seg.ref)
+			right = append(right, item)
 		} else {
-			left = append(left, seg.ref)
+			left = append(left, item)
 		}
 	}
 
 	b.barLeft.C = component.Inline(left, component.AlignmentLeft)
 	b.barRight.C = component.Inline(right, component.AlignmentRight)
+	b.leftItems, b.rightItems = left, right
+	template.SortImages(b.images)
 }
 
-// startTicker repaints the bar while its contents change on their own,
-// which is only ever during a turn.
-func (b *StatusBar) startTicker(interrupter term.Interrupter) {
+func (b *StatusBar) newImage(comp StatusBarComponent) (*template.ImageElement, error) {
+	attrs := comp.Attributes
+	if attrs.Fg == term.ColorDefault {
+		attrs.Fg = b.cfg.ForegroundColor
+	}
+	if img, ok := b.cfg.Images[comp.Image.URI]; ok {
+		return template.NewLoadedImageElement(comp.Image, img, comp.Template, attrs,
+			b.cfg.BackgroundColor)
+	}
+	return template.NewImageElement(comp.Image, comp.Template, attrs,
+		b.cfg.BackgroundColor, b.cfg.Storage, &b.interrupter)
+}
+
+// start hands the bar the interrupter that repaints it as its images
+// load and, while a turn runs, as its contents change on their own.
+func (b *StatusBar) start(interrupter term.Interrupter) {
 	if interrupter == nil {
 		return
 	}
+	b.interrupter.set(interrupter)
 	if !b.has(StatusBarSpinner) && !b.has(StatusBarElapsed) {
 		return
 	}
@@ -450,10 +508,14 @@ func (b *StatusBar) has(t StatusBarComponentType) bool {
 	return ok
 }
 
-// Close stops the repaint ticker.
+// Close stops the repaint ticker and the images from loading.
 func (b *StatusBar) Close() error {
 	b.cancel()
-	return nil
+	var errs []error
+	for _, img := range b.images {
+		errs = append(errs, img.Close())
+	}
+	return errors.Join(errs...)
 }
 
 // SetState applies fn to the bar state and rebuilds the row.
@@ -500,6 +562,27 @@ func (b *StatusBar) Draw(w term.Writer) {
 	offset := term.Attributes{Attrs: term.AttrVerticalRenderOffset}
 	for x := range b.width {
 		w.UnionAttributes(term.Coordinates{X: x}, offset)
+	}
+}
+
+// drawImages draws the layout's images to w, a writer rows tall whose
+// last row is the bar. Draw leaves them out so that they can extend past
+// the bar's row, which the bar's writer cuts off, and so that they go
+// after whatever is drawn over the bar's cells, which would cover them.
+// No rows hide them.
+func (b *StatusBar) drawImages(w term.Writer, rows int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.images) == 0 {
+		return
+	}
+	template.PlaceImages(b.leftItems, b.barLeft.Position().X, b.barLeft.Width(),
+		b.width, rows)
+	template.PlaceImages(b.rightItems, b.barRight.Position().X, b.barRight.Width(),
+		b.width, rows)
+	for _, img := range b.images {
+		// Draw shifts the bar's row with term.AttrVerticalRenderOffset.
+		img.DrawImage(w, true)
 	}
 }
 
@@ -861,4 +944,30 @@ func FormatTokenNumber(n int) string {
 	default:
 		return fmt.Sprintf("%.0fm", float64(n)/1_000_000)
 	}
+}
+
+// lateInterrupter forwards to the interrupter set last, and drops the
+// interrupts before one is. The bar's images are built with its layout,
+// before Handler hands the dialogue its interrupter, but nothing draws
+// them, which is what starts them loading, until it does.
+type lateInterrupter struct {
+	mu sync.Mutex
+	to term.Interrupter
+}
+
+func (i *lateInterrupter) set(to term.Interrupter) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.to = to
+}
+
+// Interrupt satisfies term.Interrupter.
+func (i *lateInterrupter) Interrupt(ctx context.Context) error {
+	i.mu.Lock()
+	to := i.to
+	i.mu.Unlock()
+	if to == nil {
+		return nil
+	}
+	return to.Interrupt(ctx)
 }

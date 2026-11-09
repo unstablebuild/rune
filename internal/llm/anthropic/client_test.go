@@ -34,6 +34,16 @@ import (
 	"unstable.build/rune/internal/llm/ratelimit"
 )
 
+func TestClient_ImageGenerationUnsupported(t *testing.T) {
+	var svc llmapi.Service = &client{}
+	supported, err := svc.CanGenerateImages(context.Background(), llmapi.ModelEntry{})
+	require.NoError(t, err)
+	assert.False(t, supported)
+	image, err := svc.GenerateImage(context.Background(), llmapi.ModelEntry{}, llmapi.ImageRequest{})
+	require.ErrorIs(t, err, llmapi.ErrImageGenerationUnsupported)
+	assert.Equal(t, llmapi.Image{}, image)
+}
+
 // minimalSSEResponse returns a valid Anthropic SSE stream that completes
 // with end_turn and the given text.
 func minimalSSEResponse(text string) string {

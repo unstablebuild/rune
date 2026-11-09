@@ -34,9 +34,15 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension/langext"
 	"unstable.build/rune/internal/extension/langext/langexttest"
 )
+
+func TestNewExtensionVersion(t *testing.T) {
+	_, meta := NewExtension()
+	assert.Equal(t, debug.Tag, meta.ExtensionVersion)
+}
 
 func TestDetectRustProject(t *testing.T) {
 	cases := []struct {

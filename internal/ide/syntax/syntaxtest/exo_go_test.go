@@ -35,6 +35,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/syntax/treesitter"
+	"unstable.build/rune/internal/sounds"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/exoeditor"
@@ -221,7 +223,7 @@ func newExoGoTestComponent(
 	ws := workspace.NewSchemeWorkspace(uri, scheme, schedule)
 
 	vteCfg := vte.DefaultConfig()
-	vteCfg.RingBell = func() {}
+	vteCfg.Sounds = sounds.Silent
 
 	pkgs := newInstalledPkgManager(t)
 	syntaxCfg := defaultSyntaxConfig(schedule)
@@ -323,7 +325,8 @@ func (stubExoTabManager) OnTabExit(workspaceapi.URI) bool {
 	return false
 }
 
-func (stubExoTabManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (stubExoTabManager) SetTabStatus(workspaceapi.URI, programstatus.Report) error { return nil }
+func (stubExoTabManager) EndTabStatus(workspaceapi.URI) error                       { return nil }
 
 type stubExoReloader struct{}
 

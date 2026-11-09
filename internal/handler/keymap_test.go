@@ -76,3 +76,12 @@ func TestKeyMappingCursor(t *testing.T) {
 	assert.Equal(t, cursor, kmCursor)
 	assert.Equal(t, style, kmStyle)
 }
+
+func TestKeyMappingHandlerPointerLeaves(t *testing.T) {
+	for _, size := range [][2]int{{60, 15}, {1, 1}} {
+		h := WithMapping(newPointerLess(t), map[term.KeyComb]term.KeyComb{
+			{Ch: 'x'}: {Ch: 'j'},
+		})
+		handlertest.RunPointerLeaves(t, h, size[0], size[1])
+	}
+}

@@ -87,6 +87,11 @@ type Cursor struct {
 	// RightInclusiveSemantics changes the cursor selection behaviour to
 	// add the current cursor position to the selection.
 	RightInclusiveSemantics bool
+	// VimWords makes word motions follow Vim: an empty line is a word of
+	// its own, a word never continues onto another line, and a run of
+	// double-width cells is a word apart from the single-width cells
+	// around it.
+	VimWords bool
 
 	ctx        context.Context
 	scroll     *component.Scroll
@@ -207,10 +212,20 @@ func (c *Cursor) MoveToWindowTop() bool {
 	return c.MoveToWindow(pos)
 }
 
-// MoveToWindowMiddle moves the cursor to the middle visible window row.
+// MoveToWindowMiddle moves the cursor to the middle of the window rows that
+// show text, as Vim's M and Helix's gc do: with an even number of such rows,
+// the upper of the two middle ones, and when the text ends above the bottom
+// of the window, the middle of the text shown, rows a wrapped line takes up
+// included.
 func (c *Cursor) MoveToWindowMiddle() bool {
 	pos := c.cursor
-	pos.Y = c.scroll.SizeHeight() / 2
+	shown := c.scroll.SizeHeight()
+	lastRow := c.rows() - 1
+	end := term.Coordinates{X: max(0, c.view().Columns(lastRow)-1), Y: lastRow}
+	if last, ok := c.scroll.ScrollToWindowCoordinates(end); ok {
+		shown = min(shown, last.Y+1)
+	}
+	pos.Y = max(0, shown-1) / 2
 	return c.MoveToWindow(pos)
 }
 
@@ -854,7 +869,13 @@ func isNoneOf(cell term.Cell, skip map[rune]struct{}) (none bool) {
 	return !ok
 }
 
-func (c *Cursor) moveAfterRune(budget int, skip, special map[rune]struct{}, stopAtEmptyLine bool, move func() bool) (ok bool) {
+// moveAfterRune moves past the rest of the current run of cells outside
+// skip, and past any cells in skip after it, to the first cell of the next
+// run. A cell in special, a line boundary and, when splitWide, a change
+// between double-width and single-width cells also start a new run.
+func (c *Cursor) moveAfterRune(
+	budget int, skip, special map[rune]struct{}, stopAtEmptyLine, splitWide bool, move func() bool,
+) (ok bool) {
 	enable := c.disablePublishing()
 	defer enable()
 
@@ -875,6 +896,7 @@ func (c *Cursor) moveAfterRune(budget int, skip, special map[rune]struct{}, stop
 	if !cOk || isOneOf(cell, special) {
 		state = foundRune
 	}
+	prevWide := cell.Width > 1
 
 	for i := 0; i < budget && move(); i++ {
 		cell, cOk := c.cellAtCursor()
@@ -894,6 +916,11 @@ func (c *Cursor) moveAfterRune(budget int, skip, special map[rune]struct{}, stop
 		if isOneOf(cell, special) {
 			state = foundRune
 		}
+		wide := cell.Width > 1
+		if splitWide && wide != prevWide && !isOneOf(cell, skip) {
+			state = foundRune
+		}
+		prevWide = wide
 
 		switch state {
 		case init:
@@ -911,7 +938,15 @@ func (c *Cursor) moveAfterRune(budget int, skip, special map[rune]struct{}, stop
 	return
 }
 
-func (c *Cursor) moveBeforeRune(budget int, skip, all map[rune]struct{}, move func() bool) (ok bool) {
+// moveBeforeRune moves until the far end of the next run of cells outside
+// skip. A run ends at a cell in all, where the motion leaves the line it
+// started on (under VimWords, the line the run is on) and, when splitWide,
+// where double-width cells meet single-width ones. With stopAtEmptyLine an
+// empty line other than the starting one is a run of its own. A run that
+// goes on until move fails ends on its last cell.
+func (c *Cursor) moveBeforeRune(
+	budget int, skip, all map[rune]struct{}, stopAtEmptyLine, splitWide bool, move func() bool,
+) (ok bool) {
 	enable := c.disablePublishing()
 	defer enable()
 
@@ -924,14 +959,25 @@ func (c *Cursor) moveBeforeRune(budget int, skip, all map[rune]struct{}, move fu
 	state := skipRune
 	initialScrollPos := c.cursorAtScroll()
 	mark := c.Mark()
+	var markPos term.Coordinates
+	var markWide bool
 
 	var moved bool
 	for i := 0; i < budget && move(); i++ {
 		moved = true
+		pos := c.cursorAtScroll()
 		cell, cOk := c.cellAtCursor()
 		if !cOk {
+			if stopAtEmptyLine && pos.Y != initialScrollPos.Y && c.atEmptyLine() {
+				if state == skipRune {
+					mark = c.Mark()
+				}
+				state = done
+				break
+			}
 			continue
 		}
+		wide := cell.Width > 1
 
 		switch state {
 		case skipRune:
@@ -945,10 +991,11 @@ func (c *Cursor) moveBeforeRune(budget int, skip, all map[rune]struct{}, move fu
 				state = findRune
 			}
 		case findRune:
-			if isOneOf(cell, all) {
-				state = done
+			row := initialScrollPos.Y
+			if c.VimWords {
+				row = markPos.Y
 			}
-			if initialScrollPos.Y != c.cursorAtScroll().Y {
+			if isOneOf(cell, all) || pos.Y != row || (splitWide && wide != markWide) {
 				state = done
 			}
 		}
@@ -956,10 +1003,17 @@ func (c *Cursor) moveBeforeRune(budget int, skip, all map[rune]struct{}, move fu
 			break
 		}
 		mark = c.Mark()
+		markPos = pos
+		markWide = wide
 	}
 
 	if !moved {
 		return
+	}
+	if state == findRune {
+		// The run reached the end of what move can cover, so it ends on the
+		// last cell visited rather than past it.
+		state = done
 	}
 	if state == done {
 		ok = true
@@ -983,21 +1037,21 @@ const budgetFindWord = 100
 
 // MoveRightStartWordGroup moves the cursor right to the start of the next word.
 func (c *Cursor) MoveRightStartWordGroup() bool {
-	return c.moveAfterRune(budgetFindWord, skipCharacters, skipCharacters, true, c.MoveRightWrap)
+	return c.moveAfterRune(budgetFindWord, skipCharacters, skipCharacters, true, false, c.MoveRightWrap)
 }
 
 // MoveLeftStartWordGroup moves the cursor left to the start of the previous word.
 func (c *Cursor) MoveLeftStartWordGroup() bool {
 	return c.moveBeforeRune(budgetFindWord, skipCharacters,
-		skipCharacters, c.MoveLeftWrap)
+		skipCharacters, c.VimWords, false, c.MoveLeftWrap)
 }
 
 // MoveRightEndWordGroup moves the cursor right to the end of the next or current word.
 func (c *Cursor) MoveRightEndWordGroup() bool {
 	ok := c.moveBeforeRune(budgetFindWord, skipCharacters,
-		skipCharacters, c.MoveRightWrap)
+		skipCharacters, false, false, c.MoveRightWrap)
 	if !ok || c.RightInclusiveSemantics {
-		return false
+		return ok
 	}
 	c.MoveRight()
 	return true
@@ -1006,9 +1060,9 @@ func (c *Cursor) MoveRightEndWordGroup() bool {
 // MoveLeftEndWordGroup moves the cursor left to the end of the previous word.
 func (c *Cursor) MoveLeftEndWordGroup() bool {
 	ok := c.moveAfterRune(budgetFindWord, skipCharacters,
-		skipCharacters, false, c.MoveLeftWrap)
+		skipCharacters, c.VimWords, false, c.MoveLeftWrap)
 	if !ok || c.RightInclusiveSemantics {
-		return false
+		return ok
 	}
 	c.MoveRight()
 	return true
@@ -1017,13 +1071,13 @@ func (c *Cursor) MoveLeftEndWordGroup() bool {
 // MoveRightStartWord moves the cursor right to the start of the next word.
 func (c *Cursor) MoveRightStartWord() bool {
 	return c.moveAfterRune(budgetFindWord, skipCharacters,
-		allSpecialCharacters, true, c.MoveRightWrap)
+		allSpecialCharacters, true, c.VimWords, c.MoveRightWrap)
 }
 
 // MoveLeftStartWord moves the cursor left to the start of the previous word.
 func (c *Cursor) MoveLeftStartWord() bool {
 	return c.moveBeforeRune(budgetFindWord, skipCharacters,
-		allSpecialCharacters, c.MoveLeftWrap)
+		allSpecialCharacters, c.VimWords, c.VimWords, c.MoveLeftWrap)
 }
 
 // MoveLeftStartWordNoWrap moves the cursor left to the start of the previous word,
@@ -1031,13 +1085,13 @@ func (c *Cursor) MoveLeftStartWord() bool {
 // results on the current line.
 func (c *Cursor) MoveLeftStartWordNoWrap() bool {
 	return c.moveBeforeRune(budgetFindWord, skipCharacters,
-		allSpecialCharacters, c.MoveLeft)
+		allSpecialCharacters, false, c.VimWords, c.MoveLeft)
 }
 
 // MoveRightEndWord moves the cursor right to the end of the next or current word.
 func (c *Cursor) MoveRightEndWord() bool {
 	ok := c.moveBeforeRune(budgetFindWord, skipCharacters,
-		allSpecialCharacters, c.MoveRightWrap)
+		allSpecialCharacters, false, c.VimWords, c.MoveRightWrap)
 	if !ok || c.RightInclusiveSemantics {
 		return ok
 	}
@@ -1050,7 +1104,7 @@ func (c *Cursor) MoveRightEndWord() bool {
 // results on the current line.
 func (c *Cursor) MoveRightEndWordNoWrap() bool {
 	ok := c.moveBeforeRune(budgetFindWord, skipCharacters,
-		allSpecialCharacters, c.MoveRight)
+		allSpecialCharacters, false, c.VimWords, c.MoveRight)
 	if !ok || c.RightInclusiveSemantics {
 		return ok
 	}
@@ -1061,7 +1115,7 @@ func (c *Cursor) MoveRightEndWordNoWrap() bool {
 // MoveLeftEndWord moves the cursor left to the end of the previous word.
 func (c *Cursor) MoveLeftEndWord() bool {
 	ok := c.moveAfterRune(budgetFindWord, skipCharacters,
-		allSpecialCharacters, false, c.MoveLeftWrap)
+		allSpecialCharacters, c.VimWords, c.VimWords, c.MoveLeftWrap)
 	if !ok || c.RightInclusiveSemantics {
 		return ok
 	}
@@ -1074,6 +1128,29 @@ func (c *Cursor) IsStartWord() bool {
 	pos := c.cursorAtScroll()
 	start, _, word := c.scroll.WordAt(pos)
 	return word != "" && start == pos
+}
+
+// AtStartWord reports whether the cell under the cursor is one that
+// MoveRightStartWord, or MoveRightStartWordGroup when bigWord, stops at:
+// a non-blank cell that starts its line, follows a blank or, for words,
+// sits on either side of a special character or, under VimWords, where
+// double-width and single-width cells meet.
+func (c *Cursor) AtStartWord(bigWord bool) bool {
+	special := allSpecialCharacters
+	if bigWord {
+		special = skipCharacters
+	}
+	cell, ok := c.cellAtCursor()
+	if !ok || isOneOf(cell, skipCharacters) {
+		return false
+	}
+	pos := c.cursorAtScroll()
+	if pos.X == 0 || isOneOf(cell, special) {
+		return true
+	}
+	prev, _ := c.cellAtScrollCoordinates(term.Coordinates{Y: pos.Y, X: pos.X - 1})
+	return isOneOf(prev, skipCharacters) || isOneOf(prev, special) ||
+		(!bigWord && c.VimWords && (prev.Width > 1) != (cell.Width > 1))
 }
 
 // IsEndWord returns true if cursor is at the start of a word.
@@ -2313,6 +2390,127 @@ func (c *Cursor) SelectASentence() bool {
 	return c.selectRange(start, end)
 }
 
+func isSentenceCloser(r rune) bool {
+	switch r {
+	case ')', ']', '"', '\'':
+		return true
+	default:
+		return false
+	}
+}
+
+// sentenceStartAt reports whether a sentence starts at pos: an empty line,
+// the first non-blank of the buffer or after an empty line, or the first
+// non-blank after '.', '!' or '?', any closing ')', ']', '"' or '\”, and at
+// least one blank or line break.
+func (c *Cursor) sentenceStartAt(pos term.Coordinates) bool {
+	view := c.view()
+	if view.Columns(pos.Y) == 0 {
+		return true
+	}
+	cell, ok := c.cellAtScrollCoordinates(pos)
+	if !ok || IsWordObjectBlank(cell.Ch) {
+		return false
+	}
+	y, x := pos.Y, pos.X-1
+	blank := false
+	for {
+		if x < 0 {
+			if y == 0 {
+				return true
+			}
+			y--
+			x = view.Columns(y) - 1
+			if x < 0 {
+				return true
+			}
+			blank = true
+			continue
+		}
+		prev, _ := c.cellAtScrollCoordinates(term.Coordinates{Y: y, X: x})
+		if !IsWordObjectBlank(prev.Ch) {
+			break
+		}
+		blank = true
+		x--
+	}
+	if !blank {
+		return false
+	}
+	for ; x >= 0; x-- {
+		prev, _ := c.cellAtScrollCoordinates(term.Coordinates{Y: y, X: x})
+		if !isSentenceCloser(prev.Ch) {
+			return isSentenceRune(prev.Ch)
+		}
+	}
+	return false
+}
+
+// MoveNextSentence moves the cursor to the start of the next sentence, or
+// past the last character of the buffer when no sentence follows. As in Vim,
+// a run of empty lines is a single sentence: from one of them the next
+// sentence starts on the first line with text after the run.
+func (c *Cursor) MoveNextSentence() bool {
+	rows := c.rows()
+	pos := c.cursorAtScroll()
+	if pos.Y >= rows {
+		return false
+	}
+	view := c.view()
+	for view.Columns(pos.Y) == 0 && pos.Y+1 < rows && view.Columns(pos.Y+1) == 0 {
+		pos.Y++
+	}
+	for {
+		if pos.X+1 < view.Columns(pos.Y) {
+			pos.X++
+		} else if pos.Y+1 < rows {
+			pos = term.Coordinates{Y: pos.Y + 1}
+		} else {
+			pos.X = view.Columns(pos.Y)
+			break
+		}
+		if c.sentenceStartAt(pos) {
+			break
+		}
+	}
+	_, ok := c.MoveToScroll(pos)
+	return ok
+}
+
+// MovePrevSentence moves the cursor to the start of the current sentence
+// or, from a sentence start, of the previous one. As in Vim, a run of empty
+// lines is a single sentence, so from one of them the cursor goes to the
+// start of the sentence before the run.
+func (c *Cursor) MovePrevSentence() bool {
+	rows := c.rows()
+	pos := c.cursorAtScroll()
+	if rows == 0 {
+		return false
+	}
+	if pos.Y >= rows {
+		pos = term.Coordinates{Y: rows - 1, X: c.view().Columns(rows - 1)}
+	}
+	view := c.view()
+	for view.Columns(pos.Y) == 0 && pos.Y > 0 && view.Columns(pos.Y-1) == 0 {
+		pos.Y--
+	}
+	for {
+		if cols := view.Columns(pos.Y); pos.X > 0 && cols > 0 {
+			pos.X = min(pos.X, cols) - 1
+		} else if pos.Y > 0 {
+			pos.Y--
+			pos.X = max(0, view.Columns(pos.Y)-1)
+		} else {
+			break
+		}
+		if c.sentenceStartAt(pos) {
+			break
+		}
+	}
+	_, ok := c.MoveToScroll(pos)
+	return ok
+}
+
 // MoveToMatchingRune moves the cursor to the balanced matching rune of the rune at
 // the current cursor's cell.
 func (c *Cursor) MoveToMatchingRune() bool {
@@ -2575,9 +2773,17 @@ func (c *Cursor) Paste(str string, mode SelectMode, after bool) {
 			movedDown := c.MoveLineDown()
 			var cur term.Coordinates
 			if !movedDown {
-				// force set cursor past last line
-				cur = c.CursorAtScroll()
-				c.setCursor(term.Coordinates{X: 0, Y: c.cursor.Y + 1}, false)
+				last := min(c.CursorAtScroll().Y, c.rows()-1)
+				cur = term.Coordinates{Y: last + 1}
+				cols := c.view().Columns(last)
+				c.MoveToScroll(term.Coordinates{X: cols, Y: last})
+				// The buffer ends with a line break when its last row is
+				// empty and not its only one. The pasted lines keep their
+				// final line break only then, so the buffer still does.
+				if last == 0 || cols > 0 {
+					str = strings.TrimSuffix(str, "\n")
+				}
+				str = "\n" + str
 			} else {
 				c.MoveStartLine()
 				cur = c.CursorAtScroll()
@@ -3108,6 +3314,29 @@ func (c *Cursor) Select() (ok bool) {
 	return
 }
 
+// SelectSpan selects from anchor to head, in either order, and moves the
+// cursor to head. As with Select, the selection then follows the cursor while
+// anchor stays put. It returns false and changes nothing when either end is on
+// a row outside the buffer; columns past a line's end are clamped to it.
+func (c *Cursor) SelectSpan(anchor, head term.Coordinates) bool {
+	anchor, ok := c.clampSelectionCoordinates(anchor)
+	if !ok {
+		return false
+	}
+	head, ok = c.clampSelectionCoordinates(head)
+	if !ok {
+		return false
+	}
+	c.pushSelectionHistory()
+	c.selection.mode = NoSelection
+	c.setSelection()
+	c.moveToScroll(head)
+	c.selection.mode = StandardSelection
+	c.selection.explicit = false
+	c.selection.scrollFrom = anchor
+	return c.setSelection()
+}
+
 // SelectLine anchors the current cursor position as the start of a line selection.
 // In order to unset anchor, use Unselect(). It returns true if cursor is in bounds or
 // false if selection failed. If cursor has already been called one of the Select methods,
@@ -3202,6 +3431,15 @@ func (c *Cursor) restoreSelectionSnapshot(snap selectionSnapshot) {
 	if snap.mode == NoSelection {
 		c.Unselect()
 		c.moveToScroll(snap.cursor)
+		return
+	}
+	if !snap.explicit {
+		// The far end of such a selection is the cursor; scrollTo is stale.
+		c.moveToScroll(snap.cursor)
+		c.selection.mode = snap.mode
+		c.selection.explicit = false
+		c.selection.scrollFrom = snap.scrollFrom
+		c.setSelection()
 		return
 	}
 	c.setExplicitSelection(snap.mode, snap.scrollFrom, snap.scrollTo, snap.cursor)
@@ -3382,7 +3620,13 @@ func (c *Cursor) ToggleCase() (ok bool) {
 }
 
 // ToggleLineComment toggles the configured line-comment prefix on the current
-// line or selected lines.
+// line or selected lines. A right-exclusive selection that ends at the start
+// of a line leaves that line alone. Commenting aligns every prefix at the
+// shallowest visible indentation among the non-blank lines and skips blank
+// ones; uncommenting removes each line's prefix where it is. The edits undo in
+// a single step. A selection survives the toggle on the same text, so
+// toggling again restores the lines; a right-exclusive one also grows over a
+// prefix inserted at its start.
 func (c *Cursor) ToggleLineComment() bool {
 	if !c.commentSpec.HasLine() {
 		return false
@@ -3391,39 +3635,180 @@ func (c *Cursor) ToggleLineComment() bool {
 	fromY, toY := c.commentLineBounds()
 	nonBlank := 0
 	for y := fromY; y <= toY; y++ {
-		if strings.TrimLeft(c.lineString(y), " \t") != "" {
+		if line := c.lineString(y); len(leadingIndent(line)) < len(line) {
 			nonBlank++
 		}
 	}
 	if nonBlank == 0 {
 		return false
 	}
+	cur := c.cursorAtScroll()
+	sel := c.currentSelectionSnapshot()
+	selected := sel.mode != NoSelection
+	far := cur
+	if sel.explicit {
+		far = sel.scrollTo
+	}
+	start, _ := term.CoordinatesSort(sel.scrollFrom, far)
+	keepsBefore := func(pos term.Coordinates) bool {
+		// A right-exclusive editor's selection ends are boundaries, and the
+		// start one stays before a prefix inserted there, as in VS Code. A
+		// right-inclusive editor's are cells, which move with their text.
+		return selected && !c.RightInclusiveSemantics && sel.scrollFrom != far && pos == start
+	}
+	// The edits drop the selection, so it is put back carried through them.
+	restore := func(track func(term.Coordinates) term.Coordinates) {
+		c.setCursorAfterUpdate(track(cur))
+		if !selected {
+			return
+		}
+		sel.scrollFrom, sel.scrollTo, sel.cursor = track(sel.scrollFrom), track(sel.scrollTo), track(sel.cursor)
+		c.restoreSelectionSnapshot(sel)
+	}
 	commented := c.lineCommentedRanges(prefix, fromY, toY)
 	if len(commented) == toY-fromY+1 {
-		for i := len(commented) - 1; i >= 0; i-- {
-			if commented[i].Start == commented[i].End {
-				continue
+		c.buffer().GroupEdits(func() {
+			for i := len(commented) - 1; i >= 0; i-- {
+				if commented[i].Start == commented[i].End {
+					continue
+				}
+				c.buffer().Delete(commented[i].Start, commented[i].End)
 			}
-			c.buffer().Delete(commented[i].Start, commented[i].End)
-		}
-		c.setCursorAfterLineCommentToggle(prefix, false)
+		})
+		restore(func(pos term.Coordinates) term.Coordinates {
+			if pos.Y < fromY || pos.Y > toY {
+				return pos
+			}
+			removed := commented[pos.Y-fromY]
+			switch {
+			case pos.X >= removed.End.X:
+				pos.X -= removed.End.X - removed.Start.X
+			case pos.X > removed.Start.X:
+				pos.X = removed.Start.X
+			}
+			return pos
+		})
 		return true
 	}
-	for y := toY; y >= fromY; y-- {
+	tabspaces := c.resolveTabspaces(0)
+	col := -1
+	for y := fromY; y <= toY; y++ {
 		line := c.lineString(y)
-		trimmed := strings.TrimLeft(line, " \t")
-		if trimmed == "" {
+		indent := leadingIndent(line)
+		if len(indent) == len(line) {
 			continue
 		}
-		indent := len(line) - len(trimmed)
-		c.buffer().InsertString(term.Coordinates{Y: y, X: indent}, prefix+" ")
+		if w := indentWidth(indent, tabspaces); col < 0 || w < col {
+			col = w
+		}
 	}
-	c.setCursorAfterLineCommentToggle(prefix, true)
+	comment := prefix + " "
+	insertedAt := make([]int, toY-fromY+1)
+	c.buffer().GroupEdits(func() {
+		for y := toY; y >= fromY; y-- {
+			line := c.lineString(y)
+			indent := leadingIndent(line)
+			if len(indent) == len(line) {
+				insertedAt[y-fromY] = -1
+				continue
+			}
+			at := term.Coordinates{Y: y, X: indentOffsetAtWidth(indent, col, tabspaces)}
+			insertedAt[y-fromY] = at.X
+			c.buffer().InsertString(at, comment)
+		}
+	})
+	restore(func(pos term.Coordinates) term.Coordinates {
+		if pos.Y < fromY || pos.Y > toY {
+			return pos
+		}
+		if at := insertedAt[pos.Y-fromY]; at >= 0 && (pos.X > at || pos.X == at && !keepsBefore(pos)) {
+			pos.X += cellCount(comment)
+		}
+		return pos
+	})
 	return true
 }
 
+// indentWidth is the number of columns line's leading whitespace spans.
+func indentWidth(line string, tabspaces int) int {
+	width := 0
+	for _, r := range line {
+		switch r {
+		case ' ':
+			width++
+		case '\t':
+			width = (width/tabspaces + 1) * tabspaces
+		default:
+			return width
+		}
+	}
+	return width
+}
+
+// indentOffsetAtWidth is the byte offset into line's leading whitespace where
+// it first spans width columns, or where it stops short of a tab that would
+// carry it past them.
+func indentOffsetAtWidth(line string, width, tabspaces int) int {
+	covered := 0
+	for i, r := range line {
+		next := covered + 1
+		switch r {
+		case ' ':
+		case '\t':
+			next = (covered/tabspaces + 1) * tabspaces
+		default:
+			return i
+		}
+		if covered >= width || next > width {
+			return i
+		}
+		covered = next
+	}
+	return len(line)
+}
+
+// leadingIndent is the run of space and tab cells line starts with. A space
+// that carries a combining mark is one cell of content, not indentation.
+func leadingIndent(line string) string {
+	rest, state := line, -1
+	for rest != "" {
+		cluster, next, _, nextState := graphemecluster.StepString(rest, state)
+		if cluster != " " && cluster != "\t" {
+			break
+		}
+		rest, state = next, nextState
+	}
+	return line[:len(line)-len(rest)]
+}
+
+// hasCellPrefix reports whether s starts with prefix and prefix ends on a
+// cell boundary of s, so deleting prefix's cells deletes nothing else.
+func hasCellPrefix(s, prefix string) bool {
+	if !strings.HasPrefix(s, prefix) {
+		return false
+	}
+	n, state := 0, -1
+	for n < len(prefix) {
+		var cluster string
+		cluster, _, _, state = graphemecluster.StepString(s[n:], state)
+		n += len(cluster)
+	}
+	return n == len(prefix)
+}
+
+// cellCount is how many buffer cells s takes once inserted: one per grapheme
+// cluster, however many bytes or columns each spans.
+func cellCount(s string) int {
+	n, state := 0, -1
+	for s != "" {
+		_, s, _, state = graphemecluster.StepString(s, state)
+		n++
+	}
+	return n
+}
+
 // ToggleBlockComment toggles the configured block comment delimiters around the
-// current selection.
+// current selection. The edits undo in a single step.
 func (c *Cursor) ToggleBlockComment() bool {
 	if !c.commentSpec.HasBlock() {
 		return false
@@ -3443,8 +3828,10 @@ func (c *Cursor) ToggleBlockComment() bool {
 	if rngs, covered := c.commentCoverage(term.Range{Start: from, End: to}); covered && len(rngs) == 1 {
 		comment := c.rangeString(rngs[0].Start, rngs[0].End)
 		if strings.HasPrefix(comment, open) && strings.HasSuffix(comment, close) {
-			c.buffer().Delete(term.Coordinates{Y: rngs[0].End.Y, X: rngs[0].End.X - len(close)}, rngs[0].End)
-			c.buffer().Delete(rngs[0].Start, term.Coordinates{Y: rngs[0].Start.Y, X: rngs[0].Start.X + len(open)})
+			c.buffer().GroupEdits(func() {
+				c.buffer().Delete(term.Coordinates{Y: rngs[0].End.Y, X: rngs[0].End.X - cellCount(close)}, rngs[0].End)
+				c.buffer().Delete(rngs[0].Start, term.Coordinates{Y: rngs[0].Start.Y, X: rngs[0].Start.X + cellCount(open)})
+			})
 			c.Unselect()
 			c.setCursorAfterUpdate(rngs[0].Start)
 			return true
@@ -3453,9 +3840,11 @@ func (c *Cursor) ToggleBlockComment() bool {
 	if !ok {
 		return false
 	}
-	c.buffer().InsertString(to, close)
-	c.buffer().InsertString(from, open)
-	c.setCursorAfterUpdate(term.Coordinates{Y: from.Y, X: from.X + len(open)})
+	c.buffer().GroupEdits(func() {
+		c.buffer().InsertString(to, close)
+		c.buffer().InsertString(from, open)
+	})
+	c.setCursorAfterUpdate(term.Coordinates{Y: from.Y, X: from.X + cellCount(open)})
 	return true
 }
 
@@ -3721,31 +4110,36 @@ func (c *Cursor) getShiftSelection() (from, to term.Coordinates) {
 }
 
 // ShiftSelectionRight shifts the current selection one indent level to the
-// right. The indent material is controlled by indentRune.
+// right as a single undo step. The indent material is controlled by
+// indentRune.
 func (c *Cursor) ShiftSelectionRight(indentRune rune, tabspaces int) {
 	from, to := c.getShiftSelection()
 
 	c.Unselect()
 
 	indent, _ := c.indentMaterial(indentRune, tabspaces)
-	for y := from.Y; y <= to.Y; y++ {
-		c.buffer().InsertString(term.Coordinates{Y: y}, indent)
-	}
+	c.buffer().GroupEdits(func() {
+		for y := from.Y; y <= to.Y; y++ {
+			c.buffer().InsertString(term.Coordinates{Y: y}, indent)
+		}
+	})
 }
 
 // ShiftSelectionLeft shifts the current selection one indent level to the
-// left. The indent material is controlled by indentRune. It returns false if
-// selection could not be shifted.
+// left as a single undo step. The indent material is controlled by
+// indentRune. It returns false if selection could not be shifted.
 func (c *Cursor) ShiftSelectionLeft(indentRune rune, tabspaces int) (ok bool) {
 	from, to := c.getShiftSelection()
 
 	c.Unselect()
 
-	for y := from.Y; y <= to.Y; y++ {
-		if _, sok := c.shiftRowLeft(y, indentRune, tabspaces); sok {
-			ok = true
+	c.buffer().GroupEdits(func() {
+		for y := from.Y; y <= to.Y; y++ {
+			if _, sok := c.shiftRowLeft(y, indentRune, tabspaces); sok {
+				ok = true
+			}
 		}
-	}
+	})
 	return
 }
 
@@ -4486,12 +4880,15 @@ func (c *Cursor) commentCoverage(rng term.Range) ([]term.Range, bool) {
 	return svc.CommentCoverage(rng)
 }
 
+// commentLineBounds returns the rows the selection covers, or the cursor's
+// row without one. Like VS Code's line commands, a character selection that
+// only reaches the start of its last row does not cover that row.
 func (c *Cursor) commentLineBounds() (int, int) {
-	if _, ok := c.SelectionMode(); ok {
-		if from, to, ok := c.selectionBounds(); ok {
-			from, to = term.CoordinatesSort(from, to)
-			return from.Y, to.Y
+	if from, to, ok := c.SelectionRange(); ok {
+		if c.selection.mode == StandardSelection && to.Y > from.Y && to.X == 0 {
+			to.Y--
 		}
+		return from.Y, to.Y
 	}
 	pos := c.cursorAtScroll()
 	return pos.Y, pos.Y
@@ -4501,22 +4898,22 @@ func (c *Cursor) lineCommentedRanges(_ string, fromY, toY int) []term.Range {
 	ret := make([]term.Range, 0, toY-fromY+1)
 	for y := fromY; y <= toY; y++ {
 		line := c.lineString(y)
-		trimmed := strings.TrimLeft(line, " \t")
+		indent := len(leadingIndent(line))
+		trimmed := line[indent:]
 		if trimmed == "" {
 			ret = append(ret, term.Range{})
 			continue
 		}
-		indent := len(line) - len(trimmed)
 		for _, candidate := range c.commentSpec.Line {
 			comment := candidate
-			if strings.HasPrefix(trimmed, candidate+" ") {
+			if hasCellPrefix(trimmed, candidate+" ") {
 				comment = candidate + " "
 			}
-			if !strings.HasPrefix(trimmed, comment) {
+			if !hasCellPrefix(trimmed, comment) {
 				continue
 			}
 			start := term.Coordinates{Y: y, X: indent}
-			end := term.Coordinates{Y: y, X: indent + len(comment)}
+			end := term.Coordinates{Y: y, X: indent + cellCount(comment)}
 			coverage, ok := c.commentCoverage(term.Range{Start: start, End: end})
 			if ok && len(coverage) != 0 {
 				ret = append(ret, term.Range{Start: start, End: end})
@@ -4527,30 +4924,6 @@ func (c *Cursor) lineCommentedRanges(_ string, fromY, toY int) []term.Range {
 	nextLine:
 	}
 	return ret
-}
-
-func (c *Cursor) setCursorAfterLineCommentToggle(prefix string, inserted bool) {
-	cur := c.cursorAtScroll()
-	adjust := len(prefix)
-	if inserted {
-		adjust++
-	}
-	line := c.lineString(cur.Y)
-	trimmed := strings.TrimLeft(line, " \t")
-	if trimmed == "" {
-		return
-	}
-	indent := len(line) - len(trimmed)
-	if inserted {
-		if cur.X >= indent {
-			cur.X += adjust
-		}
-	} else if cur.X >= indent+adjust {
-		cur.X -= adjust
-	} else {
-		cur.X = max(indent, 0)
-	}
-	c.setCursorAfterUpdate(cur)
 }
 
 func (c *Cursor) lineString(y int) string {

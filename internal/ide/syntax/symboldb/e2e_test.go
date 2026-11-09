@@ -19,9 +19,13 @@ package symboldb
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,6 +36,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"unstable.build/rune/internal/ide/idelsp/symbolresolve"
 	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
 	"unstable.build/rune/internal/ide/syntax/treesitter"
@@ -221,6 +226,8 @@ func TestGoE2E(t *testing.T) {
 			resolveURIs(t, env.p, "mylib.MyType.String"))
 		assert.Equal(t, []string{env.uri(t, "mylib/mylib.go")},
 			resolveURIs(t, env.p, "mylib.MyType.Set"))
+		assert.Equal(t, []string{env.uri(t, "mylib/mylib.go")},
+			resolveURIs(t, env.p, "mylib.Store.Load"))
 	})
 
 	t.Run("unexported and constants are not indexed", func(t *testing.T) {
@@ -281,11 +288,12 @@ func TestGoE2E(t *testing.T) {
 			"iter.Iterator", "iter.OnlyDefined", "iter.Aggregate",
 			"iterator.Iterator",
 			"mylib.MyType.String", "mylib.MyType.Set",
+			"mylib.Store.Load",
 		} {
 			assert.Truef(t, got[name], "expected %q to be listed", name)
 		}
 		for _, name := range []string{
-			"mylib.unexportedHelper", "iter.privateOnlyDefined",
+			"mylib.unexportedHelper", "iter.privateOnlyDefined", "mylib.Store.save",
 		} {
 			assert.Falsef(t, got[name], "%q must not be listed", name)
 		}
@@ -457,6 +465,243 @@ func TestZigE2E(t *testing.T) {
 	})
 }
 
+func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
+	const (
+		tsxFile = "Home.tsx"
+		goFile  = "geometry/geometry.go"
+	)
+	sources := map[string]string{
+		tsxFile: "function Hero() { return null; }\nconst Agent = () => null;\n",
+		goFile:  "package geometry\n\nfunc Area() int { return 0 }\n",
+	}
+	goPkg := grammarfixture.PackageFiles(t, fixtureDir(t, goFixtures))
+	tsx := grammarfixture.PackageFiles(t, fixtureDir(t, tsxFixtures))
+	// staleTSX predates the locals capture of arrow functions bound to
+	// a variable as function definitions.
+	staleTSX := maps.Clone(tsx)
+	staleTSX[treesitter.LocalsFilename] = []byte(
+		"(function_declaration name: (identifier) @local.definition.function)\n" +
+			"(variable_declarator name: (identifier) @local.definition.var)\n")
+	staleTSXRestyled := maps.Clone(staleTSX)
+	staleTSXRestyled[treesitter.HighlightsFilename] = []byte("(identifier) @variable\n")
+	staleTSXRestyled["README.md"] = []byte("# tsx\n")
+
+	touch := func(t *testing.T, pkgs *grammarfixture.Packages, pkgID string) {
+		later := time.Now().Add(time.Hour)
+		for _, path := range pkgs.Files(t, pkgID) {
+			require.NoError(t, os.Chtimes(path, later, later))
+		}
+	}
+	tests := []struct {
+		name string
+		// install sets up the packages the first scan runs under; change
+		// alters them before the workspace is reopened.
+		install, change func(t *testing.T, pkgs *grammarfixture.Packages)
+		wantReextracted []string
+		wantListed      []string
+	}{
+		{
+			name: "grammars unchanged",
+			install: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				pkgs.Install(t, "tsx", "1", staleTSX)
+			},
+			change:     func(*testing.T, *grammarfixture.Packages) {},
+			wantListed: []string{"Home.Hero", "geometry.Area"},
+		},
+		{
+			name: "grammar files touched",
+			install: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				pkgs.Install(t, "tsx", "1", staleTSX)
+			},
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				touch(t, pkgs, "tsx")
+				touch(t, pkgs, "go")
+			},
+			wantListed: []string{"Home.Hero", "geometry.Area"},
+		},
+		{
+			name: "grammar reinstalled at the same version",
+			install: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				pkgs.Install(t, "tsx", "1", staleTSX)
+			},
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				pkgs.Uninstall(t, "tsx", "1")
+				pkgs.Install(t, "tsx", "1", staleTSX)
+			},
+			wantListed: []string{"Home.Hero", "geometry.Area"},
+		},
+		{
+			name: "identical grammar released under a new version",
+			install: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				pkgs.Install(t, "tsx", "1", staleTSX)
+			},
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				pkgs.Install(t, "tsx", "2", staleTSX)
+			},
+			wantListed: []string{"Home.Hero", "geometry.Area"},
+		},
+		{
+			name: "only files extraction does not read changed",
+			install: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				pkgs.Install(t, "tsx", "1", staleTSX)
+			},
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				pkgs.Install(t, "tsx", "2", staleTSXRestyled)
+			},
+			wantListed: []string{"Home.Hero", "geometry.Area"},
+		},
+		{
+			name: "locals query upgraded",
+			install: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				pkgs.Install(t, "tsx", "1", staleTSX)
+			},
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				pkgs.Install(t, "tsx", "2", tsx)
+			},
+			wantReextracted: []string{tsxFile},
+			wantListed:      []string{"Home.Agent", "Home.Hero", "geometry.Area"},
+		},
+		{
+			name: "rolled back to an older locals query",
+			install: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				pkgs.Install(t, "tsx", "1", staleTSX)
+				pkgs.Install(t, "tsx", "2", tsx)
+			},
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				pkgs.Use(t, "tsx", "1")
+			},
+			wantReextracted: []string{tsxFile},
+			wantListed:      []string{"Home.Hero", "geometry.Area"},
+		},
+		{
+			name:    "grammar installed after the first scan",
+			install: func(*testing.T, *grammarfixture.Packages) {},
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				pkgs.Install(t, "tsx", "1", tsx)
+			},
+			wantReextracted: []string{tsxFile},
+			wantListed:      []string{"Home.Agent", "Home.Hero", "geometry.Area"},
+		},
+		{
+			name:       "grammar still not installed",
+			install:    func(*testing.T, *grammarfixture.Packages) {},
+			change:     func(*testing.T, *grammarfixture.Packages) {},
+			wantListed: []string{"geometry.Area"},
+		},
+		{
+			name: "grammar uninstalled",
+			install: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				pkgs.Install(t, "tsx", "1", tsx)
+			},
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) {
+				pkgs.Uninstall(t, "tsx", "1")
+			},
+			wantReextracted: []string{tsxFile},
+			wantListed:      []string{"geometry.Area"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			for rel, src := range sources {
+				path := filepath.Join(root, rel)
+				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+				require.NoError(t, os.WriteFile(path, []byte(src), 0o644))
+			}
+			rootURI, err := workspaceapi.ParseURI("file://" + root)
+			require.NoError(t, err)
+			scheme, err := workspace.NewFileScheme(
+				context.Background(), config.NopConfig(), rootURI)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = scheme.Close() })
+
+			pkgs := grammarfixture.NewPackages(t, map[string][]string{
+				"go": {"1"}, "tsx": {"1", "2"},
+			})
+			pkgs.Install(t, "go", "1", goPkg)
+			tt.install(t, pkgs)
+			dbPath := filepath.Join(t.TempDir(), "db.data")
+			// open reopens the workspace the way the editor does: a fresh
+			// backing parser over the on-disk database.
+			open := func(t *testing.T) (map[string]int, []string) {
+				t.Helper()
+				db, err := boltdoc.New(dbPath, docbson.Marshaler())
+				require.NoError(t, err)
+				defer func() { require.NoError(t, db.Close()) }()
+				backing := &extractionCounter{
+					Backing: treesitter.NewParser(scheme, pkgs, rootURI),
+					root:    rootURI,
+				}
+				p, err := New(backing, scheme, rootURI,
+					storageapi.WithPartition(
+						storageapi.WithPartition(db, PartitionName), rootURI.String()),
+					&recordingNotifications{}, syncTick)
+				require.NoError(t, err)
+				defer func() { require.NoError(t, p.Close()) }()
+				require.NoError(t, p.Wait(context.Background()))
+				return backing.extractions(), listReferenced(t, p)
+			}
+			assertReextracted := func(t *testing.T, got map[string]int, want []string) {
+				t.Helper()
+				for rel := range sources {
+					assert.Equalf(t, slices.Contains(want, rel), got[rel] > 0,
+						"re-extraction of %s", rel)
+				}
+			}
+
+			first, _ := open(t)
+			assertReextracted(t, first, slices.Collect(maps.Keys(sources)))
+
+			tt.change(t, pkgs)
+			second, listed := open(t)
+			assertReextracted(t, second, tt.wantReextracted)
+			assert.Equal(t, tt.wantListed, listed)
+
+			third, listed := open(t)
+			assertReextracted(t, third, nil)
+			assert.Equal(t, tt.wantListed, listed)
+		})
+	}
+}
+
+// extractionCounter counts the files a real backing parser extracts,
+// keyed by workspace-relative path.
+type extractionCounter struct {
+	Backing
+	root workspaceapi.URI
+
+	mu    sync.Mutex
+	files map[string]int
+}
+
+func (c *extractionCounter) NewQuerySession() symbolresolve.QuerySession {
+	return &countingQuerySession{QuerySession: c.Backing.NewQuerySession(), c: c}
+}
+
+func (c *extractionCounter) extractions() map[string]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return maps.Clone(c.files)
+}
+
+type countingQuerySession struct {
+	symbolresolve.QuerySession
+	c *extractionCounter
+}
+
+func (s *countingQuerySession) QueryMulti(
+	ctx context.Context, file workspaceapi.URI, queries []symbolresolve.MultiQuery,
+) ([]symbolresolve.MultiResult, error) {
+	s.c.mu.Lock()
+	if s.c.files == nil {
+		s.c.files = make(map[string]int)
+	}
+	s.c.files[workspaceapi.RelPath(s.c.root, file)]++
+	s.c.mu.Unlock()
+	return s.QuerySession.QueryMulti(ctx, file, queries)
+}
+
 // Paths to the committed testdata modules and tree-sitter fixtures,
 // relative to this package's directory.
 const (
@@ -469,6 +714,7 @@ const (
 	goFixtures  = "../../idelsp/symbolresolve/go"
 	pyFixtures  = "../syntaxtest/python"
 	rsFixtures  = "../syntaxtest/rust"
+	tsxFixtures = "../syntaxtest/tsx"
 	zigFixtures = "../syntaxtest/zig"
 )
 

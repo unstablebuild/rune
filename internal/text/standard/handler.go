@@ -356,6 +356,14 @@ func (h *standardHandler) linuxChord(ev term.Event) (term.Event, bool) {
 func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 	ctx := context.Background()
 
+	// A buttonless motion, a hover or the pointer leaving the window, is not
+	// a command: it must not end a paste-history cycle or drop a pending
+	// cursor position.
+	if ev.Type == term.EventMouse && ev.Key == 0 {
+		term.SetPointerShape(ev, term.PointerText)
+		return h.mouse.Handle(ev)
+	}
+
 	// Track whether the current event is a paste-related action.
 	// Reset lastPaste at the end unless the handler explicitly sets it.
 	pastedThisTurn := false
@@ -371,6 +379,7 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 
 	switch ev.Type {
 	case term.EventMouse:
+		term.SetPointerShape(ev, term.PointerText)
 		return h.mouse.Handle(ev)
 	case term.EventPasteStart:
 		h.pasteBuf.Reset()
@@ -379,6 +388,7 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 		return
 	case term.EventPasteEnd:
 		str := h.pasteBuf.String()
+		h.selectLinesAsRange()
 		if _, ok := h.cursor.SelectionMode(); ok {
 			// Pasting over a selection replaces it with the pasted text.
 			h.buf.MarkStartUndo()
@@ -466,33 +476,23 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 		switch ev.Key {
 		case term.KeyArrowDown:
 			handled = h.duplicateLine(false /* down */)
+			return
 		case term.KeyArrowUp:
 			handled = h.duplicateLine(true /* up */)
+			return
 		case term.KeyArrowLeft:
-			if _, ok := h.cursor.SelectionMode(); !ok {
-				h.cursor.Select()
-			}
-			handled = h.cursor.MoveLeftStartWord()
+			handled = h.moveWord(false /* left */, true /* extend */)
 			return
 		case term.KeyArrowRight:
-			if _, ok := h.cursor.SelectionMode(); !ok {
-				h.cursor.Select()
-			}
-			handled = h.cursor.MoveRightEndWord()
+			handled = h.moveWord(true /* right */, true /* extend */)
 			return
 		case 0:
 			switch ev.Ch {
 			case 'B':
-				if _, ok := h.cursor.SelectionMode(); !ok {
-					h.cursor.Select()
-				}
-				handled = h.cursor.MoveLeftStartWord()
+				handled = h.moveWord(false /* left */, true /* extend */)
 				return
 			case 'F':
-				if _, ok := h.cursor.SelectionMode(); !ok {
-					h.cursor.Select()
-				}
-				handled = h.cursor.MoveRightEndWord()
+				handled = h.moveWord(true /* right */, true /* extend */)
 				return
 			}
 		}
@@ -558,20 +558,18 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 		switch ev.Key {
 		case term.KeyArrowDown:
 			handled = h.moveLine(false /* down */)
+			return
 		case term.KeyArrowUp:
 			handled = h.moveLine(true /* up */)
+			return
 		case term.KeyArrowLeft:
-			handled = h.cursor.MoveLeftStartWord()
+			handled = h.moveWord(false /* left */, false /* extend */)
 		case term.KeyArrowRight:
-			handled = h.cursor.MoveRightEndWord()
+			handled = h.moveWord(true /* right */, false /* extend */)
 		case term.KeyBackspace:
-			h.cursor.Select()
-			h.cursor.MoveLeftStartWord()
-			handled = h.cursor.DeleteSelection()
+			handled = h.deleteWord(false /* left */)
 		case term.KeyDelete:
-			h.cursor.Select()
-			h.cursor.MoveRightStartWord()
-			handled = h.cursor.DeleteSelection()
+			handled = h.deleteWord(true /* right */)
 		case 0:
 			switch ev.Ch {
 			case 'z':
@@ -620,6 +618,8 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 				handled = h.cursor.Conflate()
 			case '/':
 				handled = h.cursor.ToggleLineComment()
+				// the toggle carries the selection along with the caret
+				return
 			case ']':
 				if _, ok := h.cursor.SelectionMode(); ok {
 					h.cursor.ShiftSelectionRight(h.cfg.indentRune, h.cfg.indentTabspaces)
@@ -634,16 +634,12 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 					handled = h.cursor.ShiftLineLeft(h.cfg.indentRune, h.cfg.indentTabspaces)
 				}
 			case 'l':
-				if mode, ok := h.cursor.SelectionMode(); ok && mode == text.LineSelection {
-					h.restoreDesiredColumn()
-					handled = h.cursor.MoveDown()
-				} else {
-					handled = h.cursor.SelectLine()
-				}
+				handled = h.expandLineSelection()
 				// avoid unselect due to not shift
 				return
 			case 'D':
 				handled = h.duplicateLine(false /* down */)
+				return
 			case 'J':
 				handled = h.cursor.SelectIndentationLevel(h.cfg.indentTabspaces)
 				return
@@ -651,40 +647,24 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 				handled = h.selectNextWordAtCursor()
 				return
 			case 'x':
-				if _, ok := h.cursor.SelectionMode(); !ok {
-					h.cursor.SelectLine()
-				}
-				_, err := h.cursor.CopySelectionNoUnselect(
-					clipboard.DefaultRegisterID, h.clipboard)
-				if err != nil {
-					h.log(log.ErrorLevel, "cursor copy selection: %v", err)
-				} else {
-					handled = h.cursor.DeleteSelection()
-				}
+				handled = h.cut()
 			case 'f':
 				handled = h.startFind()
 			case 'a':
-				if _, ok := h.cursor.SelectionMode(); ok {
-					h.cursor.Unselect()
-				}
-				h.cursor.MoveFirstLine()
-				if h.cursor.SelectLine() {
-					h.cursor.MoveLastLine()
-					h.cursor.MoveRight()
-					handled = true
-				}
+				handled = h.selectAll()
 				return
 			// the following two are defined here in case we're not capturing them at the command level
 			case 'c':
 				handled = h.copySelectionOrLine()
+				// copying a line selection moves the caret to the end of the
+				// range it becomes, which must not drop the selection
+				return
 			case 'v':
 				paste, err := h.clipboard.Paste(clipboard.DefaultRegisterID)
 				if err != nil {
 					h.log(log.ErrorLevel, "clipboard paste: %v", err)
 				} else {
-					str := paste.Text
-					mode, _ := paste.Metadata.(text.SelectMode)
-					h.cursor.Paste(str, mode, false)
+					h.paste(paste)
 					handled = true
 					h.lastPaste = true
 					h.historyIdx = 0
@@ -699,9 +679,7 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 			case 'Z':
 				handled = h.cursor.Redo()
 			case 'K':
-				if h.cursor.SelectLine() {
-					handled = h.cursor.DeleteSelection()
-				}
+				handled = h.deleteLines()
 			}
 		}
 	// no modifier
@@ -743,6 +721,7 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 				handled = h.cursor.MoveEndLine()
 			}
 		case term.KeyEnter:
+			h.selectLinesAsRange()
 			if _, ok := h.cursor.SelectionMode(); ok {
 				h.cursor.DeleteSelection()
 				h.cursor.Unselect()
@@ -754,6 +733,7 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 			}
 			handled = true
 		case term.KeySpace:
+			h.selectLinesAsRange()
 			if _, ok := h.cursor.SelectionMode(); ok {
 				h.cursor.DeleteSelection()
 				h.cursor.Unselect()
@@ -772,6 +752,7 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 			}
 			handled = true
 		case term.KeyBackspace:
+			h.selectLinesAsRange()
 			if _, ok := h.cursor.SelectionMode(); ok {
 				handled = h.cursor.DeleteSelection()
 				h.cursor.Unselect()
@@ -781,6 +762,7 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 				handled = h.cursor.Backspace()
 			}
 		case term.KeyDelete:
+			h.selectLinesAsRange()
 			if _, ok := h.cursor.SelectionMode(); ok {
 				handled = h.cursor.DeleteSelection()
 				h.cursor.Unselect()
@@ -789,6 +771,7 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 			}
 		default:
 			if ev.Ch != 0 {
+				h.selectLinesAsRange()
 				if _, ok := h.cursor.SelectionMode(); ok {
 					// Like RET, SPC and paste, a typed character replaces
 					// the selection rather than just deleting it.
@@ -810,10 +793,10 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 			handled = true
 			return
 		case term.KeyArrowLeft:
-			handled = h.cursor.MoveLeftStartWord()
+			handled = h.moveWord(false /* left */, false /* extend */)
 			return
 		case term.KeyArrowRight:
-			handled = h.cursor.MoveRightEndWord()
+			handled = h.moveWord(true /* right */, false /* extend */)
 			return
 		case term.KeyArrowUp:
 			h.restoreDesiredColumn()
@@ -832,14 +815,10 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 			handled = h.cursor.MoveLastLine()
 			return
 		case term.KeyBackspace:
-			h.cursor.Select()
-			h.cursor.MoveLeftStartWord()
-			handled = h.cursor.DeleteSelection()
+			handled = h.deleteWord(false /* left */)
 			return
 		case term.KeyDelete:
-			h.cursor.Select()
-			h.cursor.MoveRightStartWord()
-			handled = h.cursor.DeleteSelection()
+			handled = h.deleteWord(true /* right */)
 			return
 		}
 		switch ev.Ch {
@@ -847,24 +826,16 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 			handled = h.startFind()
 		case 'c':
 			handled = h.copySelectionOrLine()
+			// see the macOS copy above
+			return
 		case 'x':
-			if _, ok := h.cursor.SelectionMode(); !ok {
-				h.cursor.SelectLine()
-			}
-			_, err := h.cursor.CopySelectionNoUnselect(
-				clipboard.DefaultRegisterID, h.clipboard)
-			if err != nil {
-				h.log(log.ErrorLevel, "cursor copy selection: %v", err)
-			} else {
-				handled = h.cursor.DeleteSelection()
-			}
+			handled = h.cut()
 		case 'v':
 			paste, err := h.clipboard.Paste(clipboard.DefaultRegisterID)
 			if err != nil {
 				h.log(log.ErrorLevel, "clipboard paste: %v", err)
 			} else {
-				mode, _ := paste.Metadata.(text.SelectMode)
-				h.cursor.Paste(paste.Text, mode, false)
+				h.paste(paste)
 				handled = true
 				h.lastPaste = true
 				h.historyIdx = 0
@@ -888,15 +859,7 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 			handled = h.selectNextWordAtCursor()
 			return
 		case 'a':
-			if _, ok := h.cursor.SelectionMode(); ok {
-				h.cursor.Unselect()
-			}
-			h.cursor.MoveFirstLine()
-			if h.cursor.SelectLine() {
-				h.cursor.MoveLastLine()
-				h.cursor.MoveRight()
-				handled = true
-			}
+			handled = h.selectAll()
 			return
 		case 'q':
 			if h.macroRecorder != nil {
@@ -915,6 +878,8 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 			handled = h.cursor.Redo()
 		case '/':
 			handled = h.cursor.ToggleLineComment()
+			// see the macOS toggle above
+			return
 		case '[':
 			if _, ok := h.cursor.SelectionMode(); ok {
 				handled = h.cursor.ShiftSelectionLeft(h.cfg.indentRune, h.cfg.indentTabspaces)
@@ -939,9 +904,7 @@ func (h *standardHandler) Handle(ev term.Event) (exit, handled bool) {
 		case 'J':
 			handled = h.cursor.Conflate()
 		case 'K':
-			if h.cursor.SelectLine() {
-				handled = h.cursor.DeleteSelection()
-			}
+			handled = h.deleteLines()
 		case '-':
 			handled = h.cursor.MoveToNextMatch()
 		case '_':
@@ -1205,17 +1168,17 @@ func (h *standardHandler) LocationLists() []text.LocationSet {
 	return h.cursor.LocationLists()
 }
 
-// copySelectionOrLine copies the active selection, or the current line when
-// there is no selection, matching the empty-selection copy behavior of
-// VS Code, Sublime Text, and Zed. It mirrors the empty-selection cut path so
-// the two operations stay symmetric.
+// copySelectionOrLine copies the active selection, keeping it, or the current
+// line when there is no selection, matching the copy behavior of VS Code,
+// Sublime Text, and Zed. It copies what cut would remove so the two operations
+// stay symmetric.
 func (h *standardHandler) copySelectionOrLine() (handled bool) {
+	h.selectLinesAsRange()
 	if _, ok := h.cursor.SelectionMode(); !ok {
-		if !h.cursor.SelectLine() {
-			return
-		}
+		at, _ := h.caret()
+		return h.copyLine(at.Y)
 	}
-	_, err := h.cursor.CopySelection(clipboard.DefaultRegisterID, h.clipboard)
+	_, err := h.cursor.CopySelectionNoUnselect(clipboard.DefaultRegisterID, h.clipboard)
 	if err != nil {
 		h.log(log.ErrorLevel, "cursor copy selection: %v", err)
 		return
@@ -1223,64 +1186,358 @@ func (h *standardHandler) copySelectionOrLine() (handled bool) {
 	return true
 }
 
-func (h *standardHandler) moveLine(up bool) (handled bool) {
-	if _, ok := h.cursor.SelectionMode(); !ok {
-		if !h.cursor.SelectLine() {
-			return
-		}
+// copyLine copies line y as a whole line, the way VS Code copies with an
+// empty selection: with its line break even when it is the last line or
+// empty, so pasting it always adds a line.
+func (h *standardHandler) copyLine(y int) bool {
+	var line string
+	if y < h.buf.Rows() {
+		line = h.lineString(y)
 	}
-	handled, _ = h.cursor.CopySelectionNoUnselect(
-		clipboard.DefaultRegisterID, h.clipboard)
-	if !handled {
+	err := h.clipboard.Copy(clipboard.DefaultRegisterID,
+		clipboard.Data{Text: line + "\n", Metadata: text.LineSelection})
+	if err != nil {
+		h.log(log.ErrorLevel, "clipboard copy: %v", err)
+		return false
+	}
+	return true
+}
+
+// cut is VS Code's cut: it copies and removes the selection or, without one,
+// the caret's line together with the line break after it, or the one before
+// it when it is the last line.
+func (h *standardHandler) cut() bool {
+	h.selectLinesAsRange()
+	if _, ok := h.cursor.SelectionMode(); ok {
+		_, err := h.cursor.CopySelectionNoUnselect(clipboard.DefaultRegisterID, h.clipboard)
+		if err != nil {
+			h.log(log.ErrorLevel, "cursor copy selection: %v", err)
+			return false
+		}
+		return h.cursor.DeleteSelection()
+	}
+	at, _ := h.caret()
+	if !h.copyLine(at.Y) {
+		return false
+	}
+	rows := h.buf.Rows()
+	if rows == 0 {
+		return true
+	}
+	from := term.Coordinates{Y: at.Y}
+	to := term.Coordinates{X: h.buf.Columns(at.Y), Y: at.Y}
+	switch {
+	case at.Y < rows-1:
+		to = term.Coordinates{Y: at.Y + 1}
+	case at.Y > 0:
+		from = term.Coordinates{X: h.buf.Columns(at.Y - 1), Y: at.Y - 1}
+	}
+	h.replaceRange(from, to, "")
+	return true
+}
+
+// deleteLines is VS Code's editor.action.deleteLines: it removes the lines
+// the caret or selection is on together with the line break after them, or
+// the one before them at the end of the buffer, and keeps the caret's column.
+func (h *standardHandler) deleteLines() bool {
+	start, end, ok := h.lineSpan()
+	rows := h.buf.Rows()
+	if !ok || (rows == 1 && h.buf.Columns(0) == 0) {
+		return false
+	}
+	at, _ := h.caret()
+	from := term.Coordinates{Y: start}
+	to := term.Coordinates{X: h.buf.Columns(end), Y: end}
+	switch {
+	case end < rows-1:
+		to = term.Coordinates{Y: end + 1}
+	case start > 0:
+		start--
+		from = term.Coordinates{X: h.buf.Columns(start), Y: start}
+	}
+	h.replaceRange(from, to, "")
+	y := min(start, h.buf.Rows()-1)
+	h.cursor.MoveToScroll(term.Coordinates{X: min(at.X, h.buf.Columns(y)), Y: y})
+	return true
+}
+
+// moveLine is VS Code's editor.action.moveLinesUpAction and
+// moveLinesDownAction: the lines the caret or selection is on trade places
+// with the line above or below, carrying the caret and selection along. It
+// does nothing at the first or last line.
+func (h *standardHandler) moveLine(up bool) bool {
+	start, end, ok := h.lineSpan()
+	if !ok || (up && start == 0) || (!up && end == h.buf.Rows()-1) {
+		return false
+	}
+	block := h.linesString(start, end)
+	dy := 1
+	from := term.Coordinates{Y: start}
+	to := term.Coordinates{X: h.buf.Columns(end + 1), Y: end + 1}
+	swapped := h.lineString(end+1) + "\n" + block
+	if up {
+		dy = -1
+		from = term.Coordinates{Y: start - 1}
+		to = term.Coordinates{X: h.buf.Columns(end), Y: end}
+		swapped = block + "\n" + h.lineString(start-1)
+	}
+	restore := h.shiftSelection(dy)
+	h.replaceRange(from, to, swapped)
+	restore()
+	return true
+}
+
+// duplicateLine is VS Code's editor.action.copyLinesUpAction and
+// copyLinesDownAction: the lines the caret or selection is on are repeated
+// below themselves, and copying down carries the caret and selection to the
+// copy. The clipboard is left alone.
+func (h *standardHandler) duplicateLine(up bool) bool {
+	start, end, ok := h.lineSpan()
+	if !ok {
+		return false
+	}
+	dy := end - start + 1
+	if up {
+		dy = 0
+	}
+	restore := h.shiftSelection(dy)
+	eol := term.Coordinates{X: h.buf.Columns(end), Y: end}
+	h.replaceRange(eol, eol, "\n"+h.linesString(start, end))
+	restore()
+	return true
+}
+
+// paste is VS Code's paste: it replaces the selection with the text, and
+// without a selection a whole line goes above the caret's line, the caret
+// staying on the same text.
+func (h *standardHandler) paste(data clipboard.Data) {
+	mode, _ := data.Metadata.(text.SelectMode)
+	h.selectLinesAsRange()
+	if _, ok := h.cursor.SelectionMode(); ok {
+		h.buf.MarkStartUndo()
+		h.cursor.DeleteSelection()
+		h.cursor.InsertString(data.Text)
+		h.buf.GroupUndo()
 		return
 	}
-	h.cursor.DeleteSelection()
-	if up {
-		h.cursor.MoveUp()
-	} else {
-		h.cursor.MoveDown()
+	at, _ := h.caret()
+	h.cursor.Paste(data.Text, mode, false)
+	if mode == text.LineSelection ||
+		(mode == text.NoSelection && strings.HasSuffix(data.Text, "\n")) {
+		h.cursor.MoveToScroll(term.Coordinates{X: at.X, Y: at.Y + strings.Count(data.Text, "\n")})
 	}
-	h.cursor.MoveStartLine()
-	paste, err := h.clipboard.Paste(clipboard.DefaultRegisterID)
-	if err != nil {
-		h.log(log.ErrorLevel, "clipboard paste: %v", err)
+}
+
+// moveWord moves the caret to the start of the previous or the end of the
+// next word, as VS Code's cursorWordStartLeft and cursorWordEndRight do,
+// extending the selection when extend is set.
+func (h *standardHandler) moveWord(right, extend bool) bool {
+	at, ok := h.caret()
+	if !ok {
+		return false
+	}
+	if _, selected := h.cursor.SelectionMode(); extend && !selected {
+		h.cursor.Select()
+	}
+	to := h.words().moveWordLeft(at)
+	if right {
+		to = h.words().moveWordRight(at)
+	}
+	_, moved := h.cursor.MoveToScroll(to)
+	return moved
+}
+
+// deleteWord is VS Code's deleteWordLeft and deleteWordRight: it deletes the
+// selection or, without one, from the caret to where the word deletion ends.
+func (h *standardHandler) deleteWord(right bool) bool {
+	h.selectLinesAsRange()
+	if _, ok := h.cursor.SelectionMode(); ok {
+		return h.cursor.DeleteSelection()
+	}
+	at, ok := h.caret()
+	if !ok {
+		return false
+	}
+	var to term.Coordinates
+	if right {
+		to, ok = h.words().deleteWordRight(at)
 	} else {
-		str := paste.Text
-		curr := h.cursor.CursorAtScroll()
-		h.cursor.Paste(str, text.StandardSelection, false)
-		if up {
-			curr.Y--
-		}
-		h.cursor.MoveToScroll(curr)
+		to, ok = h.words().deleteWordLeft(at)
+	}
+	if !ok {
+		return false
+	}
+	h.replaceRange(at, to, "")
+	return true
+}
+
+// selectLinesAsRange turns a line selection into the text VS Code's
+// expandLineSelection covers: whole lines through the start of the line
+// after them, or through the end of the last line, with the caret at that
+// end. Replacing or cutting it then leaves the line break above the selection
+// alone, where deleting the lines would take it. A selection of just the empty
+// last line covers nothing and is dropped.
+func (h *standardHandler) selectLinesAsRange() {
+	if mode, ok := h.cursor.SelectionMode(); !ok || mode != text.LineSelection {
+		return
+	}
+	from, to, ok := h.cursor.SelectionBounds()
+	if !ok {
+		return
+	}
+	from, to = term.CoordinatesSort(from, to)
+	h.selectSpan(term.Coordinates{Y: from.Y}, h.lineAfter(to.Y))
+}
+
+// expandLineSelection is VS Code's expandLineSelection: it selects from the
+// start of the first line the caret or selection is on through the start of
+// the line after the last one, or the end of the buffer, with the caret at
+// that end.
+func (h *standardHandler) expandLineSelection() bool {
+	from, ok := h.caret()
+	if !ok {
+		return false
+	}
+	to := from
+	h.selectLinesAsRange()
+	if f, t, selected := h.cursor.SelectionRange(); selected {
+		from, to = h.clampToBuffer(f), h.clampToBuffer(t)
+	}
+	h.selectSpan(term.Coordinates{Y: from.Y}, h.lineAfter(to.Y))
+	return true
+}
+
+// selectAll is VS Code's selectAll: the whole buffer, with the caret at its
+// end.
+func (h *standardHandler) selectAll() bool {
+	rows := h.buf.Rows()
+	if rows == 0 {
+		return false
+	}
+	h.selectSpan(term.Coordinates{}, h.lineAfter(rows-1))
+	return true
+}
+
+// selectSpan selects from anchor to head with the caret at head, as VS Code's
+// selections are; an empty span leaves just the caret there.
+func (h *standardHandler) selectSpan(anchor, head term.Coordinates) {
+	if anchor == head {
+		h.cursor.Unselect()
+		h.cursor.MoveToScroll(head)
+		return
+	}
+	h.cursor.SelectSpan(anchor, head)
+}
+
+// lineAfter is where a selection of whole lines ending with line y ends in VS
+// Code: the start of the next line, or the end of the buffer after the last.
+func (h *standardHandler) lineAfter(y int) term.Coordinates {
+	if last := h.buf.Rows() - 1; y >= last {
+		return term.Coordinates{X: h.buf.Columns(last), Y: last}
+	}
+	return term.Coordinates{Y: y + 1}
+}
+
+// lineSpan is the range of lines VS Code's line commands act on: the caret's
+// line, or every line the selection covers except a last one it only reaches
+// the start of.
+func (h *standardHandler) lineSpan() (start, end int, ok bool) {
+	at, ok := h.caret()
+	if !ok {
+		return
+	}
+	start, end = at.Y, at.Y
+	mode, selected := h.cursor.SelectionMode()
+	from, to, bounded := h.cursor.SelectionBounds()
+	if !selected || !bounded {
+		return
+	}
+	from, to = term.CoordinatesSort(h.clampToBuffer(from), h.clampToBuffer(to))
+	start, end = from.Y, to.Y
+	if mode != text.LineSelection && end > start && to.X == 0 {
+		end--
 	}
 	return
 }
 
-func (h *standardHandler) duplicateLine(up bool) (handled bool) {
-	if _, ok := h.cursor.SelectionMode(); !ok {
-		if !h.cursor.SelectLine() {
+// shiftSelection returns a function that puts the caret and selection, as
+// they are now, back dy lines lower, so line commands carry them along with
+// the lines they move.
+func (h *standardHandler) shiftSelection(dy int) func() {
+	at, _ := h.caret()
+	mode, selected := h.cursor.SelectionMode()
+	anchor, head, bounded := h.cursor.SelectionBounds()
+	shift := func(pos term.Coordinates) term.Coordinates {
+		pos.Y += dy
+		return pos
+	}
+	return func() {
+		h.cursor.Unselect()
+		if !selected || !bounded {
+			h.cursor.MoveToScroll(shift(at))
 			return
 		}
+		h.cursor.MoveToScroll(shift(anchor))
+		switch mode {
+		case text.LineSelection:
+			h.cursor.SelectLine()
+		case text.BlockSelection:
+			h.cursor.SelectBlock()
+		default:
+			h.cursor.Select()
+		}
+		h.cursor.MoveToScroll(shift(head))
 	}
-	handled, _ = h.cursor.CopySelection(
-		clipboard.DefaultRegisterID, h.clipboard)
-	if !handled {
-		return
-	}
-	if !up {
-		h.cursor.MoveDown()
-	}
-	h.cursor.MoveStartLine()
-	paste, err := h.clipboard.Paste(clipboard.DefaultRegisterID)
-	if err != nil {
-		h.log(log.ErrorLevel, "clipboard paste: %v", err)
+}
+
+// replaceRange replaces [from, to) with s as one undo step, leaving the caret
+// after s and no selection.
+func (h *standardHandler) replaceRange(from, to term.Coordinates, s string) {
+	from, to = term.CoordinatesSort(from, to)
+	h.cursor.Unselect()
+	h.buf.MarkStartUndo()
+	if from == to || !h.cursor.SelectRange(from, to) {
+		h.cursor.MoveToScroll(from)
 	} else {
-		str := paste.Text
-		curr := h.cursor.CursorAtScroll()
-		h.cursor.Paste(str, text.StandardSelection, false)
-		h.cursor.MoveToScroll(curr)
+		h.cursor.DeleteSelection()
 	}
-	return
+	if s != "" {
+		h.cursor.InsertString(s)
+	}
+	h.buf.GroupUndo()
+}
+
+// caret is the cursor clamped into the buffer: VS Code never leaves its
+// cursor past a line end or below the last line, so its commands act from
+// there. It reports false for a buffer without rows.
+func (h *standardHandler) caret() (term.Coordinates, bool) {
+	if h.buf.Rows() == 0 {
+		return term.Coordinates{}, false
+	}
+	return h.clampToBuffer(h.cursor.CursorAtScroll()), true
+}
+
+func (h *standardHandler) lineString(y int) string {
+	return cell.RowsToString([][]term.Cell{h.buf.Row(y)})
+}
+
+func (h *standardHandler) linesString(start, end int) string {
+	lines := make([]string, 0, end-start+1)
+	for y := start; y <= end; y++ {
+		lines = append(lines, h.lineString(y))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (h *standardHandler) words() wordDoc {
+	return wordDoc{rows: h.buf.Rows(), line: func(y int) []rune {
+		row := h.buf.Row(y)
+		line := make([]rune, len(row))
+		for i := range row {
+			line[i] = row[i].Ch
+		}
+		return line
+	}}
 }
 
 func (h *standardHandler) pasteAndReindent() (handled bool) {

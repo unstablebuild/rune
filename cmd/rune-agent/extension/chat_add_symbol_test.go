@@ -18,6 +18,7 @@ package extension
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,6 +121,9 @@ type cursorTestEditor struct {
 
 func (e cursorTestEditor) Editor(workspaceapi.URI) (textapi.Handler, error) { return e.h, nil }
 func (e cursorTestEditor) CellView(textapi.Handler) textapi.CellView        { return e.view }
+func (e cursorTestEditor) SetCursor(textapi.Handler, term.Coordinates) error {
+	return errors.New("unexpected SetCursor")
+}
 
 func TestHandleChatAddSymbolDeliversExactCursorContext(t *testing.T) {
 	root := t.TempDir()

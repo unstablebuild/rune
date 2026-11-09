@@ -17,7 +17,15 @@
 package vte
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"maps"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -29,6 +37,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte/vteparser"
 	"unstable.build/rune/internal/term/vte/vtescreen"
 	"unstable.build/rune/internal/workspace/workspacetest"
@@ -395,9 +404,8 @@ func TestIntegrationParserHandler(t *testing.T) {
 				assert.Equal(t, term.Coordinates{Y: 4, X: 4}, p.sync.buf.CursorAtScreen())
 
 				p.Resize(1, 1)
-				// content was wrapped, CursorAtScroll doesn't take that into consideration
-				assert.Equal(t, term.Coordinates{Y: 11, X: 4}, p.sync.buf.CursorAtScroll())
-				assert.Equal(t, term.Coordinates{Y: 0, X: 4}, p.sync.buf.CursorAtScreen())
+				assert.Equal(t, term.Coordinates{Y: 15, X: 0}, p.sync.buf.CursorAtScroll())
+				assert.Equal(t, term.Coordinates{Y: 0, X: 0}, p.sync.buf.CursorAtScreen())
 
 				p.Resize(5, 5)
 				assert.Equal(t, term.Coordinates{Y: 7, X: 4}, p.sync.buf.CursorAtScroll())
@@ -763,8 +771,7 @@ func TestIntegrationParserHandler(t *testing.T) {
 			mockPtyFile := workspacetest.File{}
 			tm := mockTabManager{}
 			attrs := DefaultConfig().NeedsAttentionAttributes
-			pty := workspaceapi.Pty{Master: &mockPtyFile, Slave: &mockPtyFile}
-			ph := newParserHandler(new(sync.Mutex), pty, &tm,
+			ph := newParserHandler(new(sync.Mutex), &mockPtyFile, testParserHost{}, &tm,
 				clipboard.NewInMemory(), tm.bell, testURI, attrs, false, 10000, 0, nil, nil, "")
 			ph.sync.primBuf.SetDefaultChar(' ')
 			ph.sync.altBuf.SetDefaultChar(' ')
@@ -826,10 +833,18 @@ func assertWriteToPty(t *testing.T, pty *workspacetest.File, data string) {
 }
 
 type mockTabManager struct {
-	belled  bool
-	toUri   workspaceapi.URI
-	setName string
-	setAttr term.Attributes
+	belled   bool
+	toUri    workspaceapi.URI
+	setName  string
+	setAttr  term.Attributes
+	statuses []statusCall
+}
+
+// statusCall is a SetTabStatus call, or an EndTabStatus one when end is
+// set.
+type statusCall struct {
+	report programstatus.Report
+	end    bool
 }
 
 func (tm *mockTabManager) Tab(
@@ -851,11 +866,31 @@ func (tm *mockTabManager) OnTabExit(workspaceapi.URI) bool {
 	return false
 }
 
-func (tm *mockTabManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (tm *mockTabManager) SetTabStatus(uri workspaceapi.URI, report programstatus.Report) error {
+	tm.toUri = uri
+	tm.statuses = append(tm.statuses, statusCall{report: report})
+	return nil
+}
+
+func (tm *mockTabManager) EndTabStatus(uri workspaceapi.URI) error {
+	tm.toUri = uri
+	tm.statuses = append(tm.statuses, statusCall{end: true})
+	return nil
+}
 
 func (tm *mockTabManager) bell() {
 	tm.belled = true
 }
+
+// testParserHost grants the clipboard access it is given and keeps no
+// frames.
+type testParserHost struct {
+	access ClipboardAccess
+}
+
+func (h testParserHost) clipboardAccess() ClipboardAccess { return h.access }
+
+func (testParserHost) syncUpdateLocked(bool) {}
 
 func newInputParserHandler(t *testing.T, alt bool) *parserHandler {
 	t.Helper()
@@ -872,8 +907,7 @@ func newInputParserHandlerPty(t *testing.T, alt bool) (*parserHandler, *workspac
 	mockPtyFile := &workspacetest.File{}
 	tm := mockTabManager{}
 	attrs := DefaultConfig().NeedsAttentionAttributes
-	pty := workspaceapi.Pty{Master: mockPtyFile, Slave: mockPtyFile}
-	ph := newParserHandler(new(sync.Mutex), pty, &tm,
+	ph := newParserHandler(new(sync.Mutex), mockPtyFile, testParserHost{}, &tm,
 		clipboard.NewInMemory(), tm.bell, testURI, attrs, false, 10000, 0, nil, nil, "")
 	ph.sync.primBuf.SetDefaultChar(' ')
 	ph.sync.altBuf.SetDefaultChar(' ')
@@ -903,6 +937,122 @@ func TestBellFocusChangeRace(t *testing.T) {
 	<-done
 }
 
+func TestProgramStatus(t *testing.T) {
+	t.Parallel()
+	const st = "\x1b\\"
+	working := programstatus.Report{State: programstatus.Working, Progress: -1, App: "brew", Msg: "Installing"}
+	done := programstatus.Report{State: programstatus.Done, Progress: -1, App: "brew", Msg: "Upgraded"}
+	blocked := programstatus.Report{ID: "eu", State: programstatus.Blocked, Kind: programstatus.KindAuth, Progress: -1}
+	clearAll := programstatus.Report{State: programstatus.Clear}
+	end := statusCall{end: true}
+	cases := []struct {
+		name    string
+		run     func(ph *parserHandler)
+		want    []statusCall
+		wantPty string
+	}{
+		{
+			name: "every report is forwarded",
+			run: func(ph *parserHandler) {
+				ph.ProgramStatus(working)
+				ph.ProgramStatus(working)
+				ph.ProgramStatus(blocked)
+				ph.ProgramStatus(done)
+			},
+			want: []statusCall{{report: working}, {report: working}, {report: blocked}, {report: done}},
+		},
+		{
+			name:    "query is echoed with ST",
+			run:     func(ph *parserHandler) { ph.ProgramStatusQuery(st) },
+			wantPty: "\x1b]7501;?" + st,
+		},
+		{
+			name:    "query is echoed with BEL",
+			run:     func(ph *parserHandler) { ph.ProgramStatusQuery("\x07") },
+			wantPty: "\x1b]7501;?\x07",
+		},
+		{
+			name: "prompt ends what was reported",
+			run: func(ph *parserHandler) {
+				ph.ProgramStatus(done)
+				ph.ProgramStatus(blocked)
+				ph.PromptStart()
+			},
+			want: []statusCall{{report: done}, {report: blocked}, end},
+		},
+		{
+			name: "prompt without a report tells nothing",
+			run:  func(ph *parserHandler) { ph.PromptStart() },
+		},
+		{
+			name: "prompt after clearing everything tells nothing",
+			run: func(ph *parserHandler) {
+				ph.ProgramStatus(working)
+				ph.ProgramStatus(clearAll)
+				ph.PromptStart()
+			},
+			want: []statusCall{{report: working}, {report: clearAll}},
+		},
+		{
+			name: "prompt after clearing a child ends the rest",
+			run: func(ph *parserHandler) {
+				ph.ProgramStatus(working)
+				ph.ProgramStatus(programstatus.Report{ID: "eu", State: programstatus.Clear})
+				ph.PromptStart()
+			},
+			want: []statusCall{
+				{report: working},
+				{report: programstatus.Report{ID: "eu", State: programstatus.Clear}},
+				end,
+			},
+		},
+		{
+			name: "process exit ends what was reported",
+			run: func(ph *parserHandler) {
+				ph.ProgramStatus(working)
+				ph.sync.mu.Lock()
+				ph.endStatus()
+				ph.sync.mu.Unlock()
+			},
+			want: []statusCall{{report: working}, end},
+		},
+		{
+			name: "reset clears what was reported",
+			run: func(ph *parserHandler) {
+				ph.ProgramStatus(done)
+				ph.ResetState()
+				ph.ResetState()
+			},
+			want: []statusCall{{report: done}, {report: clearAll}},
+		},
+		{
+			name: "reports after a reset are forwarded",
+			run: func(ph *parserHandler) {
+				ph.ResetState()
+				ph.ProgramStatus(done)
+			},
+			want: []statusCall{{report: done}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ph, pty := newInputParserHandlerPty(t, false)
+			tm := ph.tm.(*mockTabManager)
+			tc.run(ph)
+			assert.Equal(t, tc.want, tm.statuses)
+			if tc.want != nil {
+				assert.Equal(t, ph.uri, tm.toUri)
+			}
+			if tc.wantPty != "" {
+				assertWriteToPty(t, pty, tc.wantPty)
+			} else {
+				assert.Empty(t, pty.Writes)
+			}
+		})
+	}
+}
+
 func TestBellReleasesLockBeforeInvokingCallback(t *testing.T) {
 	var extMu sync.Mutex
 	extMu.Lock()
@@ -919,8 +1069,7 @@ func TestBellReleasesLockBeforeInvokingCallback(t *testing.T) {
 	mockPtyFile := workspacetest.File{}
 	tm := mockTabManager{}
 	attrs := DefaultConfig().NeedsAttentionAttributes
-	pty := workspaceapi.Pty{Master: &mockPtyFile, Slave: &mockPtyFile}
-	ph := newParserHandler(new(sync.Mutex), pty, &tm,
+	ph := newParserHandler(new(sync.Mutex), &mockPtyFile, testParserHost{}, &tm,
 		clipboard.NewInMemory(), bellFn, testURI, attrs, false, 10000, 0, nil, nil, "")
 
 	go ph.Bell()
@@ -1140,6 +1289,121 @@ func TestResizeShrinkKeepsRowsWithinWidth(t *testing.T) {
 	})
 }
 
+func TestResizeKeepsCursorAfterItsCharacter(t *testing.T) {
+	suite := []struct {
+		name                string
+		width, height       int
+		input               string
+		up                  int
+		newWidth, newHeight int
+		expected            string
+	}{
+		{
+			name:  "widening joins the cursor row",
+			width: 10, height: 3,
+			input:    "abcdefghijklm",
+			newWidth: 20, newHeight: 3,
+			expected: "abcdefghijklm_      \n                    \n                    ",
+		},
+		{
+			name:  "narrowing splits the cursor row",
+			width: 20, height: 3,
+			input:    "abcdefghijklm",
+			newWidth: 10, newHeight: 3,
+			expected: "abcdefghij\nklm_      \n          ",
+		},
+		{
+			name:  "prompt drawn before the first resize",
+			width: 1, height: 1,
+			input:    "sh ",
+			newWidth: 16, newHeight: 3,
+			expected: "sh _            \n                \n                ",
+		},
+		{
+			name:  "wrap pending at the new width",
+			width: 30, height: 3,
+			input:    "abcdefghijklmnopqrst",
+			newWidth: 10, newHeight: 3,
+			expected: "abcdefghij\nklmnopqrst\n_         ",
+		},
+		{
+			name:  "wrap pending at both widths",
+			width: 10, height: 3,
+			input:    "abcdefghij",
+			newWidth: 5, newHeight: 3,
+			expected: "abcde\nfghij\n_    ",
+		},
+		{
+			name:  "narrowing a line that continues below the cursor",
+			width: 10, height: 4,
+			input: "ab\nABCDEFGHIJKLMNOPQRST", up: 1,
+			newWidth: 4, newHeight: 4,
+			expected: "EFGH\nI_KL\nMNOP\nQRST",
+		},
+		{
+			name:  "widening a line that continues below the cursor",
+			width: 5, height: 6,
+			input: "abcdefg\nABCDEFGHIJKL", up: 1,
+			newWidth: 10, newHeight: 6,
+			expected: "abcdefg   \nABCDEFG_IJ\nKL        \n          \n          \n          ",
+		},
+		{
+			name:  "shortening while widening a line that continues below the cursor",
+			width: 5, height: 3,
+			input: "1\n2\n3\n4\nabcdefghijk", up: 2,
+			newWidth: 15, newHeight: 2,
+			expected: "4              \na_cdefghijk    ",
+		},
+	}
+
+	for _, test := range suite {
+		t.Run(test.name, func(t *testing.T) {
+			p := newInputParserHandler(t, false)
+			p.Resize(test.width, test.height)
+			writeToBuffer(p, test.input)
+			if test.up > 0 {
+				p.MoveUp(test.up)
+			}
+			p.Resize(test.newWidth, test.newHeight)
+			p.Input('_')
+			assertEqualBuf(t, p, test.expected)
+		})
+	}
+
+	t.Run("saved cursor", func(t *testing.T) {
+		p := newInputParserHandler(t, false)
+		p.Resize(10, 3)
+		writeToBuffer(p, "abcdefghijklm")
+		p.SaveCursorPosition()
+		writeToBuffer(p, "\nx")
+		p.Resize(20, 3)
+		p.RestoreCursorPosition()
+		p.Input('_')
+		assertEqualBuf(t, p, "abcdefghijklm_      \nx                   \n                    ")
+	})
+
+	t.Run("saved cursor after trailing blanks", func(t *testing.T) {
+		p := newInputParserHandler(t, false)
+		p.Resize(10, 4)
+		writeToBuffer(p, "sh ")
+		p.SaveCursorPosition()
+		writeToBuffer(p, "\nx")
+		p.Resize(2, 4)
+		p.RestoreCursorPosition()
+		p.Input('_')
+		assertEqualBuf(t, p, "sh\n _\nx \n  ")
+	})
+
+	t.Run("cursor whose cell scrolls into history stays on screen", func(t *testing.T) {
+		p := newInputParserHandler(t, false)
+		p.Resize(20, 2)
+		writeToBuffer(p, "abcdefghijklmnopqrst")
+		p.CarriageReturn()
+		p.Resize(5, 2)
+		assert.Equal(t, term.Coordinates{}, p.sync.buf.CursorAtScreen())
+	})
+}
+
 func TestInputClustersCombiningSequences(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -1227,7 +1491,7 @@ func TestInputClustersZWJFamilyThroughFullParser(t *testing.T) {
 	data = append(data, 0xe2, 0x80, 0x8d)       // ZWJ U+200D
 	data = append(data, 0xf0, 0x9f, 0x91, 0xa7) // 👧 U+1F467
 
-	parser := vteparser.NewParser(p, new(vteparser.StdTimeout))
+	parser := vteparser.NewParser(p)
 	for _, b := range data {
 		parser.Advance(b)
 	}
@@ -1808,4 +2072,428 @@ func TestInsertDeleteLinesOnPrimaryScreen(t *testing.T) {
 			assert.Equal(t, tt.cursor, p.sync.buf.CursorAtScreen(), "the cursor stays put")
 		})
 	}
+}
+
+func TestClipboardOSC52(t *testing.T) {
+	t.Parallel()
+	const (
+		sel = selectionRegisterID
+		bel = "\x07"
+		st  = "\x1b\\"
+	)
+	clip := clipboard.DefaultRegisterID
+	b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	errUnavailable := errors.New("clipboard unavailable")
+	cases := []struct {
+		name      string
+		registers map[string]string // held before the output
+		err       error             // returned by every clipboard operation
+		output    string
+		// want holds the registers after the output; nil means the output
+		// must leave them unchanged.
+		want  map[string]string
+		reply string
+	}{
+		// store
+		{
+			name:   "store c",
+			output: "\x1b]52;c;" + b64("hello") + bel,
+			want:   map[string]string{clip: "hello"},
+		},
+		{
+			name:   "store p",
+			output: "\x1b]52;p;" + b64("hello") + bel,
+			want:   map[string]string{sel: "hello"},
+		},
+		{
+			name:   "store s",
+			output: "\x1b]52;s;" + b64("hello") + bel,
+			want:   map[string]string{sel: "hello"},
+		},
+		{
+			name:   "store without a register selects c",
+			output: "\x1b]52;;" + b64("hello") + bel,
+			want:   map[string]string{clip: "hello"},
+		},
+		{
+			name:   "store terminated by ST",
+			output: "\x1b]52;c;" + b64("hello") + st,
+			want:   map[string]string{clip: "hello"},
+		},
+		{
+			name:   "store multiline text",
+			output: "\x1b]52;c;" + b64("one\ntwo\n") + bel,
+			want:   map[string]string{clip: "one\ntwo\n"},
+		},
+		{
+			name:   "store unicode text",
+			output: "\x1b]52;c;" + b64("héllo 🚀") + bel,
+			want:   map[string]string{clip: "héllo 🚀"},
+		},
+		{
+			name:      "store replaces the register",
+			registers: map[string]string{clip: "old"},
+			output:    "\x1b]52;c;" + b64("hello") + bel,
+			want:      map[string]string{clip: "hello"},
+		},
+		{
+			name:      "store c keeps the primary selection",
+			registers: map[string]string{sel: "kept"},
+			output:    "\x1b]52;c;" + b64("hello") + bel,
+			want:      map[string]string{clip: "hello", sel: "kept"},
+		},
+		{
+			name:      "store p keeps the clipboard",
+			registers: map[string]string{clip: "kept"},
+			output:    "\x1b]52;p;" + b64("hello") + bel,
+			want:      map[string]string{clip: "kept", sel: "hello"},
+		},
+		{
+			name:      "store empty data clears the register",
+			registers: map[string]string{clip: "old"},
+			output:    "\x1b]52;c;" + bel,
+			want:      map[string]string{clip: ""},
+		},
+		{
+			name:      "store invalid base64 is dropped",
+			registers: map[string]string{clip: "old"},
+			output:    "\x1b]52;c;not base64!" + bel,
+		},
+		{
+			name:   "store unknown register is dropped",
+			output: "\x1b]52;q;" + b64("hello") + bel,
+		},
+		{
+			name:   "store cut buffer is dropped",
+			output: "\x1b]52;0;" + b64("hello") + bel,
+		},
+		{
+			name:      "store without data is dropped",
+			registers: map[string]string{clip: "old"},
+			output:    "\x1b]52;c" + bel,
+		},
+		{
+			name:      "clipboard store error doesn't freeze the terminal",
+			registers: map[string]string{clip: "old"},
+			err:       errUnavailable,
+			output:    "\x1b]52;c;" + b64("hello") + bel,
+		},
+
+		// load
+		{
+			name:      "load c",
+			registers: map[string]string{clip: "hello"},
+			output:    "\x1b]52;c;?" + bel,
+			reply:     "\x1b]52;c;" + b64("hello") + bel,
+		},
+		{
+			name:      "load p",
+			registers: map[string]string{sel: "hello"},
+			output:    "\x1b]52;p;?" + bel,
+			reply:     "\x1b]52;p;" + b64("hello") + bel,
+		},
+		{
+			name:      "load s",
+			registers: map[string]string{sel: "hello"},
+			output:    "\x1b]52;s;?" + bel,
+			reply:     "\x1b]52;s;" + b64("hello") + bel,
+		},
+		{
+			name:      "load without a register selects c",
+			registers: map[string]string{clip: "hello"},
+			output:    "\x1b]52;;?" + bel,
+			reply:     "\x1b]52;c;" + b64("hello") + bel,
+		},
+		{
+			name:      "load replies with the ST terminator",
+			registers: map[string]string{clip: "hello"},
+			output:    "\x1b]52;c;?" + st,
+			reply:     "\x1b]52;c;" + b64("hello") + st,
+		},
+		{
+			name:      "load c ignores the primary selection",
+			registers: map[string]string{sel: "hello"},
+			output:    "\x1b]52;c;?" + bel,
+			reply:     "\x1b]52;c;" + bel,
+		},
+		{
+			name:      "load p ignores the clipboard",
+			registers: map[string]string{clip: "hello"},
+			output:    "\x1b]52;p;?" + bel,
+			reply:     "\x1b]52;p;" + bel,
+		},
+		{
+			name:   "load empty register",
+			output: "\x1b]52;c;?" + bel,
+			reply:  "\x1b]52;c;" + bel,
+		},
+		{
+			name:      "load multiline text",
+			registers: map[string]string{clip: "one\ntwo\n"},
+			output:    "\x1b]52;c;?" + bel,
+			reply:     "\x1b]52;c;" + b64("one\ntwo\n") + bel,
+		},
+		{
+			name:      "load unicode text",
+			registers: map[string]string{clip: "héllo 🚀"},
+			output:    "\x1b]52;c;?" + bel,
+			reply:     "\x1b]52;c;" + b64("héllo 🚀") + bel,
+		},
+		{
+			name:      "load unknown register is dropped",
+			registers: map[string]string{clip: "hello"},
+			output:    "\x1b]52;q;?" + bel,
+		},
+		{
+			name:      "clipboard load error doesn't freeze the terminal",
+			registers: map[string]string{clip: "hello"},
+			err:       errUnavailable,
+			output:    "\x1b]52;c;?" + bel,
+		},
+
+		// round trips
+		{
+			name:   "store c then load c",
+			output: "\x1b]52;c;" + b64("hello") + bel + "\x1b]52;c;?" + bel,
+			want:   map[string]string{clip: "hello"},
+			reply:  "\x1b]52;c;" + b64("hello") + bel,
+		},
+		{
+			name:   "store p then load s",
+			output: "\x1b]52;p;" + b64("hello") + bel + "\x1b]52;s;?" + bel,
+			want:   map[string]string{sel: "hello"},
+			reply:  "\x1b]52;s;" + b64("hello") + bel,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			uri, err := workspaceapi.ParseURI("memory:///osc52")
+			require.NoError(t, err)
+			registers := map[string]string{}
+			maps.Copy(registers, tc.registers)
+			want := tc.want
+			if want == nil {
+				want = maps.Clone(registers)
+			}
+			pty := &workspacetest.File{}
+			lock := new(lockCounter)
+			ph := newParserHandler(lock, pty,
+				testParserHost{access: ClipboardAccess{Write: true, Read: true}},
+				&mockTabManager{}, &registerClipboard{registers: registers, err: tc.err},
+				func() {}, uri, term.Attributes{}, false, 100, 0, nil, nil, "")
+
+			vteparser.NewParser(ph).AdvanceBytes([]byte(tc.output))
+
+			assert.Equal(t, want, registers)
+			assert.Equal(t, tc.reply, string(bytes.Join(pty.Writes, nil)))
+			assert.Zero(t, lock.held, "terminal lock left held")
+			assert.Zero(t, lock.stray, "terminal lock released without being held")
+		})
+	}
+}
+
+func TestClipboardOSC52Access(t *testing.T) {
+	t.Parallel()
+	const bel = "\x07"
+	clip := clipboard.DefaultRegisterID
+	b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	store := "\x1b]52;c;" + b64("evil") + bel
+	load := "\x1b]52;c;?" + bel
+	cases := []struct {
+		name   string
+		access ClipboardAccess
+		output string
+		want   map[string]string
+		reply  string
+	}{
+		{
+			name:   "store is refused by default",
+			output: store,
+			want:   map[string]string{clip: "secret"},
+		},
+		{
+			name:   "load is refused by default",
+			output: load,
+			want:   map[string]string{clip: "secret"},
+		},
+		{
+			name:   "store is refused when only read is allowed",
+			access: ClipboardAccess{Read: true},
+			output: store,
+			want:   map[string]string{clip: "secret"},
+		},
+		{
+			name:   "load is refused when only write is allowed",
+			access: ClipboardAccess{Write: true},
+			output: load,
+			want:   map[string]string{clip: "secret"},
+		},
+		{
+			name:   "store is allowed by write",
+			access: ClipboardAccess{Write: true},
+			output: store,
+			want:   map[string]string{clip: "evil"},
+		},
+		{
+			name:   "load is allowed by read",
+			access: ClipboardAccess{Read: true},
+			output: load,
+			want:   map[string]string{clip: "secret"},
+			reply:  "\x1b]52;c;" + b64("secret") + bel,
+		},
+		{
+			name:   "a refused store does not reply",
+			output: store + load,
+			want:   map[string]string{clip: "secret"},
+		},
+		{
+			name:   "a reset keeps the access",
+			access: ClipboardAccess{Write: true},
+			output: "\x1bc" + store,
+			want:   map[string]string{clip: "evil"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			uri, err := workspaceapi.ParseURI("memory:///osc52")
+			require.NoError(t, err)
+			registers := map[string]string{clip: "secret"}
+			pty := &workspacetest.File{}
+			ph := newParserHandler(new(lockCounter), pty,
+				testParserHost{access: tc.access}, &mockTabManager{},
+				&registerClipboard{registers: registers},
+				func() {}, uri, term.Attributes{}, false, 100, 0, nil, nil, "")
+
+			vteparser.NewParser(ph).AdvanceBytes([]byte(tc.output))
+
+			assert.Equal(t, tc.want, registers)
+			assert.Equal(t, tc.reply, string(bytes.Join(pty.Writes, nil)))
+		})
+	}
+}
+
+func TestRequestTermcapAdvertisesOSC52(t *testing.T) {
+	t.Parallel()
+	const st = "\x1b\\"
+	hex := func(s string) string { return fmt.Sprintf("%x", s) }
+	msValue := `\E]52;%p1%s;%p2%s\E\\`
+	cases := []struct {
+		name   string
+		access ClipboardAccess
+		output string
+		reply  string
+	}{
+		{
+			name:   "Ms when programs may write the clipboard",
+			access: ClipboardAccess{Write: true},
+			output: "\x1bP+q" + hex("Ms") + st,
+			reply:  "\x1bP1+r" + hex("Ms") + "=" + hex(msValue) + st,
+		},
+		{
+			name:   "Ms when programs may not write the clipboard",
+			access: ClipboardAccess{Read: true},
+			output: "\x1bP+q" + hex("Ms") + st,
+			reply:  "\x1bP0+r" + hex("Ms") + st,
+		},
+		{
+			name:   "an unknown capability",
+			access: ClipboardAccess{Write: true},
+			output: "\x1bP+q" + hex("Tc") + st,
+			reply:  "\x1bP0+r" + hex("Tc") + st,
+		},
+		{
+			name:   "every name of a request is answered on its own",
+			access: ClipboardAccess{Write: true},
+			output: "\x1bP+q" + hex("Tc") + ";" + hex("Ms") + ";" + hex("RGB") + st,
+			reply: "\x1bP0+r" + hex("Tc") + st +
+				"\x1bP1+r" + hex("Ms") + "=" + hex(msValue) + st +
+				"\x1bP0+r" + hex("RGB") + st,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			uri, err := workspaceapi.ParseURI("memory:///xtgettcap")
+			require.NoError(t, err)
+			pty := &workspacetest.File{}
+			ph := newParserHandler(new(lockCounter), pty,
+				testParserHost{access: tc.access}, &mockTabManager{}, clipboard.NewInMemory(),
+				func() {}, uri, term.Attributes{}, false, 100, 0, nil, nil, "")
+
+			vteparser.NewParser(ph).AdvanceBytes([]byte(tc.output))
+
+			assert.Equal(t, tc.reply, string(bytes.Join(pty.Writes, nil)))
+		})
+	}
+}
+
+func TestRequestTermcapMsReadsAsOSC52ToNeovim(t *testing.T) {
+	t.Parallel()
+	uri, err := workspaceapi.ParseURI("memory:///xtgettcap")
+	require.NoError(t, err)
+	pty := &workspacetest.File{}
+	ph := newParserHandler(new(lockCounter), pty,
+		testParserHost{access: ClipboardAccess{Write: true}}, &mockTabManager{},
+		clipboard.NewInMemory(),
+		func() {}, uri, term.Attributes{}, false, 100, 0, nil, nil, "")
+
+	ph.RequestTermcap([]string{"Ms"})
+
+	// vim.termcap.query: ^\027P1+r(%x+)(.*)$, then rest must be =%x+ and
+	// the value, with \E read as ESC and %pN removed, must start the OSC
+	// 52 sequence for runtime/plugin/osc52.lua to enable the provider.
+	reply := string(bytes.Join(pty.Writes, nil))
+	require.True(t, strings.HasPrefix(reply, "\x1bP1+r"), reply)
+	require.True(t, strings.HasSuffix(reply, "\x1b\\"), reply)
+	name, rest, ok := strings.Cut(strings.TrimSuffix(reply[len("\x1bP1+r"):], "\x1b\\"), "=")
+	require.True(t, ok, reply)
+	decodedName, err := hex.DecodeString(name)
+	require.NoError(t, err)
+	assert.Equal(t, "Ms", string(decodedName))
+	value, err := hex.DecodeString(rest)
+	require.NoError(t, err)
+	seq := strings.ReplaceAll(string(value), `\E`, "\x1b")
+	seq = regexp.MustCompile(`%p\d`).ReplaceAllString(seq, "")
+	assert.True(t, strings.HasPrefix(seq, "\x1b]52"), "%q", seq)
+}
+
+// registerClipboard keeps each register apart, as the clipboard Rune
+// configures does, so that a test tells which one a request reached.
+type registerClipboard struct {
+	registers map[string]string
+	err       error
+}
+
+func (c *registerClipboard) Copy(registerID string, data clipboard.Data) error {
+	if c.err != nil {
+		return c.err
+	}
+	c.registers[registerID] = data.Text
+	return nil
+}
+
+func (c *registerClipboard) Paste(registerID string) (clipboard.Data, error) {
+	if c.err != nil {
+		return clipboard.Data{}, c.err
+	}
+	return clipboard.Data{Text: c.registers[registerID]}, nil
+}
+
+// lockCounter stands in for the terminal lock so that releasing it
+// while nobody holds it fails the test: on a sync.Mutex that is a fatal
+// error, which would take down the test binary instead.
+type lockCounter struct {
+	held, stray int
+}
+
+func (l *lockCounter) Lock() { l.held++ }
+
+func (l *lockCounter) Unlock() {
+	if l.held == 0 {
+		l.stray++
+		return
+	}
+	l.held--
 }

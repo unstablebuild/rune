@@ -33,9 +33,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/blue/release"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
+	"unstable.build/rune/internal/ide/console/pkgconsole"
 	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
-	"unstable.build/rune/internal/ide/pkgshell"
 )
 
 // gitFixtureCommit writes files into a fixture repo worktree and
@@ -80,6 +80,9 @@ func serveGitFixtures(t *testing.T, base string) func(pkgID string) string {
 
 func TestPkgManagerGitHubInstallFacade(t *testing.T) {
 	const ghID = "github.com/owner/repo"
+	// Hiding git from PATH keeps the install on the built-in go-git
+	// client, so this test stays hermetic.
+	t.Setenv("PATH", "")
 	base := t.TempDir()
 	repoDir := filepath.Join(base, "github.com", "owner", "repo")
 	sha := gitFixtureCommit(t, repoDir, map[string]string{
@@ -97,13 +100,13 @@ func TestPkgManagerGitHubInstallFacade(t *testing.T) {
 	m := newTestWorkspaceManagerHandlerForPkgManager(t, rm, false, 0, ghURL)
 	defer m.Close()
 
-	h := pkgshell.New(pkgshell.Config{Manager: m.pkgmanager.pkg})
+	h := pkgconsole.New(pkgconsole.Config{Manager: m.pkgmanager.pkg})
 	ctx := context.Background()
 
 	// install resolves HEAD as the latest version, clones, and installs
 	// the declared requirement from the official distribution first.
 	_, err := h.HandleCommand(ctx, repl.Command{
-		Name: pkgshell.CommandName,
+		Name: pkgconsole.CommandName,
 		Args: []string{"install", ghID},
 	}, repl.NopProgressWriter())
 	require.NoError(t, err)
@@ -143,7 +146,7 @@ func TestPkgManagerGitHubInstallFacade(t *testing.T) {
 
 	// remove cleans up through the shell
 	_, err = h.HandleCommand(ctx, repl.Command{
-		Name: pkgshell.CommandName,
+		Name: pkgconsole.CommandName,
 		Args: []string{"remove", ghID},
 	}, repl.NopProgressWriter())
 	require.NoError(t, err)

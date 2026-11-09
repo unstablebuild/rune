@@ -25,6 +25,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"go.uber.org/goleak"
+	rhandlertest "unstable.build/rune/internal/handler/handlertest"
 )
 
 func newTestInterrupter() (term.Interrupter, chan struct{}) {
@@ -124,5 +125,17 @@ func TestAnimationPlayer(t *testing.T) {
 		expected := "0000    \n0000    \n    0000\n    0000"
 		require.NoError(t, w.Flush())
 		assert.Equal(t, expected, w.String(), i)
+	}
+}
+
+func TestPlayerPointerLeaves(t *testing.T) {
+	for _, size := range [][2]int{{60, 15}, {1, 1}} {
+		a := component.NewAnimation(term.NopInterrupter(),
+			[]string{"0000\n0000", "1111\n1111"}, []int{0, 1}, 30)
+		h := AnimationPlayer(a)
+		rhandlertest.RunPointerLeaves(t, h, size[0], size[1])
+		h.Handle(term.Event{Type: term.EventKey, Key: term.KeySpace})
+		rhandlertest.RunPointerLeaves(t, h, size[0], size[1])
+		require.NoError(t, a.Close())
 	}
 }

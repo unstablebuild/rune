@@ -19,6 +19,7 @@ package memory
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -294,4 +295,8 @@ func TestParseMemories(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func (*mockExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }

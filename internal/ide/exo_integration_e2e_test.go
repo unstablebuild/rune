@@ -33,6 +33,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/text"
 )
 
@@ -82,8 +83,8 @@ func TestExoVimEndToEnd(t *testing.T) {
 		"goto": "<esc>:{line}<enter>{col}|",
 		"quit": "<esc>:qa<enter>",
 	}
-	// terminalConfig() reads cfg.ringBell; vte panics on a nil bell.
-	cfg.ringBell = func() {}
+	// terminalConfig() reads cfg.sounds; vte panics on a nil player.
+	cfg.sounds = sounds.Silent
 	require.Equal(t, "exo", cfg.editorMode())
 
 	// Hook the autoSaver factory so we can assert exo never wires
@@ -210,7 +211,7 @@ func TestExoVimSwapfileGracefulClose(t *testing.T) {
 		"goto":    "<esc>:{line}<enter>{col}|",
 		"quit":    "<esc>:qa!<enter>",
 	}
-	cfg.ringBell = func() {}
+	cfg.sounds = sounds.Silent
 	require.Equal(t, "exo", cfg.editorMode())
 
 	uri, err := workspaceapi.ParseURI("file://" + dir)
@@ -304,7 +305,7 @@ func TestExoVimSetCursorAtScroll(t *testing.T) {
 		"goto": "<esc>:{line}<enter>{col}|",
 		"quit": "<esc>:qa<enter>",
 	}
-	cfg.ringBell = func() {}
+	cfg.sounds = sounds.Silent
 	require.Equal(t, "exo", cfg.editorMode())
 
 	uri, err := workspaceapi.ParseURI("file://" + dir)
@@ -424,7 +425,7 @@ func TestFileExplorerExoEnter(t *testing.T) {
 		"goto":    "<esc>:{line}<enter>{col}|",
 		"quit":    "<esc>:qa<enter>",
 	}
-	cfg.ringBell = func() {}
+	cfg.sounds = sounds.Silent
 	require.Equal(t, "exo", cfg.editorMode())
 	// The exofallback default is standard; verify it propagated so
 	// downstream behaviour (Enter toggles, no vi search) matches.

@@ -17,16 +17,27 @@
 package dialoguetui
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"unstable.build/rune/internal/component/asciiart"
 	"unstable.build/rune/internal/component/markdown"
 )
 
@@ -34,6 +45,130 @@ var (
 	_ tui.Component        = (*Component)(nil)
 	_ component.Responsive = (*Component)(nil)
 )
+
+func TestComponentImageLifetime(t *testing.T) {
+	for _, dispose := range []string{"reset", "close"} {
+		t.Run(dispose, func(t *testing.T) {
+			var data bytes.Buffer
+			require.NoError(t, png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 10, 240))))
+			cfg := DefaultMarkdownConfig()
+			cfg.FS = turnImageFS{"/images/picture.png": data.Bytes(), "images/picture.png": data.Bytes()}
+			cfg.Storage = storagestub.NewInMemoryService()
+			cfg.Interrupter = term.NopInterrupter()
+			comp := NewComponent(ComponentConfig{MarkdownConfig: cfg})
+			t.Cleanup(func() { require.NoError(t, comp.Close()) })
+			var previews []*markdown.Component
+			for _, id := range []string{"first", "second"} {
+				comp.AddToolCall(id, "capture", "", "")
+				comp.AddToolCallImage(id, "/images/picture.png", "preview")
+				previews = append(previews, comp.currentTurn.tools[id].images[0])
+				comp.AddReceiveMessage("![assistant](/images/picture.png)")
+			}
+			comp.eachTranscriptMarkdown(func(md *markdown.Component, _ term.Coordinates) {
+				previews = append(previews, md)
+			})
+			require.Len(t, previews, 4)
+			w := term.NewStringWriter(30, 20)
+			w.SetContext = term.ContextWithCellPixelSize(context.Background(), 10, 20)
+			for _, md := range previews {
+				require.Eventually(t, func() bool {
+					md.Resize(30, 20)
+					md.Draw(w)
+					return md.Height(30) > 10
+				}, time.Second, time.Millisecond, "replayed previews must load after answer breaks")
+			}
+			comp.AddReceiveMessage("later answer")
+			for _, md := range previews {
+				md.Draw(w)
+				assert.Greater(t, md.Height(30), 10)
+			}
+			if dispose == "reset" {
+				comp.Reset()
+			} else {
+				require.NoError(t, comp.Close())
+			}
+		})
+	}
+}
+
+type componentImageFS func(string, int, os.FileMode) (workspaceapi.File, error)
+
+func (fs componentImageFS) OpenFile(path string, flag int, mode os.FileMode) (workspaceapi.File, error) {
+	return fs(path, flag, mode)
+}
+
+func TestComponentImageLoadingAcrossBreak(t *testing.T) {
+	var data bytes.Buffer
+	require.NoError(t, png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 10, 240))))
+	started, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
+	cfg := DefaultMarkdownConfig()
+	cfg.FS = componentImageFS(func(path string, flag int, mode os.FileMode) (workspaceapi.File, error) {
+		close(started)
+		<-release
+		return (turnImageFS{"/images/picture.png": data.Bytes()}).OpenFile(path, flag, mode)
+	})
+	cfg.Storage = storagestub.NewInMemoryService()
+	cfg.Interrupter = term.NopInterrupter()
+	comp := NewComponent(ComponentConfig{MarkdownConfig: cfg})
+	t.Cleanup(func() { require.NoError(t, comp.Close()) })
+	comp.AddToolCall("image", "capture", "", "")
+	comp.AddToolCallImage("image", "/images/picture.png", "preview")
+	turn := comp.currentTurn
+	w := term.NewStringWriter(30, 20)
+	w.SetContext = term.ContextWithCellPixelSize(context.Background(), 10, 20)
+	turn.Resize(30, 20)
+	turn.Draw(w)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("image load did not start")
+	}
+	comp.AddReceiveMessage("answer")
+	comp.AddReceiveMessage("later answer")
+	unblock()
+	require.Eventually(t, func() bool {
+		turn.Resize(30, 20)
+		turn.Draw(w)
+		return turn.tools["image"].images[0].Height(30) == 14
+	}, time.Second, time.Millisecond)
+}
+
+func TestComponentDisposesDeferredImages(t *testing.T) {
+	for _, dispose := range []string{"reset", "close"} {
+		t.Run(dispose, func(t *testing.T) {
+			var data bytes.Buffer
+			require.NoError(t, png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 10, 240))))
+			cfg := DefaultMarkdownConfig()
+			cfg.FS = turnImageFS{"/images/picture.png": data.Bytes(), "images/picture.png": data.Bytes()}
+			cfg.Storage = storagestub.NewInMemoryService()
+			cfg.Interrupter = term.NopInterrupter()
+			comp := NewComponent(ComponentConfig{MarkdownConfig: cfg})
+			t.Cleanup(func() { require.NoError(t, comp.Close()) })
+			comp.AddToolCall("image", "capture", "", "")
+			comp.AddToolCallImage("image", "/images/picture.png", "preview")
+			preview := comp.currentTurn.tools["image"].images[0]
+			comp.AddReceiveMessageChunk("![assistant](/images/picture.png)")
+			assistant := comp.tailMd
+			if dispose == "reset" {
+				comp.Reset()
+			} else {
+				require.NoError(t, comp.Close())
+			}
+			w := term.NewStringWriter(30, 20)
+			w.SetContext = term.ContextWithCellPixelSize(context.Background(), 10, 20)
+			for _, md := range []*markdown.Component{preview, assistant} {
+				for deadline := time.Now().Add(100 * time.Millisecond); time.Now().Before(deadline); {
+					md.Resize(30, 20)
+					md.Draw(w)
+					require.LessOrEqual(t, md.Height(30), 10, "disposed images must not start loading")
+					time.Sleep(time.Millisecond)
+				}
+			}
+		})
+	}
+}
 
 func TestComponentDraw(t *testing.T) {
 	for i := range 2 {
@@ -80,7 +215,7 @@ func TestComponentDraw(t *testing.T) {
 						assert.True(t, comp.SeekUp())
 						assert.False(t, comp.SeekUp())
 					},
-					Expected: "wasup bro            \nI am a AI assistant  \nblabla.              \n                     \nSpeak in bro.        \nYo, wa'tup.          \n                     \n ┌──────────────┐    \n │              │    \n └──────────────┘    \n                     ",
+					Expected: "wasup bro            \nI am a AI assistant  \nblabla.              \n                     \nSpeak in bro.        \nYo, wa'tup.          \n         \uf063           \n ┌──────────────┐    \n │              │    \n └──────────────┘    \n                     ",
 				},
 				{
 					Action: func() {
@@ -166,7 +301,7 @@ func TestComponentScrollPreservedOnAppend(t *testing.T) {
 				"line5                \n" +
 				"line6                \n" +
 				"line7                \n" +
-				"line8                \n" +
+				"         \uf063           \n" +
 				" ┌──────────────┐    \n" +
 				" │              │    \n" +
 				" └──────────────┘    \n" +
@@ -179,7 +314,7 @@ func TestComponentScrollPreservedOnAppend(t *testing.T) {
 				"line5                \n" +
 				"line6                \n" +
 				"line7                \n" +
-				"line8                \n" +
+				"         \uf063           \n" +
 				" ┌──────────────┐    \n" +
 				" │              │    \n" +
 				" └──────────────┘    \n" +
@@ -195,7 +330,7 @@ func TestComponentScrollPreservedOnAppend(t *testing.T) {
 				"line4                \n" +
 				"line5                \n" +
 				"line6                \n" +
-				"line7                \n" +
+				"         \uf063           \n" +
 				" ┌──────────────┐    \n" +
 				" │              │    \n" +
 				" └──────────────┘    \n" +
@@ -208,7 +343,7 @@ func TestComponentScrollPreservedOnAppend(t *testing.T) {
 				"line4                \n" +
 				"line5                \n" +
 				"line6                \n" +
-				"line7                \n" +
+				"         \uf063           \n" +
 				" ┌──────────────┐    \n" +
 				" │              │    \n" +
 				" └──────────────┘    \n" +
@@ -298,7 +433,7 @@ func TestComponentScrollPreservedOnInPlaceGrowth(t *testing.T) {
 				"line7                \n" +
 				"line8                \n" +
 				"line9                \n" +
-				"line10               \n" +
+				"         \uf063           \n" +
 				" ┌──────────────┐    \n" +
 				" │              │    \n" +
 				" └──────────────┘    \n" +
@@ -310,7 +445,7 @@ func TestComponentScrollPreservedOnInPlaceGrowth(t *testing.T) {
 				"line7                \n" +
 				"line8                \n" +
 				"line9                \n" +
-				"line10               \n" +
+				"         \uf063           \n" +
 				" ┌──────────────┐    \n" +
 				" │              │    \n" +
 				" └──────────────┘    \n" +
@@ -358,7 +493,7 @@ func TestComponentScrollPreservedOnInPlaceGrowth(t *testing.T) {
 				"line8                \n" +
 				"line9                \n" +
 				"line10               \n" +
-				"a                    \n" +
+				"         \uf063           \n" +
 				" ┌──────────────┐    \n" +
 				" │              │    \n" +
 				" └──────────────┘    \n" +
@@ -370,7 +505,7 @@ func TestComponentScrollPreservedOnInPlaceGrowth(t *testing.T) {
 				"line8                \n" +
 				"line9                \n" +
 				"line10               \n" +
-				"a                    \n" +
+				"         \uf063           \n" +
 				" ┌──────────────┐    \n" +
 				" │              │    \n" +
 				" └──────────────┘    \n" +
@@ -422,7 +557,7 @@ func TestComponentScrollPreservedOnInPlaceGrowth(t *testing.T) {
 				"line6                \n" +
 				"line7                \n" +
 				"line8                \n" +
-				"line9                \n" +
+				"         \uf063           \n" +
 				" ┌──────────────┐    \n" +
 				" │              │    \n" +
 				" └──────────────┘    \n" +
@@ -434,7 +569,7 @@ func TestComponentScrollPreservedOnInPlaceGrowth(t *testing.T) {
 				"line6                \n" +
 				"line7                \n" +
 				"line8                \n" +
-				"line9                \n" +
+				"         \uf063           \n" +
 				" ┌──────────────┐    \n" +
 				" │              │    \n" +
 				" └──────────────┘    \n" +
@@ -488,7 +623,7 @@ func TestComponentScrollPreservedOnInPlaceGrowth(t *testing.T) {
 				"line7                \n" +
 				"line8                \n" +
 				"line9                \n" +
-				"line10               \n" +
+				"         \uf063           \n" +
 				" ┌──────────────┐    \n" +
 				" │              │    \n" +
 				" └──────────────┘    \n" +
@@ -500,7 +635,7 @@ func TestComponentScrollPreservedOnInPlaceGrowth(t *testing.T) {
 				"line7                \n" +
 				"line8                \n" +
 				"line9                \n" +
-				"line10               \n" +
+				"         \uf063           \n" +
 				" ┌──────────────┐    \n" +
 				" │              │    \n" +
 				" └──────────────┘    \n" +
@@ -548,7 +683,7 @@ func TestComponentScrollPreservedOnInPlaceGrowth(t *testing.T) {
 				"line5                \n" +
 				"line6                \n" +
 				"line7                \n" +
-				"line8                \n" +
+				"         \uf063           \n" +
 				" ┌──────────────┐    \n" +
 				" │              │    \n" +
 				" └──────────────┘    \n" +
@@ -558,7 +693,7 @@ func TestComponentScrollPreservedOnInPlaceGrowth(t *testing.T) {
 				"line3                \n" +
 				"line4                \n" +
 				"line5                \n" +
-				"line6                \n" +
+				"         \uf063           \n" +
 				" ┌──────────────┐    \n" +
 				" │x             │    \n" +
 				" │y             │    \n" +
@@ -683,7 +818,7 @@ func TestComponentToggleContractedPreservesVisibleAnchor(t *testing.T) {
 				"file data                                \n" +
 				"file data                                \n" +
 				"...                                      \n" +
-				"✓ read_file c3.go                        \n" +
+				"                   \uf063                     \n" +
 				"   ┌───────────────────────────────┐     \n" +
 				"   │                               │     \n" +
 				"   └───────────────────────────────┘     \n" +
@@ -719,7 +854,7 @@ func TestComponentToggleContractedPreservesVisibleAnchor(t *testing.T) {
 				"file data                                \n" +
 				"file data                                \n" +
 				"...                                      \n" +
-				"✓ read_file c3.go                        \n" +
+				"                   \uf063                     \n" +
 				"   ┌───────────────────────────────┐     \n" +
 				"   │                               │     \n" +
 				"   └───────────────────────────────┘     \n" +
@@ -2979,6 +3114,85 @@ func TestComponentToolCallOrderings(t *testing.T) {
 		comptest.TestComponent(t, comp, w, tests)
 	})
 
+	t.Run("children and completion after text detached the turn", func(t *testing.T) {
+		comp := NewComponent(ComponentConfig{})
+		comp.Resize(W, H)
+		w := mkW()
+		tests := []comptest.TestCase{
+			{
+				Action: func() {
+					comp.AddToolCall("p1", "agent", "{}", "task")
+					comp.AddReceiveMessageChunk("waiting")
+					comp.AddChildToolCall("p1", "c1", "read", "{}", "f")
+					comp.CompleteChildToolCall("p1", "c1", "read", "{}", "f", "ok", false)
+					comp.CompleteToolCall("p1", "agent", "{}", "task", "done", false)
+				},
+				Expected: "✓ agent task                   \n" +
+					"done                           \n" +
+					"✓ read f                       \n" +
+					"ok                             \n" +
+					"waiting                        \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"  ┌───────────────────────┐    \n" +
+					"  │                       │    \n" +
+					"  └───────────────────────┘    \n" +
+					"                               ",
+			},
+		}
+		comptest.TestComponent(t, comp, w, tests)
+	})
+
+	t.Run("result of a nested sub-agent", func(t *testing.T) {
+		comp := NewComponent(ComponentConfig{StartCollapsed: true})
+		comp.Resize(W, H)
+		w := mkW()
+		tests := []comptest.TestCase{
+			{
+				Action: func() {
+					comp.AddToolCall("p1", "skill", "{}", "research")
+					comp.AddChildToolCall("p1", "c1", "agent", "{}", "scout")
+					comp.AddChildResult("c1", "found", false)
+					comp.CompleteChildToolCall("p1", "c1", "agent", "{}", "scout", "found", false)
+					comp.AddChildResult("p1", "done", false)
+					comp.CompleteToolCall("p1", "skill", "{}", "research", "done", false)
+				},
+				Expected: "└─ ✓ skill research            \n" +
+					"   ├─ ✓ agent scout            \n" +
+					"   │  └─ 󰆈  found              \n" +
+					"   └─ 󰆈  done                  \n" +
+					"Press <ctrl-o> to expand       \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"  ┌───────────────────────┐    \n" +
+					"  │                       │    \n" +
+					"  └───────────────────────┘    \n" +
+					"                               ",
+			},
+		}
+		comptest.TestComponent(t, comp, w, tests)
+	})
+
 	t.Run("child tool call error", func(t *testing.T) {
 		comp := NewComponent(ComponentConfig{})
 		comp.Resize(W, H)
@@ -4398,4 +4612,444 @@ func TestComponentRestoreDraftDoesNotSynthesizeLinks(t *testing.T) {
 	assert.Empty(t, comp.Input().Links(),
 		"plain text that happens to match a chip must stay unlinked")
 	assert.Len(t, comp.Attachments(), 1)
+}
+
+// newScrollOverlayComponent lays out a 20x14 chat whose transcript holds
+// a long question and a one-row one, each followed by six replies.
+func newScrollOverlayComponent(cfg ComponentConfig) *Component {
+	comp := NewComponent(cfg)
+	comp.Resize(20, 14)
+	comp.AddSendMessage("first question that is long enough to wrap over several rows")
+	for i := range 6 {
+		comp.AddReceiveMessage(fmt.Sprintf("reply %d", i))
+	}
+	comp.AddSendMessage("second")
+	for i := range 6 {
+		comp.AddReceiveMessage(fmt.Sprintf("answer %d", i))
+	}
+	return comp
+}
+
+func TestComponentScrollOverlays(t *testing.T) {
+	const width, height = 20, 14
+	arrow := term.Coordinates{X: (width - 1) / 2, Y: 10}
+	suite := []struct {
+		desc      string
+		maxRows   int
+		up        int
+		hover     bool
+		wantRows  []string
+		wantArrow term.Attributes
+	}{
+		{
+			desc:     "at the bottom nothing is pinned and no arrow is drawn",
+			maxRows:  2,
+			wantRows: []string{"", "answer 1"},
+		},
+		{
+			desc:      "a question at the top of the view is not pinned",
+			maxRows:   2,
+			up:        2,
+			wantRows:  []string{"second", "answer 0"},
+			wantArrow: term.Attributes{Fg: term.ColorSilver},
+		},
+		{
+			desc:      "the next question pushes the pin out",
+			maxRows:   2,
+			up:        3,
+			wantRows:  []string{"first question that…", "second"},
+			wantArrow: term.Attributes{Fg: term.ColorSilver},
+		},
+		{
+			desc:      "a long question is cut short after max rows",
+			maxRows:   2,
+			up:        5,
+			wantRows:  []string{"first question that", "is long enough to w…", ""},
+			wantArrow: term.Attributes{Fg: term.ColorSilver},
+		},
+		{
+			desc:      "hovering the arrow highlights it",
+			maxRows:   2,
+			up:        5,
+			hover:     true,
+			wantRows:  []string{"first question that", "is long enough to w…", ""},
+			wantArrow: term.Attributes{Fg: term.ColorWhite, Attrs: term.AttrBold},
+		},
+		{
+			desc:      "zero max rows disables the pin",
+			up:        5,
+			wantRows:  []string{"", "reply 5", "", "second"},
+			wantArrow: term.Attributes{Fg: term.ColorSilver},
+		},
+		{
+			desc:      "nothing is pinned at the start of the transcript",
+			maxRows:   2,
+			up:        100,
+			wantRows:  []string{"first question that", "is long enough to"},
+			wantArrow: term.Attributes{Fg: term.ColorSilver},
+		},
+	}
+	for _, tc := range suite {
+		t.Run(tc.desc, func(t *testing.T) {
+			comp := newScrollOverlayComponent(ComponentConfig{PinnedMessageMaxRows: tc.maxRows})
+			for range tc.up {
+				comp.SeekUp()
+			}
+			if tc.hover {
+				require.True(t, comp.HoverScrollOverlays(arrow))
+			}
+			w := term.NewStringWriter(width, height)
+			comp.Draw(w)
+			require.NoError(t, w.Flush())
+
+			rows := strings.Split(w.String(), "\n")
+			for i, want := range tc.wantRows {
+				assert.Equal(t, want, strings.TrimRight(rows[i], " "), "row %d", i)
+			}
+			cell := w.Cells()[arrow.Y*width+arrow.X]
+			if tc.wantArrow == (term.Attributes{}) {
+				assert.NotEqual(t, jumpToBottomArrow, cell.Ch)
+				return
+			}
+			assert.Equal(t, jumpToBottomArrow, cell.Ch)
+			assert.Equal(t, tc.wantArrow, cell.Attributes())
+			assert.Equal(t, string(jumpToBottomArrow), strings.TrimSpace(rows[arrow.Y]),
+				"the arrow takes its row over")
+		})
+	}
+}
+
+func TestComponentSendIcon(t *testing.T) {
+	const width, height = 20, 14
+	cfg := ComponentConfig{
+		PinnedMessageMaxRows: 2,
+		SendMessageIcon:      DefaultSendMessageIcon,
+		MessagesRowConfig: component.SpanConfig{
+			PadHorizontal:    6,
+			ContentAlignment: component.AlignmentCentered,
+		},
+		SendMessageStringConfig: component.StringConfig{
+			Attributes:           term.Attributes{Fg: term.ColorYellow},
+			BackgroundAttributes: term.Attributes{Bg: term.ColorGray},
+		},
+	}
+	type row struct {
+		icon bool
+		// textBg is the background where the message text starts.
+		textBg term.Color
+	}
+	suite := []struct {
+		desc   string
+		noIcon bool
+		up     int
+		hover  bool
+		want   map[int]row
+	}{
+		{
+			desc: "sent messages have an icon left of their first row only",
+			up:   18,
+			want: map[int]row{
+				0: {icon: true, textBg: term.ColorGray},
+				1: {textBg: term.ColorGray},
+				4: {},
+			},
+		},
+		{
+			desc: "the pinned message has the same icon",
+			up:   5,
+			want: map[int]row{
+				0: {icon: true, textBg: term.ColorGray},
+				1: {textBg: term.ColorGray},
+				2: {},
+				3: {icon: true, textBg: term.ColorGray},
+			},
+		},
+		{
+			desc:   "no icon leaves the padding blank",
+			noIcon: true,
+			up:     5,
+			want: map[int]row{
+				0: {textBg: term.ColorGray},
+				3: {textBg: term.ColorGray},
+			},
+		},
+		{
+			desc:  "hovering the pinned message lightens its background",
+			up:    5,
+			hover: true,
+			want: map[int]row{
+				0: {icon: true, textBg: term.ColorSilver},
+				1: {textBg: term.ColorSilver},
+				3: {icon: true, textBg: term.ColorGray},
+			},
+		},
+	}
+	for _, tc := range suite {
+		t.Run(tc.desc, func(t *testing.T) {
+			cfg := cfg
+			if tc.noIcon {
+				cfg.SendMessageIcon = 0
+			}
+			comp := newScrollOverlayComponent(cfg)
+			for range tc.up {
+				comp.SeekUp()
+			}
+			if tc.hover {
+				require.True(t, comp.HoverScrollOverlays(term.Coordinates{X: -3, Y: 0}))
+			}
+			w := term.NewStringWriter(width, height)
+			comp.Draw(w)
+			require.NoError(t, w.Flush())
+			cells := w.Cells()
+			for y, want := range tc.want {
+				gutter := cells[y*width : y*width+3]
+				if want.icon {
+					assert.Equal(t, term.NewCell(DefaultSendMessageIcon, 1, term.Attributes{}), gutter[0],
+						"row %d icon", y)
+				} else {
+					assert.NotEqual(t, DefaultSendMessageIcon, gutter[0].Ch, "row %d icon", y)
+					assert.Contains(t, []rune{0, ' '}, gutter[0].Ch, "row %d icon", y)
+				}
+				for x, c := range gutter {
+					assert.Equal(t, term.ColorDefault, c.Bg, "row %d gutter cell %d", y, x)
+				}
+				assert.Equal(t, want.textBg, cells[y*width+3].Bg, "row %d text", y)
+			}
+		})
+	}
+}
+
+func TestComponentJumpToBottom(t *testing.T) {
+	arrow := term.Coordinates{X: 9, Y: 10}
+	comp := newScrollOverlayComponent(ComponentConfig{})
+	for range 5 {
+		comp.SeekUp()
+	}
+	require.True(t, comp.JumpArrowAt(arrow))
+	require.True(t, comp.HoverScrollOverlays(arrow))
+
+	comp.JumpToBottom()
+	assert.Zero(t, comp.messages.Offset())
+	assert.False(t, comp.JumpArrowAt(arrow))
+	assert.False(t, comp.jumpHovered)
+
+	comp.AddReceiveMessage("follows new content")
+	assert.Zero(t, comp.messages.Offset())
+}
+
+func TestComponentScrollToPinnedMessage(t *testing.T) {
+	comp := newScrollOverlayComponent(ComponentConfig{PinnedMessageMaxRows: 2})
+	for range 8 {
+		comp.SeekUp()
+	}
+	require.True(t, comp.PinnedMessageAt(term.Coordinates{X: 0, Y: 1}))
+	require.False(t, comp.PinnedMessageAt(term.Coordinates{X: 0, Y: 2}))
+
+	comp.ScrollToPinnedMessage()
+	w := term.NewStringWriter(20, 14)
+	comp.Draw(w)
+	require.NoError(t, w.Flush())
+	rows := strings.Split(w.String(), "\n")
+	assert.Equal(t, []string{"first question that", "is long enough to", "wrap over several", "rows"},
+		[]string{
+			strings.TrimRight(rows[0], " "), strings.TrimRight(rows[1], " "),
+			strings.TrimRight(rows[2], " "), strings.TrimRight(rows[3], " "),
+		})
+	assert.False(t, comp.PinnedMessageAt(term.Coordinates{X: 0, Y: 0}))
+}
+
+func TestComponentSetStatusBarConfig(t *testing.T) {
+	const width, height = 40, 12
+	modelOnly, err := ParseStatusBarLayout(`{{ .Model }}`)
+	require.NoError(t, err)
+	withEffort, err := ParseStatusBarLayout(`{{ .Model }} {{ .Effort }}`)
+	require.NoError(t, err)
+	start := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	enabled := func(layout []StatusBarComponent, shader string) StatusBarConfig {
+		return StatusBarConfig{Enabled: true, Layout: layout, Shader: shader}
+	}
+	tests := []struct {
+		name string
+		from StatusBarConfig
+		// whileSet changes the state between the two configs.
+		whileSet     func(*StatusBarState)
+		to           StatusBarConfig
+		wantBar      int
+		wantEffect   bool
+		wantModel    string
+		wantRendered string
+	}{
+		{
+			name: "a new layout", from: enabled(modelOnly, ""), to: enabled(withEffort, ""),
+			wantBar: 1, wantModel: "opus", wantRendered: "opus high",
+		},
+		{
+			name: "turning the bar off", from: enabled(modelOnly, ""), to: StatusBarConfig{},
+			wantBar: 0,
+		},
+		{
+			name: "turning the bar back on", from: StatusBarConfig{},
+			whileSet: func(s *StatusBarState) { s.Model = "sonnet" },
+			to:       enabled(modelOnly, ""), wantBar: 1, wantModel: "sonnet", wantRendered: "sonnet",
+		},
+		{
+			name: "an effect during a turn", from: enabled(modelOnly, ""), to: enabled(modelOnly, "pulse"),
+			wantBar: 1, wantEffect: true, wantModel: "opus", wantRendered: "opus",
+		},
+		{
+			name: "an effect removed during a turn", from: enabled(modelOnly, "pulse"), to: enabled(modelOnly, ""),
+			wantBar: 1, wantModel: "opus", wantRendered: "opus",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := NewComponent(ComponentConfig{StatusBar: tt.from})
+			h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp, make(interrupts, 1))
+			t.Cleanup(func() {
+				close(tx)
+				assert.NoError(t, comp.Close())
+			})
+			h.Resize(width, height)
+			comp.SetStatusBarState(func(s *StatusBarState) {
+				s.Active, s.TurnStart, s.Model, s.Effort = true, start, "opus", "high"
+			})
+			if tt.whileSet != nil {
+				comp.SetStatusBarState(tt.whileSet)
+			}
+
+			comp.SetStatusBarConfig(tt.to)
+			assert.Equal(t, tt.wantBar, comp.barHeight())
+			boxH := comp.boxHeight(comp.boxWidth(width))
+			assert.Equal(t, height-tt.wantBar, comp.InputPosition().Y+boxH,
+				"the compose box sits right above the bar")
+			if tt.wantBar == 0 {
+				assert.Zero(t, comp.StatusBarState())
+				return
+			}
+			state := comp.StatusBarState()
+			assert.Equal(t, tt.wantModel, state.Model)
+			assert.True(t, state.Active)
+			assert.Equal(t, start, state.TurnStart, "the turn keeps its elapsed time")
+			assert.Equal(t, tt.wantEffect, comp.shadedBar.shader != nil)
+			assert.Equal(t, tt.wantRendered, strings.TrimSpace(render(t, comp.statusBar, width)))
+		})
+	}
+}
+
+func TestComponentInputBoxFrameGraphics(t *testing.T) {
+	const width, height = 24, 4
+	// Nothing is on disk at uri, so only a reloaded image can draw.
+	const uri = "file:///nonexistent/frame.png"
+	cs := component.FrameCharSetDefault()
+	cs.TopLeft = '╓'
+	cs.Graphics = component.FrameCharSetGraphics{TopLeft: uri, Overlay: true}
+	// The asciiart writer draws the gray 128 pixel as 'a'.
+	gray := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	gray.Set(0, 0, color.Gray{Y: 128})
+
+	tests := []struct {
+		name      string
+		noStorage bool
+		expected  string
+	}{
+		{
+			name: "a reloaded image draws over the frame",
+			expected: "                        \n" +
+				"  a──────────────────┐  \n" +
+				"  │                  │  \n" +
+				"  └──────────────────┘  ",
+		},
+		{
+			name:      "without storage the frame shows its runes alone",
+			noStorage: true,
+			expected: "                        \n" +
+				"  ╓──────────────────┐  \n" +
+				"  │                  │  \n" +
+				"  └──────────────────┘  ",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := ComponentConfig{InputBox: InputBoxConfig{
+				GraphicsStorage: storagestub.NewInMemoryService(),
+			}}
+			if tt.noStorage {
+				cfg.InputBox.GraphicsStorage = nil
+			}
+			comp := NewComponent(cfg)
+			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
+			h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp, term.NopInterrupter())
+			defer close(tx)
+			h.Resize(width, height)
+
+			comp.SetInputBoxFrameCharSet(cs, nil)
+			h.Draw(term.NewStringWriter(width, height))
+			comp.SetInputBoxFrameCharSet(cs, map[string]image.Image{uri: gray})
+			w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+			h.Draw(w)
+			require.NoError(t, w.Flush())
+			assert.Equal(t, tt.expected, w.String())
+		})
+	}
+}
+
+func TestComponentSetInputBoxColors(t *testing.T) {
+	const width, height = 24, 6
+	tests := []struct {
+		name           string
+		opened         ComponentConfig
+		frame, content term.Attributes
+		bg             term.Color
+		wantFrame      term.Attributes
+		wantInputBg    term.Color
+	}{
+		{
+			name:        "a new input background",
+			opened:      ComponentConfig{InputBackgroundColor: term.ColorGray},
+			frame:       term.Attributes{Fg: term.ColorAqua},
+			content:     term.Attributes{Fg: term.ColorOlive},
+			bg:          term.ColorRed,
+			wantFrame:   term.Attributes{Fg: term.ColorAqua, Bg: term.ColorRed},
+			wantInputBg: term.ColorRed,
+		},
+		{
+			name:        "an input background where there was none",
+			frame:       term.Attributes{Fg: term.ColorAqua, Bg: term.ColorNavy},
+			bg:          term.ColorBlue,
+			wantFrame:   term.Attributes{Fg: term.ColorAqua, Bg: term.ColorBlue},
+			wantInputBg: term.ColorBlue,
+		},
+		{
+			name: "no input background leaves the frame's",
+			opened: ComponentConfig{
+				InputBackgroundColor: term.ColorGray,
+				InputBox:             InputBoxConfig{FrameAttr: term.Attributes{Fg: term.ColorAqua}},
+			},
+			frame:       term.Attributes{Bg: term.ColorNavy},
+			wantFrame:   term.Attributes{Bg: term.ColorNavy},
+			wantInputBg: term.ColorDefault,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := NewComponent(tt.opened)
+			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
+			h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp, term.NopInterrupter())
+			defer close(tx)
+			h.Resize(width, height)
+			typeText(h, "hi")
+
+			comp.SetInputBoxColors(tt.frame, tt.content, tt.bg)
+			w := term.NewStringWriter(width, height)
+			h.Draw(w)
+			pos := comp.InputPosition()
+			corner := w.Cells()[pos.Y*width+pos.X]
+			require.Equal(t, '┌', corner.Ch)
+			assert.Equal(t, tt.wantFrame, corner.Attributes(), "the frame")
+			typed := w.Cells()[(pos.Y+1)*width+pos.X+1]
+			require.Equal(t, 'h', typed.Ch)
+			assert.Equal(t, tt.wantInputBg, typed.Bg, "the input")
+			assert.Equal(t, tt.content, comp.cfg.InputBox.ContentAttr, "the feedback inputboxes")
+		})
+	}
 }

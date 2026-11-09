@@ -609,8 +609,9 @@ func TestInsertModeKeys(t *testing.T) {
 	// it, and leaving pulls that cell back off, so the range covers
 	// the original text plus what was typed. The other entries leave
 	// a point after the typed text, which the normal-mode invariant
-	// widens onto the following cell, or onto the last cell of the
-	// row when the point sits on its line ending.
+	// widens onto the following character, a line ending included. At
+	// the end of the document there is none, so the point stays. A
+	// selected line ending reads back as no text.
 	for _, tc := range []struct {
 		name    string
 		evs     []term.Event
@@ -618,10 +619,10 @@ func TestInsertModeKeys(t *testing.T) {
 		wantSel string
 	}{
 		{name: "a", evs: keys("aX"), want: term.Coordinates{X: 1}, wantSel: "aX"},
-		{name: "A", evs: keys("AX"), want: term.Coordinates{X: 2}, wantSel: "X"},
+		{name: "A", evs: keys("AX"), want: term.Coordinates{X: 3}, wantSel: ""},
 		{name: "I", evs: keys("IX"), want: term.Coordinates{X: 1}, wantSel: "a"},
-		{name: "o", evs: keys("oX"), want: term.Coordinates{Y: 1}, wantSel: "X"},
-		{name: "O", evs: keys("OX"), want: term.Coordinates{}, wantSel: "X"},
+		{name: "o", evs: keys("oX"), want: term.Coordinates{X: 1, Y: 1}, wantSel: ""},
+		{name: "O", evs: keys("OX"), want: term.Coordinates{X: 1}, wantSel: ""},
 		{name: "c", evs: keys("cX"), want: term.Coordinates{X: 1}, wantSel: "b"},
 	} {
 		t.Run("esc after "+tc.name, func(t *testing.T) {
@@ -948,8 +949,12 @@ func TestCaretMotions(t *testing.T) {
 			evs: []term.Event{namedKey(term.KeyArrowUp)}, wantAt: term.Coordinates{}, wantSel: "a"},
 		{name: "h clamps at line start", content: "hello", evs: keys("hhh"),
 			wantAt: term.Coordinates{}, wantSel: "h"},
-		{name: "l clamps at line end", content: "ab", evs: keys("lllll"),
-			wantAt: term.Coordinates{X: 1}, wantSel: "b"},
+		{name: "h crosses onto the line ending above", content: "ab\ncd", at: term.Coordinates{Y: 1},
+			evs: keys("h"), wantAt: term.Coordinates{X: 2}, wantSel: ""},
+		{name: "l stops at the end of the document", content: "ab", evs: keys("lllll"),
+			wantAt: term.Coordinates{X: 2}, wantSel: ""},
+		{name: "l crosses the line ending", content: "ab\ncd", at: term.Coordinates{X: 1},
+			evs: keys("ll"), wantAt: term.Coordinates{Y: 1}, wantSel: "c"},
 		{name: "k clamps at first line", content: "ab\ncd", evs: keys("kkk"),
 			wantAt: term.Coordinates{}, wantSel: "a"},
 		{name: "j clamps at last line", content: "ab\ncd", evs: keys("jjj"),
@@ -962,8 +967,8 @@ func TestCaretMotions(t *testing.T) {
 			wantAt: term.Coordinates{X: 12}, wantSel: "x"},
 		{name: "count larger than buffer clamps", content: "ab\ncd", evs: keys("99j"),
 			wantAt: term.Coordinates{Y: 1}, wantSel: "c"},
-		{name: "j onto a shorter line clamps the column", content: "abcd\nx\nabcd",
-			at: term.Coordinates{X: 3}, evs: keys("j"), wantAt: term.Coordinates{Y: 1}, wantSel: "x"},
+		{name: "j onto a shorter line lands on its line ending", content: "abcd\nx\nabcd",
+			at: term.Coordinates{X: 3}, evs: keys("j"), wantAt: term.Coordinates{X: 1, Y: 1}, wantSel: ""},
 		{name: "j past a shorter line restores the column", content: "abcd\nx\nabcd",
 			at: term.Coordinates{X: 3}, evs: keys("jj"),
 			wantAt: term.Coordinates{X: 3, Y: 2}, wantSel: "d"},
@@ -2068,6 +2073,242 @@ func TestDelete(t *testing.T) {
 	})
 }
 
+func TestLineAndWordEditsMatchHelix(t *testing.T) {
+	// The expectations come from Helix 25.07.
+	cases := []struct {
+		name    string
+		content string
+		at      term.Coordinates
+		keys    string
+		want    string
+		wantAt  term.Coordinates
+		// wantSels is every range's text in document order, left
+		// unchecked when Helix ends the sequence outside normal mode.
+		wantSels    []string
+		wantPrimary int
+	}{
+		{name: "xd a middle line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 1}, keys: "xd", want: "ab\nef", wantAt: term.Coordinates{Y: 1}, wantSels: []string{"e"}},
+		{name: "xd the first line", content: "ab\ncd\nef", keys: "xd", want: "cd\nef", wantAt: term.Coordinates{}, wantSels: []string{"c"}},
+		{name: "xd the last line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 2}, keys: "xd", want: "ab\ncd\n", wantAt: term.Coordinates{Y: 2}, wantSels: []string{""}},
+		{name: "xxd the last two lines", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "xxd", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "xd the trailing empty line", content: "ab\ncd\n", at: term.Coordinates{Y: 2}, keys: "xd", want: "ab\ncd\n", wantAt: term.Coordinates{Y: 2}, wantSels: []string{""}},
+		{name: "xd the line before the trailing empty line", content: "ab\ncd\n", at: term.Coordinates{Y: 1}, keys: "xd", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "xxd over the trailing empty line", content: "ab\ncd\n", at: term.Coordinates{Y: 1}, keys: "xxd", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "xd the only line", content: "ab", at: term.Coordinates{X: 1}, keys: "xd", want: "", wantAt: term.Coordinates{}, wantSels: []string{""}},
+		{name: "xd on an empty buffer", content: "", keys: "xd", want: "", wantAt: term.Coordinates{}, wantSels: []string{""}},
+		{name: "xd a double-width last line", content: "ab\n日本", at: term.Coordinates{X: 1, Y: 1}, keys: "xd", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "xd an emoji line", content: "\U0001F600\ncd", keys: "xd", want: "cd", wantAt: term.Coordinates{}, wantSels: []string{"c"}},
+		{name: "xd a tab-indented last line", content: "ab\n\tcd", at: term.Coordinates{X: 2, Y: 1}, keys: "xd", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "xd past the line end", content: "ab\ncd", at: term.Coordinates{X: 9, Y: 1}, keys: "xd", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "xd below the last line", content: "ab\ncd", at: term.Coordinates{Y: 9}, keys: "xd", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "%d", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "%d", want: "", wantAt: term.Coordinates{}, wantSels: []string{""}},
+		{name: "xc the last line", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "xc", want: "ab\ncd\n", wantAt: term.Coordinates{Y: 2}},
+		{name: "xxc the last two lines", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "xxc", want: "ab\n\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "xyp the last line", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "xyp", want: "ab\ncd\nefef", wantAt: term.Coordinates{X: 3, Y: 2}, wantSels: []string{"ef"}},
+		{name: "xyP the last line", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "xyP", want: "ab\ncd\nefef", wantAt: term.Coordinates{X: 1, Y: 2}, wantSels: []string{"ef"}},
+		{name: "alt-d in insert mode before an emoji", content: "ab\U0001F600cd", keys: "i<alt-d>", want: "\U0001F600cd", wantAt: term.Coordinates{}},
+		{name: "alt-d in insert mode on cjk", content: "日本ab cd", keys: "i<alt-d>", want: " cd", wantAt: term.Coordinates{}},
+		{name: "alt-d in insert mode at the line end", content: "ab\ncd", keys: "A<alt-d>", want: "ab\n", wantAt: term.Coordinates{X: 2}},
+		{name: "alt-d in insert mode over a tab", content: "ab\tcd", at: term.Coordinates{X: 2}, keys: "i<alt-d>", want: "ab", wantAt: term.Coordinates{X: 2}},
+		{name: "alt-d in insert mode on an empty line", content: "ab\n\ncd", at: term.Coordinates{Y: 1}, keys: "i<alt-d>", want: "ab\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "xd a tab-indented middle line", content: "\tab\ncd", at: term.Coordinates{X: 1}, keys: "xd", want: "cd", wantAt: term.Coordinates{}, wantSels: []string{"c"}},
+		{name: "xd a double-width middle line", content: "日本\ncd", at: term.Coordinates{X: 1}, keys: "xd", want: "cd", wantAt: term.Coordinates{}, wantSels: []string{"c"}},
+		{name: "xd past the end of a middle line", content: "ab\ncd", at: term.Coordinates{X: 9}, keys: "xd", want: "cd", wantAt: term.Coordinates{}, wantSels: []string{"c"}},
+		{name: "xd an empty middle line", content: "ab\n\ncd", at: term.Coordinates{Y: 1}, keys: "xd", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "xrz the last line", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "xrz", want: "ab\ncd\nzz", wantAt: term.Coordinates{X: 1, Y: 2}, wantSels: []string{"zz"}},
+		{name: "x~ the last line", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "x~", want: "ab\ncd\nEF", wantAt: term.Coordinates{X: 1, Y: 2}, wantSels: []string{"EF"}},
+		{name: "xxyp the last two lines", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "xxyp", want: "ab\ncd\nefcd\nef", wantAt: term.Coordinates{X: 1, Y: 3}, wantSels: []string{"cd\nef"}},
+		{name: "xyp a middle line", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "xyp", want: "ab\ncd\ncd\nef", wantAt: term.Coordinates{X: 2, Y: 2}, wantSels: []string{"cd\n"}},
+		{name: "xyjp below the last line", content: "ab\ncd", keys: "xyjp", want: "ab\ncdab\n", wantAt: term.Coordinates{X: 4, Y: 1}, wantSels: []string{"ab\n"}},
+		{name: "xc a middle line", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "xc", want: "ab\n\nef", wantAt: term.Coordinates{Y: 1}},
+		{name: "xc the only line", content: "ab", at: term.Coordinates{X: 1}, keys: "xc", want: "", wantAt: term.Coordinates{}},
+		{name: "xc the last line before a final newline", content: "ab\ncd\n", at: term.Coordinates{Y: 1}, keys: "xc", want: "ab\n\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "xc a double-width last line", content: "ab\n日本", at: term.Coordinates{X: 1, Y: 1}, keys: "xc", want: "ab\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "xyp a tab-indented last line", content: "ab\n\tcd", at: term.Coordinates{X: 1, Y: 1}, keys: "xyp", want: "ab\n\tcd\tcd", wantAt: term.Coordinates{X: 5, Y: 1}, wantSels: []string{"\tcd"}},
+		{name: "xyP an emoji last line", content: "ab\n\U0001F600", at: term.Coordinates{Y: 1}, keys: "xyP", want: "ab\n\U0001F600\U0001F600", wantAt: term.Coordinates{Y: 1}, wantSels: []string{"\U0001F600"}},
+		{name: "alt-d in insert mode mid-word", content: "abc def", at: term.Coordinates{X: 1}, keys: "i<alt-d>", want: "a def", wantAt: term.Coordinates{X: 1}},
+		{name: "alt-d in insert mode on a blank", content: "ab cd", at: term.Coordinates{X: 2}, keys: "i<alt-d>", want: "ab", wantAt: term.Coordinates{X: 2}},
+		{name: "alt-d in insert mode before a separator", content: "a.b", keys: "i<alt-d>", want: "b", wantAt: term.Coordinates{}},
+		{name: "alt-d in insert mode at the document end", content: "ab", keys: "A<alt-d>", want: "ab", wantAt: term.Coordinates{X: 2}},
+		{name: "alt-d in append mode mid-word", content: "abc def", keys: "a<alt-d>", want: "a def", wantAt: term.Coordinates{}},
+		{name: "alt-d in insert mode at a final newline", content: "ab\n", keys: "A<alt-d>", want: "ab\n", wantAt: term.Coordinates{X: 2}},
+		{name: "alt-d in insert mode on cjk then ascii", content: "日本 ab", keys: "i<alt-d>", want: " ab", wantAt: term.Coordinates{}},
+		{name: "alt-d in insert mode over two blank lines", content: "ab\n\n\ncd", at: term.Coordinates{Y: 1}, keys: "i<alt-d>", want: "ab\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "alt-d in insert mode before a tab-indented word", content: "ab\n\tcd", keys: "A<alt-d>", want: "ab\n", wantAt: term.Coordinates{X: 2}},
+		{name: "x a middle line", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "x", want: "ab\ncd\nef", wantAt: term.Coordinates{X: 2, Y: 1}, wantSels: []string{"cd\n"}},
+		{name: "alt-d in append mode then typing", content: "abc def", keys: "a<alt-d>X", want: "Xa def", wantAt: term.Coordinates{X: 1}},
+		{name: "alt-d in insert mode then typing", content: "abc def", at: term.Coordinates{X: 1}, keys: "i<alt-d>X", want: "aX def", wantAt: term.Coordinates{X: 2}},
+		{name: "x the first line", content: "ab\ncd\nef", keys: "x", want: "ab\ncd\nef", wantAt: term.Coordinates{X: 2}, wantSels: []string{"ab\n"}},
+		{name: "x the last line", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "x", want: "ab\ncd\nef", wantAt: term.Coordinates{X: 1, Y: 2}, wantSels: []string{"ef"}},
+		{name: "xx two lines", content: "ab\ncd\nef", keys: "xx", want: "ab\ncd\nef", wantAt: term.Coordinates{X: 2, Y: 1}, wantSels: []string{"ab\ncd\n"}},
+		{name: "x the last line before a final newline", content: "ab\ncd\n", at: term.Coordinates{Y: 1}, keys: "x", want: "ab\ncd\n", wantAt: term.Coordinates{X: 2, Y: 1}, wantSels: []string{"cd\n"}},
+		{name: "x an empty line", content: "ab\n\ncd", at: term.Coordinates{Y: 1}, keys: "x", want: "ab\n\ncd", wantAt: term.Coordinates{X: 1, Y: 2}, wantSels: []string{"\ncd"}},
+		{name: "x a double-width line", content: "日本\nab", keys: "x", want: "日本\nab", wantAt: term.Coordinates{X: 2}, wantSels: []string{"日本\n"}},
+		{name: "l past the last character", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "l", want: "ab\ncd", wantAt: term.Coordinates{X: 2}, wantSels: []string{"\n"}},
+		{name: "ll past the line ending", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "ll", want: "ab\ncd", wantAt: term.Coordinates{Y: 1}, wantSels: []string{"c"}},
+		{name: "l past the last character of the last line", content: "ab\ncd", at: term.Coordinates{X: 1, Y: 1}, keys: "l", want: "ab\ncd", wantAt: term.Coordinates{X: 2, Y: 1}, wantSels: []string{""}},
+		{name: "A then esc", content: "ab\ncd", keys: "A<esc>", want: "ab\ncd", wantAt: term.Coordinates{X: 2}, wantSels: []string{"\n"}},
+		{name: "A then esc on the last line", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "A<esc>", want: "ab\ncd", wantAt: term.Coordinates{X: 2, Y: 1}, wantSels: []string{""}},
+		{name: "a on the last character then esc", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "a<esc>", want: "ab\ncd", wantAt: term.Coordinates{X: 1}, wantSels: []string{"b"}},
+		{name: "w over the last word", content: "ab cd\nef", at: term.Coordinates{X: 3}, keys: "w", want: "ab cd\nef", wantAt: term.Coordinates{X: 4}, wantSels: []string{"cd"}},
+		{name: "e over the last word", content: "ab cd\nef", at: term.Coordinates{X: 3}, keys: "e", want: "ab cd\nef", wantAt: term.Coordinates{X: 4}, wantSels: []string{"cd"}},
+		{name: "vl over the line ending", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "vl", want: "ab\ncd", wantAt: term.Coordinates{X: 2}},
+		{name: "x then j", content: "ab\ncd\nef", keys: "xj", want: "ab\ncd\nef", wantAt: term.Coordinates{X: 2, Y: 1}, wantSels: []string{"\n"}},
+		{name: "x then k", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "xk", want: "ab\ncd\nef", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{"d"}},
+		{name: "j from a line ending", content: "ab\ncd\nef", at: term.Coordinates{X: 1}, keys: "lj", want: "ab\ncd\nef", wantAt: term.Coordinates{X: 2, Y: 1}, wantSels: []string{"\n"}},
+		{name: "X a middle line", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "X", want: "ab\ncd\nef", wantAt: term.Coordinates{X: 2, Y: 1}, wantSels: []string{"cd\n"}},
+		{name: "xd then x", content: "ab\ncd\nef", keys: "xdx", want: "cd\nef", wantAt: term.Coordinates{X: 2}, wantSels: []string{"cd\n"}},
+		{name: "gl", content: "ab\ncd", keys: "gl", want: "ab\ncd", wantAt: term.Coordinates{X: 1}, wantSels: []string{"b"}},
+		{name: "x then esc", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "x<esc>", want: "ab\ncd\nef", wantAt: term.Coordinates{X: 2, Y: 1}, wantSels: []string{"cd\n"}},
+		{name: "x then semicolon", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "x;", want: "ab\ncd\nef", wantAt: term.Coordinates{X: 2, Y: 1}, wantSels: []string{"\n"}},
+		{name: "xyCp below an unterminated last line", content: "a\nb", keys: "xyCp", want: "a\na\nba\n", wantAt: term.Coordinates{X: 2, Y: 2}, wantSels: []string{"a\n", "a\n"}, wantPrimary: 1},
+		{name: "xyp on a line ending then paste below the last line", content: "ab\ncd", keys: "xyjjp", want: "ab\ncdab\n", wantAt: term.Coordinates{X: 4, Y: 1}, wantSels: []string{"ab\n"}},
+		{name: "xyp below a terminated last line", content: "ab\ncd\n", keys: "xyjp", want: "ab\ncd\nab\n", wantAt: term.Coordinates{X: 2, Y: 2}, wantSels: []string{"ab\n"}},
+		{name: "xy then p twice below the last line", content: "ab\ncd", keys: "xyjpp", want: "ab\ncdab\nab\n", wantAt: term.Coordinates{X: 2, Y: 2}, wantSels: []string{"ab\n"}},
+		{name: "l then d deletes the line ending", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "ld", want: "abcd", wantAt: term.Coordinates{X: 2}, wantSels: []string{"c"}},
+		{name: "A then esc then d", content: "ab\ncd", keys: "A<esc>d", want: "abcd", wantAt: term.Coordinates{X: 2}, wantSels: []string{"c"}},
+		{name: "l then i inserts before the line ending", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "liZ<esc>", want: "abZ\ncd", wantAt: term.Coordinates{X: 3}, wantSels: []string{"\n"}},
+		{name: "l then a appends after the line ending", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "laZ<esc>", want: "ab\nZcd", wantAt: term.Coordinates{Y: 1}, wantSels: []string{"\nZ"}},
+		{name: "x then semicolon on the last line", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "x;", want: "ab\ncd\nef", wantAt: term.Coordinates{X: 1, Y: 2}, wantSels: []string{"f"}},
+		{name: "x then a on the last line", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "xaZ<esc>", want: "ab\ncd\nefZ\n", wantAt: term.Coordinates{X: 2, Y: 2}, wantSels: []string{"efZ"}},
+		{name: "x then i on the last line", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "xiZ<esc>", want: "ab\ncd\nZef", wantAt: term.Coordinates{X: 1, Y: 2}, wantSels: []string{"ef"}},
+		{name: "x then a on a middle line", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "xaZ<esc>", want: "ab\ncd\nZef", wantAt: term.Coordinates{Y: 2}, wantSels: []string{"cd\nZ"}},
+		{name: "x then c on the last line then typing", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "xcZ<esc>", want: "ab\ncd\nZ", wantAt: term.Coordinates{X: 1, Y: 2}, wantSels: []string{""}},
+		{name: "e to the document end then a", content: "ab cd", keys: "eeaZ<esc>", want: "ab cdZ\n", wantAt: term.Coordinates{X: 5}, wantSels: []string{" cdZ"}},
+		{name: "l at the document end then i", content: "ab", keys: "lliZ<esc>", want: "abZ", wantAt: term.Coordinates{X: 3}, wantSels: []string{""}},
+		{name: "l stops at the document end", content: "ab", keys: "lllll", want: "ab", wantAt: term.Coordinates{X: 2}, wantSels: []string{""}},
+		{name: "j onto a shorter line lands on its line ending", content: "abcd\nx\nabcd", at: term.Coordinates{X: 3}, keys: "j", want: "abcd\nx\nabcd", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{"\n"}},
+		{name: "a then esc", content: "ab", keys: "aX<esc>", want: "aXb", wantAt: term.Coordinates{X: 1}, wantSels: []string{"aX"}},
+		{name: "A then esc at the document end", content: "ab", keys: "AX<esc>", want: "abX", wantAt: term.Coordinates{X: 3}, wantSels: []string{""}},
+		{name: "I then esc", content: "ab", keys: "IX<esc>", want: "Xab", wantAt: term.Coordinates{X: 1}, wantSels: []string{"a"}},
+		{name: "o then esc at the document end", content: "ab", keys: "oX<esc>", want: "ab\nX", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{""}},
+		{name: "O then esc", content: "ab", keys: "OX<esc>", want: "X\nab", wantAt: term.Coordinates{X: 1}, wantSels: []string{"\n"}},
+		{name: "c then esc", content: "ab", keys: "cX<esc>", want: "Xb", wantAt: term.Coordinates{X: 1}, wantSels: []string{"b"}},
+		{name: "A then esc before a line ending", content: "ab\ncd", keys: "AX<esc>", want: "abX\ncd", wantAt: term.Coordinates{X: 3}, wantSels: []string{"\n"}},
+		{name: "xd then d at the document end", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "xdd", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "c on an empty buffer", content: "", keys: "cX<esc>", want: "X", wantAt: term.Coordinates{X: 1}, wantSels: []string{""}},
+		{name: "y of whole lines over two ranges", content: "a\nb\nc", keys: "xCy", want: "a\nb\nc", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{"a\n", "b\n"}, wantPrimary: 1},
+		{name: "linewise P above two ranges", content: "a\nb", keys: "xyCP", want: "a\na\na\nb", wantAt: term.Coordinates{X: 1, Y: 2}, wantSels: []string{"a\n", "a\n"}, wantPrimary: 1},
+		{name: "r enter over two ranges", content: "abc\ndef\nghi", at: term.Coordinates{X: 1}, keys: "Cr<enter>", want: "a\nc\nd\nf\nghi", wantAt: term.Coordinates{X: 1, Y: 2}, wantSels: []string{"\n", "\n"}, wantPrimary: 1},
+		{name: "]space under a linewise range", content: "a\nb\nc", keys: "xx]<space>", want: "a\nb\n\nc", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{"a\nb\n"}},
+		{name: "]space then x", content: "a", keys: "]<space>x", want: "a\n", wantAt: term.Coordinates{X: 1}, wantSels: []string{"a\n"}},
+		{name: "s $ inside a line selection", content: "ab\ncd", keys: "xs$<enter>", want: "ab\ncd", wantAt: term.Coordinates{X: 2}, wantSels: []string{"\n"}},
+		{name: "/ $ selects a line ending", content: "ab\ncd", keys: "/$<enter>", want: "ab\ncd", wantAt: term.Coordinates{X: 2}, wantSels: []string{"\n"}},
+		{name: "* on a line selection", content: "foo\nbar", keys: "x*", want: "foo\nbar", wantAt: term.Coordinates{X: 3}, wantSels: []string{"foo\n"}},
+		{name: "& refuses a line selection", content: "ab\ncd", keys: "x&", want: "ab\ncd", wantAt: term.Coordinates{X: 2}, wantSels: []string{"ab\n"}},
+		{name: "C from a line ending", content: "ab\nab", at: term.Coordinates{X: 1}, keys: "lC", want: "ab\nab", wantAt: term.Coordinates{X: 2, Y: 1}, wantSels: []string{"\n", ""}, wantPrimary: 1},
+		{name: "x over two ranges", content: "abc\ndef\nghi", at: term.Coordinates{X: 1}, keys: "Cx", want: "abc\ndef\nghi", wantAt: term.Coordinates{X: 3, Y: 1}, wantSels: []string{"abc\n", "def\n"}, wantPrimary: 1},
+		{name: "x twice merges two ranges", content: "abc\ndef\nghi", at: term.Coordinates{X: 1}, keys: "Cxx", want: "abc\ndef\nghi", wantAt: term.Coordinates{X: 2, Y: 2}, wantSels: []string{"abc\ndef\nghi"}},
+		{name: "X snaps two ranges", content: "abc\ndef\nghi", at: term.Coordinates{X: 1}, keys: "CvlX", want: "abc\ndef\nghi", wantAt: term.Coordinates{X: 3, Y: 1}},
+		{name: "alt-x shrinks two ranges", content: "abc\ndef\nghi", keys: "vjl<esc>C<alt-x>", want: "abc\ndef\nghi", wantAt: term.Coordinates{X: 3}, wantSels: []string{"abc\n"}},
+		{name: "h crosses line starts for three ranges", content: "abc\ndef\nghi", at: term.Coordinates{X: 1}, keys: "CChh", want: "abc\ndef\nghi", wantAt: term.Coordinates{X: 3, Y: 1}, wantSels: []string{"a", "\n", "\n"}, wantPrimary: 2},
+		{name: "j onto shorter lines for two ranges", content: "abcd\nab\nabcd\nab\nabcd", at: term.Coordinates{X: 3}, keys: "Cj", want: "abcd\nab\nabcd\nab\nabcd", wantAt: term.Coordinates{X: 2, Y: 3}, wantSels: []string{"\n", "\n"}, wantPrimary: 1},
+		{name: "l onto a line ending and the document end", content: "ab\nab", keys: "Cll", want: "ab\nab", wantAt: term.Coordinates{X: 2, Y: 1}, wantSels: []string{"\n", ""}, wantPrimary: 1},
+		{name: "x twice to the document end", content: "abc\ndef", keys: "Cxx", want: "abc\ndef", wantAt: term.Coordinates{X: 2, Y: 1}, wantSels: []string{"abc\ndef"}},
+		{name: "md with a range lacking a pair", content: "(a)\nb", at: term.Coordinates{X: 1}, keys: "Cmd(", want: "(a)\nb", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{"a", ""}, wantPrimary: 1},
+		{name: "alt-d in append mode then esc", content: "abc def", keys: "a<alt-d>X<esc>", want: "Xa def", wantAt: term.Coordinates{X: 1}, wantSels: []string{"a"}},
+		{name: "w at the document end", content: "ab", at: term.Coordinates{X: 1}, keys: "w", want: "ab", wantAt: term.Coordinates{X: 1}, wantSels: []string{"b"}},
+		{name: "e on the last character", content: "foo bar", at: term.Coordinates{X: 6}, keys: "e", want: "foo bar", wantAt: term.Coordinates{X: 6}, wantSels: []string{"r"}},
+		{name: "xd on the empty row after a final line ending", content: "ab\n", at: term.Coordinates{Y: 1}, keys: "xd", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "x on the empty row after a final line ending", content: "ab\n", at: term.Coordinates{Y: 1}, keys: "x", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "d on the empty row after a final line ending", content: "ab\n", at: term.Coordinates{Y: 1}, keys: "d", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "xd the unterminated last line", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "xd", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "xd then x at the document end", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "xdx", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "xd then xd at the document end", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "xdxd", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "xd then k", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "xdk", want: "ab\n", wantAt: term.Coordinates{}, wantSels: []string{"a"}},
+		{name: "xd then h", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "xdh", want: "ab\n", wantAt: term.Coordinates{X: 2}, wantSels: []string{"\n"}},
+		{name: "j onto the empty row after a final line ending", content: "ab\n", keys: "j", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "ge before an empty row after a final line ending", content: "ab\n\n", keys: "ge", want: "ab\n\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{"\n"}},
+		{name: "l onto the document end after a line ending", content: "ab\n", at: term.Coordinates{X: 1}, keys: "ll", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "l at the document end stays", content: "ab\n", at: term.Coordinates{X: 1}, keys: "lll", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "k from the document end", content: "abc\n", at: term.Coordinates{X: 2}, keys: "llk", want: "abc\n", wantAt: term.Coordinates{}, wantSels: []string{"a"}},
+		{name: "w from the document end", content: "ab\n", at: term.Coordinates{X: 1}, keys: "llw", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "b from the document end", content: "ab cd\n", at: term.Coordinates{X: 4}, keys: "llb", want: "ab cd\n", wantAt: term.Coordinates{X: 3}, wantSels: []string{"cd"}},
+		{name: "i at the document end", content: "ab\n", at: term.Coordinates{X: 1}, keys: "lliX<esc>", want: "ab\nX", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{""}},
+		{name: "a at the document end", content: "ab\n", at: term.Coordinates{X: 1}, keys: "llaX<esc>", want: "ab\nX", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{""}},
+		{name: "p at the document end", content: "ab\n", keys: "ylllp", want: "ab\na", wantAt: term.Coordinates{Y: 1}, wantSels: []string{"a"}},
+		{name: "P at the document end", content: "ab\n", keys: "ylllP", want: "ab\na", wantAt: term.Coordinates{Y: 1}, wantSels: []string{"a"}},
+		{name: "r at the document end", content: "ab\n", at: term.Coordinates{X: 1}, keys: "llrX", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "~ at the document end", content: "ab\n", at: term.Coordinates{X: 1}, keys: "ll~", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantSels: []string{""}},
+		{name: "c at the document end", content: "ab\n", at: term.Coordinates{X: 1}, keys: "llcX<esc>", want: "ab\nX", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{""}},
+		{name: "o at the document end after a line ending", content: "ab\n", at: term.Coordinates{X: 1}, keys: "lloX<esc>", want: "ab\nX\n", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{"\n"}},
+		{name: "v then h from the document end after a line ending", content: "ab\n", at: term.Coordinates{X: 1}, keys: "llvh", want: "ab\n", wantAt: term.Coordinates{X: 1}},
+		{name: "h from the unterminated document end", content: "ab", at: term.Coordinates{X: 1}, keys: "lh", want: "ab", wantAt: term.Coordinates{X: 1}, wantSels: []string{"b"}},
+		{name: "v then h from the unterminated document end", content: "ab", at: term.Coordinates{X: 1}, keys: "lvh", want: "ab", wantAt: term.Coordinates{}},
+		{name: "p at the unterminated document end", content: "ab", keys: "ylp", want: "aba", wantAt: term.Coordinates{X: 2}, wantSels: []string{"a"}},
+		{name: "d at the unterminated document end", content: "ab", at: term.Coordinates{X: 1}, keys: "ld", want: "ab", wantAt: term.Coordinates{X: 2}, wantSels: []string{""}},
+		{name: "x at the unterminated document end", content: "ab", at: term.Coordinates{X: 1}, keys: "lx", want: "ab", wantAt: term.Coordinates{X: 1}, wantSels: []string{"ab"}},
+		{name: "k from a line ending", content: "ab\ncd", at: term.Coordinates{X: 1, Y: 1}, keys: "lk", want: "ab\ncd", wantAt: term.Coordinates{X: 2}, wantSels: []string{"\n"}},
+		{name: "x on a line ending", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "lx", want: "ab\ncd", wantAt: term.Coordinates{X: 2}, wantSels: []string{"ab\n"}},
+		{name: "e from a line ending", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "le", want: "ab\ncd", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{"cd"}},
+		{name: "r on a line ending", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "lrX", want: "abXcd", wantAt: term.Coordinates{X: 2}, wantSels: []string{"X"}},
+		{name: "i on a line ending", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "liX<esc>", want: "abX\ncd", wantAt: term.Coordinates{X: 3}, wantSels: []string{"\n"}},
+		{name: "a on a line ending", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "laX<esc>", want: "ab\nXcd", wantAt: term.Coordinates{Y: 1}, wantSels: []string{"\nX"}},
+		{name: "v then l from a line ending", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "lvl", want: "ab\ncd", wantAt: term.Coordinates{Y: 1}},
+		{name: "l from the last character onto the line ending", content: "ab\ncd", keys: "gll", want: "ab\ncd", wantAt: term.Coordinates{X: 2}, wantSels: []string{"\n"}},
+		{name: "h from an empty row", content: "ab\n\ncd", at: term.Coordinates{Y: 2}, keys: "h", want: "ab\n\ncd", wantAt: term.Coordinates{Y: 1}, wantSels: []string{"\n"}},
+		{name: "l from an empty row", content: "ab\n\ncd", at: term.Coordinates{Y: 1}, keys: "l", want: "ab\n\ncd", wantAt: term.Coordinates{Y: 2}, wantSels: []string{"c"}},
+		{name: "a count of h crosses a line ending", content: "ab\ncd", at: term.Coordinates{X: 1, Y: 1}, keys: "3h", want: "ab\ncd", wantAt: term.Coordinates{X: 1}, wantSels: []string{"b"}},
+		{name: "a count of l stops at the document end", content: "ab\ncd", keys: "10l", want: "ab\ncd", wantAt: term.Coordinates{X: 2, Y: 1}, wantSels: []string{""}},
+		{name: "l over wide glyphs", content: "日本\nab", keys: "lll", want: "日本\nab", wantAt: term.Coordinates{Y: 1}, wantSels: []string{"a"}},
+		{name: "l over a tab", content: "\tb\ncd", keys: "lll", want: "\tb\ncd", wantAt: term.Coordinates{Y: 1}, wantSels: []string{"c"}},
+		{name: "r over the whole document", content: "ab\ncd", keys: "%rX", want: "XXXXX", wantAt: term.Coordinates{X: 4}, wantSels: []string{"XXXXX"}},
+		{name: "r over a range across rows", content: "ab\ncd\nef", keys: "vjrX", want: "XXXXd\nef", wantAt: term.Coordinates{X: 3}, wantSels: []string{"XXXX"}},
+		{name: "r over a line selection", content: "ab\ncd", keys: "xrX", want: "XXXcd", wantAt: term.Coordinates{X: 2}, wantSels: []string{"XXX"}},
+		{name: "c of the last two lines", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "xxcZ<esc>", want: "ab\nZ\n", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{"\n"}},
+		{name: "c of two lines before a final line ending", content: "ab\ncd\nef\n", at: term.Coordinates{Y: 1}, keys: "xxcZ<esc>", want: "ab\nZ\n", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{"\n"}},
+		{name: "O at the document end after a line ending", content: "ab\n", at: term.Coordinates{X: 1}, keys: "llOZ<esc>", want: "ab\nZ\n", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{"\n"}},
+		{name: "O at the unterminated document end", content: "ab", at: term.Coordinates{X: 1}, keys: "lOZ<esc>", want: "Z\nab", wantAt: term.Coordinates{X: 1}, wantSels: []string{"\n"}},
+		{name: "o at the unterminated document end", content: "ab", at: term.Coordinates{X: 1}, keys: "loZ<esc>", want: "ab\nZ", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{""}},
+		{name: "c of the unterminated last line", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "xcZ<esc>", want: "ab\nZ", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{""}},
+		{name: "c of the whole document", content: "ab\ncd", keys: "%cZ<esc>", want: "Z\n", wantAt: term.Coordinates{X: 1}, wantSels: []string{"\n"}},
+		{name: "O on a line ending", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "lOZ<esc>", want: "Z\nab\ncd", wantAt: term.Coordinates{X: 1}, wantSels: []string{"\n"}},
+		{name: "o on a line ending", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "loZ<esc>", want: "ab\nZ\ncd", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{"\n"}},
+		{name: "* at the document end gets no trailing boundary", content: "bar foo", at: term.Coordinates{X: 4}, keys: "e*\"/p", want: "bar foo\\bfoo", wantAt: term.Coordinates{X: 11}, wantSels: []string{"\\bfoo"}},
+		{name: "* in select mode then paste the search register", content: "foobar", at: term.Coordinates{X: 3}, keys: "vll*\"/p", want: "foobarbar", wantAt: term.Coordinates{X: 5}, wantSels: []string{"bar"}},
+		{name: "* escapes a backslash", content: "a\\b", keys: "vll*\"/p", want: "a\\b\\ba\\\\b", wantAt: term.Coordinates{X: 2}, wantSels: []string{"a\\b"}},
+		{name: "* on a line selection then paste the search register", content: "foo\nbar", keys: "x*\"/p", want: "foo\n\\bfoo\nbar", wantAt: term.Coordinates{X: 5, Y: 1}, wantSels: []string{"\\bfoo\n"}},
+		{name: "s \\n selects the line endings", content: "ab\ncd\nef", keys: "%s\\\\n<enter>", want: "ab\ncd\nef", wantAt: term.Coordinates{X: 2}, wantSels: []string{"\n", "\n"}},
+		{name: "j merges ranges on the last line", content: "ab\nab", keys: "Cj", want: "ab\nab", wantAt: term.Coordinates{Y: 1}, wantSels: []string{"a"}},
+		{name: "k merges ranges on the first line", content: "ab\nab", keys: "Ck", want: "ab\nab", wantAt: term.Coordinates{}, wantSels: []string{"a"}},
+		{name: "a count of h over two ranges", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "C3h", want: "ab\ncd", wantAt: term.Coordinates{X: 1}, wantSels: []string{"a", "b"}, wantPrimary: 1},
+		{name: "x then alt-;", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "x<alt-;>", want: "ab\ncd\nef", wantAt: term.Coordinates{Y: 1}, wantSels: []string{"cd\n"}},
+		{name: "p in select mode keeps the selection", content: "abc\ndef", at: term.Coordinates{X: 1}, keys: "Cylvp", want: "abcb\ndefe", wantAt: term.Coordinates{X: 2, Y: 1}, wantSels: []string{"c", "f"}, wantPrimary: 1},
+		{name: "P in select mode keeps the selection", content: "abc\ndef", at: term.Coordinates{X: 1}, keys: "CylvP", want: "abbc\ndeef", wantAt: term.Coordinates{X: 3, Y: 1}, wantSels: []string{"c", "f"}, wantPrimary: 1},
+		{name: "linewise p in select mode keeps the selection", content: "a\nb\nc", keys: "xyjvp", want: "a\nb\na\nc", wantAt: term.Coordinates{X: 1, Y: 1}, wantSels: []string{"\n"}},
+		{name: "* in select mode before a line ending then paste the search register", content: "foobar\n", at: term.Coordinates{X: 3}, keys: "vll*\"/p", want: "foobarbar\\b\n", wantAt: term.Coordinates{X: 5}, wantSels: []string{"bar"}},
+		{name: "; at the document end", content: "ab", at: term.Coordinates{X: 1}, keys: "l;", want: "ab", wantAt: term.Coordinates{X: 2}, wantSels: []string{""}},
+		{name: "alt-; at the document end", content: "ab", at: term.Coordinates{X: 1}, keys: "l<alt-;>", want: "ab", wantAt: term.Coordinates{X: 2}, wantSels: []string{""}},
+		{name: "v then ;", content: "abc", keys: "vll;", want: "abc", wantAt: term.Coordinates{X: 2}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hx, buf, _ := newHelix(t, tc.content, term.Coordinates{})
+			hx.SetCursorAtScroll(tc.at)
+			if hx.CursorAtScroll() != tc.at {
+				// SetCursorAtScroll clamps; only a buffer shrinking under
+				// the caret leaves it out of bounds.
+				hx.cursor.MoveToScroll(tc.at)
+			}
+			require.Equal(t, tc.at, hx.CursorAtScroll())
+
+			seq, err := term.ParseKeys(tc.keys)
+			require.NoError(t, err)
+			for _, k := range seq {
+				send(t, hx, term.Event{Type: term.EventKey, Mod: k.Mod, Key: k.Key, Ch: k.Ch})
+			}
+
+			assert.Equal(t, tc.want, buf.String(), "content")
+			assert.Equal(t, tc.wantAt, hx.CursorAtScroll(), "caret")
+			if tc.wantSels != nil {
+				assert.Equal(t, tc.wantSels, sels(hx), "fragments")
+				assert.Equal(t, tc.wantPrimary, primaryIdx(hx), "primary")
+			}
+		})
+	}
+}
+
 func TestChange(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -2210,8 +2451,8 @@ func TestReplaceChar(t *testing.T) {
 			evs: keys("rz"), want: "zbc", wantSel: "z"},
 		{name: "r replaces the whole selection", content: "foo bar",
 			evs: keys("wrz"), want: "zzzzbar", wantSel: "zzzz"},
-		{name: "r over a line selection", content: "ab\ncd",
-			evs: keys("xr-"), want: "--\ncd"},
+		{name: "r over a line selection replaces its line ending too", content: "ab\ncd",
+			evs: keys("xr-"), want: "---cd"},
 		{name: "r with a wide glyph", content: "世界",
 			evs: keys("rx"), want: "x界"},
 		{name: "r on a wide replacement", content: "ab",
@@ -2399,6 +2640,52 @@ func TestComments(t *testing.T) {
 		send(t, hx, modKey(term.ModCtrl, 'c'))
 		assert.Equal(t, "// a\n// b\nc", buf.String())
 	})
+
+	for _, tc := range []struct {
+		name    string
+		content string
+		sel     *selection
+		evs     []term.Event
+		want    string
+	}{
+		{name: "linewise rows align at the shallowest tab", content: "\t\ta\n\tb\nc",
+			evs: keys("xx"), want: "\t// \ta\n\t// b\nc"},
+		{name: "linewise rows align at the shallowest spaces", content: "  a\n    b",
+			evs: keys("xx"), want: "  // a\n  //   b"},
+		{name: "linewise rows uncomment in place", content: "  // a\n  //   b",
+			evs: keys("xx"), want: "  a\n    b"},
+		{name: "select all through a trailing newline", content: "a\n  b\n",
+			evs: keys("%"), want: "// a\n//   b\n"},
+		{name: "rows of wide runes and emoji", content: "界\n👨‍👧‍👦\n🇯🇵",
+			evs: keys("xx"), want: "// 界\n// 👨‍👧‍👦\n🇯🇵"},
+		{name: "blank rows are skipped", content: "a\n \t\nb",
+			evs: keys("xxx"), want: "// a\n \t\n// b"},
+		{name: "separate ranges align independently", content: "  a\nb\n    c\n      d",
+			sel:  selOf(1, fwd(2, 0, 3, 0), fwd(4, 2, 7, 3)),
+			want: "  // a\nb\n    // c\n    //   d"},
+		{name: "adjacent ranges align together", content: "    a\n  b",
+			sel:  selOf(1, fwd(4, 0, 5, 0), fwd(2, 1, 3, 1)),
+			want: "  //   a\n  // b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hx, buf, _ := newHelix(t, tc.content, term.Coordinates{})
+			hx.cursor.SetCommentSpec(text.CommentSpec{Line: []string{"//"}})
+			buf.WithView(testCommentView{View: buf.View(), line: []string{"//"}})
+			if tc.sel != nil {
+				impl(hx).setSelection(*tc.sel)
+			}
+			send(t, hx, tc.evs...)
+			send(t, hx, modKey(term.ModCtrl, 'c'))
+			require.Equal(t, tc.want, buf.String())
+
+			for round := range 2 {
+				send(t, hx, key('u'))
+				assert.Equal(t, tc.content, buf.String(), "round %d: one u reverts the toggle", round)
+				send(t, hx, key('U'))
+				assert.Equal(t, tc.want, buf.String(), "round %d: one U reapplies it", round)
+			}
+		})
+	}
 }
 
 func TestInsertEntry(t *testing.T) {

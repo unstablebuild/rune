@@ -37,8 +37,9 @@ import (
 )
 
 type stubWM struct {
-	calls int
-	last  browserapi.Floating
+	calls  int
+	closes int
+	last   browserapi.Floating
 }
 
 func (stubWM) Focus() (browserapi.Window, error) { return stubWindow(1), nil }
@@ -55,9 +56,9 @@ func (stubWM) Tab(workspaceapi.URI, rune, string, browserapi.Handler) (browserap
 	return nil, nil
 }
 func (stubWM) SetWindowContent(browserapi.Window, browserapi.Handler) error { return nil }
-func (stubWM) CloseWindow(browserapi.Window) error                          { return nil }
+func (s *stubWM) CloseWindow(browserapi.Window) error                       { s.closes++; return nil }
 
-func (stubWM) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (stubWM) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
 
 type stubWindow uint64
 
@@ -157,6 +158,23 @@ func TestCrierShowLiteralOpensFloating(t *testing.T) {
 	require.NoError(t, c.Show(context.Background()))
 	assert.Equal(t, 1, wm.calls)
 	require.NotNil(t, wm.last)
+}
+
+func TestCrierNoticeCloseLeavesItsWindow(t *testing.T) {
+	wm := &stubWM{}
+	c := New(mapFS{}, wm, nopParser{}, syncTick, nopLinkClick, Config{
+		Literal:      "# Hello",
+		Show:         ShowAlways,
+		Storage:      storagestub.NewInMemoryService(),
+		WorkspaceURI: mustURI(t, "file:///workspace"),
+	})
+	require.NoError(t, c.Show(context.Background()))
+	require.NotNil(t, wm.last)
+
+	require.NoError(t, wm.last.Close())
+
+	assert.Zero(t, wm.closes,
+		"the window may already show other content when the notice is released")
 }
 
 func TestCrierShowLiteralWinsOverPath(t *testing.T) {

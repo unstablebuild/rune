@@ -17,11 +17,18 @@
 package browsertest
 
 import (
+	"context"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
@@ -29,6 +36,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/imageuri/imageuritest"
 
 	"unstable.build/rune/internal/browser"
 )
@@ -123,7 +131,8 @@ func TestComponentCloseWindow(t *testing.T) {
 
 			assert.Equal(t, 0, len(c.Tabs()))
 			assert.Equal(t, 1, c.Tiles())
-			require.Error(t, win.Close())
+			assert.True(t, win.Closed())
+			require.NoError(t, win.Close(), "closing a closed window is a no-op")
 			assert.Equal(t, 1, c.Tiles())
 		})
 
@@ -537,27 +546,27 @@ func TestComponentPrompt(t *testing.T) {
 	t.Run("panics if options are zero in length", func(t *testing.T) {
 		c := browser.NewComponent(browser.DefaultConfig())
 		assert.Panics(t, func() {
-			c.Prompt("bla", []string{}, nil, nil)
+			c.Prompt(browserapi.PromptConfig{Message: "bla", Options: []string{}}, nil)
 		})
 
 	})
 	t.Run("panics if bindings and options are different lengths", func(t *testing.T) {
 		c := browser.NewComponent(browser.DefaultConfig())
 		assert.Panics(t, func() {
-			c.Prompt("bla", []string{"a", "b"}, []term.KeyComb{{}}, nil)
+			c.Prompt(browserapi.PromptConfig{Message: "bla", Options: []string{"a", "b"}, Bindings: []term.KeyComb{{}}}, nil)
 		})
 	})
 	t.Run("panics if message is empty", func(t *testing.T) {
 		c := browser.NewComponent(browser.DefaultConfig())
 		assert.Panics(t, func() {
-			c.Prompt("", []string{"a", "b"}, []term.KeyComb{{}, {}}, nil)
+			c.Prompt(browserapi.PromptConfig{Message: "", Options: []string{"a", "b"}, Bindings: []term.KeyComb{{}, {}}}, nil)
 		})
 	})
 	t.Run("runs close callback when closed", func(t *testing.T) {
 		c := browser.NewComponent(browser.DefaultConfig())
 		c.Resize(20, 12)
 		closeCalled := false
-		c.Prompt("Albert Pla?", []string{"Buah!", "Hmm"}, nil,
+		c.Prompt(browserapi.PromptConfig{Message: "Albert Pla?", Options: []string{"Buah!", "Hmm"}},
 			handler.FuncPromptHandler(
 				func(idx int, option string) {},
 				func() error {
@@ -573,7 +582,7 @@ func TestComponentPrompt(t *testing.T) {
 		reopens := 0
 		var open func()
 		open = func() {
-			c.Prompt("Stay?", []string{"Ok"}, nil,
+			c.Prompt(browserapi.PromptConfig{Message: "Stay?", Options: []string{"Ok"}},
 				handler.FuncPromptHandler(
 					func(int, string) {},
 					func() error {
@@ -602,7 +611,7 @@ func TestComponentPrompt(t *testing.T) {
 		advanced := false
 		var open func()
 		open = func() {
-			c.Prompt("Stay?", []string{"Copy"}, nil,
+			c.Prompt(browserapi.PromptConfig{Message: "Stay?", Options: []string{"Copy"}},
 				handler.FuncPromptHandler(
 					func(int, string) {
 						advanced = false
@@ -652,7 +661,7 @@ func TestComponentPrompt(t *testing.T) {
 │888888888888888888│    
 └──────────────────┘    `,
 			}, {func() {
-				c.Prompt("Virgen Maria?", []string{"Boh", "Meh"}, nil, handler.NopPromptHandler())
+				c.Prompt(browserapi.PromptConfig{Message: "Virgen Maria?", Options: []string{"Boh", "Meh"}}, handler.NopPromptHandler())
 			}, `
 ┌──────────────────┐    
 │x music           │    
@@ -682,14 +691,14 @@ func TestComponentPrompt(t *testing.T) {
 │888888888888888888│    
 └──────────────────┘    `,
 			}, {func() {
-				c.Prompt("Tokischa?", []string{"Yay", "Nay"}, nil,
+				c.Prompt(browserapi.PromptConfig{Message: "Tokischa?", Options: []string{"Yay", "Nay"}},
 					handler.FuncPromptHandler(
 						func(idx int, option string) {
-							c.Prompt("Robert Love", []string{"YAS!"}, nil,
+							c.Prompt(browserapi.PromptConfig{Message: "Robert Love", Options: []string{"YAS!"}},
 								handler.NopPromptHandler())
 						},
 						func() error { return nil }))
-				c.Prompt("Rosalia?", []string{"Yay", "Nay"}, nil, handler.NopPromptHandler())
+				c.Prompt(browserapi.PromptConfig{Message: "Rosalia?", Options: []string{"Yay", "Nay"}}, handler.NopPromptHandler())
 			}, `
 ┌──────────────────┐    
 │x music           │    
@@ -709,8 +718,8 @@ func TestComponentPrompt(t *testing.T) {
 ┌────────┐              
 │x musi  │              
 ├●███████┤              
-│  Rosa  │              
-│ YayNay │              
+│  Yay   │              
+│  Nay   │              
 └────────┘              
                         
                         
@@ -830,11 +839,11 @@ func TestComponentPrompt(t *testing.T) {
 │888888888888888888│    
 └──────────────────┘    `,
 			}, {func() {
-				c.Prompt("Twitch Streaming?", []string{"Yes", "No"}, nil,
+				c.Prompt(browserapi.PromptConfig{Message: "Twitch Streaming?", Options: []string{"Yes", "No"}},
 					handler.NopPromptHandler())
-				c.Prompt("Twitch Streaming?", []string{"Yes", "No"}, nil,
+				c.Prompt(browserapi.PromptConfig{Message: "Twitch Streaming?", Options: []string{"Yes", "No"}},
 					handler.NopPromptHandler())
-				c.Prompt("Twitch Streaming?", []string{"Yes", "No"}, nil,
+				c.Prompt(browserapi.PromptConfig{Message: "Twitch Streaming?", Options: []string{"Yes", "No"}},
 					handler.NopPromptHandler())
 			}, `
 ┌──────────────────┐    
@@ -865,9 +874,9 @@ func TestComponentPrompt(t *testing.T) {
 │888888888888888888│    
 └──────────────────┘    `,
 			}, {func() {
-				c.Prompt("Twitch Streaming?", []string{"Yes", "No"}, nil, handler.NopPromptHandler())
-				c.Prompt("Twitch Streaming?", []string{"Yes", "No"}, nil, handler.NopPromptHandler())
-				c.Prompt("Twitch Streaming?", []string{"Yes", "No"}, nil, handler.NopPromptHandler())
+				c.Prompt(browserapi.PromptConfig{Message: "Twitch Streaming?", Options: []string{"Yes", "No"}}, handler.NopPromptHandler())
+				c.Prompt(browserapi.PromptConfig{Message: "Twitch Streaming?", Options: []string{"Yes", "No"}}, handler.NopPromptHandler())
+				c.Prompt(browserapi.PromptConfig{Message: "Twitch Streaming?", Options: []string{"Yes", "No"}}, handler.NopPromptHandler())
 			}, `
 ┌──────────────────┐    
 │x music           │    
@@ -920,6 +929,107 @@ func TestComponentSetFocus(t *testing.T) {
 	prev = c.SetFocus(win1)
 	assert.Equal(t, win2, prev)
 	assert.Equal(t, win1, c.Focus())
+}
+
+func TestComponentKeepsFrameImagesAtFocusedCorners(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "frame.png")
+	require.NoError(t, os.WriteFile(path, imageuritest.StatusBarLeftPNG, 0o600))
+	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	graphics := component.FrameCharSetGraphics{
+		TopLeft: uri, TopRight: uri, BottomLeft: uri, BottomRight: uri,
+		HorizontalTop: uri, HorizontalBottom: uri,
+		VerticalLeft: uri, VerticalRight: uri,
+	}
+
+	for _, tcase := range []struct {
+		name      string
+		focusLeft bool
+		tabOffset int
+	}{
+		{"left window focused", true, 0},
+		{"right window focused", false, 0},
+		{"tab bar offset", true, 4},
+	} {
+		t.Run(tcase.name, func(t *testing.T) {
+			cfg := browser.DefaultConfig()
+			cfg.FrameUnion = false
+			cfg.TabBarOffset = tcase.tabOffset
+			cfg.WindowManagerConfig.FrameCharSet.Graphics = graphics
+			cfg.WindowManagerConfig.FocusFrameCharSet.Graphics = graphics
+			cfg.WindowManagerConfig.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			loaded := make(frameImageInterrupter, 1)
+			cfg.Interrupter = loaded
+			c := browser.NewComponent(cfg)
+			defer func() { assert.NoError(t, c.Close()) }()
+			c.Resize(30, 10)
+			left := c.Focus()
+			_, ok := c.Split(browserapi.OrientationRight, left, NewTestHandler())
+			require.True(t, ok)
+			if tcase.focusLeft {
+				c.SetFocus(left)
+			}
+
+			c.Draw(newFrameImageScreen(30, 10))
+			select {
+			case <-loaded:
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "frame image did not load")
+			}
+			screen := newFrameImageScreen(30, 10)
+			c.Draw(screen)
+
+			assert.Empty(t, screen.covered, "cells drawn over frame images")
+			pos := c.WindowManagerPosition()
+			width, height := c.WindowManagerSize()
+			x := pos.X + width - 1
+			if tcase.focusLeft {
+				x = pos.X
+			}
+			for _, corner := range []term.Coordinates{
+				{X: x, Y: pos.Y}, {X: x, Y: pos.Y + height - 1},
+			} {
+				assert.True(t, screen.images[corner], "no frame image at %v", corner)
+			}
+		})
+	}
+}
+
+// frameImageScreen records where images are drawn, and the cells written
+// over them afterwards, which hide them.
+type frameImageScreen struct {
+	*term.StringWriter
+	images  map[term.Coordinates]bool
+	covered []term.Coordinates
+}
+
+func newFrameImageScreen(width, height int) *frameImageScreen {
+	return &frameImageScreen{
+		StringWriter: term.NewStringWriter(width, height),
+		images:       make(map[term.Coordinates]bool),
+	}
+}
+
+func (s *frameImageScreen) DrawImage(img term.Image) bool {
+	s.images[img.Pos] = true
+	return true
+}
+
+func (s *frameImageScreen) SetCell(pos term.Coordinates, c term.Cell) {
+	if s.images[pos] {
+		delete(s.images, pos)
+		s.covered = append(s.covered, pos)
+	}
+	s.StringWriter.SetCell(pos, c)
+}
+
+type frameImageInterrupter chan struct{}
+
+func (i frameImageInterrupter) Interrupt(context.Context) error {
+	select {
+	case i <- struct{}{}:
+	default:
+	}
+	return nil
 }
 
 func TestComponentOnTabsClick(t *testing.T) {
@@ -1154,6 +1264,426 @@ func TestComponentOnTabIconClick(t *testing.T) {
 		assert.Len(t, f.c.Tabs(), 3)
 		assertWindowContent(t, f.c.Focus(), f.tabs[1])
 	})
+
+	t.Run("the pointer is a finger over the tabs", func(t *testing.T) {
+		f := setup(t, browser.DefaultConfig(), remove)
+		hover := func(pos term.Coordinates) (term.PointerShape, bool) {
+			p := new(term.Pointer)
+			f.c.Handle(term.Event{
+				Type: term.EventMouse, MouseX: pos.X, MouseY: pos.Y,
+				Context: term.ContextWithPointer(context.Background(), p),
+			})
+			return p.Shape()
+		}
+		icon := iconOf(t, f.c, 'B')
+
+		shape, _ := hover(icon)
+		assert.Equal(t, term.PointerLink, shape)
+		shape, _ = hover(name(icon))
+		assert.Equal(t, term.PointerLink, shape, "over the name")
+		_, set := hover(term.Coordinates{X: width - 3, Y: icon.Y})
+		assert.False(t, set, "past the tabs")
+	})
+}
+
+func TestComponentPromptPointerShape(t *testing.T) {
+	const width, height = 60, 20
+	c := browser.NewComponent(browser.DefaultConfig())
+	c.Resize(width, height)
+	c.Prompt(browserapi.PromptConfig{Message: "Proceed?", Options: []string{"Yes", "No"}}, handler.NopPromptHandler())
+	w := term.NewStringWriter(width, height)
+	c.Draw(w)
+	require.NoError(t, w.Flush())
+	at := func(ch rune) term.Coordinates {
+		t.Helper()
+		for i, cell := range w.Cells() {
+			if cell.Ch == ch {
+				return term.Coordinates{X: i % width, Y: i / width}
+			}
+		}
+		require.Failf(t, "not drawn", "%q in:\n%s", ch, w.String())
+		return term.Coordinates{}
+	}
+	hover := func(pos term.Coordinates) term.PointerShape {
+		p := new(term.Pointer)
+		c.Handle(term.Event{
+			Type: term.EventMouse, MouseX: pos.X, MouseY: pos.Y,
+			Context: term.ContextWithPointer(context.Background(), p),
+		})
+		shape, _ := p.Shape()
+		return shape
+	}
+
+	assert.Equal(t, term.PointerLink, hover(at('Y')), "over a button")
+	assert.Equal(t, term.PointerDefault, hover(at('P')), "over the message")
+}
+
+func TestComponentPromptHoverMovesHighlight(t *testing.T) {
+	const width, height = 60, 20
+	style := browser.DefaultConfig().PromptConfig
+	c := browser.NewComponent(browser.DefaultConfig())
+	c.Resize(width, height)
+	selected := -1
+	c.Prompt(browserapi.PromptConfig{Message: "Proceed?", Options: []string{"Yes", "No"}}, handler.FuncPromptHandler(
+		func(i int, _ string) { selected = i }, func() error { return nil }))
+	draw := func() *term.StringWriter {
+		w := term.NewStringWriter(width, height)
+		c.Draw(w)
+		require.NoError(t, w.Flush())
+		return w
+	}
+	cellOf := func(w *term.StringWriter, ch rune) (term.Coordinates, term.Attributes) {
+		t.Helper()
+		for i, cell := range w.Cells() {
+			if cell.Ch == ch {
+				return term.Coordinates{X: i % width, Y: i / width}, cell.Attributes()
+			}
+		}
+		require.Failf(t, "not drawn", "%q in:\n%s", ch, w.String())
+		return term.Coordinates{}, term.Attributes{}
+	}
+	noPos, _ := cellOf(draw(), 'N')
+
+	c.Handle(term.Event{Type: term.EventMouse, MouseX: noPos.X, MouseY: noPos.Y})
+	w := draw()
+	_, yes := cellOf(w, 'Y')
+	_, no := cellOf(w, 'N')
+	assert.Equal(t, style.TextAttr, yes, "the highlight leaves the keyboard's choice")
+	assert.Equal(t, style.HighlightAttr, no, "the highlight follows the pointer")
+
+	c.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	assert.Equal(t, 1, selected, "enter selects the hovered option")
+}
+
+func TestComponentPromptLinkClick(t *testing.T) {
+	const width, height = 60, 20
+	const link = "https://example.com/advisory"
+	for _, tcase := range []struct {
+		name   string
+		at     string
+		shape  term.PointerShape
+		opened []string
+	}{
+		{"a click on a link opens it", "advisory", term.PointerLink, []string{link}},
+		{"a click on plain text opens nothing", "See", term.PointerDefault, nil},
+	} {
+		t.Run(tcase.name, func(t *testing.T) {
+			var opened []string
+			cfg := browser.DefaultConfig()
+			cfg.PromptConfig.OnLinkClick = func(u *url.URL) bool {
+				opened = append(opened, u.String())
+				return true
+			}
+			c := browser.NewComponent(cfg)
+			c.Resize(width, height)
+			selected := -1
+			c.Prompt(browserapi.PromptConfig{
+				Message: "See the [advisory](" + link + ") first.", Options: []string{"Yes", "No"},
+			}, handler.FuncPromptHandler(func(i int, _ string) { selected = i }, func() error { return nil }))
+
+			w := term.NewStringWriter(width, height)
+			c.Draw(w)
+			require.NoError(t, w.Flush())
+			row, col, found := 0, 0, false
+			for y, line := range strings.Split(w.String(), "\n") {
+				if x := strings.Index(line, tcase.at); x >= 0 {
+					row, col, found = y, len([]rune(line[:x])), true
+					break
+				}
+			}
+			require.True(t, found, "%q not drawn in:\n%s", tcase.at, w.String())
+			mouse := func(key term.Key) term.PointerShape {
+				p := new(term.Pointer)
+				c.Handle(term.Event{
+					Type: term.EventMouse, Key: key, MouseX: col, MouseY: row,
+					Context: term.ContextWithPointer(context.Background(), p),
+				})
+				shape, _ := p.Shape()
+				return shape
+			}
+
+			assert.Equal(t, tcase.shape, mouse(0))
+			mouse(term.MouseLeft)
+			mouse(term.MouseRelease)
+			assert.Equal(t, tcase.opened, opened)
+			assert.Equal(t, -1, selected, "no option is selected")
+			assert.Equal(t, 1, c.FloatingWindows(), "the prompt stays open")
+		})
+	}
+
+	t.Run("a click on a link after a press released on an option opens it", func(t *testing.T) {
+		var opened []string
+		cfg := browser.DefaultConfig()
+		cfg.PromptConfig.OnLinkClick = func(u *url.URL) bool {
+			opened = append(opened, u.String())
+			return true
+		}
+		c := browser.NewComponent(cfg)
+		c.Resize(width, height)
+		c.Prompt(browserapi.PromptConfig{
+			Message: "See the [advisory](" + link + ") first.", Options: []string{"Yes", "No"},
+		}, handler.NopPromptHandler())
+		w := term.NewStringWriter(width, height)
+		c.Draw(w)
+		require.NoError(t, w.Flush())
+		at := func(s string) (pos term.Coordinates) {
+			t.Helper()
+			for y, line := range strings.Split(w.String(), "\n") {
+				if x := strings.Index(line, s); x >= 0 {
+					return term.Coordinates{X: len([]rune(line[:x])), Y: y}
+				}
+			}
+			require.Failf(t, "not drawn", "%q in:\n%s", s, w.String())
+			return
+		}
+		advisory, yes := at("advisory"), at("Yes")
+		mouse := func(key term.Key, pos term.Coordinates) {
+			c.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: pos.X, MouseY: pos.Y})
+		}
+
+		mouse(term.MouseLeft, advisory)
+		mouse(term.MouseRelease, yes)
+		mouse(term.MouseLeft, advisory)
+		mouse(term.MouseRelease, advisory)
+		assert.Equal(t, []string{link, link}, opened)
+		assert.Equal(t, 1, c.FloatingWindows(), "the prompt stays open")
+	})
+}
+
+func TestComponentPromptMarkdownMessageTakesTheMouseAnywhere(t *testing.T) {
+	message := strings.Join([]string{
+		"# A header with a [link](https://example.com/h)",
+		"A paragraph with a [link](https://example.com/p), **bold** and 日本語 text that wraps.",
+		"- an item with a [link](https://example.com/l)\n  - a nested item",
+		"> a quote with a [link](https://example.com/q)",
+		"| a | [b](https://example.com/t) |\n|---|---|\n| 日本 | d |",
+		"```go\nfunc main() {}\n```",
+		"---",
+	}, "\n\n")
+	// Each pass sends its events to every cell and to a cell beyond
+	// each edge, in turn; the drag presses on every cell without a
+	// release until the next pass.
+	passes := [][]term.Key{
+		{0},
+		{term.MouseLeft, term.MouseRelease},
+		{term.MouseLeft},
+		{term.MouseRelease},
+		{term.MouseRight, term.MouseRelease},
+		{term.MouseMiddle, term.MouseRelease},
+		{term.MouseWheelDown},
+		{term.MouseWheelUp},
+	}
+	for _, size := range []struct {
+		name          string
+		width, height int
+		// clicks is whether the clicks pass lands on a link.
+		clicks bool
+	}{
+		{"a message with room to spare", 100, 50, true},
+		{"a scrolled message", 100, 14, true},
+		{"a prompt narrower than the message's padding", 3, 14, false},
+		{"a prompt a row tall", 100, 1, false},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			cfg := browser.DefaultConfig()
+			clicks := 0
+			cfg.PromptConfig.OnLinkClick = func(*url.URL) bool { clicks++; return true }
+			c := browser.NewComponent(cfg)
+			c.Resize(size.width, size.height)
+			open := func() {
+				if c.FloatingWindows() == 0 {
+					c.Prompt(browserapi.PromptConfig{
+						Message: message, Options: []string{"Yes", "No"},
+					}, handler.NopPromptHandler())
+				}
+			}
+
+			require.NotPanics(t, func() {
+				for _, keys := range passes {
+					for y := -1; y <= size.height; y++ {
+						for x := -1; x <= size.width; x++ {
+							for _, key := range keys {
+								open()
+								c.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: x, MouseY: y})
+							}
+						}
+					}
+					c.Draw(term.NewStringWriter(size.width, size.height))
+				}
+			})
+			assert.Equal(t, size.clicks, clicks > 0, "%d clicks on links", clicks)
+		})
+	}
+}
+
+func TestComponentPromptClickedAttr(t *testing.T) {
+	const width, height = 60, 20
+	cfg := browser.DefaultConfig()
+	cfg.PromptConfig.ClickedAttr = term.Attributes{Fg: term.ColorWhite, Bg: term.ColorPurple}
+	c := browser.NewComponent(cfg)
+	c.Resize(width, height)
+	selected := -1
+	c.Prompt(browserapi.PromptConfig{Message: "Proceed?", Options: []string{"Yes", "No"}}, handler.FuncPromptHandler(
+		func(i int, _ string) { selected = i }, func() error { return nil }))
+	noCell := func() (term.Coordinates, term.Attributes) {
+		t.Helper()
+		w := term.NewStringWriter(width, height)
+		c.Draw(w)
+		require.NoError(t, w.Flush())
+		for i, cell := range w.Cells() {
+			if cell.Ch == 'N' {
+				return term.Coordinates{X: i % width, Y: i / width}, cell.Attributes()
+			}
+		}
+		require.Failf(t, "not drawn", "No in:\n%s", w.String())
+		return term.Coordinates{}, term.Attributes{}
+	}
+	pos, _ := noCell()
+	mouse := func(key term.Key) {
+		c.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: pos.X, MouseY: pos.Y})
+	}
+
+	mouse(term.MouseLeft)
+	_, no := noCell()
+	assert.Equal(t, cfg.PromptConfig.ClickedAttr, no, "a pressed button looks clicked")
+	assert.Equal(t, -1, selected, "the press alone selects nothing")
+
+	mouse(term.MouseRelease)
+	assert.Equal(t, 1, selected, "the release selects the button")
+}
+
+func TestComponentPromptButtonImages(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "button.png")
+	require.NoError(t, os.WriteFile(path, imageuritest.StatusBarLeftPNG, 0o600))
+	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	images := browser.PromptImages{
+		Idle:   browser.PromptButtonImage{Left: uri, Middle: uri, Right: uri},
+		Outset: component.ButtonOutset{Top: 1, Bottom: 1, Sides: 1},
+	}
+	const width, height = 80, 24
+
+	for _, tcase := range []struct {
+		name    string
+		images  browser.PromptImages
+		storage bool
+		drawn   bool
+	}{
+		{"no images", browser.PromptImages{}, true, false},
+		{"no image cache", images, false, false},
+		{"images", images, true, true},
+	} {
+		t.Run(tcase.name, func(t *testing.T) {
+			cfg := browser.DefaultConfig()
+			cfg.PromptConfig.Images = tcase.images
+			loaded := make(frameImageInterrupter, 1)
+			cfg.Interrupter = loaded
+			if tcase.storage {
+				cfg.WindowManagerConfig.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			}
+			c := browser.NewComponent(cfg)
+			defer func() { assert.NoError(t, c.Close()) }()
+			c.Resize(width, height)
+
+			imgs := c.ButtonImages()
+			if tcase.drawn {
+				require.NotNil(t, imgs)
+				assert.Equal(t, images.Outset, imgs.Outset)
+				assert.Same(t, imgs.Idle.Left, imgs.Idle.Middle, "one image per URI")
+				assert.True(t, imgs.Hover.Empty(), "a state without URIs has no images")
+			} else {
+				assert.Nil(t, imgs)
+			}
+
+			c.Prompt(browserapi.PromptConfig{
+				Message: "Proceed?", Options: []string{"Yes", "No"},
+			}, handler.NopPromptHandler())
+			c.Draw(newButtonImageScreen(width, height))
+			if tcase.drawn {
+				select {
+				case <-loaded:
+				case <-time.After(5 * time.Second):
+					require.FailNow(t, "button image did not load")
+				}
+			}
+			screen := newButtonImageScreen(width, height)
+			c.Draw(screen)
+			require.NoError(t, screen.Flush())
+
+			var yes term.Coordinates
+			var label term.Attributes
+			for i, cell := range screen.Cells() {
+				if cell.Ch == 'Y' {
+					yes, label = term.Coordinates{X: i % width, Y: i / width}, cell.Attributes()
+					break
+				}
+			}
+			if !tcase.drawn {
+				assert.Empty(t, screen.images)
+				assert.Equal(t, cfg.PromptConfig.HighlightAttr, label)
+				return
+			}
+			require.NotEmpty(t, screen.images)
+			top, bottom := height, 0
+			covered := false
+			for _, img := range screen.images {
+				assert.Equal(t, term.ImageLayerBelowText, img.Layer)
+				top, bottom = min(top, img.Pos.Y), max(bottom, img.Pos.Y+img.Height)
+				covered = covered || (yes.X >= img.Pos.X && yes.X < img.Pos.X+img.Width &&
+					yes.Y >= img.Pos.Y && yes.Y < img.Pos.Y+img.Height)
+			}
+			assert.True(t, covered, "no image under the label")
+			assert.Equal(t, yes.Y-1, top, "the images reach the top outset")
+			assert.Equal(t, yes.Y+2, bottom, "the images reach the bottom outset")
+			assert.Equal(t, term.Attributes{
+				Fg: cfg.PromptConfig.HighlightAttr.Fg,
+				Bg: cfg.PromptConfig.BackgroundAttr.Bg,
+			}, label, "the label keeps its color over the prompt's background")
+		})
+	}
+}
+
+// buttonImageScreen records the images drawn on it.
+type buttonImageScreen struct {
+	*term.StringWriter
+	images []term.Image
+}
+
+func newButtonImageScreen(width, height int) *buttonImageScreen {
+	return &buttonImageScreen{StringWriter: term.NewStringWriter(width, height)}
+}
+
+func (s *buttonImageScreen) DrawImage(img term.Image) bool {
+	s.images = append(s.images, img)
+	return true
+}
+
+func TestComponentPromptMaxWidth(t *testing.T) {
+	// one line of 23*8+1 = 185 cells
+	message := strings.Repeat("a rather long question ", 8) + "?"
+	for _, tcase := range []struct {
+		name               string
+		bound              int
+		minWidth, maxWidth int
+	}{
+		{name: "host proportions", bound: 0, minWidth: 31, maxWidth: 184},
+		{name: "widest line", bound: 300, minWidth: 185, maxWidth: 200},
+		{name: "wraps at the bound", bound: 30, minWidth: 1, maxWidth: 30},
+	} {
+		t.Run(tcase.name, func(t *testing.T) {
+			cfg := browser.DefaultConfig()
+			cfg.PromptConfig.MinWidth = 0
+			c := browser.NewComponent(cfg)
+			c.Resize(300, 60)
+			win := c.Prompt(browserapi.PromptConfig{
+				Message: message, Options: []string{"Yes", "No"}, MaxWidth: tcase.bound,
+			}, handler.NopPromptHandler())
+			content, err := win.Content()
+			require.NoError(t, err)
+			width, _ := content.(component.Floating).Dimensions()
+			assert.GreaterOrEqual(t, width, tcase.minWidth)
+			assert.LessOrEqual(t, width, tcase.maxWidth)
+		})
+	}
 }
 
 func TestComponentSplitNil(t *testing.T) {
@@ -1186,6 +1716,97 @@ func TestComponentSplitNil(t *testing.T) {
 		}
 		comptest.TestComponent(t, c, w, tests)
 	})
+}
+
+func TestComponentRestyle(t *testing.T) {
+	plus := component.FrameCharSet{
+		TopLeft: '+', TopRight: '+', BottomLeft: '+', BottomRight: '+',
+		HorizontalTop: '-', HorizontalBottom: '-', VerticalLeft: '|', VerticalRight: '|',
+	}
+	wallpaper := func(text string) browser.Wallpaper {
+		return browser.Wallpaper{NewComponent: func() tui.Component {
+			return component.NewStringWithConfig(text, component.StringConfig{
+				Alignment: component.AlignmentCentered,
+			})
+		}}
+	}
+	path := filepath.Join(t.TempDir(), "button.png")
+	require.NoError(t, os.WriteFile(path, imageuritest.StatusBarLeftPNG, 0o600))
+	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+
+	cfg := browser.DefaultConfig()
+	cfg.Wallpaper = wallpaper("BART")
+	cfg.WindowManagerConfig.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	cfg.Interrupter = make(frameImageInterrupter, 1)
+	c := browser.NewComponent(cfg)
+	defer func() { assert.NoError(t, c.Close()) }()
+	c.SetDefaultSplit(browserapi.OrientationLeft)
+	c.Resize(20, 8)
+	wallpaperWin := c.Focus()
+	tabURI, err := workspaceapi.ParseURI("file:///tab")
+	require.NoError(t, err)
+	tab := c.NewTab(tabURI, 'x', "tab", NewTestHandler(), nil)
+	tabWin, ok := c.Split(browserapi.OrientationDefault, wallpaperWin, tab)
+	require.True(t, ok)
+	c.SetFocus(tabWin)
+
+	highlight := term.Attributes{Fg: term.ColorBlack, Bg: term.ColorAqua}
+	style := browser.Style{
+		WindowManager:     cfg.WindowManagerConfig,
+		FrameUnionCharSet: component.FrameUnionCharSet{FrameCharSet: plus, Left: 'L', Right: 'R', Top: 'T', Bottom: 'B'},
+		Prompt:            cfg.PromptConfig,
+		Wallpaper:         wallpaper("NEW!"),
+		Tabs: browser.TabStyle{
+			FocusTabAttr:          cfg.FocusTabAttr,
+			NonFocusTabAttr:       cfg.NonFocusTabAttr,
+			FocusTabHighlightAttr: cfg.FocusTabHighlightAttr,
+			FocusTabHighlightChar: '=',
+		},
+	}
+	style.WindowManager.FrameCharSet = plus
+	style.WindowManager.FocusFrameCharSet = plus
+	style.Prompt.HighlightAttr = highlight
+	style.Prompt.Images = browser.PromptImages{Idle: browser.PromptButtonImage{Middle: uri}}
+	require.Nil(t, c.ButtonImages())
+
+	comptest.TestComponent(t, c, term.NewStringWriter(24, 8), []comptest.TestCase{
+		{Expected: `
+┌━━━━━─────────────┐    
+│x tab             │    
+┌────────┐┌────────┤    
+│AAAAAAAA││        │    
+│AAAAAAAA││  BART  │    
+│AAAAAAAA││        │    
+│AAAAAAAA││        │    
+└────────┘└────────┘    `},
+		{Action: func() { c.Restyle(style) }, Expected: `
++=====-------------+    
+|x tab             |    
++--------++--------R    
+|AAAAAAAA||        |    
+|AAAAAAAA||  NEW!  |    
+|AAAAAAAA||        |    
+|AAAAAAAA||        |    
++--------++--------+    `},
+	})
+
+	content, err := tabWin.Content()
+	require.NoError(t, err)
+	assert.Same(t, tab, content, "the tab window keeps its tab")
+
+	assert.NotNil(t, c.ButtonImages(), "prompts get the new images")
+	c.Prompt(browserapi.PromptConfig{Message: "Proceed?", Options: []string{"Yes", "No"}},
+		handler.NopPromptHandler())
+	w := term.NewStringWriter(20, 8)
+	c.Draw(w)
+	require.NoError(t, w.Flush())
+	var yes term.Attributes
+	for _, cell := range w.Cells() {
+		if cell.Ch == 'Y' {
+			yes = cell.Attributes()
+		}
+	}
+	assert.Equal(t, highlight, yes, "prompts get the new attributes")
 }
 
 func TestFloatingPanicWallpaper(t *testing.T) {

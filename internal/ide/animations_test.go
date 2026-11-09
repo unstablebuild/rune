@@ -17,6 +17,7 @@
 package ide
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -27,8 +28,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/component/shader"
+	"unstable.build/rune/internal/component/shader/glslshader"
 	"unstable.build/rune/internal/component/shader/shaderloop"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 )
 
 func newAnimConfig(t *testing.T, src string) ideConfig {
@@ -45,6 +47,7 @@ func TestAnimationsDefaultsEnabled(t *testing.T) {
 	c := newAnimConfig(t, `config = {}`)
 	assert.True(t, c.animationsLoadingWorkspace())
 	assert.True(t, c.animationsOpenWorkspace())
+	assert.True(t, c.animationsIntro())
 	assert.Empty(t, c.errors)
 }
 
@@ -61,11 +64,13 @@ config = {
     "animations": {
         "loading_workspace": False,
         "open_workspace":    False,
+        "intro":             False,
     },
 }
 `)
 	assert.False(t, c.animationsLoadingWorkspace())
 	assert.False(t, c.animationsOpenWorkspace())
+	assert.False(t, c.animationsIntro())
 	assert.Empty(t, c.errors)
 }
 
@@ -407,6 +412,27 @@ config = {
 	assert.Empty(t, c.errors)
 }
 
+func TestAnimationsOpenWorkspaceShaderTakesTheReveals(t *testing.T) {
+	for _, name := range []string{
+		"burn", "beams", "binaryPath", "decrypt", "expand", "matrix", "middleOut",
+		"pour", "print", "rain", "slide",
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := newAnimConfig(t, fmt.Sprintf(`
+config = {
+    "animations": {
+        "open_workspace": {"shader": %q},
+    },
+}
+`, name))
+			got, ok := c.animationsOpenWorkspaceShader()
+			assert.True(t, ok)
+			assert.Equal(t, name, got)
+			assert.Empty(t, c.errors)
+		})
+	}
+}
+
 func TestAnimationsOpenWorkspaceShaderUnknown(t *testing.T) {
 	c := newAnimConfig(t, `
 config = {
@@ -488,6 +514,7 @@ func TestAnimationsActiveTab(t *testing.T) {
 		shader string
 		fps    int
 		loop   time.Duration
+		params shaderloop.Params
 		errors []string
 	}{{
 		name:   "absent",
@@ -499,10 +526,73 @@ func TestAnimationsActiveTab(t *testing.T) {
 		name: "configured",
 		src: `config = {"animations": {"KEY": {
     "enabled": True, "shader": "shine", "fps": 12, "loop": "2s",
+    "shine": {"color": "green", "intensity": 0.8, "band_width": 0.4},
 }}}`,
 		shader: "shine",
 		fps:    12,
 		loop:   2 * time.Second,
+		params: shaderloop.Params{Shine: shaderloop.ShineParams{
+			Color: term.ColorGreen, Intensity: 0.8, BandWidth: 0.4,
+		}},
+	}, {
+		name: "every shader keeps its own tuning",
+		src: `config = {"animations": {"KEY": {
+    "shader": "pulse",
+    "pulse": {"color": "red", "intensity": 0.5},
+    "shine": {"color": "green"},
+}}}`,
+		shader: "pulse",
+		fps:    shaderloop.DefaultFPS,
+		loop:   shaderloop.DefaultLoop,
+		params: shaderloop.Params{
+			Pulse: shaderloop.PulseParams{Color: term.ColorRed, Intensity: 0.5},
+			Shine: shaderloop.ShineParams{Color: term.ColorGreen},
+		},
+	}, {
+		name: "every shader's knobs",
+		src: `config = {"animations": {"KEY": {
+    "blaze":   {"animate_background": True, "color": "green", "swap_red_blue": True},
+    "burn":    {
+        "animate_background": True, "gradient": ["white", "green", 0x003300],
+        "duration": 0.3, "seed": 7, "origin": 0,
+    },
+    "inferno": {"color": "#0000ff", "swap_red_blue": True},
+    "shine":   {"direction": "left_to_right"},
+}}}`,
+		shader: "pulse",
+		fps:    shaderloop.DefaultFPS,
+		loop:   shaderloop.DefaultLoop,
+		params: shaderloop.Params{
+			Blaze: shaderloop.FireParams{
+				AnimateBackground: true, Color: term.ColorGreen, SwapRedBlue: true,
+			},
+			Burn: shaderloop.BurnParams{
+				AnimateBackground: true,
+				Gradient: []term.Color{
+					term.ColorWhite, term.ColorGreen, term.NewHexColor(0x003300),
+				},
+				Duration: 0.3, Seed: 7, FixedOrigin: true, Origin: 0,
+			},
+			Inferno: shaderloop.FireParams{
+				Color: term.NewRGBColor(0, 0, 255), SwapRedBlue: true,
+			},
+			Shine: shaderloop.ShineParams{Direction: glslshader.DirectionLeftToRight},
+		},
+	}, {
+		name:   "integer fractions",
+		src:    `config = {"animations": {"KEY": {"shine": {"intensity": 1, "band_width": 1}}}}`,
+		shader: "pulse",
+		fps:    shaderloop.DefaultFPS,
+		loop:   shaderloop.DefaultLoop,
+		params: shaderloop.Params{Shine: shaderloop.ShineParams{Intensity: 1, BandWidth: 1}},
+	}, {
+		name: "tuning outside a shader's key is ignored",
+		src: `config = {"animations": {"KEY": {
+    "shader": "shine", "color": "green", "intensity": 0.8, "band_width": 0.4,
+}}}`,
+		shader: "shine",
+		fps:    shaderloop.DefaultFPS,
+		loop:   shaderloop.DefaultLoop,
 	}, {
 		name:   "enabled missing defaults true",
 		src:    `config = {"animations": {"KEY": {"fps": 12}}}`,
@@ -544,16 +634,74 @@ func TestAnimationsActiveTab(t *testing.T) {
 		loop:   shaderloop.DefaultLoop,
 		errors: []string{"animations.KEY.fps", "animations.KEY.loop"},
 	}, {
+		name: "fractions out of range fall back and warn",
+		src: `config = {"animations": {"KEY": {
+    "pulse": {"intensity": 0},
+    "shine": {"intensity": 1.5, "band_width": -0.1},
+}}}`,
+		shader: "pulse",
+		fps:    shaderloop.DefaultFPS,
+		loop:   shaderloop.DefaultLoop,
+		errors: []string{
+			"animations.KEY.pulse.intensity",
+			"animations.KEY.shine.intensity", "animations.KEY.shine.band_width",
+		},
+	}, {
+		name: "invalid knobs fall back and warn",
+		src: `config = {"animations": {"KEY": {
+    "blaze":   {"animate_background": "yes", "color": ["red"], "swap_red_blue": 1},
+    "burn":    {"gradient": [], "duration": 2, "seed": "lucky", "origin": 1.5},
+    "inferno": {"color": True, "swap_red_blue": "yes"},
+    "shine":   {"direction": "sideways"},
+}}}`,
+		shader: "pulse",
+		fps:    shaderloop.DefaultFPS,
+		loop:   shaderloop.DefaultLoop,
+		params: shaderloop.Params{
+			Shine: shaderloop.ShineParams{Direction: glslshader.DirectionBottomLeftToTopRight},
+		},
+		errors: []string{
+			"animations.KEY.blaze.animate_background", "animations.KEY.blaze.color",
+			"animations.KEY.blaze.swap_red_blue",
+			"animations.KEY.burn.gradient", "animations.KEY.burn.duration",
+			"animations.KEY.burn.seed", "animations.KEY.burn.origin",
+			"animations.KEY.inferno.color", "animations.KEY.inferno.swap_red_blue",
+			"animations.KEY.shine.direction",
+		},
+	}, {
+		name: "invalid gradient colours fall back and warn",
+		src: `config = {"animations": {"KEY": {
+    "burn": {"gradient": ["green", ["red"]]},
+}}}`,
+		shader: "pulse",
+		fps:    shaderloop.DefaultFPS,
+		loop:   shaderloop.DefaultLoop,
+		errors: []string{"animations.KEY.burn.gradient"},
+	}, {
+		name: "None keeps the default",
+		src: `config = {"animations": {"KEY": {
+    "burn":  {"origin": None, "seed": 7},
+    "shine": {"color": None, "direction": None},
+}}}`,
+		shader: "pulse",
+		fps:    shaderloop.DefaultFPS,
+		loop:   shaderloop.DefaultLoop,
+		params: shaderloop.Params{Burn: shaderloop.BurnParams{Seed: 7}},
+	}, {
 		name: "wrong types fall back and warn",
 		src: `config = {"animations": {"KEY": {
     "enabled": "yes", "shader": 42, "fps": "fast", "loop": 1200,
+    "pulse": "red",
+    "shine": {"color": ["green"], "intensity": "bright", "band_width": "wide"},
 }}}`,
 		shader: "pulse",
 		fps:    shaderloop.DefaultFPS,
 		loop:   shaderloop.DefaultLoop,
 		errors: []string{
 			"animations.KEY.enabled", "animations.KEY.shader",
-			"animations.KEY.fps", "animations.KEY.loop",
+			"animations.KEY.fps", "animations.KEY.loop", "animations.KEY.pulse",
+			"animations.KEY.shine.color", "animations.KEY.shine.intensity",
+			"animations.KEY.shine.band_width",
 		},
 	}} {
 		for _, key := range []string{animActiveContentTab, animActiveWorkspaceTab} {
@@ -562,6 +710,7 @@ func TestAnimationsActiveTab(t *testing.T) {
 				assert.Equal(t, tc.shader, c.animationsActiveTabShader(key))
 				assert.Equal(t, tc.fps, c.animationsActiveTabFPS(key))
 				assert.Equal(t, tc.loop, c.animationsActiveTabLoop(key))
+				assert.Equal(t, tc.params, c.animationsActiveTabParams(key))
 				want := make([]string, len(tc.errors))
 				for i, e := range tc.errors {
 					want[i] = strings.ReplaceAll(e, "KEY", key)
@@ -594,6 +743,124 @@ config = {
 	assert.Empty(t, c.errors)
 }
 
+func TestAnimationsScreensaver(t *testing.T) {
+	defaults := screensaverConfig{
+		idleTimeout: defaultScreensaverIdleTimeout,
+		duration:    defaultScreensaverDuration,
+		fps:         defaultShaderFPS,
+		timeShader:  "loop",
+	}
+	withShaders := func(cfg screensaverConfig, shaders ...string) screensaverConfig {
+		cfg.shaders = shaders
+		return cfg
+	}
+	for _, tc := range []struct {
+		name   string
+		src    string
+		want   screensaverConfig
+		errors []string
+	}{{
+		name: "absent",
+		src:  `config = {}`,
+		want: defaults,
+	}, {
+		name: "no shaders",
+		src:  `config = {"animations": {"screensaver": {"idle_timeout": "1m"}}}`,
+		want: screensaverConfig{
+			idleTimeout: time.Minute, duration: defaultScreensaverDuration,
+			fps: defaultShaderFPS, timeShader: "loop",
+		},
+	}, {
+		name: "configured",
+		src: `config = {"animations": {"screensaver": {
+    "enabled": True, "idle_timeout": "5m", "shaders": ["matrix", "rain"],
+    "duration": "30s", "fps": 12, "time_shader": "ping_pong",
+}}}`,
+		want: screensaverConfig{
+			shaders:     []string{"matrix", "rain"},
+			idleTimeout: 5 * time.Minute, duration: 30 * time.Second, fps: 12,
+			timeShader: "ping_pong",
+		},
+	}, {
+		name: "disabled",
+		src:  `config = {"animations": {"screensaver": False}}`,
+		want: defaults,
+	}, {
+		name: "disabled in its dict",
+		src:  `config = {"animations": {"screensaver": {"enabled": False, "shaders": ["matrix"]}}}`,
+		want: defaults,
+	}, {
+		name:   "unknown shaders are skipped",
+		src:    `config = {"animations": {"screensaver": {"shaders": ["matrix", "nope", "rain"]}}}`,
+		want:   withShaders(defaults, "matrix", "rain"),
+		errors: []string{"animations.screensaver.shaders"},
+	}, {
+		name:   "shaders that are not strings are skipped",
+		src:    `config = {"animations": {"screensaver": {"shaders": [1, "rain"]}}}`,
+		want:   withShaders(defaults, "rain"),
+		errors: []string{"animations.screensaver.shaders"},
+	}, {
+		name: "a single shader need not be in a list",
+		src:  `config = {"animations": {"screensaver": {"shaders": "rain"}}}`,
+		want: withShaders(defaults, "rain"),
+	}, {
+		name:   "an unknown single shader is skipped",
+		src:    `config = {"animations": {"screensaver": {"shaders": "nope"}}}`,
+		want:   defaults,
+		errors: []string{"animations.screensaver.shaders"},
+	}, {
+		name:   "shaders that are neither a list nor a string",
+		src:    `config = {"animations": {"screensaver": {"shaders": 1}}}`,
+		want:   defaults,
+		errors: []string{"animations.screensaver.shaders"},
+	}, {
+		name:   "unknown time shader",
+		src:    `config = {"animations": {"screensaver": {"shaders": ["rain"], "time_shader": "sine"}}}`,
+		want:   withShaders(defaults, "rain"),
+		errors: []string{"animations.screensaver.time_shader"},
+	}, {
+		name: "malformed values fall back to their defaults",
+		src: `config = {"animations": {"screensaver": {
+    "shaders": ["rain"], "idle_timeout": "soon", "duration": 3, "fps": "fast", "time_shader": 1,
+}}}`,
+		want: withShaders(defaults, "rain"),
+		errors: []string{
+			"animations.screensaver.idle_timeout", "animations.screensaver.duration",
+			"animations.screensaver.fps", "animations.screensaver.time_shader",
+		},
+	}, {
+		name: "zero values fall back to their defaults",
+		src: `config = {"animations": {"screensaver": {
+    "shaders": ["rain"], "idle_timeout": "0s", "duration": "0s", "fps": 0,
+}}}`,
+		want: withShaders(defaults, "rain"),
+		errors: []string{
+			"animations.screensaver.idle_timeout", "animations.screensaver.duration",
+			"animations.screensaver.fps",
+		},
+	}, {
+		name: "negative values fall back to their defaults",
+		src: `config = {"animations": {"screensaver": {
+    "shaders": ["rain"], "idle_timeout": "-1m", "duration": "-1s", "fps": -1,
+}}}`,
+		want: withShaders(defaults, "rain"),
+		errors: []string{
+			"animations.screensaver.idle_timeout", "animations.screensaver.duration",
+			"animations.screensaver.fps",
+		},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newAnimConfig(t, tc.src)
+			assert.Equal(t, tc.want, c.screensaver())
+			var got []string
+			for k := range c.errors {
+				got = append(got, k)
+			}
+			assert.ElementsMatch(t, tc.errors, got)
+		})
+	}
+}
+
 func TestIDEOpenShaderConfigOverrideAppliesToRoot(t *testing.T) {
 	configFile, _ := makeTestFiles(t)
 	require.NoError(t, os.WriteFile(configFile.Name(), []byte(""), 0666))
@@ -612,13 +879,13 @@ config = {
 	dir := t.TempDir()
 
 	sentinelCalled := false
-	sentinel := func(term.Attributes) shader.Shader {
+	sentinel := func(term.Attributes, shader.Snapshot) shader.Shader {
 		sentinelCalled = true
 		return shader.Nop()
 	}
 
 	i := new(IDE)
-	require.NoError(t, i.init(".", configFile.Name(), dir, pkgtrust.NewStore(dir, nil), newTestStorage(t, dir),
+	require.NoError(t, i.init(".", configFile.Name(), dir, pkgtrust.NewStore(), newTestStorage(t, dir),
 		WithPublishEvent(nopPublishEvent),
 		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
 		WithLocker(new(sync.Mutex)),
@@ -630,11 +897,88 @@ config = {
 	require.NotNil(t, i.root.openShaderCfg.shader,
 		"open shader must be configured")
 
-	_ = i.root.openShaderCfg.shader(term.Attributes{})
+	_ = i.root.openShaderCfg.shader(term.Attributes{}, shader.Snapshot{})
 	assert.False(t, sentinelCalled,
 		"rune.star override must replace the WithOpenShader factory; "+
 			"the sentinel from WithOpenShader was invoked instead")
 
 	assert.Equal(t, time.Second, i.root.openShaderCfg.duration,
 		"open shader duration override must be applied")
+}
+
+func TestIDEOpenShaderConfigRevealsTheScreenTakenOver(t *testing.T) {
+	configFile, _ := makeTestFiles(t)
+	require.NoError(t, os.WriteFile(configFile.Name(), []byte(""), 0666))
+	starlarkSrc := `
+config = {
+    "animations": {
+        "open_workspace": {"shader": "rain"},
+    },
+}
+`
+	dir := t.TempDir()
+	i := new(IDE)
+	require.NoError(t, i.init(".", configFile.Name(), dir, pkgtrust.NewStore(), newTestStorage(t, dir),
+		WithPublishEvent(nopPublishEvent),
+		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
+		WithLocker(new(sync.Mutex)),
+		WithDefaultConfigStarlark(starlarkSrc, true, true),
+		WithOpenShader(func(term.Attributes, shader.Snapshot) shader.Shader { return shader.Nop() }, 60, time.Second),
+	))
+	t.Cleanup(func() { _ = i.closeResources() })
+
+	cells := func(ch rune) [][]term.Cell {
+		out := make([][]term.Cell, 4)
+		for y := range out {
+			out[y] = make([]term.Cell, 10)
+			for x := range out[y] {
+				out[y][x] = term.NewCell(ch, 1, term.Attributes{Fg: term.ColorWhite})
+			}
+		}
+		return out
+	}
+	open := i.root.openShaderCfg.shader(term.Attributes{}, shader.Snapshot{Cells: cells('O')})
+	first := cells('N')
+	open.Shade(0, 30, first)
+	old := 0
+	for _, row := range first {
+		for _, c := range row {
+			if c.Ch == 'O' {
+				old++
+			}
+		}
+	}
+	assert.GreaterOrEqual(t, old, 30, "the rain starts from the screen it takes over")
+}
+
+func TestIDEScreensaverConfigArmsTheIdleTimer(t *testing.T) {
+	configFile, _ := makeTestFiles(t)
+	require.NoError(t, os.WriteFile(configFile.Name(), []byte(""), 0666))
+	starlarkSrc := `
+config = {
+    "animations": {
+        "screensaver": {"shaders": ["rain"], "idle_timeout": "3m"},
+    },
+}
+`
+	dir := t.TempDir()
+	i := new(IDE)
+	require.NoError(t, i.init(".", configFile.Name(), dir, pkgtrust.NewStore(), newTestStorage(t, dir),
+		WithPublishEvent(nopPublishEvent),
+		WithExtensionsRunner(FuncExtensionsRunner(testRunnerFn)),
+		WithLocker(new(sync.Mutex)),
+		WithDefaultConfigStarlark(starlarkSrc, true, true),
+		WithScheduleNextTick(func(func()) bool { return true }),
+	))
+	t.Cleanup(func() { _ = i.closeResources() })
+	var armed []time.Duration
+	i.options.afterFunc = func(d time.Duration, _ func()) *time.Timer {
+		armed = append(armed, d)
+		return nil
+	}
+
+	i.Ready()
+
+	assert.Equal(t, []string{"rain"}, i.root.screensaverCfg.shaders)
+	assert.Contains(t, armed, 3*time.Minute)
 }

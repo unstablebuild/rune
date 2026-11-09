@@ -28,7 +28,26 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/handler/handlertest"
 )
+
+func TestLocationCommandHandlerPointerLeaves(t *testing.T) {
+	t.Parallel()
+	cwd, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	uri := workspaceapi.Join(cwd, "bookmarks.go")
+	wrap := func() Handler {
+		fileRegistry := NewFileCommandRegistry(cwd, newIndentTestWorkspaceRegistry())
+		h, err := SubscribeLocationCommands(uri, fileRegistry, newPointerEditor(t, uri))
+		require.NoError(t, err)
+		return h
+	}
+	for _, size := range []struct{ width, height int }{{40, 10}, {1, 1}} {
+		handlertest.RunPointerLeaves(t, wrap(), size.width, size.height)
+	}
+	requirePointerLeavesKeepState(t, wrap(), 40, 10,
+		term.Coordinates{X: 3, Y: 2}, term.Coordinates{X: 12, Y: 4})
+}
 
 func TestLocationHighlightCommandHighlightsAllLocations(t *testing.T) {
 	cwd, err := workspaceapi.ParseURI("memory:///")

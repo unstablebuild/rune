@@ -16,7 +16,8 @@
 
 // Package idehistory consolidates all persisted workspace session state
 // (open files, file→window mapping, tile layout, open terminal sessions,
-// open task sessions, extension tabs) behind a single Store.
+// open task sessions, extension tabs, programs listing a status) behind
+// a single Store.
 package idehistory
 
 import (
@@ -68,6 +69,7 @@ type State struct {
 	Terminals  []TerminalSession
 	Tasks      []TaskSession
 	Extensions []ExtensionTab
+	Programs   []Program
 }
 
 // IsEmpty reports whether there's nothing worth restoring. A persisted
@@ -77,7 +79,8 @@ type State struct {
 // case and triggering restore on it produces an empty-but-visible window.
 //
 // The workspace name is likewise not content: it is applied whenever
-// the workspace opens, without going through restore.
+// the workspace opens, without going through restore. Nor are programs,
+// which come back only with the tabs they report from.
 func (s State) IsEmpty() bool {
 	return len(s.Files) == 0 &&
 		len(s.Terminals) == 0 &&
@@ -117,13 +120,22 @@ type TaskSession struct {
 	WindowMinimizedAlignment component.Alignment
 }
 
-// ExtensionTab is a tab whose content an extension serves, shown in a tiled window.
+// ExtensionTab is a tab whose content an extension serves. WindowID is zero
+// when the tab is inactive, otherwise it identifies the tiled window showing it.
 type ExtensionTab struct {
 	URI      workspaceapi.URI
 	Icon     rune
 	Name     string
 	WindowID uint64
 	Focus    bool
+}
+
+// Program is a tab whose program reported a status, which the program
+// status inbox lists until the tab closes. App is the app it last
+// reported, if any.
+type Program struct {
+	URI workspaceapi.URI
+	App string
 }
 
 // Snapshotter supplies live workspace state when the Store needs to
@@ -135,6 +147,7 @@ type Snapshotter interface {
 	Terminals() []TerminalSession
 	Tasks() []TaskSession
 	ExtensionTabs() []ExtensionTab
+	Programs() []Program
 	Layout() (tcomponent.TileLayout, bool)
 	FileWindowIDs() map[string]uint64
 }
@@ -244,6 +257,7 @@ func (s *Store) StoreWorkspaceStateForClose(
 		state.Terminals = snap.Terminals()
 		state.Tasks = snap.Tasks()
 		state.Extensions = snap.ExtensionTabs()
+		state.Programs = snap.Programs()
 		state.Name = snap.Name()
 	}
 	return s.StoreWorkspaceState(ctx, uri, state)
@@ -469,6 +483,7 @@ type workspaceStateDocument struct {
 	Terminals  []terminalDoc `bson:",omitempty"`
 	Tasks      []taskDoc
 	Extensions []extensionTabDoc
+	Programs   []programDoc
 }
 
 type terminalStateDocument struct {
@@ -512,6 +527,11 @@ type extensionTabDoc struct {
 	Name     string
 	WindowID uint64
 	Focus    bool
+}
+
+type programDoc struct {
+	URI string
+	App string
 }
 
 type lastSessionDocument struct {
@@ -596,6 +616,9 @@ func newWorkspaceStateDocument(
 			Focus:    e.Focus,
 		})
 	}
+	for _, p := range state.Programs {
+		doc.Programs = append(doc.Programs, programDoc{URI: p.URI.String(), App: p.App})
+	}
 	return doc
 }
 
@@ -650,6 +673,13 @@ func (d workspaceStateDocument) toState() State {
 			WindowID: e.WindowID,
 			Focus:    e.Focus,
 		})
+	}
+	for _, p := range d.Programs {
+		uri, err := workspaceapi.ParseURI(p.URI)
+		if err != nil {
+			continue
+		}
+		state.Programs = append(state.Programs, Program{URI: uri, App: p.App})
 	}
 	return state
 }

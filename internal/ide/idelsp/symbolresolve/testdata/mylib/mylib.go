@@ -25,6 +25,13 @@ func (m MyType) String() string { return m.Value }
 
 func (m *MyType) Set(v string) { m.Value = v }
 
+// Store's methods have no receiver declaration; they must still be
+// addressable as mylib.Store.Method.
+type Store interface {
+	Load(key string) string
+	save(key, v string)
+}
+
 func MyFunc(s string) string { return "mylib:" + s }
 
 func unexportedHelper() string { return "secret" }

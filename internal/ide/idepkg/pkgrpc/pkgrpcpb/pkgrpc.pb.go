@@ -108,7 +108,7 @@ func (x PackageError_Kind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use PackageError_Kind.Descriptor instead.
 func (PackageError_Kind) EnumDescriptor() ([]byte, []int) {
-	return file_pkgrpcpb_pkgrpc_proto_rawDescGZIP(), []int{18, 0}
+	return file_pkgrpcpb_pkgrpc_proto_rawDescGZIP(), []int{19, 0}
 }
 
 type Empty struct {
@@ -994,6 +994,78 @@ func (x *Answer) GetApproved() bool {
 	return false
 }
 
+// Requirement is a requirement the install installed or upgraded before
+// the package that requires it.
+type Requirement struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Package string                 `protobuf:"bytes,1,opt,name=package,proto3" json:"package,omitempty"`
+	// from is the version that was in use, and empty when the
+	// requirement was not installed.
+	From          string `protobuf:"bytes,2,opt,name=from,proto3" json:"from,omitempty"`
+	To            string `protobuf:"bytes,3,opt,name=to,proto3" json:"to,omitempty"`
+	RequiredBy    string `protobuf:"bytes,4,opt,name=required_by,json=requiredBy,proto3" json:"required_by,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Requirement) Reset() {
+	*x = Requirement{}
+	mi := &file_pkgrpcpb_pkgrpc_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Requirement) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Requirement) ProtoMessage() {}
+
+func (x *Requirement) ProtoReflect() protoreflect.Message {
+	mi := &file_pkgrpcpb_pkgrpc_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Requirement.ProtoReflect.Descriptor instead.
+func (*Requirement) Descriptor() ([]byte, []int) {
+	return file_pkgrpcpb_pkgrpc_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *Requirement) GetPackage() string {
+	if x != nil {
+		return x.Package
+	}
+	return ""
+}
+
+func (x *Requirement) GetFrom() string {
+	if x != nil {
+		return x.From
+	}
+	return ""
+}
+
+func (x *Requirement) GetTo() string {
+	if x != nil {
+		return x.To
+	}
+	return ""
+}
+
+func (x *Requirement) GetRequiredBy() string {
+	if x != nil {
+		return x.RequiredBy
+	}
+	return ""
+}
+
 // ChangeRequest is what a client sends on Install and Use: the package
 // first, then an answer to every prompt the host sends.
 type ChangeRequest struct {
@@ -1009,7 +1081,7 @@ type ChangeRequest struct {
 
 func (x *ChangeRequest) Reset() {
 	*x = ChangeRequest{}
-	mi := &file_pkgrpcpb_pkgrpc_proto_msgTypes[16]
+	mi := &file_pkgrpcpb_pkgrpc_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1021,7 +1093,7 @@ func (x *ChangeRequest) String() string {
 func (*ChangeRequest) ProtoMessage() {}
 
 func (x *ChangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkgrpcpb_pkgrpc_proto_msgTypes[16]
+	mi := &file_pkgrpcpb_pkgrpc_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1034,7 +1106,7 @@ func (x *ChangeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChangeRequest.ProtoReflect.Descriptor instead.
 func (*ChangeRequest) Descriptor() ([]byte, []int) {
-	return file_pkgrpcpb_pkgrpc_proto_rawDescGZIP(), []int{16}
+	return file_pkgrpcpb_pkgrpc_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ChangeRequest) GetRequest() isChangeRequest_Request {
@@ -1087,6 +1159,7 @@ type ChangeEvent struct {
 	//	*ChangeEvent_Notice
 	//	*ChangeEvent_Done
 	//	*ChangeEvent_Prompt
+	//	*ChangeEvent_Requirement
 	Event         isChangeEvent_Event `protobuf_oneof:"event"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1094,7 +1167,7 @@ type ChangeEvent struct {
 
 func (x *ChangeEvent) Reset() {
 	*x = ChangeEvent{}
-	mi := &file_pkgrpcpb_pkgrpc_proto_msgTypes[17]
+	mi := &file_pkgrpcpb_pkgrpc_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1106,7 +1179,7 @@ func (x *ChangeEvent) String() string {
 func (*ChangeEvent) ProtoMessage() {}
 
 func (x *ChangeEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_pkgrpcpb_pkgrpc_proto_msgTypes[17]
+	mi := &file_pkgrpcpb_pkgrpc_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1119,7 +1192,7 @@ func (x *ChangeEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChangeEvent.ProtoReflect.Descriptor instead.
 func (*ChangeEvent) Descriptor() ([]byte, []int) {
-	return file_pkgrpcpb_pkgrpc_proto_rawDescGZIP(), []int{17}
+	return file_pkgrpcpb_pkgrpc_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ChangeEvent) GetEvent() isChangeEvent_Event {
@@ -1165,6 +1238,15 @@ func (x *ChangeEvent) GetPrompt() *Prompt {
 	return nil
 }
 
+func (x *ChangeEvent) GetRequirement() *Requirement {
+	if x != nil {
+		if x, ok := x.Event.(*ChangeEvent_Requirement); ok {
+			return x.Requirement
+		}
+	}
+	return nil
+}
+
 type isChangeEvent_Event interface {
 	isChangeEvent_Event()
 }
@@ -1188,6 +1270,10 @@ type ChangeEvent_Prompt struct {
 	Prompt *Prompt `protobuf:"bytes,4,opt,name=prompt,proto3,oneof"`
 }
 
+type ChangeEvent_Requirement struct {
+	Requirement *Requirement `protobuf:"bytes,5,opt,name=requirement,proto3,oneof"`
+}
+
 func (*ChangeEvent_Progress) isChangeEvent_Event() {}
 
 func (*ChangeEvent_Notice) isChangeEvent_Event() {}
@@ -1195,6 +1281,8 @@ func (*ChangeEvent_Notice) isChangeEvent_Event() {}
 func (*ChangeEvent_Done) isChangeEvent_Event() {}
 
 func (*ChangeEvent_Prompt) isChangeEvent_Event() {}
+
+func (*ChangeEvent_Requirement) isChangeEvent_Event() {}
 
 // PackageError is attached to error statuses so the client can restore
 // the idepkg sentinel the host's package manager returned.
@@ -1207,7 +1295,7 @@ type PackageError struct {
 
 func (x *PackageError) Reset() {
 	*x = PackageError{}
-	mi := &file_pkgrpcpb_pkgrpc_proto_msgTypes[18]
+	mi := &file_pkgrpcpb_pkgrpc_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1219,7 +1307,7 @@ func (x *PackageError) String() string {
 func (*PackageError) ProtoMessage() {}
 
 func (x *PackageError) ProtoReflect() protoreflect.Message {
-	mi := &file_pkgrpcpb_pkgrpc_proto_msgTypes[18]
+	mi := &file_pkgrpcpb_pkgrpc_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1232,7 +1320,7 @@ func (x *PackageError) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PackageError.ProtoReflect.Descriptor instead.
 func (*PackageError) Descriptor() ([]byte, []int) {
-	return file_pkgrpcpb_pkgrpc_proto_rawDescGZIP(), []int{18}
+	return file_pkgrpcpb_pkgrpc_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *PackageError) GetKind() PackageError_Kind {
@@ -1314,16 +1402,23 @@ const file_pkgrpcpb_pkgrpc_proto_rawDesc = "" +
 	"\x03key\x18\x02 \x01(\tR\x03key\"<\n" +
 	"\x06Answer\x12\x16\n" +
 	"\x06prompt\x18\x01 \x01(\x04R\x06prompt\x12\x1a\n" +
-	"\bapproved\x18\x02 \x01(\bR\bapproved\"x\n" +
+	"\bapproved\x18\x02 \x01(\bR\bapproved\"l\n" +
+	"\vRequirement\x12\x18\n" +
+	"\apackage\x18\x01 \x01(\tR\apackage\x12\x12\n" +
+	"\x04from\x18\x02 \x01(\tR\x04from\x12\x0e\n" +
+	"\x02to\x18\x03 \x01(\tR\x02to\x12\x1f\n" +
+	"\vrequired_by\x18\x04 \x01(\tR\n" +
+	"requiredBy\"x\n" +
 	"\rChangeRequest\x122\n" +
 	"\apackage\x18\x01 \x01(\v2\x16.pkgrpc.PackageVersionH\x00R\apackage\x12(\n" +
 	"\x06answer\x18\x02 \x01(\v2\x0e.pkgrpc.AnswerH\x00R\x06answerB\t\n" +
-	"\arequest\"\xbf\x01\n" +
+	"\arequest\"\xf8\x01\n" +
 	"\vChangeEvent\x12.\n" +
 	"\bprogress\x18\x01 \x01(\v2\x10.pkgrpc.ProgressH\x00R\bprogress\x12(\n" +
 	"\x06notice\x18\x02 \x01(\v2\x0e.pkgrpc.NoticeH\x00R\x06notice\x12#\n" +
 	"\x04done\x18\x03 \x01(\v2\r.pkgrpc.EmptyH\x00R\x04done\x12(\n" +
-	"\x06prompt\x18\x04 \x01(\v2\x0e.pkgrpc.PromptH\x00R\x06promptB\a\n" +
+	"\x06prompt\x18\x04 \x01(\v2\x0e.pkgrpc.PromptH\x00R\x06prompt\x127\n" +
+	"\vrequirement\x18\x05 \x01(\v2\x13.pkgrpc.RequirementH\x00R\vrequirementB\a\n" +
 	"\x05event\"\xa4\x02\n" +
 	"\fPackageError\x12-\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x19.pkgrpc.PackageError.KindR\x04kind\"\xe4\x01\n" +
@@ -1368,7 +1463,7 @@ func file_pkgrpcpb_pkgrpc_proto_rawDescGZIP() []byte {
 }
 
 var file_pkgrpcpb_pkgrpc_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pkgrpcpb_pkgrpc_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_pkgrpcpb_pkgrpc_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_pkgrpcpb_pkgrpc_proto_goTypes = []any{
 	(PackageError_Kind)(0),        // 0: pkgrpc.PackageError.Kind
 	(*Empty)(nil),                 // 1: pkgrpc.Empty
@@ -1387,22 +1482,23 @@ var file_pkgrpcpb_pkgrpc_proto_goTypes = []any{
 	(*Prompt)(nil),                // 14: pkgrpc.Prompt
 	(*PromptOption)(nil),          // 15: pkgrpc.PromptOption
 	(*Answer)(nil),                // 16: pkgrpc.Answer
-	(*ChangeRequest)(nil),         // 17: pkgrpc.ChangeRequest
-	(*ChangeEvent)(nil),           // 18: pkgrpc.ChangeEvent
-	(*PackageError)(nil),          // 19: pkgrpc.PackageError
-	nil,                           // 20: pkgrpc.Filters.FiltersEntry
-	nil,                           // 21: pkgrpc.PackageFilters.FiltersEntry
-	nil,                           // 22: pkgrpc.Package.MetadataEntry
-	nil,                           // 23: pkgrpc.Bundle.MetadataEntry
-	(*timestamppb.Timestamp)(nil), // 24: google.protobuf.Timestamp
+	(*Requirement)(nil),           // 17: pkgrpc.Requirement
+	(*ChangeRequest)(nil),         // 18: pkgrpc.ChangeRequest
+	(*ChangeEvent)(nil),           // 19: pkgrpc.ChangeEvent
+	(*PackageError)(nil),          // 20: pkgrpc.PackageError
+	nil,                           // 21: pkgrpc.Filters.FiltersEntry
+	nil,                           // 22: pkgrpc.PackageFilters.FiltersEntry
+	nil,                           // 23: pkgrpc.Package.MetadataEntry
+	nil,                           // 24: pkgrpc.Bundle.MetadataEntry
+	(*timestamppb.Timestamp)(nil), // 25: google.protobuf.Timestamp
 }
 var file_pkgrpcpb_pkgrpc_proto_depIdxs = []int32{
-	20, // 0: pkgrpc.Filters.filters:type_name -> pkgrpc.Filters.FiltersEntry
-	21, // 1: pkgrpc.PackageFilters.filters:type_name -> pkgrpc.PackageFilters.FiltersEntry
-	22, // 2: pkgrpc.Package.metadata:type_name -> pkgrpc.Package.MetadataEntry
-	24, // 3: pkgrpc.Package.created_at:type_name -> google.protobuf.Timestamp
-	23, // 4: pkgrpc.Bundle.metadata:type_name -> pkgrpc.Bundle.MetadataEntry
-	24, // 5: pkgrpc.Bundle.created_at:type_name -> google.protobuf.Timestamp
+	21, // 0: pkgrpc.Filters.filters:type_name -> pkgrpc.Filters.FiltersEntry
+	22, // 1: pkgrpc.PackageFilters.filters:type_name -> pkgrpc.PackageFilters.FiltersEntry
+	23, // 2: pkgrpc.Package.metadata:type_name -> pkgrpc.Package.MetadataEntry
+	25, // 3: pkgrpc.Package.created_at:type_name -> google.protobuf.Timestamp
+	24, // 4: pkgrpc.Bundle.metadata:type_name -> pkgrpc.Bundle.MetadataEntry
+	25, // 5: pkgrpc.Bundle.created_at:type_name -> google.protobuf.Timestamp
 	15, // 6: pkgrpc.Prompt.options:type_name -> pkgrpc.PromptOption
 	3,  // 7: pkgrpc.ChangeRequest.package:type_name -> pkgrpc.PackageVersion
 	16, // 8: pkgrpc.ChangeRequest.answer:type_name -> pkgrpc.Answer
@@ -1410,38 +1506,39 @@ var file_pkgrpcpb_pkgrpc_proto_depIdxs = []int32{
 	13, // 10: pkgrpc.ChangeEvent.notice:type_name -> pkgrpc.Notice
 	1,  // 11: pkgrpc.ChangeEvent.done:type_name -> pkgrpc.Empty
 	14, // 12: pkgrpc.ChangeEvent.prompt:type_name -> pkgrpc.Prompt
-	0,  // 13: pkgrpc.PackageError.kind:type_name -> pkgrpc.PackageError.Kind
-	2,  // 14: pkgrpc.PackageManager.LibDir:input_type -> pkgrpc.PackageRef
-	2,  // 15: pkgrpc.PackageManager.LatestVersion:input_type -> pkgrpc.PackageRef
-	2,  // 16: pkgrpc.PackageManager.DescribePackage:input_type -> pkgrpc.PackageRef
-	3,  // 17: pkgrpc.PackageManager.DescribeRelease:input_type -> pkgrpc.PackageVersion
-	4,  // 18: pkgrpc.PackageManager.ListPackages:input_type -> pkgrpc.Filters
-	5,  // 19: pkgrpc.PackageManager.ListPackageVersions:input_type -> pkgrpc.PackageFilters
-	1,  // 20: pkgrpc.PackageManager.ListInstalledPackages:input_type -> pkgrpc.Empty
-	2,  // 21: pkgrpc.PackageManager.ListInstalledPackageVersions:input_type -> pkgrpc.PackageRef
-	17, // 22: pkgrpc.PackageManager.Install:input_type -> pkgrpc.ChangeRequest
-	17, // 23: pkgrpc.PackageManager.Use:input_type -> pkgrpc.ChangeRequest
-	2,  // 24: pkgrpc.PackageManager.DeletePackage:input_type -> pkgrpc.PackageRef
-	6,  // 25: pkgrpc.PackageManager.DeletePackageVersion:input_type -> pkgrpc.DeleteVersionRequest
-	2,  // 26: pkgrpc.PackageManager.VersionInUse:input_type -> pkgrpc.PackageRef
-	7,  // 27: pkgrpc.PackageManager.LibDir:output_type -> pkgrpc.Paths
-	8,  // 28: pkgrpc.PackageManager.LatestVersion:output_type -> pkgrpc.Version
-	10, // 29: pkgrpc.PackageManager.DescribePackage:output_type -> pkgrpc.Package
-	11, // 30: pkgrpc.PackageManager.DescribeRelease:output_type -> pkgrpc.Bundle
-	10, // 31: pkgrpc.PackageManager.ListPackages:output_type -> pkgrpc.Package
-	11, // 32: pkgrpc.PackageManager.ListPackageVersions:output_type -> pkgrpc.Bundle
-	2,  // 33: pkgrpc.PackageManager.ListInstalledPackages:output_type -> pkgrpc.PackageRef
-	8,  // 34: pkgrpc.PackageManager.ListInstalledPackageVersions:output_type -> pkgrpc.Version
-	18, // 35: pkgrpc.PackageManager.Install:output_type -> pkgrpc.ChangeEvent
-	18, // 36: pkgrpc.PackageManager.Use:output_type -> pkgrpc.ChangeEvent
-	1,  // 37: pkgrpc.PackageManager.DeletePackage:output_type -> pkgrpc.Empty
-	1,  // 38: pkgrpc.PackageManager.DeletePackageVersion:output_type -> pkgrpc.Empty
-	9,  // 39: pkgrpc.PackageManager.VersionInUse:output_type -> pkgrpc.InUse
-	27, // [27:40] is the sub-list for method output_type
-	14, // [14:27] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	17, // 13: pkgrpc.ChangeEvent.requirement:type_name -> pkgrpc.Requirement
+	0,  // 14: pkgrpc.PackageError.kind:type_name -> pkgrpc.PackageError.Kind
+	2,  // 15: pkgrpc.PackageManager.LibDir:input_type -> pkgrpc.PackageRef
+	2,  // 16: pkgrpc.PackageManager.LatestVersion:input_type -> pkgrpc.PackageRef
+	2,  // 17: pkgrpc.PackageManager.DescribePackage:input_type -> pkgrpc.PackageRef
+	3,  // 18: pkgrpc.PackageManager.DescribeRelease:input_type -> pkgrpc.PackageVersion
+	4,  // 19: pkgrpc.PackageManager.ListPackages:input_type -> pkgrpc.Filters
+	5,  // 20: pkgrpc.PackageManager.ListPackageVersions:input_type -> pkgrpc.PackageFilters
+	1,  // 21: pkgrpc.PackageManager.ListInstalledPackages:input_type -> pkgrpc.Empty
+	2,  // 22: pkgrpc.PackageManager.ListInstalledPackageVersions:input_type -> pkgrpc.PackageRef
+	18, // 23: pkgrpc.PackageManager.Install:input_type -> pkgrpc.ChangeRequest
+	18, // 24: pkgrpc.PackageManager.Use:input_type -> pkgrpc.ChangeRequest
+	2,  // 25: pkgrpc.PackageManager.DeletePackage:input_type -> pkgrpc.PackageRef
+	6,  // 26: pkgrpc.PackageManager.DeletePackageVersion:input_type -> pkgrpc.DeleteVersionRequest
+	2,  // 27: pkgrpc.PackageManager.VersionInUse:input_type -> pkgrpc.PackageRef
+	7,  // 28: pkgrpc.PackageManager.LibDir:output_type -> pkgrpc.Paths
+	8,  // 29: pkgrpc.PackageManager.LatestVersion:output_type -> pkgrpc.Version
+	10, // 30: pkgrpc.PackageManager.DescribePackage:output_type -> pkgrpc.Package
+	11, // 31: pkgrpc.PackageManager.DescribeRelease:output_type -> pkgrpc.Bundle
+	10, // 32: pkgrpc.PackageManager.ListPackages:output_type -> pkgrpc.Package
+	11, // 33: pkgrpc.PackageManager.ListPackageVersions:output_type -> pkgrpc.Bundle
+	2,  // 34: pkgrpc.PackageManager.ListInstalledPackages:output_type -> pkgrpc.PackageRef
+	8,  // 35: pkgrpc.PackageManager.ListInstalledPackageVersions:output_type -> pkgrpc.Version
+	19, // 36: pkgrpc.PackageManager.Install:output_type -> pkgrpc.ChangeEvent
+	19, // 37: pkgrpc.PackageManager.Use:output_type -> pkgrpc.ChangeEvent
+	1,  // 38: pkgrpc.PackageManager.DeletePackage:output_type -> pkgrpc.Empty
+	1,  // 39: pkgrpc.PackageManager.DeletePackageVersion:output_type -> pkgrpc.Empty
+	9,  // 40: pkgrpc.PackageManager.VersionInUse:output_type -> pkgrpc.InUse
+	28, // [28:41] is the sub-list for method output_type
+	15, // [15:28] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_pkgrpcpb_pkgrpc_proto_init() }
@@ -1449,15 +1546,16 @@ func file_pkgrpcpb_pkgrpc_proto_init() {
 	if File_pkgrpcpb_pkgrpc_proto != nil {
 		return
 	}
-	file_pkgrpcpb_pkgrpc_proto_msgTypes[16].OneofWrappers = []any{
+	file_pkgrpcpb_pkgrpc_proto_msgTypes[17].OneofWrappers = []any{
 		(*ChangeRequest_Package)(nil),
 		(*ChangeRequest_Answer)(nil),
 	}
-	file_pkgrpcpb_pkgrpc_proto_msgTypes[17].OneofWrappers = []any{
+	file_pkgrpcpb_pkgrpc_proto_msgTypes[18].OneofWrappers = []any{
 		(*ChangeEvent_Progress)(nil),
 		(*ChangeEvent_Notice)(nil),
 		(*ChangeEvent_Done)(nil),
 		(*ChangeEvent_Prompt)(nil),
+		(*ChangeEvent_Requirement)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1465,7 +1563,7 @@ func file_pkgrpcpb_pkgrpc_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkgrpcpb_pkgrpc_proto_rawDesc), len(file_pkgrpcpb_pkgrpc_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   23,
+			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

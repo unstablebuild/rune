@@ -44,6 +44,7 @@ import (
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/plugin"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/text/cmdenv"
 	"unstable.build/rune/internal/workspace/workspacetest"
@@ -1041,6 +1042,52 @@ func assertWatchArmed(t *testing.T, m *Manager, exec *fakeScheme, taskname strin
 		"watch never armed for task %q", taskname)
 }
 
+func TestManagerStatusTask(t *testing.T) {
+	wm := newFakeBrowser()
+	m := newTestManager(wm, newFakeScheme())
+	pty, err := workspaceapi.ParseURI("file:///dev/ttys009")
+	require.NoError(t, err)
+	newPlugin := m.newPlugin
+	var program *statusTestPlugin
+	m.newPlugin = func(
+		publisher browser.EventPublisher, notifications browser.Notifications,
+		e schemeapi.Executor, term schemeapi.Terminal, tm browser.TabManager,
+		cmdAndArgs []string, maxWidth int, opts ...plugin.Option,
+	) (browser.ScrollableFloating, error) {
+		h, err := newPlugin(publisher, notifications, e, term, tm, cmdAndArgs, maxWidth, opts...)
+		program = &statusTestPlugin{ScrollableFloating: h, uri: pty}
+		return program, err
+	}
+	require.NoError(t, m.RunTask(Task{Name: "build", Cmd: "make"}))
+	taskIfc, ok := m.tasks.Load("build")
+	require.True(t, ok)
+	task := taskIfc.(*Task)
+	task.WaitInflight()
+
+	got, ok := m.StatusTask(pty)
+	require.True(t, ok, "the task is found by the uri its run reports under")
+	assert.Same(t, task, got)
+	other, err := workspaceapi.ParseURI("file:///dev/ttys010")
+	require.NoError(t, err)
+	_, ok = m.StatusTask(other)
+	assert.False(t, ok)
+	assert.Same(t, program, task.Program())
+
+	_, shown := task.Shown()
+	assert.False(t, shown, "a minimized task is out of sight")
+	task.onFocus()
+	win, shown := task.Shown()
+	require.True(t, shown, "an unminimized task shows in its window")
+	assert.Equal(t, task.win.WindowID(), win.WindowID())
+}
+
+type statusTestPlugin struct {
+	browser.ScrollableFloating
+	uri workspaceapi.URI
+}
+
+func (p *statusTestPlugin) StatusURI() workspaceapi.URI { return p.uri }
+
 func mustTaskInfo(t *testing.T, m *Manager, taskname string) TaskInfo {
 	t.Helper()
 	taskIfc, ok := m.tasks.Load(taskname)
@@ -1480,7 +1527,8 @@ func (m *fakeBrowser) OnTabExit(workspaceapi.URI) bool {
 	return false
 }
 
-func (m *fakeBrowser) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (m *fakeBrowser) SetTabStatus(workspaceapi.URI, programstatus.Report) error { return nil }
+func (m *fakeBrowser) EndTabStatus(workspaceapi.URI) error                       { return nil }
 
 func (m *fakeBrowser) Floating(h browser.Floating, cfg browserapi.FloatingConfig) (
 	browser.Window, error,
@@ -2202,6 +2250,9 @@ func TestManagerLifecycleEdgeCases(t *testing.T) {
 		}, time.Second, 10*time.Millisecond,
 			"Close should stop every task watch")
 		assert.Empty(t, m.ListTasks())
+		for _, w := range wm.Created() {
+			assert.True(t, w.Closed(), "Close should close every task window")
+		}
 	})
 
 	t.Run("SetMaxWidthHeight concurrent with task runs does not race or panic", func(t *testing.T) {

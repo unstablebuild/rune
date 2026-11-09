@@ -16,7 +16,15 @@
 
 package idepkgtest
 
-import "github.com/unstablebuild/blue/release"
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/blue/release"
+)
 
 // MakePackages makes a map[string]release.Package from the following list of pkgs.
 func MakePackages(pkgs ...release.Package) map[string]release.Package {
@@ -34,4 +42,25 @@ func MakeBundles(bundles ...[]release.Bundle) map[string][]release.Bundle {
 		ret[bs[0].Package] = bs
 	}
 	return ret
+}
+
+// MakeTarball makes the gzipped tarball of a package bundle holding
+// files, keyed by their path in the bundle.
+func MakeTarball(t testing.TB, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+	for name, content := range files {
+		require.NoError(t, tw.WriteHeader(&tar.Header{
+			Name: name,
+			Mode: 0o644,
+			Size: int64(len(content)),
+		}))
+		_, err := tw.Write([]byte(content))
+		require.NoError(t, err)
+	}
+	require.NoError(t, tw.Close())
+	require.NoError(t, gzw.Close())
+	return buf.Bytes()
 }

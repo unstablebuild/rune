@@ -79,53 +79,88 @@ func New(
 	opener syntax.Opener,
 	config syntax.Config,
 ) syntax.Tree {
-	if config.ScheduleNextTick == nil {
-		panic("invalid config")
-	}
-	ret := new(Tree)
-	ret.config = config
-	ret.buf = buf
-	ret.uri = uri
-	ret.opener = opener
-	// NOTE: this shouldn't be removed as the buffer's view
-	// is how we share this tree's capabilities with
-	// other parts of the codebase via interface assertion.
-	ret.cview = ret.buf.WithView(ret)
-	ret.buf.Subscribe(ret)
-	ret.n = n
-	ret.interrupter = interrupter
-	ret.pkg = pkg
-	ret.loc = loc
-	ret.fc = fc
-	ret.statesubs = make(map[chan syntax.State]struct{})
-	ret.waitingReady = make(chan struct{})
+	ret := newTree(pkg, uri, buf, config)
+	ret.install(n, interrupter, loc, fc, opener)
 
 	go debug.CapturePanicReport(func() {
 		files, err := ret.downloadFiles(ctx)
-		if err != nil {
-			config.ScheduleNextTick(func() {
-				// set current state either way, so unblocking
-				// waiting goroutines can stream the first state.
-				defer close(ret.waitingReady)
-				ret.mu.Lock()
-				defer ret.mu.Unlock()
-				ret.currState = syntax.State{Closed: ret.closed, ParserError: err.Error()}
-			})
-			return
-		}
+		// The buffer is installed and live, so it is parsed on the
+		// event loop that edits it.
 		config.ScheduleNextTick(func() {
-			defer close(ret.waitingReady)
-			err := ret.initParserFromFiles(ctx, files)
-			ret.mu.Lock()
-			defer ret.mu.Unlock()
-			if err != nil {
-				ret.currState = syntax.State{Closed: ret.closed, ParserError: err.Error()}
-			} else {
-				ret.updateCurrentState(files.langID)
-			}
+			ret.finishInit(ctx, ret.initParserFromFiles(files, err))
 		})
 	})
 	return ret
+}
+
+var _ syntax.ParseTreeFunc = Parse
+
+// Parse loads the grammar of uri's language, parses buf and highlights it
+// without installing the tree into buf. See syntax.ParseTreeFunc.
+func Parse(
+	ctx context.Context, pkg syntax.PkgManager, uri workspaceapi.URI, buf *cell.Buffer,
+	config syntax.Config,
+) syntax.ParsedTree {
+	t := newTree(pkg, uri, buf, config)
+	files, err := t.downloadFiles(ctx)
+	return &parsedTree{t: t, init: t.initParserFromFiles(files, err)}
+}
+
+// parsedTree is a Tree that Parse initialized, waiting to be installed.
+type parsedTree struct {
+	t    *Tree
+	init initResult
+}
+
+func (p *parsedTree) Install(
+	n browserapi.Notifications, interrupter term.Interrupter, loc syntax.LocationSetter,
+	fc workspace.FlusherCloser, opener syntax.Opener,
+) syntax.Tree {
+	p.t.install(n, interrupter, loc, fc, opener)
+	p.t.finishInit(context.Background(), p.init)
+	return p.t
+}
+
+func (p *parsedTree) Close() error {
+	p.t.mu.Lock()
+	defer p.t.mu.Unlock()
+	if p.t.closed {
+		return nil
+	}
+	p.t.closed = true
+	return p.t.release()
+}
+
+func newTree(
+	pkg syntax.PkgManager, uri workspaceapi.URI, buf *cell.Buffer, config syntax.Config,
+) *Tree {
+	if config.ScheduleNextTick == nil {
+		panic("invalid config")
+	}
+	return &Tree{
+		config:       config,
+		buf:          buf,
+		uri:          uri,
+		pkg:          pkg,
+		statesubs:    make(map[chan syntax.State]struct{}),
+		waitingReady: make(chan struct{}),
+	}
+}
+
+func (t *Tree) install(
+	n browserapi.Notifications, interrupter term.Interrupter, loc syntax.LocationSetter,
+	fc workspace.FlusherCloser, opener syntax.Opener,
+) {
+	t.n = n
+	t.interrupter = interrupter
+	t.loc = loc
+	t.fc = fc
+	t.opener = opener
+	// NOTE: this shouldn't be removed as the buffer's view
+	// is how we share this tree's capabilities with
+	// other parts of the codebase via interface assertion.
+	t.cview = t.buf.WithView(t)
+	t.buf.Subscribe(t)
 }
 
 // Tree represents a file's syntax tree powered by tree-sitter.
@@ -163,6 +198,9 @@ type Tree struct {
 	locals            *tree_sitter.Query
 	statesubs         map[chan syntax.State]struct{}
 	currState         syntax.State
+	// fullPassTook is how long the last full parse and highlight of the
+	// buffer took.
+	fullPassTook time.Duration
 
 	onWillEditStart term.Coordinates
 	onWillEditEnd   term.Coordinates
@@ -258,15 +296,13 @@ func (t *Tree) InitialFolds() (iterator.Iterator[term.Range], bool) {
 		return nil, false
 	}
 
-	if !t.ready {
-		return newFoldsIterator(true, t, t.waitingReady), true
-	}
-
-	if t.folds == nil || t.tree == nil {
+	if t.ready && (t.folds == nil || t.tree == nil) {
 		return nil, false
 	}
 
-	return iterator.FromSlice(t.getFolds(true)), true
+	// Callers drain initial folds off the event loop as their tab
+	// opens, so the whole-file query runs on their first Next.
+	return newFoldsIterator(true, t, t.waitingReady), true
 }
 
 // Close closes all resources associated with this Tree.
@@ -287,6 +323,14 @@ func (t *Tree) Close() (ret error) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if err := t.release(); err != nil {
+		ret = multierror.Append(ret, err)
+	}
+	return
+}
+
+// release frees the native resources of a closed tree. t.mu must be held.
+func (t *Tree) release() (ret error) {
 	if !t.ready {
 		return nil
 	}
@@ -306,9 +350,7 @@ func (t *Tree) Close() (ret error) {
 	if t.indents != nil {
 		t.indents.Close()
 	}
-	if err := purego.Dlclose(t.lib); err != nil {
-		ret = multierror.Append(ret, err)
-	}
+	ret = purego.Dlclose(t.lib)
 	for ch := range t.statesubs {
 		close(ch)
 	}
@@ -401,8 +443,13 @@ type files struct {
 	langID       string
 	files        []string
 	packageFound bool
+	// notAvail is whether the user must be told the grammar of langID
+	// is not available.
+	notAvail bool
 }
 
+// downloadFiles lists the files of the grammar package of t's language. It
+// may run on any goroutine.
 func (t *Tree) downloadFiles(ctx context.Context) (files, error) {
 	filename := t.uri.Name()
 	id, err := languages.LanguageForFile(filename)
@@ -420,23 +467,36 @@ func (t *Tree) downloadFiles(ctx context.Context) (files, error) {
 			return files{langID: id}, nil
 		}
 		t.log(log.ErrorLevel, "aborting syntax parsing: %v", err)
-		t.config.ScheduleNextTick(func() { t.notifyNotAvail(id) })
-		return files{}, err
+		return files{langID: id, notAvail: true}, err
 	}
 	defer iter.Close()
 	allFiles, err := iterator.ToSlice(ctx, iter)
 	if err != nil {
 		msg := fmt.Sprintf("fetch language %q package: %v", id, err)
 		t.log(log.ErrorLevel, "%s", msg)
-		t.config.ScheduleNextTick(func() { t.notifyNotAvail(id) })
-		return files{}, errors.New(msg)
+		return files{langID: id, notAvail: true}, errors.New(msg)
 	}
 	return files{files: allFiles, langID: id, packageFound: true}, nil
 }
 
-func (t *Tree) initParserFromFiles(ctx context.Context, f files) error {
-	if !f.packageFound {
-		return nil
+// initResult is how initializing a tree's parser went, for finishInit to
+// report on the event loop.
+type initResult struct {
+	langID   string
+	err      error
+	notAvail bool
+	// highlighted is whether a full highlight of the parsed tree waits in
+	// highlightBuf to be published.
+	highlighted bool
+}
+
+// initParserFromFiles loads the grammar in f and parses and highlights t's
+// buffer with it, publishing nothing. It may run on any goroutine that may
+// read the buffer.
+func (t *Tree) initParserFromFiles(f files, err error) initResult {
+	res := initResult{langID: f.langID, err: err, notAvail: f.notAvail}
+	if err != nil || !f.packageFound {
+		return res
 	}
 
 	var langFile, highlightsFile, indentsFile, foldsFile, localsFile string
@@ -457,34 +517,61 @@ func (t *Tree) initParserFromFiles(ctx context.Context, f files) error {
 	if langFile == "" {
 		msg := fmt.Sprintf("parser file not found in language %q package", f.langID)
 		t.log(log.InfoLevel, "language not available: %s", msg)
-		t.notifyNotAvail(f.langID)
-		return errors.New(msg)
+		res.err, res.notAvail = errors.New(msg), true
+		return res
 	}
-	err := t.initParser(ctx, f.langID, langFile,
+	res.highlighted, res.err = t.initParser(f.langID, langFile,
 		highlightsFile, indentsFile, foldsFile, localsFile)
-	if err != nil {
-		t.log(log.ErrorLevel, "initialize language %s: %v", f.langID, err)
-		t.notifyNotAvail(f.langID)
-		return err
+	if res.err != nil {
+		t.log(log.ErrorLevel, "initialize language %s: %v", f.langID, res.err)
+		res.notAvail = true
+		return res
 	}
 	t.log(log.DebugLevel, "successfully initialized parser")
-	return nil
+	return res
 }
 
+// finishInit reports res, publishes the highlights initParserFromFiles left
+// pending and releases the callers waiting for t to be initialized. It runs
+// on the event loop.
+func (t *Tree) finishInit(ctx context.Context, res initResult) {
+	defer close(t.waitingReady)
+	t.mu.Lock()
+	if res.err != nil {
+		t.currState = syntax.State{Closed: t.closed, ParserError: res.err.Error()}
+	} else {
+		t.updateCurrentState(res.langID)
+	}
+	if res.highlighted && !t.closed {
+		t.publishHighlights(t.highlightBuf)
+	}
+	parsed := t.ready && !t.closed && t.tree != nil
+	t.mu.Unlock()
+	if res.notAvail {
+		t.notifyNotAvail(res.langID)
+	}
+	if parsed {
+		if err := t.interrupter.Interrupt(ctx); err != nil {
+			t.log(log.WarnLevel, "interrupt: %v", err)
+		}
+	}
+}
+
+// initParser reports whether it left a full highlight pending in
+// highlightBuf.
 func (t *Tree) initParser(
-	ctx context.Context, langID,
-	langfile, highlightsfile, indentsFile, foldsFile, localsFile string,
-) error {
+	langID, langfile, highlightsfile, indentsFile, foldsFile, localsFile string,
+) (bool, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if t.closed {
-		return nil
+		return false, nil
 	}
 
 	lib, err := purego.Dlopen(langfile, purego.RTLD_NOW|purego.RTLD_GLOBAL)
 	if err != nil {
-		return fmt.Errorf("dlopen %q: %w", langfile, err)
+		return false, fmt.Errorf("dlopen %q: %w", langfile, err)
 	}
 	t.lib = lib
 
@@ -495,7 +582,7 @@ func (t *Tree) initParser(
 	sym, err := purego.Dlsym(lib, parserID)
 	if err != nil {
 		_ = purego.Dlclose(t.lib)
-		return fmt.Errorf("load symbol %q: %w", parserID, err)
+		return false, fmt.Errorf("load symbol %q: %w", parserID, err)
 	}
 	purego.RegisterFunc(&lang, sym)
 
@@ -504,14 +591,14 @@ func (t *Tree) initParser(
 	if err := t.parser.SetLanguage(language); err != nil {
 		_ = purego.Dlclose(t.lib)
 		t.parser.Close()
-		return fmt.Errorf("set parser language: %v", err)
+		return false, fmt.Errorf("set parser language: %v", err)
 	}
 
 	if highlightsfile != "" {
 		if err := t.initHighlights(language, highlightsfile); err != nil {
 			_ = purego.Dlclose(t.lib)
 			t.parser.Close()
-			return fmt.Errorf("initialize highlights: %w", err)
+			return false, fmt.Errorf("initialize highlights: %w", err)
 		}
 	} else {
 		t.log(log.InfoLevel, "highlights file not found, some features will be disabled")
@@ -543,6 +630,7 @@ func (t *Tree) initParser(
 
 	// build the syntax tree
 	t.persistCells()
+	start := time.Now()
 	t.parseTree(nil, "initial parse error")
 	t.updateCurrentState(langID)
 
@@ -551,19 +639,22 @@ func (t *Tree) initParser(
 
 	if t.tree == nil {
 		t.log(log.ErrorLevel, "parsing failed: nil tree")
-		return nil
+		return false, nil
 	}
 
-	if err := t.highlight(); err != nil {
-		t.log(log.ErrorLevel, "highlight: %v", err)
+	if t.highlights == nil {
+		t.fullPassTook = time.Since(start)
+		return false, nil
 	}
-
-	if err := t.interrupter.Interrupt(ctx); err != nil {
-		t.log(log.WarnLevel, "interrupt: %v", err)
-	}
-	// do not return highlight or interrupt error so we don't
+	// do not return highlight errors so we don't
 	// show initialize SO failure notification to user.
-	return nil
+	err = t.computeHighlights()
+	t.fullPassTook = time.Since(start)
+	if err != nil {
+		t.log(log.ErrorLevel, "highlight: %v", err)
+		return false, nil
+	}
+	return true, nil
 }
 
 func (t *Tree) initHighlights(
@@ -655,7 +746,18 @@ func (t *Tree) reparse() {
 	if !t.ready || t.closed {
 		return
 	}
+	if t.fullPassOverBudget() {
+		t.log(log.DebugLevel, "skipping re-parse after flush, the last full pass took %s",
+			t.fullPassTook)
+		return
+	}
 	t.doReparse()
+}
+
+// fullPassOverBudget reports whether a full parse and highlight that is not
+// needed to keep the tree in sync with the buffer must be skipped.
+func (t *Tree) fullPassOverBudget() bool {
+	return t.config.FullReparseBudget > 0 && t.fullPassTook > t.config.FullReparseBudget
 }
 
 func (t *Tree) doReparse() {
@@ -664,6 +766,7 @@ func (t *Tree) doReparse() {
 		t.tree.Close() // dealloc previous tree
 	}
 	t.persistCells()
+	start := time.Now()
 	t.parseTree(nil, "re-parse error")
 	t.streamState()
 	if t.tree == nil {
@@ -673,6 +776,7 @@ func (t *Tree) doReparse() {
 	if err := t.highlight(); err != nil {
 		t.log(log.ErrorLevel, "highlight: %v", err)
 	}
+	t.fullPassTook = time.Since(start)
 }
 
 func (t *Tree) incrementalParse(start, end, from, to term.Coordinates, content string) {
@@ -715,9 +819,10 @@ func (t *Tree) incrementalParse(start, end, from, to term.Coordinates, content s
 		return
 	}
 	if t.currState.ParserError != "" {
-		t.log(log.DebugLevel, "%s, re-parse on errors: %t",
-			t.currState.ParserError, t.config.ReparseOnErrors)
-		if t.config.ReparseOnErrors {
+		reparse := t.config.ReparseOnErrors && !t.fullPassOverBudget()
+		t.log(log.DebugLevel, "%s, re-parse on errors: %t, re-parse: %t",
+			t.currState.ParserError, t.config.ReparseOnErrors, reparse)
+		if reparse {
 			changedTree.Close()
 			t.doReparse()
 			return
@@ -743,6 +848,17 @@ func (t *Tree) highlight() error {
 	if t.highlights == nil {
 		return nil
 	}
+	if err := t.computeHighlights(); err != nil {
+		return err
+	}
+	t.log(log.TraceLevel, "set %d highlights", len(t.highlightBuf))
+	t.publishHighlights(t.highlightBuf)
+	return nil
+}
+
+// computeHighlights highlights the whole tree into highlightBuf and
+// locations, for publishHighlights to publish.
+func (t *Tree) computeHighlights() error {
 	t.lineStarts = lineStarts(t.lineStarts, t.content)
 	highlights := t.getHighlights(t.cellBytes, t.content)
 	clear(t.locations)
@@ -753,10 +869,6 @@ func (t *Tree) highlight() error {
 	if !ok {
 		return errors.New("convert full highlight locations to byte ranges")
 	}
-	t.publishHighlights(highlights)
-
-	t.log(log.TraceLevel, "set %d highlights", len(highlights))
-
 	return nil
 }
 
@@ -780,7 +892,7 @@ func (t *Tree) highlightIncremental(
 	if t.highlights == nil {
 		return nil
 	}
-	if t.tree.RootNode().HasError() {
+	if t.tree.RootNode().HasError() && !t.fullPassOverBudget() {
 		return t.highlight()
 	}
 	t.lineStarts = lineStarts(t.lineStarts, t.content)

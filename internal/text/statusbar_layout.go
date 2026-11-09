@@ -93,6 +93,10 @@ import (
 //     template.DefaultImageAlt.
 //   - ttl <duration>: how long a downloaded image is reused. Defaults to
 //     24h.
+//
+// Sizes and cell offsets are at most template.MaxImageCells, and pixel
+// offsets at most template.MaxImagePixelOffset, offsets in either
+// direction, as template.Image.Validate checks.
 func ParseStatusBarLayout(layoutStr string) (
 	ret []StatusBarComponent, err error,
 ) {

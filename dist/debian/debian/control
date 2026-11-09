@@ -41,4 +41,4 @@ Description: Fast, GPU-accelerated, full-featured IDE and terminal multiplexer
  multiplexer, suitable both for automatic and manual programming.
  .
  X11 and OpenGL support is required only when opening a GUI window;
- TUI and headless modes run without a graphical stack.
+ headless mode runs without a graphical stack.

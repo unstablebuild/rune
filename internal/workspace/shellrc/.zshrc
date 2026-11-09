@@ -10,3 +10,8 @@ bindkey '^G' beep
 bindkey '^A' beginning-of-line
 bindkey '^E' end-of-line
 bindkey '^[[3~' delete-char
+
+# after the user's files, so Rune's environment wins over them
+if [[ -r "$ZDOTDIR/env.sh" ]]; then
+	source "$ZDOTDIR/env.sh"
+fi

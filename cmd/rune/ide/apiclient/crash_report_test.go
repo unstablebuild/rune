@@ -18,6 +18,7 @@ package apiclient
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -105,5 +106,52 @@ func TestPostReport_NonSuccessStatus(t *testing.T) {
 	err := client.PostReport(context.Background(), crashreport.Payload{YAML: []byte("package: test\n")})
 	if err == nil {
 		t.Fatal("expected error for non-success status")
+	}
+}
+
+func TestPostReport_SendsAnonymouslyWithoutToken(t *testing.T) {
+	cases := []struct {
+		name    string
+		sourcer auth.TokenSourcer
+	}{
+		{
+			name: "not logged in",
+			sourcer: auth.FuncTokenSourcer(func(context.Context, *oauth2.Token) (oauth2.TokenSource, error) {
+				return nil, auth.ErrNotAuthenticated
+			}),
+		},
+		{
+			name: "token refresh fails",
+			sourcer: auth.FuncTokenSourcer(func(context.Context, *oauth2.Token) (oauth2.TokenSource, error) {
+				return nil, errors.New("auth server unreachable")
+			}),
+		},
+		{name: "no token sourcer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var receivedAuth []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				receivedAuth = r.Header.Values("Authorization")
+				w.WriteHeader(http.StatusCreated)
+			}))
+			defer srv.Close()
+
+			u, _ := url.Parse(srv.URL)
+			client := &Client{
+				httpEndpointURL: u,
+				tokenSource: auth.NewCachedTokenSource(
+					tc.sourcer, storagestub.NewInMemoryService()),
+			}
+
+			err := client.PostReport(context.Background(),
+				crashreport.Payload{YAML: []byte("package: test\n")})
+			if err != nil {
+				t.Fatalf("PostReport: %v", err)
+			}
+			if len(receivedAuth) != 0 {
+				t.Errorf("Authorization = %q, want none", receivedAuth)
+			}
+		})
 	}
 }

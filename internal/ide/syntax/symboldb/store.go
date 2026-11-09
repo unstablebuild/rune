@@ -34,7 +34,7 @@ const (
 	// its derived tables (such as the names partition) may not exist,
 	// and per-file records alone cannot rebuild them because unchanged
 	// files are normally skipped.
-	schemaVersion = 5
+	schemaVersion = 6
 )
 
 // Kinds of stored symbol locations. Lookups prefer refs, then defs,
@@ -123,6 +123,7 @@ type fileDoc struct {
 	Path    string
 	ModTime int64
 	Version int
+	Grammar string
 	Names   []string
 	Imports map[string]string
 }

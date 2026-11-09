@@ -32,10 +32,34 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/idelsp/jsonrpc2"
-	"unstable.build/rune/internal/procattr"
+	"unstable.build/rune/internal/ide/procattr"
 	"unstable.build/rune/internal/workspace/processctx"
 )
+
+// lspClientName is sent as clientInfo.name in every initialize request.
+// Language servers key client-specific behavior and usage telemetry off
+// it (gopls counts gopls/client:rune), so it must not change.
+const lspClientName = "rune"
+
+// exitGrace bounds how long a failed bring-up waits for the server
+// process to report its exit, whose status usually explains the failure
+// better than the broken connection does.
+const exitGrace = 500 * time.Millisecond
+
+// initializeRequest is the wire form of the initialize params. clientInfo
+// identifies the editor rather than the extension that asked for the
+// server, so rune always sets it instead of taking it from the extension.
+type initializeRequest struct {
+	semanticapi.InitializeParams
+	ClientInfo lspClientInfo `json:"clientInfo"`
+}
+
+type lspClientInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version,omitempty"`
+}
 
 // server is the routing-facing contract the Manager uses to talk
 // to a language backend. A backend is either a single langServer
@@ -92,6 +116,7 @@ type langServer struct {
 	alive      bool
 	log        *slog.Logger
 	init       semanticapi.InitializeResult
+	initRaw    json.RawMessage
 	pullDiags  bool
 }
 
@@ -274,12 +299,28 @@ func (s *langServer) start(ctx context.Context) error {
 
 	resp, err := s.initialize(ctx)
 	if err != nil {
+		err = s.withExitStatus(err)
 		_ = s.Close()
 		return fmt.Errorf("initialize %s: %w", s.cfg.command, err)
 	}
 	s.init = resp
 	s.pullDiags = pullDiagnosticsSupported(s.params.Capabilities, resp)
 	return nil
+}
+
+// withExitStatus annotates err with the exit status of the server
+// process if it exits within exitGrace. It consumes the watcher, so it
+// must only be used once the server will not be supervised.
+func (s *langServer) withExitStatus(err error) error {
+	select {
+	case exitErr := <-s.watcher:
+		if exitErr == nil {
+			return fmt.Errorf("%w; process %d exited with status 0", err, s.pid)
+		}
+		return fmt.Errorf("%w; process %d exited: %w", err, s.pid, exitErr)
+	case <-time.After(exitGrace):
+		return err
+	}
 }
 
 func (s *langServer) Close() error {
@@ -307,13 +348,27 @@ func (s *langServer) initialize(ctx context.Context) (
 ) {
 
 	s.log.Debug("rpc call", "method", "initialize")
-	err = s.conn.Call(ctx, "initialize", s.params).Await(ctx, &response)
+	var raw json.RawMessage
+	err = s.conn.Call(ctx, "initialize", s.initializeRequest()).Await(ctx, &raw)
 	if err != nil {
 		return
 	}
+	if err = json.Unmarshal(raw, &response); err != nil {
+		err = fmt.Errorf("decode initialize result: %w", err)
+		return
+	}
+	s.initRaw = raw
 
 	err = s.conn.Notify(ctx, "initialized", struct{}{})
 	return
+}
+
+// initializeRequest is the initialize request as sent on the wire.
+func (s *langServer) initializeRequest() initializeRequest {
+	return initializeRequest{
+		InitializeParams: s.params,
+		ClientInfo:       lspClientInfo{Name: lspClientName, Version: debug.Tag},
+	}
 }
 
 func (s *langServer) stop(ctx context.Context) error {
@@ -424,4 +479,21 @@ func (s *langServer) isAlive() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.alive
+}
+
+// wasStopped reports whether stop was called, after which an exit of
+// the process is expected rather than a crash.
+func (s *langServer) wasStopped() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopCalled
+}
+
+// logAttrs returns the attributes identifying this server in lifecycle
+// logs, followed by extra.
+func (s *langServer) logAttrs(extra ...any) []any {
+	return append([]any{
+		"language", s.cfg.id, "server", s.serverName, "root", s.rootURI,
+		"path", s.binPath, "args", s.cfg.args, "pid", s.pid,
+	}, extra...)
 }

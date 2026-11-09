@@ -25,7 +25,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
@@ -37,10 +39,12 @@ func newStatusBarSyncComponent() syncComponent {
 	comp := dialoguetui.NewComponent(dialoguetui.ComponentConfig{
 		StatusBar: dialoguetui.StatusBarConfig{Enabled: true},
 	})
+	h := &aiEditorHandler{n: stubNotifications{}}
 	return syncComponent{
 		mu:   new(sync.Mutex),
 		comp: comp,
-		h:    &aiEditorHandler{n: stubNotifications{}},
+		h:    h,
+		tab:  newTabStatusReporter(nil, workspaceapi.URI{}, h.n),
 	}
 }
 
@@ -144,48 +148,48 @@ func TestBeginTurnKeepsContextOccupancy(t *testing.T) {
 	assert.Equal(t, start, got.TurnStart)
 }
 
-func TestTurnMarksChatTabActivity(t *testing.T) {
+func TestTurnReportsChatTabStatus(t *testing.T) {
 	wm := &recordingWindowManager{}
 	s := newStatusBarSyncComponent()
 	t.Cleanup(func() { _ = s.comp.Close() })
-	s.h.wm = wm
 	uri, err := getModelUri("rolling-fox", "gpt-5")
 	require.NoError(t, err)
-	s.uri = uri
+	s.tab = newTabStatusReporter(wm, uri, s.h.n)
 
 	s.beginTurn(time.Now())
-	assert.Equal(t, []tabActivity{{uri: uri, active: true}}, wm.tabActivity())
+	assert.Equal(t, uri, wm.statusURI)
+	assert.Equal(t, []browserapi.TabStatus{
+		{State: browserapi.TabClear, Progress: -1},
+		{State: browserapi.TabWorking, Progress: -1, Title: statusTitleSending},
+	}, wm.tabStatuses())
 	s.endTurn()
-	assert.Equal(t, []tabActivity{
-		{uri: uri, active: true}, {uri: uri, active: false},
-	}, wm.tabActivity())
+	assert.Len(t, wm.tabStatuses(), 2, "the outcome, not the end of the turn, settles the status")
 }
 
-func TestTurnSurvivesTabActivityErrors(t *testing.T) {
-	wm := &recordingWindowManager{activityErr: errors.New("unknown tab")}
+func TestTurnSurvivesTabStatusErrors(t *testing.T) {
+	wm := &recordingWindowManager{statusErr: errors.New("unknown tab")}
 	s := newStatusBarSyncComponent()
 	t.Cleanup(func() { _ = s.comp.Close() })
-	s.h.wm = wm
 	uri, err := getModelUri("rolling-fox", "gpt-5")
 	require.NoError(t, err)
-	s.uri = uri
+	s.tab = newTabStatusReporter(wm, uri, s.h.n)
 
 	s.beginTurn(time.Now())
 	assert.True(t, s.comp.StatusBarState().Active)
 	s.endTurn()
 	assert.False(t, s.comp.StatusBarState().Active)
-	assert.Len(t, wm.tabActivity(), 2)
+	assert.Len(t, wm.tabStatuses(), 2)
 }
 
-func TestTurnWithoutTabSkipsActivity(t *testing.T) {
+func TestTurnWithoutTabSkipsStatus(t *testing.T) {
 	wm := &recordingWindowManager{}
 	s := newStatusBarSyncComponent()
 	t.Cleanup(func() { _ = s.comp.Close() })
-	s.h.wm = wm
+	s.tab = newTabStatusReporter(wm, workspaceapi.URI{}, s.h.n)
 
 	s.beginTurn(time.Now())
 	s.endTurn()
-	assert.Empty(t, wm.tabActivity())
+	assert.Empty(t, wm.tabStatuses())
 }
 
 func TestSyncStatusBarModelResolvesProviderDefaultEffort(t *testing.T) {
@@ -325,7 +329,7 @@ func testAgentToolCompactReportsCompactingPhase(t *testing.T, onCompacted func(s
 		defer close(done)
 		createAgentCompletions(ctx, cancel, tx, rx, ag, nopSpawner{},
 			nil, skills.NewRegistry(nopFileSystem{}, dirURI(""), nil, nil),
-			"d1", s, stubNotifications{}, onCompacted, store)
+			"d1", s, onCompacted, store)
 	}()
 
 	require.Eventually(t, func() bool { return svc.CallCount() >= 3 },
@@ -353,3 +357,161 @@ func (compactStubTool) Execute(context.Context, string) agent.ToolResult {
 
 func (compactStubTool) Summary(string) string         { return "" }
 func (compactStubTool) NeedsDeterministicOrder() bool { return false }
+
+// summaryStubTool is a tool whose summary the chat's status reports
+// while it runs.
+type summaryStubTool struct{}
+
+func (summaryStubTool) Definition() llmapi.Tool {
+	return llmapi.Tool{
+		Type:     llmapi.ToolTypeFunction,
+		Function: llmapi.FunctionDefinition{Name: "bash"},
+	}
+}
+
+func (summaryStubTool) Execute(context.Context, string) agent.ToolResult {
+	return agent.ToolResult{Content: "ok"}
+}
+
+func (summaryStubTool) Summary(string) string         { return "go test ./..." }
+func (summaryStubTool) NeedsDeterministicOrder() bool { return false }
+
+func runTurnForStatus(
+	t *testing.T, svc llmapi.Service, entry llmapi.ModelEntry, registry *agent.Registry,
+	turns int, cancelAfterCalls int,
+) ([]browserapi.TabStatus, workspaceapi.URI) {
+	t.Helper()
+	wm := &recordingWindowManager{}
+	s := newStatusBarSyncComponent()
+	t.Cleanup(func() { _ = s.comp.Close() })
+	uri, err := getModelUri("rolling-fox", "gpt-5")
+	require.NoError(t, err)
+	s.tab = newTabStatusReporter(wm, uri, s.h.n)
+
+	store := newMemDialogueStore()
+	ag := agent.NewAgent(svc, registry,
+		skills.NewRegistry(nopFileSystem{}, dirURI(""), nil, nil),
+		store, agent.NoMemory(),
+		agent.Config{SystemPrompt: "test", Model: entry, SessionKey: "d1"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tx := make(chan dialoguetui.MessageEvent, 64)
+	rx := make(chan completionRequest, turns)
+	for range turns {
+		rx <- completionRequest{displayText: "go", modelText: "go", ctx: ctx}
+	}
+	settled := make(chan struct{})
+	go func() {
+		idle := 0
+		for ev := range tx {
+			if ev.Type == dialoguetui.MessageEventBusy && !ev.Busy {
+				idle++
+				if idle == turns {
+					close(settled)
+				}
+			}
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		createAgentCompletions(ctx, cancel, tx, rx, ag, nopSpawner{},
+			nil, skills.NewRegistry(nopFileSystem{}, dirURI(""), nil, nil),
+			"d1", s, nil, store)
+	}()
+	if cancelAfterCalls > 0 {
+		require.Eventually(t, func() bool {
+			return svc.(*llmtest.Service).CallCount() >= cancelAfterCalls
+		}, 5*time.Second, time.Millisecond)
+		cancel()
+	} else {
+		select {
+		case <-settled:
+		case <-time.After(5 * time.Second):
+			t.Fatal("turns did not settle")
+		}
+		cancel()
+	}
+	<-done
+	return wm.tabStatuses(), uri
+}
+
+func TestTurnStatusFollowsEvents(t *testing.T) {
+	entry := llmapi.ModelEntry{Provider: "test", Name: "test-model", ContextWindow: 128_000}
+
+	t.Run("tool round then reply", func(t *testing.T) {
+		svc := llmtest.New([]llmapi.ModelEntry{entry},
+			llmtest.Response{ToolCalls: []llmapi.ToolCall{{
+				ID: "c1", Type: llmapi.ToolTypeFunction,
+				Function: llmapi.FunctionCall{Name: "bash", Arguments: "{}"},
+			}}, FinishReason: llmapi.FinishReasonToolCall},
+			llmtest.Response{Chunks: []string{"**Fixed** the parser bug.\n\nTwo files changed."}},
+		)
+		statuses, _ := runTurnForStatus(t, svc, entry, agent.NewRegistry(summaryStubTool{}), 1, 0)
+		assert.Equal(t, []browserapi.TabStatus{
+			{State: browserapi.TabClear, Progress: -1},
+			{State: browserapi.TabWorking, Progress: -1, Title: statusTitleSending},
+			{State: browserapi.TabWorking, Progress: -1, Title: statusTitleReasoning},
+			{State: browserapi.TabWorking, Progress: -1, Title: statusTitleTools},
+			{State: browserapi.TabWorking, Progress: -1, Title: "bash: go test ./..."},
+			{State: browserapi.TabWorking, Progress: -1, Title: statusTitleSending},
+			{State: browserapi.TabWorking, Progress: -1, Title: statusTitleReasoning},
+			{State: browserapi.TabWorking, Progress: -1, Title: statusTitleWriting},
+			{State: browserapi.TabClear, Progress: -1},
+			{State: browserapi.TabDone, Progress: -1, Message: "Fixed the parser bug."},
+		}, statuses)
+	})
+
+	t.Run("a reply without text is summarized by a fixed message", func(t *testing.T) {
+		svc := llmtest.New([]llmapi.ModelEntry{entry}, llmtest.Response{Chunks: []string{"  \n"}})
+		statuses, _ := runTurnForStatus(t, svc, entry, agent.NewRegistry(), 1, 0)
+		assert.Equal(t, browserapi.TabStatus{State: browserapi.TabDone, Progress: -1, Message: statusMsgCompleted},
+			statuses[len(statuses)-1])
+	})
+
+	t.Run("a failed completion is an error", func(t *testing.T) {
+		svc := llmtest.New([]llmapi.ModelEntry{entry}, llmtest.Response{Err: errors.New("boom")})
+		statuses, _ := runTurnForStatus(t, svc, entry, agent.NewRegistry(), 1, 0)
+		last := statuses[len(statuses)-1]
+		assert.Equal(t, browserapi.TabError, last.State)
+		assert.Contains(t, last.Message, statusMsgFailed)
+		assert.Contains(t, last.Message, "boom")
+	})
+
+	t.Run("a truncated reply is an error", func(t *testing.T) {
+		svc := llmtest.New([]llmapi.ModelEntry{entry},
+			llmtest.Response{Chunks: []string{"cut"}, FinishReason: llmapi.FinishReasonLength})
+		statuses, _ := runTurnForStatus(t, svc, entry, agent.NewRegistry(), 1, 0)
+		assert.Equal(t, browserapi.TabStatus{State: browserapi.TabError, Progress: -1, Message: statusMsgTruncated},
+			statuses[len(statuses)-1])
+	})
+
+	t.Run("a rate limit is told as it happens", func(t *testing.T) {
+		svc := llmtest.New([]llmapi.ModelEntry{entry}, llmtest.Response{
+			Chunks:            []string{"done"},
+			RateLimitWarnings: []*llmapi.RateLimitInfo{{Message: "Rate limit reached, retrying"}},
+		})
+		statuses, _ := runTurnForStatus(t, svc, entry, agent.NewRegistry(), 1, 0)
+		assert.Contains(t, statuses, browserapi.TabStatus{
+			State: browserapi.TabWorking, Progress: -1, Title: statusTitleRateLimit,
+			Message: "Rate limit reached, retrying",
+		})
+	})
+
+	t.Run("a second turn starts over", func(t *testing.T) {
+		svc := llmtest.New([]llmapi.ModelEntry{entry},
+			llmtest.Response{Chunks: []string{"first"}},
+			llmtest.Response{Chunks: []string{"second"}},
+		)
+		statuses, _ := runTurnForStatus(t, svc, entry, agent.NewRegistry(), 2, 0)
+		var dones []string
+		for _, st := range statuses {
+			if st.State == browserapi.TabDone {
+				dones = append(dones, st.Message)
+			}
+		}
+		assert.Equal(t, []string{"first", "second"}, dones)
+	})
+}

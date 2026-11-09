@@ -24,16 +24,22 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"unstable.build/rune/cmd/rune-agent/agentshell"
+	"unstable.build/rune/internal/debug"
 )
+
+// extensionID is the ID Rune knows the extension by, which names its
+// config block.
+const extensionID = "rune-agent"
 
 // NewExtension returns an extension and its metadata.
 func NewExtension() (extensionapi.WorkspaceExtension, extensionapi.Metadata) {
 	return &workspaceExtension{}, extensionapi.Metadata{
-		DeveloperID:    "Unstable Build",
-		DeveloperEmail: "it@unstable.build",
-		DeveloperKey:   "064D4ABCFA6D9338",
-		ExtensionID:    "rune-agent",
-		ExtensionName:  "Rune Agent",
+		DeveloperID:      "Unstable Build",
+		DeveloperEmail:   "it@unstable.build",
+		DeveloperKey:     "064D4ABCFA6D9338",
+		ExtensionID:      extensionID,
+		ExtensionName:    "Rune Agent",
+		ExtensionVersion: debug.Tag,
 		Permissions: extensionapi.NewPermissions(
 			permissions...,
 		),
@@ -154,6 +160,7 @@ var (
 		extensionapi.PermissionSyntaxTree,
 		extensionapi.PermissionLSP,
 		extensionapi.PermissionLLM,
+		extensionapi.PermissionSearch,
 	}
 )
 
@@ -166,6 +173,11 @@ func (e *workspaceExtension) ExtendWorkspace(
 	if err != nil {
 		return err
 	}
+	reload, stopReload := notifyReload()
+	go debug.CapturePanicReport(func() {
+		defer stopReload()
+		h.watchReload(h.ctx, reload, w.Config)
+	})
 
 	for _, cmd := range commands {
 		err := w.RegisterCommand(cmd, h)

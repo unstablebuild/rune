@@ -18,12 +18,16 @@ package shop
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
+
+	"unstable.build/rune/internal/handler/handlertest"
 )
 
 type noopTUIHandler struct{}
@@ -50,4 +54,15 @@ func TestNewShaderRootUsesProvidedInterrupter(t *testing.T) {
 		return calls.Load() > 0
 	}, time.Second, 20*time.Millisecond,
 		"startup shader should tick through the supplied interrupter")
+}
+
+func TestShaderRunnerPointerLeaves(t *testing.T) {
+	t.Parallel()
+	for _, size := range [][2]int{{60, 15}, {1, 1}} {
+		root := NewRoot(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		r := NewShaderRoot(root, term.NopInterrupter())
+		handlertest.RunPointerLeaves(t, r, size[0], size[1])
+		require.NoError(t, r.Close())
+		_ = root.Close()
+	}
 }

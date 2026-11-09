@@ -19,10 +19,8 @@ package vteparser
 import (
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
@@ -161,6 +159,63 @@ func TestParserIntegration(t *testing.T) {
 				assert.Equal(t, CursorStyle{Shape: CursorShapeBeam, Blinking: false}, handler.cursorStyle)
 			},
 		},
+		{
+			"XTGETTCAP decodes the capability name",
+			[]byte("\x1bP+q4d73\x1b\\"),
+			func(t *testing.T, handler mockHandler) {
+				assert.Equal(t, [][]string{{"Ms"}}, handler.termcapRequests)
+			},
+		},
+		{
+			"XTGETTCAP accepts uppercase hex",
+			[]byte("\x1bP+q4D73\x1b\\"),
+			func(t *testing.T, handler mockHandler) {
+				assert.Equal(t, [][]string{{"Ms"}}, handler.termcapRequests)
+			},
+		},
+		{
+			"XTGETTCAP passes every name of one request together",
+			[]byte("\x1bP+q5463;524742;4d73\x1b\\"),
+			func(t *testing.T, handler mockHandler) {
+				assert.Equal(t, [][]string{{"Tc", "RGB", "Ms"}}, handler.termcapRequests)
+			},
+		},
+		{
+			"XTGETTCAP skips a name that is not hex",
+			[]byte("\x1bP+q4d7;zz;4d73\x1b\\"),
+			func(t *testing.T, handler mockHandler) {
+				assert.Equal(t, [][]string{{"Ms"}}, handler.termcapRequests)
+			},
+		},
+		{
+			"XTGETTCAP without a name asks for nothing",
+			[]byte("\x1bP+q\x1b\\"),
+			func(t *testing.T, handler mockHandler) {
+				assert.Empty(t, handler.termcapRequests)
+			},
+		},
+		{
+			"XTGETTCAP ends at the string terminator",
+			[]byte("\x1bP+q4d73\x1b\\\x1bP+q5463\x1b\\"),
+			func(t *testing.T, handler mockHandler) {
+				assert.Equal(t, [][]string{{"Ms"}, {"Tc"}}, handler.termcapRequests)
+			},
+		},
+		{
+			"DECRQSS is not a termcap request",
+			[]byte("\x1bP$qm\x1b\\"),
+			func(t *testing.T, handler mockHandler) {
+				assert.Empty(t, handler.termcapRequests)
+			},
+		},
+		{
+			"printable text after XTGETTCAP is still input",
+			[]byte("\x1bP+q4d73\x1b\\a"),
+			func(t *testing.T, handler mockHandler) {
+				assert.Equal(t, [][]string{{"Ms"}}, handler.termcapRequests)
+				assert.Equal(t, []rune{'a'}, handler.input)
+			},
+		},
 	}
 
 	for _, test := range suite {
@@ -168,7 +223,7 @@ func TestParserIntegration(t *testing.T) {
 			var handler mockHandler
 			handler.init()
 
-			parser := NewParser(&handler, testSyncHandler{})
+			parser := NewParser(&handler)
 
 			for _, b := range test.input {
 				parser.Advance(b)
@@ -185,7 +240,7 @@ func TestParserSetSyncMode(t *testing.T) {
 	var handler mockHandler
 	handler.init()
 
-	parser := NewParser(loggingHandler{h: &handler}, new(StdTimeout))
+	parser := NewParser(loggingHandler{h: &handler})
 
 	for _, b := range input {
 		parser.Advance(b)
@@ -202,6 +257,8 @@ type mockHandler struct {
 	attrs            []*Attr
 	identityReported bool
 	cursorStyle      CursorStyle
+	termcapRequests  [][]string
+	input            []rune
 }
 
 func (m *mockHandler) init() {
@@ -210,6 +267,8 @@ func (m *mockHandler) init() {
 	m.attr = nil
 	m.attrs = make([]*Attr, 0)
 	m.identityReported = false
+	m.termcapRequests = nil
+	m.input = nil
 }
 
 func (m *mockHandler) TerminalAttribute(attr Attr) {
@@ -235,28 +294,21 @@ func (m *mockHandler) SetCursorStyle(style CursorStyle) {
 	m.cursorStyle = style
 }
 
+func (m *mockHandler) RequestTermcap(names []string) {
+	m.termcapRequests = append(m.termcapRequests, names)
+}
+
+func (m *mockHandler) Input(c rune) {
+	m.input = append(m.input, c)
+}
+
 func (m *mockHandler) resetState() {
 	m.init()
 }
 
-type testSyncHandler struct {
-}
-
-func (t testSyncHandler) SetTimeout(duration time.Duration) {
-	panic("unreachable")
-}
-
-func (t testSyncHandler) ClearTimeout() {
-	panic("unreachable")
-}
-
-func (t testSyncHandler) PendingTimeout() bool {
-	return false
-}
-
 func TestSGRScratchReuseLongToShort(t *testing.T) {
 	h := new(sgrRecordingHandler)
-	p := NewParser(h, new(StdTimeout))
+	p := NewParser(h)
 	streams := []string{
 		"\x1b[1;3;4;38;2;1;2;3;48;5;9m",
 		"\x1b[31m",
@@ -352,7 +404,7 @@ func TestSGRColorsTable(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := new(sgrRecordingHandler)
-			p := NewParser(h, new(StdTimeout))
+			p := NewParser(h)
 			p.AdvanceBytes([]byte(tt.stream))
 			assert.Equal(t, tt.want, h.attrs)
 		})
@@ -390,7 +442,7 @@ func TestSGRResetAndMalformedTable(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := new(sgrRecordingHandler)
-			p := NewParser(h, new(StdTimeout))
+			p := NewParser(h)
 			p.AdvanceBytes([]byte(tt.stream))
 			assert.Equal(t, tt.want, h.attrs)
 		})
@@ -497,7 +549,7 @@ func TestAdvanceBytesEventsTable(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := new(parserRunHandler)
-			p := NewParser(h, new(StdTimeout))
+			p := NewParser(h)
 			p.AdvanceBytes(tt.stream)
 
 			assert.Equal(t, tt.wantEvents, h.events)
@@ -534,7 +586,7 @@ func TestAdvanceBytesMatchesAdvanceAtEverySplit(t *testing.T) {
 			wantEvents, wantPreceding := parserEventsWithAdvance(tt.stream)
 			for split := 0; split <= len(tt.stream); split++ {
 				h := new(parserRunHandler)
-				p := NewParser(h, new(StdTimeout))
+				p := NewParser(h)
 				p.AdvanceBytes(tt.stream[:split])
 				p.AdvanceBytes(tt.stream[split:])
 
@@ -598,18 +650,23 @@ func TestSynchronizedUpdateEventsTable(t *testing.T) {
 				runEvent("tail"),
 			},
 		},
+		{
+			name:   "queries inside the region dispatch immediately",
+			stream: []byte("\x1b[?2026h\x1b[6n"),
+			wantEvents: []parserRunEvent{
+				{kind: "set-private", mode: PrivateModeSyncUpdate},
+				{kind: "device-status", r: 6},
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := new(parserRunHandler)
-			timeout := new(recordingParserTimeout)
-			p := NewParser(h, timeout)
+			p := NewParser(h)
 			p.AdvanceBytes(tt.stream)
 
 			assert.Equal(t, tt.wantEvents, h.events)
-			assert.Zero(t, p.SyncBytesCount())
-			assert.False(t, timeout.pending)
 		})
 	}
 }
@@ -656,169 +713,12 @@ func TestSynchronizedUpdateNearMarkersMatchUnwrapped(t *testing.T) {
 	}
 }
 
-func TestStopSyncTimeoutReplaysPartialMarker(t *testing.T) {
-	h := new(parserRunHandler)
-	timeout := new(recordingParserTimeout)
-	p := NewParser(h, timeout)
-	p.AdvanceBytes([]byte("\x1b[?2026hbody\x1b["))
-	require.True(t, timeout.pending)
-	require.Positive(t, p.SyncBytesCount())
-
-	p.StopSync()
-	p.AdvanceBytes([]byte("31mX"))
-
-	assert.Equal(t, []parserRunEvent{
-		{kind: "set-private", mode: PrivateModeSyncUpdate},
-		runEvent("body"),
-		{kind: "unset-private", mode: PrivateModeSyncUpdate},
-		{kind: "attr", attr: Attr{Type: ForegroundAttr, Color: term.ColorMaroon}},
-		runEvent("X"),
-	}, h.events)
-	assert.Zero(t, p.SyncBytesCount())
-	assert.Equal(t, 1, timeout.clears)
-}
-
-func TestSynchronizedUpdateBufferAllocatesLazily(t *testing.T) {
-	h := new(countingParserHandler)
-	timeout := new(recordingParserTimeout)
-	p := NewParser(h, timeout)
-
-	assert.Zero(t, cap(p.state.syncState.buffer))
-	p.AdvanceBytes([]byte("ordinary output"))
-	assert.Zero(t, cap(p.state.syncState.buffer))
-
-	p.AdvanceBytes(bsuCSI)
-	p.AdvanceBytes([]byte("buffered"))
-	assert.Equal(t, syncBufferSize, cap(p.state.syncState.buffer))
-}
-
-func TestSynchronizedUpdateBufferBoundaryTable(t *testing.T) {
-	tests := []struct {
-		name             string
-		body             int
-		firstChunk       int
-		trailing         string
-		wantBuffered     int
-		wantInputBytes   int
-		wantSets         int
-		wantClears       int
-		wantUnsetPrivate int
-		wantPending      bool
-	}{
-		{
-			name:         "one below flush threshold stays buffered",
-			body:         syncBufferSize - 2,
-			wantBuffered: syncBufferSize - 2,
-			wantSets:     1,
-			wantPending:  true,
-		},
-		{
-			name:             "exact threshold flushes",
-			body:             syncBufferSize - 1,
-			wantInputBytes:   syncBufferSize - 1,
-			wantSets:         1,
-			wantClears:       1,
-			wantUnsetPrivate: 1,
-		},
-		{
-			name:             "triggering byte in separate call flushes",
-			body:             syncBufferSize - 1,
-			firstChunk:       syncBufferSize - 2,
-			wantInputBytes:   syncBufferSize - 1,
-			wantSets:         1,
-			wantClears:       1,
-			wantUnsetPrivate: 1,
-		},
-		{
-			name:             "overshoot resumes trailing bytes",
-			body:             syncBufferSize - 1,
-			trailing:         "tail",
-			wantInputBytes:   syncBufferSize - 1 + len("tail"),
-			wantSets:         1,
-			wantClears:       1,
-			wantUnsetPrivate: 1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			h := new(countingParserHandler)
-			timeout := new(recordingParserTimeout)
-			p := NewParser(h, timeout)
-			p.AdvanceBytes(bsuCSI)
-			body := make([]byte, tt.body+len(tt.trailing))
-			for i := range tt.body {
-				body[i] = 'x'
-			}
-			copy(body[tt.body:], tt.trailing)
-			if tt.firstChunk > 0 {
-				p.AdvanceBytes(body[:tt.firstChunk])
-				p.AdvanceBytes(body[tt.firstChunk:])
-			} else {
-				p.AdvanceBytes(body)
-			}
-
-			assert.Equal(t, tt.wantBuffered, p.SyncBytesCount())
-			assert.Equal(t, tt.wantInputBytes, h.inputBytes)
-			assert.Equal(t, 1, h.setPrivate)
-			assert.Equal(t, tt.wantUnsetPrivate, h.unsetPrivate)
-			assert.Equal(t, tt.wantSets, len(timeout.sets))
-			for _, duration := range timeout.sets {
-				assert.Equal(t, syncUpdateTimeout, duration)
-			}
-			assert.Equal(t, tt.wantClears, timeout.clears)
-			assert.Equal(t, tt.wantPending, timeout.pending)
-		})
-	}
-}
-
-func TestSynchronizedUpdateTimeoutLifecycle(t *testing.T) {
-	h := new(countingParserHandler)
-	timeout := new(recordingParserTimeout)
-	p := NewParser(h, timeout)
-	p.AdvanceBytes(append(append([]byte(nil), bsuCSI...), bsuCSI...))
-
-	require.Equal(t, []time.Duration{syncUpdateTimeout, syncUpdateTimeout}, timeout.sets)
-	assert.True(t, timeout.pending)
-	p.StopSync()
-	assert.False(t, timeout.pending)
-	assert.Equal(t, 1, timeout.clears)
-	assert.Equal(t, 1, h.unsetPrivate)
-}
-
 type parserRunEvent struct {
 	kind string
 	text string
 	r    rune
 	mode PrivateMode
 	attr Attr
-}
-
-type countingParserHandler struct {
-	nopHandler
-	inputBytes   int
-	setPrivate   int
-	unsetPrivate int
-}
-
-func (h *countingParserHandler) Input(c rune) {
-	h.inputBytes += len(string(c))
-}
-
-func (h *countingParserHandler) InputRun(run []byte) {
-	h.inputBytes += len(run)
-}
-
-func (h *countingParserHandler) SetPrivateMode(mode PrivateMode) {
-	if mode == PrivateModeSyncUpdate {
-		h.setPrivate++
-	}
-}
-
-func (h *countingParserHandler) UnsetPrivateMode(mode PrivateMode) {
-	if mode == PrivateModeSyncUpdate {
-		h.unsetPrivate++
-	}
 }
 
 func runEvent(text string) parserRunEvent {
@@ -866,29 +766,13 @@ func (h *parserRunHandler) UnsetPrivateMode(mode PrivateMode) {
 	h.events = append(h.events, parserRunEvent{kind: "unset-private", mode: mode})
 }
 
-type recordingParserTimeout struct {
-	pending bool
-	sets    []time.Duration
-	clears  int
-}
-
-func (t *recordingParserTimeout) SetTimeout(duration time.Duration) {
-	t.pending = true
-	t.sets = append(t.sets, duration)
-}
-
-func (t *recordingParserTimeout) ClearTimeout() {
-	t.pending = false
-	t.clears++
-}
-
-func (t *recordingParserTimeout) PendingTimeout() bool {
-	return t.pending
+func (h *parserRunHandler) DeviceStatus(status int) {
+	h.events = append(h.events, parserRunEvent{kind: "device-status", r: rune(status)})
 }
 
 func parserEventsWithAdvance(stream []byte) ([]parserRunEvent, rune) {
 	h := new(parserRunHandler)
-	p := NewParser(h, new(StdTimeout))
+	p := NewParser(h)
 	for _, ch := range stream {
 		p.Advance(ch)
 	}
@@ -897,7 +781,7 @@ func parserEventsWithAdvance(stream []byte) ([]parserRunEvent, rune) {
 
 func parserEventsWithAdvanceBytes(stream []byte) ([]parserRunEvent, rune) {
 	h := new(parserRunHandler)
-	p := NewParser(h, new(recordingParserTimeout))
+	p := NewParser(h)
 	p.AdvanceBytes(stream)
 	return normalizeParserRunEvents(h.events), p.state.precedingChar
 }
@@ -917,28 +801,19 @@ func normalizeParserRunEvents(events []parserRunEvent) []parserRunEvent {
 }
 
 type parserSyncSnapshot struct {
-	events       []parserRunEvent
-	preceding    rune
-	syncBytes    int
-	timeoutOpen  bool
-	timeoutSets  int
-	timeoutClear int
+	events    []parserRunEvent
+	preceding rune
 }
 
 func parserSyncResult(stream []byte, first, second int) parserSyncSnapshot {
 	h := new(parserRunHandler)
-	timeout := new(recordingParserTimeout)
-	p := NewParser(h, timeout)
+	p := NewParser(h)
 	p.AdvanceBytes(stream[:first])
 	p.AdvanceBytes(stream[first:second])
 	p.AdvanceBytes(stream[second:])
 	return parserSyncSnapshot{
-		events:       normalizeParserRunEvents(h.events),
-		preceding:    p.state.precedingChar,
-		syncBytes:    p.SyncBytesCount(),
-		timeoutOpen:  timeout.pending,
-		timeoutSets:  len(timeout.sets),
-		timeoutClear: timeout.clears,
+		events:    normalizeParserRunEvents(h.events),
+		preceding: p.state.precedingChar,
 	}
 }
 

@@ -23,13 +23,11 @@ import (
 	"github.com/unstablebuild/blue/release"
 	"github.com/unstablebuild/blue/release/cdnrelease"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
-	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
-	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/ide"
-	"unstable.build/rune/internal/ide/gitpkg"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idepkg"
-	"unstable.build/rune/internal/ide/multipkg"
-	"unstable.build/rune/internal/workspace"
+	"unstable.build/rune/internal/ide/idepkg/gitpkg"
+	"unstable.build/rune/internal/ide/idepkg/multipkg"
 )
 
 func newRemoteReleaseManager(gitOpts ...gitpkg.Option) release.Manager {
@@ -42,43 +40,20 @@ func newRemoteReleaseManager(gitOpts ...gitpkg.Option) release.Manager {
 	return multipkg.New(gitpkg.New(gitOpts...), official)
 }
 
-// loadRemoteConfigAndApplyEnv loads the remote ~/.rune config overlaid with
-// the workspace-root .rune/config.yaml, applies its gui.env block to this
-// process, and prepends ~/.rune/bin to PATH, so the tools the `rune -x`
-// server spawns see the packages installed on this host. On any error it
-// warns and continues so serving is never blocked.
-func loadRemoteConfigAndApplyEnv(scheme schemeapi.Scheme, uri workspaceapi.URI) {
-	cwd := workspace.NewSchemeWorkspace(uri, scheme,
-		func(fn func()) bool { fn(); return true })
-	rootCfg, err := ide.ConfigWithOverlays(
-		*flagConfigPath, runeDefaultConfig(), cwd,
-		[]string{workspaceConfigFilename},
-	)
-	if err != nil {
-		log.Warnf("load remote config: %v", err)
-		if rootCfg == nil {
-			rootCfg = config.NopConfig()
-		}
-	}
-	applyConfigEnv(rootCfg)
-}
-
-// applyConfigEnv applies rootCfg's gui.env block to this process and
-// prepends ~/.rune/bin to PATH. Failures are logged.
-func applyConfigEnv(rootCfg config.Config) {
+// applyConfigEnv applies rootCfg's gui.env block to host. Failures are
+// logged.
+func applyConfigEnv(host *hostenv.Host, rootCfg config.Config) {
+	env := config.NopConfig()
 	guiCfg, ok, err := getGUIConfig(rootCfg)
 	if err != nil {
 		log.Warnf("read gui config: %v", err)
 	} else if ok {
-		if env, err := getGUIEnvVars(guiCfg); err != nil {
+		if env, err = getGUIEnvVars(guiCfg); err != nil {
 			log.Warnf("read gui.env: %v", err)
-		} else if err := applyGUIEnvVars(env); err != nil {
-			log.Warnf("apply gui.env: %v", err)
 		}
 	}
-
-	if err := setupRuneBinPATH(*flagDataPath); err != nil {
-		log.Warnf("set ~/.rune/bin on PATH: %v", err)
+	if err := host.Apply(env); err != nil {
+		log.Warnf("apply gui.env: %v", err)
 	}
 }
 

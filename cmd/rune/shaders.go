@@ -78,10 +78,10 @@ func loadingShader(defaultAttr term.Attributes) shader.Shader {
 }
 
 // openShader returns the shader played when a workspace finishes
-// loading. A quick "burn" sweep ignites the canvas and resolves
-// back to the original content, acknowledging the transition
-// without slowing the user down.
-func openShader(defaultAttr term.Attributes) shader.Shader {
+// loading. A quick "burn" sweep ignites from, the screen the workspace
+// takes over, and resolves to the workspace, acknowledging the
+// transition without slowing the user down.
+func openShader(defaultAttr term.Attributes, from shader.Snapshot) shader.Shader {
 	params := shader.DefaultBurnParams()
 	params.BurnGradient = []term.Color{
 		term.ColorWhite,
@@ -100,8 +100,7 @@ func openShader(defaultAttr term.Attributes) shader.Shader {
 	}
 	params.SmokeRise = 0.99
 	params.SmokeMaxRise = 20
-
-	burn := shader.Burn(params, defaultAttr)
+	params.From = from
 
 	// Cross-fade the trailing portion of the open shader into the
 	// live cells. The change point sits exactly between the burn
@@ -111,50 +110,15 @@ func openShader(defaultAttr term.Attributes) shader.Shader {
 	// long fade keeps the workspace from "popping" into view at the
 	// end of the burn.
 	fadeOutPerc := float64(openShaderFadeOutDuration) / float64(openShaderDuration)
-	wrapped := shader.TransitionCrossFade(
+	return shader.TransitionCrossFade(
 		shader.TransitionCrossFadeParams{
 			ChangeAtPerc: 1.0 - fadeOutPerc/2.0,
 			OverlapPerc:  fadeOutPerc,
 		},
 		defaultAttr,
-		burn,
+		shader.Burn(params, defaultAttr),
 		shader.Nop(),
 	)
-	// Expose the burn's snapshot/desaturation hooks through the
-	// cross-fade wrapper so the loading→open chain continues to
-	// work: shaderRunner.stopLoading() type-asserts the returned
-	// shader for these interfaces.
-	return &openShaderShader{Shader: wrapped, burn: burn}
-}
-
-// openShaderShader pairs a cross-fade wrapper with the underlying
-// burn so the runner's pre-shader hooks (initial cells, initial
-// desaturation) still reach the burn after wrapping. The cross-fade
-// itself is opaque to those hooks because it has no concept of an
-// initial snapshot.
-type openShaderShader struct {
-	shader.Shader
-	burn shader.Shader
-}
-
-// SetInitialCells forwards to the wrapped burn so the open shader
-// keeps the pre-switch screen as its base layer.
-func (s *openShaderShader) SetInitialCells(cells [][]term.Cell) {
-	if sh, ok := s.burn.(interface {
-		SetInitialCells([][]term.Cell)
-	}); ok {
-		sh.SetInitialCells(cells)
-	}
-}
-
-// SetInitialDesaturation forwards to the wrapped burn so the open
-// shader starts from the loading shader's terminal desaturation.
-func (s *openShaderShader) SetInitialDesaturation(amount float64) {
-	if sh, ok := s.burn.(interface {
-		SetInitialDesaturation(amount float64)
-	}); ok {
-		sh.SetInitialDesaturation(amount)
-	}
 }
 
 func shutdownShader(defaultAttr term.Attributes) shader.Shader {

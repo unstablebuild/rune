@@ -47,9 +47,6 @@ var headscaleConfigTemplate string
 // SkipIfNoDocker skips the test when docker is not usable on this host.
 func SkipIfNoDocker(t *testing.T) {
 	t.Helper()
-	if os.Getenv("CI") == "true" {
-		t.SkipNow()
-	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skipf("docker not available: %v", err)
 	}
@@ -161,6 +158,18 @@ func (a Account) UserKey(t *testing.T) string {
 func (a Account) ServeKey(t *testing.T) string {
 	t.Helper()
 	return a.control.preAuthKey(t, a.id, "--tags", a.ServeTag())
+}
+
+// SignIn signs the machine waiting on authURL, the /register URL
+// Headscale issued it, in as the account. That is what the user does by
+// opening the URL in a browser.
+func (a Account) SignIn(t *testing.T, authURL string) {
+	t.Helper()
+	_, id, ok := strings.Cut(authURL, "/register/")
+	if !ok || id == "" {
+		t.Fatalf("not a Headscale sign-in URL: %s", authURL)
+	}
+	a.control.headscaleExec(t, "auth", "register", "--auth-id", id, "--user", a.Name)
 }
 
 // NewAccount creates a Headscale user named name.

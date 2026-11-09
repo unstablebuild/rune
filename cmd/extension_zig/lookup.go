@@ -17,11 +17,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"strings"
+	"path"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -82,7 +81,7 @@ func readPathKey(
 // resolveZls returns the zls language server path. A configured lsp_path
 // overrides discovery; otherwise the zls the zig package ships is used,
 // and failing that the host is probed: well-known install locations, then
-// a login-shell `command -v` lookup. A miss warns and returns "" so the
+// the workspace host's PATH. A miss warns and returns "" so the
 // caller surfaces the initialization error.
 func resolveZls(
 	ctx context.Context,
@@ -148,7 +147,7 @@ func findPackaged(
 }
 
 // resolveBinary prefers packaged and otherwise probes for name on the
-// workspace host: the well-known locations, then a shell lookup.
+// workspace host: the well-known locations, then its PATH.
 func resolveBinary(
 	ctx context.Context,
 	fs workspaceapi.FileSystem,
@@ -167,7 +166,7 @@ func resolveBinary(
 
 	ctx, cancel := context.WithTimeout(ctx, zigResolutionTimeout)
 	defer cancel()
-	if bin, err := probeShellLookup(ctx, exec, name); err == nil {
+	if bin, err := lookPath(ctx, exec, name); err == nil {
 		return bin, nil
 	}
 
@@ -190,53 +189,16 @@ func probeWellKnown(fs workspaceapi.FileSystem, candidates []string) (string, bo
 	return "", false
 }
 
-func probeShellLookup(
-	ctx context.Context, exec workspaceapi.Executor, name string,
-) (string, error) {
-	out, err := commandOutput(ctx, exec, "sh", "-lc", "command -v "+name)
+// lookPath returns the absolute path name resolves to on the workspace
+// host's PATH. It runs no command, so the user is not asked to approve
+// one.
+func lookPath(ctx context.Context, exec workspaceapi.Executor, name string) (string, error) {
+	bin, err := exec.LookPath(ctx, name, "")
 	if err != nil {
 		return "", err
 	}
-	out = strings.TrimSpace(out)
-	// command -v may print multiple lines for aliases/functions; take
-	// the first absolute path it printed.
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "/") {
-			return line, nil
-		}
+	if !path.IsAbs(bin) {
+		return "", fmt.Errorf("%s resolved to %q, not an absolute path", name, bin)
 	}
-	return "", fmt.Errorf("shell probe produced no absolute path: %q", out)
-}
-
-// commandOutput runs bin with args and returns its stdout, draining
-// stderr so the process never blocks on a full pipe.
-func commandOutput(
-	ctx context.Context,
-	exec workspaceapi.Executor,
-	bin string,
-	args ...string,
-) (string, error) {
-	var stdout, stderr bytes.Buffer
-	ch := make(chan error, 1)
-	cmd := workspaceapi.Cmd{
-		Path:    bin,
-		Args:    args,
-		Stdout:  &stdout,
-		Stderr:  &stderr,
-		Watcher: workspaceapi.ChanProcessWatcher(ch),
-	}
-	if _, err := exec.Start(ctx, cmd); err != nil {
-		return "", fmt.Errorf("start %s: %w", bin, err)
-	}
-	var runErr error
-	select {
-	case runErr = <-ch:
-	case <-ctx.Done():
-		runErr = ctx.Err()
-	}
-	if runErr != nil {
-		return "", fmt.Errorf("%s %s: %w", bin, strings.Join(args, " "), runErr)
-	}
-	return stdout.String(), nil
+	return bin, nil
 }

@@ -20,10 +20,17 @@ import (
 	"testing"
 
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/component/shader/shadertest"
 )
 
 func TestEmbers(t *testing.T) {
-	sh := Embers(DefaultEmbersParams(), term.Attributes{}, 30)
+	sh := Embers(DefaultEmbersParams(), term.Attributes{})
 	shadertest.TestShader(t, sh)
+}
+
+func TestEmbersDependsOnProgressOnly(t *testing.T) {
+	build := func() shader.Shader { return Embers(DefaultEmbersParams(), term.Attributes{}) }
+	shadertest.AssertProgressOnly(t, build, shadertest.MakeTextCanvas(12, 6))
+	shadertest.AssertOrderIndependent(t, build, shadertest.MakeTextCanvas(12, 6), 20)
 }

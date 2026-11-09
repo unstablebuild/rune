@@ -35,7 +35,32 @@ func TestShadeGLSL(t *testing.T) {
 		sh.Shade(20, 100, cells)
 		assert.Equal(t, 20, sh.cr.frame)
 		assert.Equal(t, 100, sh.cr.total)
-		assert.Equal(t, 20.0/30.0, sh.cr.time)
+	})
+
+	t.Run("shades frames before the animation as its first", func(t *testing.T) {
+		defer sh.cr.reset()
+		cells := shadertest.MakeCellMatrix(4, 3)
+		sh.Shade(-5, 100, cells)
+		assert.Equal(t, 0, sh.cr.frame)
+		assert.Len(t, sh.cr.coordsExecuted, 4*3)
+	})
+
+	t.Run("shades nothing out of the animation", func(t *testing.T) {
+		for _, tc := range []struct {
+			name         string
+			frame, total int
+		}{
+			{"frame at total", 100, 100},
+			{"frame past total", 101, 100},
+			{"zero total", 0, 0},
+			{"negative total", 0, -1},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				defer sh.cr.reset()
+				sh.Shade(tc.frame, tc.total, shadertest.MakeCellMatrix(4, 3))
+				assert.Empty(t, sh.cr.coordsExecuted)
+			})
+		}
 	})
 
 	t.Run("receives horizontal resolution as the number of cell columns", func(t *testing.T) {
@@ -172,7 +197,7 @@ type fakeShader struct {
 }
 
 func (s *fakeShader) Shade(frame, total int, in [][]term.Cell) {
-	s.helper.shadeGLSL(frame, total, 30, in, s.cr)
+	s.helper.shadeGLSL(frame, total, in, s.cr)
 }
 
 type coord struct {
@@ -183,14 +208,12 @@ type coord struct {
 type fakeCellRunner struct {
 	frame                    int
 	total                    int
-	fps                      float
-	time                     float
 	resolutionX, resolutionY int
 	coordsExecuted           []coord
 }
 
 func (s *fakeCellRunner) runCell(
-	frame, total int, fps float, time float,
+	frame, total int,
 	cellCoords term.Coordinates,
 	fragCoordX, fragCoordY int,
 	resolutionX, resolutionY int,
@@ -198,8 +221,6 @@ func (s *fakeCellRunner) runCell(
 ) (char rune, fg, bg term.Color) {
 	s.frame = frame
 	s.total = total
-	s.fps = fps
-	s.time = time
 	s.resolutionX = resolutionX
 	s.resolutionY = resolutionY
 	s.coordsExecuted = append(s.coordsExecuted, coord{fragCoordX, fragCoordY})
@@ -209,7 +230,6 @@ func (s *fakeCellRunner) runCell(
 func (s *fakeCellRunner) reset() {
 	s.frame = 0
 	s.total = 0
-	s.fps = 0
 	s.resolutionX = 0
 	s.resolutionY = 0
 	s.coordsExecuted = nil

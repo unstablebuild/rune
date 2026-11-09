@@ -32,9 +32,9 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"unstable.build/rune/internal/extension/extensionv2"
+	"unstable.build/rune/internal/ide/console/pkgconsole"
 	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
-	"unstable.build/rune/internal/ide/pkgshell"
 )
 
 func TestGitHubPkgRealEndToEnd(t *testing.T) {
@@ -122,14 +122,14 @@ func runRealGitHubPkgE2E(t *testing.T, f realGitHubFixture) {
 			"an untagged repository lists only latest")
 	}
 
-	h := pkgshell.New(pkgshell.Config{Manager: m.pkgmanager.pkg})
+	h := pkgconsole.New(pkgconsole.Config{Manager: m.pkgmanager.pkg})
 
 	installArgs := []string{"install", f.pkgID}
 	if f.installTag != "" {
 		installArgs = append(installArgs, f.installTag)
 	}
 	_, err = h.HandleCommand(ctx, repl.Command{
-		Name: pkgshell.CommandName,
+		Name: pkgconsole.CommandName,
 		Args: installArgs,
 	}, repl.NopProgressWriter())
 	require.NoError(t, err)

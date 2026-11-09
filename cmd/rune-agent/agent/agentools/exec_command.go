@@ -25,6 +25,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	"unstable.build/rune/cmd/rune-agent/configedit"
 )
 
@@ -35,9 +36,10 @@ const (
 )
 
 type execCommandTool struct {
-	mgr   *SessionManager
-	cwd   workspaceapi.URI
-	guard grepGuard
+	mgr    *SessionManager
+	cwd    workspaceapi.URI
+	guard  grepGuard
+	policy toolpolicy.Policy
 }
 
 type execCommandArgs struct {
@@ -74,12 +76,20 @@ func NewExecCommand(
 	}
 }
 
+// WithPolicy implements agent.PolicyTool: the copy rejects the commands p
+// does not allow before running them.
+func (t *execCommandTool) WithPolicy(p toolpolicy.Policy) agent.Tool {
+	c := *t
+	c.policy = p
+	return &c
+}
+
 func (t *execCommandTool) Definition() llmapi.Tool {
 	return llmapi.Tool{
 		Type: llmapi.ToolTypeFunction,
 		Function: llmapi.FunctionDefinition{
 			Name: "exec_command",
-			Description: `Runs a command in a PTY, returning output or a session ID for ongoing interaction.
+			Description: withCommandHelp(`Runs a command in a PTY, returning output or a session ID for ongoing interaction.
 
 Do NOT use this tool for tasks that have a dedicated tool:
 • grep/rg/ag → use grep_files or search_symbols
@@ -89,7 +99,7 @@ Do NOT use this tool for tasks that have a dedicated tool:
 • Symbol search → use search_symbols or find_definition
 
 Use exec_command only for running tests, build commands, git, or other
-tasks with no dedicated tool.`,
+tasks with no dedicated tool.`, t.policy),
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -139,6 +149,16 @@ func (t *execCommandTool) Execute(ctx context.Context, arguments string) agent.T
 
 	if args.Cmd == "" {
 		return agent.ToolResult{Content: "error: cmd must not be empty", IsError: true}
+	}
+
+	// The session runs the command with the shell the model picks, so
+	// the check plans that shell, whatever it is.
+	shell := args.Shell
+	if shell == "" {
+		shell = "bash"
+	}
+	if rejected, ok := checkCommand(t.policy, shell, args.Cmd); ok {
+		return rejected
 	}
 
 	if isGrepInvocation(args.Cmd) {

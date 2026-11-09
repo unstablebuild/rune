@@ -25,6 +25,7 @@ import (
 	sync "sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -319,6 +320,74 @@ AAAAAAAAAAAAAAAAAAAA
 		assert.Equal(t, term.EventKey, republished[0].Type)
 	})
 
+	t.Run("handle sets the pointer shape of the last mouse event sent", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mock := browsertest.NewMockFloating(ctrl)
+		superseded := make(chan struct{})
+		interrupts := make(chan struct{}, 16)
+		client, closeFn := setupIntTest(t, mock, func() {
+			mock.EXPECT().Handle(gomock.Any()).DoAndReturn(func(ev term.Event) (bool, bool) {
+				switch ev.MouseX {
+				case 1:
+					term.SetPointerShape(ev, term.PointerLink)
+				case 2:
+					term.SetPointerShape(ev, term.PointerText)
+				case 3:
+					<-superseded
+					term.SetPointerShape(ev, term.PointerMove)
+				case 4:
+					term.SetPointerShape(ev, term.PointerColResize)
+				}
+				return false, true
+			}).AnyTimes()
+			mock.EXPECT().Selection()
+			mock.EXPECT().Dimensions()
+			mock.EXPECT().Cursor().Times(2)
+			mock.EXPECT().Draw(gomock.Any())
+		}, func(ev term.Event) error {
+			if ev.Type == term.EventInterrupt {
+				interrupts <- struct{}{}
+			}
+			return nil
+		})
+		defer closeFn()
+		// the setup's draw
+		<-interrupts
+
+		mouse := func(x int) *term.Pointer {
+			p := new(term.Pointer)
+			_, _ = client.Handle(term.Event{
+				Type: term.EventMouse, MouseX: x,
+				Context: term.ContextWithPointer(context.Background(), p),
+			})
+			return p
+		}
+		shownShape := func(p *term.Pointer) term.PointerShape {
+			t.Helper()
+			select {
+			case <-interrupts:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the response never interrupted the event loop")
+			}
+			shape, _ := p.Shape()
+			return shape
+		}
+
+		assert.Equal(t, term.PointerLink, shownShape(mouse(1)))
+
+		_, _ = client.Handle(term.Event{Type: term.EventKey, Ch: 'a'})
+		assert.Equal(t, term.PointerText, shownShape(mouse(2)),
+			"key responses do not count as mouse responses")
+
+		older := mouse(3)
+		p := mouse(4)
+		close(superseded)
+		assert.Equal(t, term.PointerColResize, shownShape(p))
+		shape, _ := older.Shape()
+		assert.Equal(t, term.PointerText, shape,
+			"a response to a superseded mouse event is dropped")
+	})
+
 	t.Run("cursor returns nothing", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		mock := browsertest.NewMockFloating(ctrl)
@@ -390,6 +459,93 @@ AAAAAAAAAAAAAAAAAAAA
 		assert.Equal(t, fresh, actualCoordinates)
 		assert.Equal(t, term.CursorStyleSteadyBar, actualStyle)
 	})
+}
+
+func TestClientServerStreamPointerShape(t *testing.T) {
+	// The extension shows the link pointer over x < linkWidth and sets no
+	// shape elsewhere.
+	const linkWidth = 4
+	const overLink, overText = 1, 6
+	type move struct {
+		x int
+		// fallback is set before the event reaches the extension, as a
+		// parent handler does to offer a shape its children may override.
+		fallback *term.PointerShape
+	}
+	hover := func(x int) move { return move{x: x} }
+	textFallback := term.PointerText
+	const (
+		dflt = term.PointerDefault
+		link = term.PointerLink
+		text = term.PointerText
+	)
+	cases := []struct {
+		name  string
+		moves []move
+		// shown is every shape the runtime showed, after dispatching each
+		// event and on every interrupt the stream published.
+		shown []term.PointerShape
+	}{
+		{"the extension's shape holds between its answers",
+			[]move{hover(overLink), hover(overLink), hover(overLink)},
+			[]term.PointerShape{dflt, link, link, link}},
+		{"leaving the shape shows the default once answered",
+			[]move{hover(overLink), hover(overText)},
+			[]term.PointerShape{dflt, link, link, dflt}},
+		{"a fallback set before forwarding is back once answered",
+			[]move{hover(overLink), {x: overText, fallback: &textFallback}},
+			[]term.PointerShape{dflt, link, link, text}},
+		{"no shape is shown while the extension sets none",
+			[]move{hover(overText), hover(overText)},
+			[]term.PointerShape{dflt, dflt}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mock := browsertest.NewMockFloating(ctrl)
+			answer := make(chan struct{})
+			rt := newPointerRuntime()
+			client, closeFn := setupIntTest(t, mock, func() {
+				mock.EXPECT().Handle(gomock.Any()).DoAndReturn(func(ev term.Event) (bool, bool) {
+					if ev.Type != term.EventMouse {
+						return false, false
+					}
+					<-answer
+					if ev.MouseX < linkWidth {
+						term.SetPointerShape(ev, term.PointerLink)
+					}
+					return false, true
+				}).AnyTimes()
+				mock.EXPECT().Selection()
+				mock.EXPECT().Dimensions()
+				mock.EXPECT().Cursor().Times(2)
+				mock.EXPECT().Draw(gomock.Any())
+			}, rt.publish)
+			defer closeFn()
+			<-rt.drawn
+
+			for _, m := range tc.moves {
+				p := new(term.Pointer)
+				if m.fallback != nil {
+					p.SetShape(*m.fallback)
+				}
+				rt.dispatch(p, func() {
+					_, _ = client.Handle(term.Event{
+						Type: term.EventMouse, MouseX: m.x,
+						Context: term.ContextWithPointer(context.Background(), p),
+					})
+				})
+				answer <- struct{}{}
+				_, _ = client.Handle(term.Event{Type: term.EventKey, Ch: 'a'})
+				select {
+				case <-rt.republished:
+				case <-time.After(5 * time.Second):
+					t.Fatal("the extension never answered")
+				}
+			}
+			assert.Equal(t, tc.shown, rt.shownShapes())
+		})
+	}
 }
 
 type nopLocker struct{}
@@ -514,6 +670,66 @@ func doSetupIntTest(t *testing.T, register func(*grpc.Server)) (
 }
 
 func nopPublisher(term.Event) error { return nil }
+
+// pointerRuntime emulates how the GUI shows pointer shapes: every mouse
+// event gets a fresh Pointer, and the shape of the latest one is shown
+// once the event is dispatched and again on every interrupt. The stream
+// republishes unhandled keys in order, so receiving one means every
+// earlier answer was applied.
+type pointerRuntime struct {
+	mu          sync.Mutex
+	latest      *term.Pointer
+	shown       []term.PointerShape
+	drawn       chan struct{}
+	republished chan struct{}
+}
+
+func newPointerRuntime() *pointerRuntime {
+	return &pointerRuntime{
+		drawn:       make(chan struct{}),
+		republished: make(chan struct{}, 1),
+	}
+}
+
+// publish is the stream's publisher. The first interrupt answers the
+// setup's draw, before any mouse event.
+func (r *pointerRuntime) publish(ev term.Event) error {
+	switch ev.Type {
+	case term.EventInterrupt:
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.latest == nil {
+			close(r.drawn)
+			return nil
+		}
+		r.showLocked()
+	case term.EventKey:
+		r.republished <- struct{}{}
+	}
+	return nil
+}
+
+// dispatch makes p the latest Pointer, runs handle and shows the result.
+func (r *pointerRuntime) dispatch(p *term.Pointer, handle func()) {
+	r.mu.Lock()
+	r.latest = p
+	r.mu.Unlock()
+	handle()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.showLocked()
+}
+
+func (r *pointerRuntime) showLocked() {
+	shape, _ := r.latest.Shape()
+	r.shown = append(r.shown, shape)
+}
+
+func (r *pointerRuntime) shownShapes() []term.PointerShape {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]term.PointerShape(nil), r.shown...)
+}
 
 // scriptedStream is a grpc.ClientStream that replays a fixed script of
 // server messages and records what the ServerStream sends back, so a draw

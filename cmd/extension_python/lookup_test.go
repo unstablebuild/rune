@@ -103,11 +103,14 @@ func (f *fakeFS) ReadDir(_ string) ([]os.DirEntry, error) {
 }
 
 // scriptedCmd records the stdout/stderr payload and exit error returned
-// by the fake executor for a matching command key.
+// by the fake executor for a matching command key. With release set, the
+// process runs until release is closed and is killed if its Start ctx
+// was canceled by then, as the workspace RPC executor does.
 type scriptedCmd struct {
-	stdout string
-	stderr string
-	err    error
+	stdout  string
+	stderr  string
+	err     error
+	release chan struct{}
 }
 
 // fakeExecutor implements workspaceapi.Executor. It dispatches on the
@@ -118,11 +121,17 @@ type fakeExecutor struct {
 	responses map[string]scriptedCmd
 	calls     []string
 	dirs      map[string]string
+	exits     map[string]error
 	nextPid   workspaceapi.Pid
 }
 
 func newFakeExecutor() *fakeExecutor {
-	return &fakeExecutor{responses: map[string]scriptedCmd{}, dirs: map[string]string{}, nextPid: 1}
+	return &fakeExecutor{
+		responses: map[string]scriptedCmd{},
+		dirs:      map[string]string{},
+		exits:     map[string]error{},
+		nextPid:   1,
+	}
 }
 
 func (e *fakeExecutor) respond(key string, r scriptedCmd) *fakeExecutor {
@@ -134,7 +143,7 @@ func (e *fakeExecutor) callKey(cmd workspaceapi.Cmd) string {
 	return strings.Join(append([]string{cmd.Path}, cmd.Args...), " ")
 }
 
-func (e *fakeExecutor) Start(_ context.Context, cmd workspaceapi.Cmd) (workspaceapi.Pid, error) {
+func (e *fakeExecutor) Start(ctx context.Context, cmd workspaceapi.Cmd) (workspaceapi.Pid, error) {
 	e.mu.Lock()
 	key := e.callKey(cmd)
 	e.calls = append(e.calls, key)
@@ -153,14 +162,24 @@ func (e *fakeExecutor) Start(_ context.Context, cmd workspaceapi.Cmd) (workspace
 	if cmd.Stderr != nil && resp.stderr != "" {
 		_, _ = io.Copy(cmd.Stderr, bytes.NewBufferString(resp.stderr))
 	}
+	var ch chan<- error
 	if cmd.Watcher != nil {
-		ch := cmd.Watcher.WatchProcess()
-		go func(err error) {
-			if ch != nil {
-				ch <- err
-			}
-		}(resp.err)
+		ch = cmd.Watcher.WatchProcess()
 	}
+	go func(err error) {
+		if resp.release != nil {
+			<-resp.release
+			if cerr := ctx.Err(); cerr != nil {
+				err = cerr
+			}
+		}
+		e.mu.Lock()
+		e.exits[key] = err
+		e.mu.Unlock()
+		if ch != nil {
+			ch <- err
+		}
+	}(resp.err)
 	return pid, nil
 }
 
@@ -181,4 +200,17 @@ func (e *fakeExecutor) dirFor(key string) string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.dirs[key]
+}
+
+// exitFor returns the exit error of the process matching key, and
+// whether it has exited.
+func (e *fakeExecutor) exitFor(key string) (error, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	err, ok := e.exits[key]
+	return err, ok
+}
+
+func (*fakeExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }

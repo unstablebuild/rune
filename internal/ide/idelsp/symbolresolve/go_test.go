@@ -232,6 +232,11 @@ func TestResolveE2E(t *testing.T) {
 			wantURIs: []string{mylibFileURI},
 		},
 		{
+			name:     "interface method resolves to interface declaration",
+			symbol:   "mylib.Store.Load",
+			wantURIs: []string{mylibFileURI},
+		},
+		{
 			// A method on a type that does not exist returns
 			// not-found rather than matching another type's method.
 			name:            "method on unknown type returns not-found",

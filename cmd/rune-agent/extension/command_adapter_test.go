@@ -32,10 +32,35 @@ import (
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
 	"unstable.build/rune/cmd/rune-agent/llm/llmtest"
+	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/llm/anthropic"
 	"unstable.build/rune/internal/llm/codex"
 	"unstable.build/rune/internal/llm/gemini"
 )
+
+func TestCommandFloatingCloseLeavesItsWindow(t *testing.T) {
+	md, err := markdown.New("# hello")
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name  string
+		items []component.Responsive
+	}{
+		{"markdown", []component.Responsive{md}},
+		{"list", []component.Responsive{component.NewResponsiveString("a", component.StringResponsiveConfig{}), md}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wm := &reviewWindowManager{}
+			a := &commandAdapter{wm: wm}
+			a.openCommandFloating(tc.items)
+			require.Len(t, wm.floatings, 1)
+
+			require.NoError(t, wm.floatings[0].Close())
+
+			assert.Zero(t, wm.closes,
+				"the window may already show other content when the output is released")
+		})
+	}
+}
 
 // newMaxTokensAdapter builds a commandAdapter whose agent is bound to a
 // concrete model so handleMaxTokens can validate against its documented
@@ -225,6 +250,24 @@ func TestCommandAdapterRejectsPositionalID(t *testing.T) {
 	}
 }
 
+func TestCommandAdapterModelRefreshesTools(t *testing.T) {
+	model := llmapi.ModelEntry{Provider: "openai", Name: "supported"}
+	target := llmapi.ModelEntry{Provider: "openai", Name: "unsupported"}
+	a := newMaxTokensAdapter(t, model)
+	svc := llmtest.New([]llmapi.ModelEntry{model, target})
+	a.llmSvc = svc
+	called := false
+	a.modelToolsFn = func(got llmapi.Service, entry llmapi.ModelEntry) {
+		called = true
+		assert.Same(t, svc, got)
+		assert.Equal(t, target, entry)
+	}
+	_, err := a.handleModel(t.Context(), []string{"openai/unsupported"})
+	require.NoError(t, err)
+	require.True(t, called)
+	assert.Equal(t, target, a.agent.ModelEntry())
+}
+
 func TestCommandAdapterModelArgumentCompleters(t *testing.T) {
 	svc := llmtest.New([]llmapi.ModelEntry{
 		{Provider: "openai", Name: "gpt-5.5"},
@@ -276,24 +319,36 @@ func TestCommandAdapterModelResolvesAliasLabel(t *testing.T) {
 	assert.Equal(t, "openai/gpt-5.5", a.resolvedModelLabel(context.Background()))
 }
 
-func TestFormatSkillMessageIncludesSkillToolHint(t *testing.T) {
-	skill := skills.Skill{Name: "perplexity-search"}
+func TestFormatSkillMessageSkillToolHint(t *testing.T) {
+	tests := []struct {
+		name     string
+		skill    skills.Skill
+		wantHint bool
+	}{
+		{name: "instruction skill", skill: skills.Skill{Name: "perplexity-search"}, wantHint: true},
+		{name: "agent skill", skill: skills.Skill{Name: "perplexity-search", Type: "agent"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := formatSkillMessage(tc.skill, "pico go to line")
 
-	msg := formatSkillMessage(skill, "pico go to line")
-
-	assert.Contains(t, msg, "<command-message>perplexity-search</command-message>")
-	assert.Contains(t, msg, "<command-name>/perplexity-search</command-name>")
-	assert.Contains(t, msg, "pico go to line")
-	assert.Contains(t, msg, "<command-hint>")
-	assert.Contains(t, msg, "</command-hint>")
-	assert.Contains(t, msg, "perplexity-search")
-	// The hint must mention the skill tool by name so the model knows
-	// what action to take.
-	hintStart := strings.Index(msg, "<command-hint>")
-	hintEnd := strings.Index(msg, "</command-hint>")
-	require.Greater(t, hintEnd, hintStart)
-	hint := msg[hintStart+len("<command-hint>") : hintEnd]
-	assert.Contains(t, hint, "skill")
+			assert.True(t, strings.HasPrefix(msg, "<command-message>perplexity-search</command-message>\n"+
+				"<command-name>/perplexity-search</command-name>\npico go to line"), msg)
+			if !tc.wantHint {
+				assert.NotContains(t, msg, "<command-hint>", "a sub-agent has no skill tool to call for itself")
+				return
+			}
+			// The hint must mention the skill tool by name so the model
+			// knows what action to take.
+			hintStart := strings.Index(msg, "<command-hint>")
+			hintEnd := strings.Index(msg, "</command-hint>")
+			require.GreaterOrEqual(t, hintStart, 0)
+			require.Greater(t, hintEnd, hintStart)
+			hint := msg[hintStart+len("<command-hint>") : hintEnd]
+			assert.Contains(t, hint, "skill")
+			assert.Contains(t, hint, `"perplexity-search"`)
+		})
+	}
 }
 
 func TestParseStoredCommandMessageRoundTripsWithHint(t *testing.T) {
@@ -320,6 +375,17 @@ func TestParseStoredCommandMessageRoundTripsWithHint(t *testing.T) {
 			skill:    skills.Skill{Name: "issue-create"},
 			args:     "line one\nline two",
 			expected: "/issue-create\nline one\nline two",
+		},
+		{
+			name:     "agent skill without args",
+			skill:    skills.Skill{Name: "plan", Type: "agent"},
+			expected: "/plan",
+		},
+		{
+			name:     "agent skill with args",
+			skill:    skills.Skill{Name: "sourcegraph-search", Type: "agent"},
+			args:     "where is the output format defined?",
+			expected: "/sourcegraph-search where is the output format defined?",
 		},
 	}
 	for _, tc := range tests {

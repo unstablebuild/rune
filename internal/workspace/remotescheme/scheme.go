@@ -523,6 +523,14 @@ func (s *remoteScheme) Signal(p workspaceapi.Pid, signal syscall.Signal) error {
 	return scheme.Signal(p, signal)
 }
 
+func (s *remoteScheme) LookPath(ctx context.Context, name, dir string) (string, error) {
+	err, scheme := s.state()
+	if err != nil {
+		return "", err
+	}
+	return scheme.LookPath(ctx, name, dir)
+}
+
 func (s *remoteScheme) NewPty(ctx context.Context) (workspaceapi.Pty, error) {
 	scheme, generation, err := s.stateWithGeneration()
 	if err != nil {

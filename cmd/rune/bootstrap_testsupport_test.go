@@ -135,6 +135,8 @@ type nopE2ERunner struct{}
 
 func (nopE2ERunner) Run(string, string, config.Config) error { return nil }
 func (nopE2ERunner) Close() error                            { return nil }
+func (n nopE2ERunner) SignalReload() int                     { return 0 }
+
 func (n nopE2ERunner) WaitReady(ctx context.Context, id string) error {
 	return nil
 }

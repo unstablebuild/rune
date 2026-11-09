@@ -32,17 +32,21 @@ import (
 //
 // Each cell briefly cycles through a sequence of "burn" glyphs colored
 // by a fire gradient, even if the original cell was blank. Pre-ignition
-// and post-burn cells render unchanged (their original text and colors
-// show through), so only a thin wave is on fire at any moment. As some
-// original text cells finish burning, the original character rises into
-// higher cells, fading toward grey.
+// cells show [BurnParams.From], or the cells shaded without it, and
+// post-burn cells render unchanged, so only a thin wave is on fire at
+// any moment. As some original text cells finish burning, the original
+// character rises into higher cells, fading toward grey.
+//
+// The placements drawn over the snapshot show on the cells still showing
+// it, and the live placements on the cells the burn has crossed. Neither
+// shows under fire, while rising characters pass behind them.
 //
 // The last frame of the animation matches the input exactly.
 //
 // Inspired by terminaltexteffects' "burn" effect, which spreads its
 // scenes through the canvas with a PrimsSimple algorithm and emits
 // smoke particles from each burning character.
-func Burn(params BurnParams, defaultAttr term.Attributes) Shader {
+func Burn(params BurnParams, defaultAttr term.Attributes) ImageShader {
 	defaults := DefaultBurnParams()
 	if len(params.BurnSymbols) == 0 {
 		params.BurnSymbols = defaults.BurnSymbols
@@ -80,43 +84,10 @@ func Burn(params BurnParams, defaultAttr term.Attributes) Shader {
 	if params.SmokeChance > 1 {
 		params.SmokeChance = 1
 	}
+	params.From = params.From.copied(defaultAttr.Fg)
 	return &burn{
 		BurnParams:  params,
 		defaultAttr: defaultAttr,
-	}
-}
-
-// SetInitialCells sets the snapshot Burn uses as its base layer while the
-// shader is active. When unset, Burn falls back to capturing the first cell
-// matrix passed to Shade. The slice is retained as-is, so callers that may
-// mutate it should pass a clone (e.g. via [term.CloneCells]).
-func (s *burn) SetInitialCells(cells [][]term.Cell) {
-	s.initialCells = cells
-	s.igniteFrame = nil
-	s.rootSet = false
-}
-
-// SetInitialDesaturation desaturates every cell of the snapshot used as
-// the base layer (see [SetInitialCells]) toward its per-cell luminance
-// gray by the given amount. amount is clamped to [0, 1].
-//
-// This is used to chain Burn with a preceding [GrayFade] loading shader:
-// by passing the previous shader's progress, the snapshot starts at the
-// same desaturation amount the loading shader left off at, so the two
-// effects compose without a visible color blip at the handover.
-func (s *burn) SetInitialDesaturation(amount float64) {
-	if amount <= 0 {
-		return
-	}
-	if amount > 1 {
-		amount = 1
-	}
-	for y, row := range s.initialCells {
-		for x, cell := range row {
-			s.initialCells[y][x].Fg = shaderutils.DesaturateColor(
-				cell.Fg, amount, s.defaultAttr.Fg,
-			)
-		}
 	}
 }
 
@@ -171,6 +142,11 @@ type BurnParams struct {
 	// Cells show their live content throughout rather than the snapshot
 	// Burn otherwise reveals from.
 	PaintForeground bool
+	// From is the screen the burn starts from and uncovers the cells it
+	// shades in place of. Without cells, the cells shaded show before the
+	// burn reaches them too, so the wave crosses them and leaves them as
+	// they were.
+	From Snapshot
 }
 
 // DefaultBurnParams returns a sane set of [BurnParams].
@@ -218,10 +194,10 @@ type burn struct {
 	// on the first draw, then reused across content changes.
 	rootSet      bool
 	rootX, rootY int
-	// initialCells is the first cell matrix seen by the shader for the
-	// current shape. Until the burn has crossed a cell, that snapshot is
-	// drawn over the live cells so the burn acts as a reveal transition.
-	initialCells [][]term.Cell
+	// layers is what shows on each cell of the last frame shaded, row by
+	// row, for frames that show the snapshot on some cells only.
+	layers []layer
+	cutter imageCutter
 }
 
 type burnBounds struct {
@@ -229,13 +205,51 @@ type burnBounds struct {
 	maxX, maxY int
 }
 
+// burnFrame is what shows on a frame.
+type burnFrame uint8
+
+const (
+	burnFrameLive burnFrame = iota
+	burnFrameSnapshot
+	// burnFrameLayers shows on each cell what burn.layers tells.
+	burnFrameLayers
+)
+
 func (s *burn) Shade(frame, total int, cells [][]term.Cell) {
+	s.shadeCells(frame, total, cells)
+}
+
+func (s *burn) ShadeImages(
+	frame, total int, cells [][]term.Cell, images []term.Image,
+) []term.Image {
+	switch s.shadeCells(frame, total, cells) {
+	case burnFrameSnapshot:
+		return append(images[:0], s.From.Images...)
+	case burnFrameLayers:
+		return s.cutImages(images, len(cells), len(s.layers)/len(cells))
+	default:
+		return images
+	}
+}
+
+// cutImages returns the live placements images and the snapshot's cut to
+// the cells of a cols by rows frame showing them.
+func (s *burn) cutImages(images []term.Image, rows, cols int) []term.Image {
+	showing := func(layer layer) func(x, y int) bool {
+		return func(x, y int) bool { return s.layers[y*cols+x] == layer }
+	}
+	out := s.cutter.cut(images[:0], images, cols, rows, showing(layerLive))
+	return s.cutter.cut(out, s.From.Images, cols, rows, showing(layerSnapshot))
+}
+
+// shadeCells shades cells and returns what the frame shows.
+func (s *burn) shadeCells(frame, total int, cells [][]term.Cell) burnFrame {
 	if total <= 0 {
-		return
+		return burnFrameLive
 	}
 	rows := len(cells)
 	if rows == 0 {
-		return
+		return burnFrameLive
 	}
 	cols := 0
 	for _, row := range cells {
@@ -244,46 +258,49 @@ func (s *burn) Shade(frame, total int, cells [][]term.Cell) {
 		}
 	}
 	if cols == 0 {
-		return
+		return burnFrameLive
 	}
-	s.ensureInitialCells(cells)
 	if frame > total {
-		return
+		return burnFrameLive
 	}
 	if frame < 0 {
 		frame = 0
 	}
-	// Frame 0: paint the pre-burn snapshot over the live cells so the
-	// transition starts from the captured screen instead of flashing the
-	// new workspace for a frame before the wave begins. The chained
-	// loading→open transition needs this: if the loading shader stopped
-	// part-way through desaturating, SetInitialDesaturation has already
-	// applied that amount to s.initialCells.
+	// Frame 0 shows the snapshot whole, so the transition starts from the
+	// screen it takes over instead of flashing the new one for a frame
+	// before the wave begins.
 	if frame == 0 && !s.PaintForeground {
+		if len(s.From.Cells) == 0 {
+			return burnFrameLive
+		}
 		for y := range cells {
 			for x := range cells[y] {
 				cells[y][x] = s.initialCell(y, x, cells[y][x])
 			}
 		}
-		return
+		return burnFrameSnapshot
 	}
 
 	bounds, ok := s.activeBounds(rows, cols)
 	if !ok {
-		return
+		return burnFrameLive
 	}
-	s.ensureCache(s.initialCells, rows, cols, total, bounds)
+	text := s.From.Cells
+	if len(text) == 0 {
+		text = cells
+	}
+	s.ensureCache(cells, text, rows, cols, total, bounds)
 
 	burnFrames := s.burnFrameCount(total)
 	if s.PaintForeground {
 		s.recolorText(frame, burnFrames, bounds, cells)
-		return
+		return burnFrameLive
 	}
 	smokeFrames := s.smokeFrameCount(total)
-	activeBurn := make([][]bool, rows)
-	for y := range activeBurn {
-		activeBurn[y] = make([]bool, cols)
+	if len(s.layers) != rows*cols {
+		s.layers = make([]layer, rows*cols)
 	}
+	clear(s.layers)
 
 	// Pass 1: cells progress through three states based on their per-cell
 	// ignition frame:
@@ -298,13 +315,9 @@ func (s *burn) Shade(frame, total int, cells [][]term.Cell) {
 		maxX := min(bounds.maxX, len(row)-1)
 		for x := bounds.minX; x <= maxX; x++ {
 			start := s.igniteFrame[y][x]
-			if start < 0 {
-				cells[y][x] = s.initialCell(y, x, cells[y][x])
-				continue
-			}
 			localFrame := frame - start
-			if localFrame < 0 {
-				cells[y][x] = s.initialCell(y, x, cells[y][x])
+			if start < 0 || localFrame < 0 {
+				s.layers[y*cols+x] = s.unburnt(cells, x, y)
 				continue
 			}
 			if localFrame >= burnFrames {
@@ -325,7 +338,7 @@ func (s *burn) Shade(frame, total int, cells [][]term.Cell) {
 			// is its own visual layer and should sit on the cell
 			// grid, not on the chrome's render offset.
 			cells[y][x].Attrs &^= burnGlyphStripAttrs
-			activeBurn[y][x] = true
+			s.layers[y*cols+x] = layerEffect
 		}
 	}
 
@@ -335,7 +348,7 @@ func (s *burn) Shade(frame, total int, cells [][]term.Cell) {
 	// motion reads as pieces of text floating upward rather than as spark
 	// punctuation.
 	if smokeFrames <= 0 {
-		return
+		return burnFrameLayers
 	}
 	for srcY := bounds.minY; srcY <= bounds.maxY && srcY < rows; srcY++ {
 		maxX := bounds.maxX
@@ -366,7 +379,7 @@ func (s *burn) Shade(frame, total int, cells [][]term.Cell) {
 			if targetY < 0 || targetY >= rows || targetX < 0 || targetX >= cols {
 				continue
 			}
-			if targetX >= len(cells[targetY]) || activeBurn[targetY][targetX] {
+			if targetX >= len(cells[targetY]) || s.layers[targetY*cols+targetX] == layerEffect {
 				continue
 			}
 
@@ -396,6 +409,7 @@ func (s *burn) Shade(frame, total int, cells [][]term.Cell) {
 			cells[targetY][targetX].Attrs &^= burnGlyphStripAttrs
 		}
 	}
+	return burnFrameLayers
 }
 
 // burnGlyphStripAttrs is the set of cell attrs cleared on cells the
@@ -426,34 +440,22 @@ func (s *burn) recolorText(
 	}
 }
 
-func (s *burn) ensureInitialCells(cells [][]term.Cell) {
-	if sameCellShape(s.initialCells, cells) {
-		return
+// unburnt shows on the cell at x, y what shows there before the burn
+// reaches it, and returns the layer that is: the snapshot's cell, or the
+// cell as it is when the snapshot has none there.
+func (s *burn) unburnt(cells [][]term.Cell, x, y int) layer {
+	if !inCanvas(s.From.Cells, x, y) {
+		return layerLive
 	}
-	s.initialCells = cloneCellMatrix(cells)
-	// A shape change invalidates the cached traversal and root. Content
-	// changes with the same shape intentionally do not update the snapshot.
-	s.igniteFrame = nil
-	s.rootSet = false
+	cells[y][x] = s.From.Cells[y][x]
+	return layerSnapshot
 }
 
 func (s *burn) initialCell(y, x int, fallback term.Cell) term.Cell {
-	if y < 0 || y >= len(s.initialCells) || x < 0 || x >= len(s.initialCells[y]) {
+	if !inCanvas(s.From.Cells, x, y) {
 		return fallback
 	}
-	return s.initialCells[y][x]
-}
-
-func sameCellShape(a, b [][]term.Cell) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for y := range a {
-		if len(a[y]) != len(b[y]) {
-			return false
-		}
-	}
-	return true
+	return s.From.Cells[y][x]
 }
 
 func cloneCellMatrix(in [][]term.Cell) [][]term.Cell {
@@ -530,10 +532,10 @@ func (s *burn) lastIgniteFrame(total int) int {
 // normalizes it into the available frame budget so frame/total means
 // "how much of the full traversal has been reached". Rune assigns an
 // ignition frame to blank cells too so empty regions visibly burn; cells
-// with original characters are preferred as graph roots so text catches
-// early when present.
+// with original characters of text are preferred as graph roots so text
+// catches early when present.
 func (s *burn) ensureCache(
-	cells [][]term.Cell,
+	cells, text [][]term.Cell,
 	rows int,
 	cols int,
 	total int,
@@ -563,7 +565,7 @@ func (s *burn) ensureCache(
 		seed = 1
 	}
 	rng := rand.New(rand.NewSource(seed + int64(rows*1_000_003+cols*97+total*13)))
-	order := s.primsSimpleOrder(cells, bounds, rows, cols, rng)
+	order := s.primsSimpleOrder(text, bounds, rows, cols, rng)
 	if len(order) == 0 {
 		return
 	}

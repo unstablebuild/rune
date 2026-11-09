@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -30,7 +31,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
@@ -38,9 +38,11 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
+	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/debug"
+	rhandlertest "unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/handler/search"
 	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/workspace"
@@ -304,6 +306,54 @@ func TestScanDoneWaitsForCommandOutputDrain(t *testing.T) {
 		"every line written before the process exited must be in the list")
 }
 
+func TestCommandStartFailureWithoutFallbackNotifies(t *testing.T) {
+	notifications := &recordingNotifications{}
+	startErr := errors.New("error executing remote rune workspace server over SSH: exit status 3")
+	clients := Clients{
+		ResourceOpener: stubResourceOpener{},
+		WindowManager:  stubWindowManager{},
+		Interrupter:    term.NopInterrupter(),
+		Notifications:  notifications,
+		Executor:       failingStartExecutor{err: startErr},
+	}
+	listCfg := search.ListConfig{
+		Algo:        search.FuzzyMatch,
+		Interrupter: term.NopInterrupter(),
+		SyncSearch:  true,
+	}
+	rh, err := NewWithListConfig(
+		context.Background(), clients, stubWindow(0),
+		term.KeyComb{}, "", "git grep -n foo", 0, listCfg,
+		nil, nil,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rh.Close() })
+	h := rh.(*fuzzyFinderHandler)
+
+	waitForScanWithTimeout(t, h, 5*time.Second)
+
+	msgs := notifications.errors()
+	require.Len(t, msgs, 1)
+	assert.Contains(t, msgs[0], "git grep -n foo")
+	assert.Contains(t, msgs[0], startErr.Error())
+	assert.Zero(t, h.list.TotalCount())
+}
+
+func TestNewWithListConfigRequiresCommandOrFallback(t *testing.T) {
+	clients := Clients{
+		ResourceOpener: stubResourceOpener{},
+		WindowManager:  stubWindowManager{},
+		Interrupter:    term.NopInterrupter(),
+		Notifications:  stubNotifications{},
+	}
+	_, err := NewWithListConfig(
+		context.Background(), clients, stubWindow(0),
+		term.KeyComb{}, "", "", 0, search.ListConfig{Interrupter: term.NopInterrupter()},
+		nil, nil,
+	)
+	require.Error(t, err)
+}
+
 func TestOpenerChordRecallsHistory(t *testing.T) {
 	historyKey := term.KeyComb{Mod: term.ModMeta, Ch: 'p'}
 	for _, tc := range []struct {
@@ -391,6 +441,22 @@ func (e *instantExitExecutor) Signal(workspaceapi.Pid, syscall.Signal) error {
 
 func (e *instantExitExecutor) Close() error { return nil }
 
+type failingStartExecutor struct {
+	err error
+}
+
+func (e failingStartExecutor) Start(context.Context, workspaceapi.Cmd) (workspaceapi.Pid, error) {
+	return 0, e.err
+}
+
+func (failingStartExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
+
+func (failingStartExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
+func (failingStartExecutor) Close() error { return nil }
+
 // --- stubs ----------------------------------------------------------------
 
 type stubWindow uint64
@@ -402,6 +468,8 @@ type stubResourceOpener struct{}
 func (stubResourceOpener) Open(workspaceapi.URI) (browserapi.Handler, error) {
 	return stubBrowserHandler{}, nil
 }
+
+func (stubResourceOpener) Show(workspaceapi.URI) error { return nil }
 
 type stubBrowserHandler struct{}
 
@@ -430,7 +498,7 @@ func (stubWindowManager) Tab(workspaceapi.URI, rune, string, browserapi.Handler)
 func (stubWindowManager) SetWindowContent(browserapi.Window, browserapi.Handler) error { return nil }
 func (stubWindowManager) CloseWindow(browserapi.Window) error                          { return nil }
 
-func (stubWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (stubWindowManager) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
 
 type stubNotifications struct{}
 
@@ -442,4 +510,72 @@ func (stubNotifications) NotifyOnce(browserapi.NotificationLevel, string, ...any
 }
 func (stubNotifications) UpdateNotificationProgress(string, string, int64, int64) error {
 	return nil
+}
+
+type recordingNotifications struct {
+	mu   sync.Mutex
+	errs []string
+}
+
+func (n *recordingNotifications) Notify(level browserapi.NotificationLevel, msg string, args ...any) (string, error) {
+	if level == browserapi.LevelError {
+		n.mu.Lock()
+		n.errs = append(n.errs, fmt.Sprintf(msg, args...))
+		n.mu.Unlock()
+	}
+	return "", nil
+}
+
+func (n *recordingNotifications) NotifyOnce(level browserapi.NotificationLevel, msg string, args ...any) (string, error) {
+	return n.Notify(level, msg, args...)
+}
+
+func (*recordingNotifications) UpdateNotificationProgress(string, string, int64, int64) error {
+	return nil
+}
+
+func (n *recordingNotifications) errors() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.errs...)
+}
+
+func TestFuzzyFinderHandlerPointerLeaves(t *testing.T) {
+	files := make([]string, 300)
+	for i := range files {
+		files[i] = fmt.Sprintf("some/deeply/nested/directory/file-%03d.go", i)
+	}
+	for _, size := range [][2]int{{60, 15}, {1, 1}} {
+		clients := Clients{
+			ResourceOpener: stubResourceOpener{},
+			WindowManager:  stubWindowManager{},
+			Interrupter:    term.NopInterrupter(),
+			Notifications:  stubNotifications{},
+		}
+		listCfg := search.ListConfig{
+			Algo:        search.FuzzyMatch,
+			Interrupter: term.NopInterrupter(),
+			SyncSearch:  true,
+		}
+		rh, err := NewWithListConfig(
+			context.Background(), clients, stubWindow(0),
+			term.KeyComb{}, "", "", 0, listCfg,
+			func(workspaceapi.FileSystem, context.Context) (iterator.Iterator[string], error) {
+				return iterator.FromSlice(files), nil
+			},
+			func(workspaceapi.FileSystem, string) (workspaceapi.URI, term.Coordinates, bool) {
+				return workspaceapi.URI{}, term.Coordinates{}, false
+			},
+		)
+		require.NoError(t, err)
+		h := rh.(*fuzzyFinderHandler)
+		waitForScanWithTimeout(t, h, 5*time.Second)
+		h.Handle(term.Event{Type: term.EventKey, Ch: '1'})
+		rhandlertest.RunPointerLeaves(t, rh, size[0], size[1])
+		require.NoError(t, rh.Close())
+	}
+}
+
+func (*instantExitExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
 }

@@ -27,8 +27,13 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	builtins "unstable.build/rune/cmd/rune-agent/skills"
 )
+
+// builtinDir is the prefix of the Dir of the skills built into Rune,
+// which have no directory on disk.
+const builtinDir = "<builtin>/"
 
 // SkillRegistry is a thread-safe, mutable registry of skills.
 // Created once at startup and shared by the skill tool and agentshell.
@@ -59,7 +64,6 @@ func NewRegistry(fs workspaceapi.FileSystem, cwd workspaceapi.URI, dirs []string
 		}
 		r.dirs = append(r.dirs, abs)
 		for _, s := range r.loadDir(abs) {
-			r.warnDescription(s)
 			if existing, exists := r.byName[s.Name]; !exists {
 				r.byName[s.Name] = s
 			} else {
@@ -117,6 +121,19 @@ func (r *SkillRegistry) Dirs() []string {
 	return slices.Clone(r.dirs)
 }
 
+// AgentPolicy returns the tool policy of the sub-agent that runs the agent
+// skill s: s.Tools, with its bash($name) entries letting commands run the
+// scripts of the skills r holds. Builtin skills have no scripts.
+func (r *SkillRegistry) AgentPolicy(s Skill) toolpolicy.Policy {
+	dirs := make(map[string]string)
+	for _, other := range r.List() {
+		if !strings.HasPrefix(other.Dir, builtinDir) {
+			dirs[other.Name] = other.Dir
+		}
+	}
+	return s.Tools.WithSkillDirs(dirs)
+}
+
 // AddDir adds a skill directory. Resolves relative paths against
 // cwd (stored at construction). Scans the directory and
 // registers all found skills. Returns the list of newly added skills.
@@ -134,7 +151,6 @@ func (r *SkillRegistry) AddDir(dir string) ([]Skill, error) {
 	loaded := r.loadDir(abs)
 	var added []Skill
 	for _, s := range loaded {
-		r.warnDescription(s)
 		if existing, exists := r.byName[s.Name]; !exists {
 			r.byName[s.Name] = s
 			added = append(added, s)
@@ -181,7 +197,6 @@ func (r *SkillRegistry) Reload() {
 	r.byName = make(map[string]Skill, len(r.byName))
 	for _, abs := range r.dirs {
 		for _, s := range r.loadDir(abs) {
-			r.warnDescription(s)
 			if existing, exists := r.byName[s.Name]; !exists {
 				r.byName[s.Name] = s
 			} else {
@@ -203,13 +218,6 @@ func (r *SkillRegistry) resolve(dir string) string {
 	return expanded
 }
 
-func (r *SkillRegistry) warnDescription(s Skill) {
-	if len(s.Description) > 1024 {
-		r.notify("skill %q: description exceeds 1024 characters (%d)",
-			s.Name, len(s.Description))
-	}
-}
-
 func (r *SkillRegistry) registerBuiltins() {
 	for _, entry := range []struct {
 		data []byte
@@ -217,8 +225,9 @@ func (r *SkillRegistry) registerBuiltins() {
 	}{
 		{builtins.Explore, "explore"},
 		{builtins.Plan, "plan"},
+		{builtins.RuneHUD, "rune-hud"},
 	} {
-		s, err := Parse(entry.data, "<builtin>/"+entry.name)
+		s, err := Parse(entry.data, builtinDir+entry.name)
 		if err != nil {
 			panic("builtin skill " + entry.name + ": " + err.Error())
 		}

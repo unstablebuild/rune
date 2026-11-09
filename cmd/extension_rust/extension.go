@@ -32,6 +32,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension/langext"
 	"unstable.build/rune/internal/ide/idelsp/lspcmd"
 )
@@ -51,6 +52,8 @@ func NewExtension() (extensionapi.WorkspaceExtension, extensionapi.Metadata) {
 		DeveloperKey:   "064D4ABCFA6D9338",
 		ExtensionID:    "rust",
 		ExtensionName:  "Rust Language Extension",
+		// debug.Tag is stamped by the rune-language-rust build with the package's release tag.
+		ExtensionVersion: debug.Tag,
 		Permissions: extensionapi.NewPermissions(
 			extensionapi.PermissionLSP,
 			extensionapi.PermissionEditor,

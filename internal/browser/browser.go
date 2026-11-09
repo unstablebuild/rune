@@ -17,6 +17,7 @@
 package browser
 
 import (
+	"fmt"
 	"io"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -25,6 +26,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"unstable.build/rune/internal/term/programstatus"
 )
 
 // Floating is a Handler used for Floating windows.
@@ -159,9 +161,17 @@ type TabManager interface {
 	// on the host event loop.
 	OnTabExit(uri workspaceapi.URI) bool
 
-	// SetTabActivity marks the tab identified by uri as having work in
-	// progress or as idle. See browserapi.WindowManager.SetTabActivity.
-	SetTabActivity(uri workspaceapi.URI, active bool) error
+	// SetTabStatus applies report, made by the program behind the tab
+	// identified by uri, to the tab's status. Done, error and idle
+	// records clear once the user sees the tab; every record is dropped
+	// when the tab closes. It fails when uri is no tab.
+	SetTabStatus(uri workspaceapi.URI, report programstatus.Report) error
+
+	// EndTabStatus tells that the program behind the tab identified by
+	// uri ended: what it reported working, blocked or idle is dropped,
+	// while done and error records stay until the user sees the tab.
+	// It fails when uri is no tab.
+	EndTabStatus(uri workspaceapi.URI) error
 }
 
 // Notifications is the interface that wraps methods to display
@@ -172,10 +182,89 @@ type Notifications interface {
 	UpdateNotificationProgress(id, message string, progress, total int64) error
 }
 
-// ResourceOpener is the interface that wraps the method Open.
+// ResourceOpener is the interface that wraps the methods Open, Show and
+// Resource.
 type ResourceOpener interface {
 	Open(resource workspaceapi.URI) (browserapi.Handler, error)
+	// Show has the contract of browserapi.ResourceOpener.Show.
+	Show(resource workspaceapi.URI) error
 	Resource(workspaceapi.URI) (browserapi.Handler, bool)
+}
+
+// ReportFromTabStatus converts a status reported through the SDK into
+// a protocol report attributed to app, normalized as
+// programstatus.Normalize does. It fails when the state or kind is
+// unknown or the report breaks a protocol limit.
+func ReportFromTabStatus(status browserapi.TabStatus, app string) (programstatus.Report, error) {
+	r := programstatus.Report{
+		ID:       status.ID,
+		Progress: status.Progress,
+		App:      app,
+		Title:    status.Title,
+		Msg:      status.Message,
+	}
+	switch status.State {
+	case browserapi.TabIdle:
+		r.State = programstatus.Idle
+	case browserapi.TabWorking:
+		r.State = programstatus.Working
+	case browserapi.TabDone:
+		r.State = programstatus.Done
+	case browserapi.TabBlocked:
+		r.State = programstatus.Blocked
+	case browserapi.TabError:
+		r.State = programstatus.Error
+	case browserapi.TabClear:
+		r.State = programstatus.Clear
+	default:
+		return programstatus.Report{}, fmt.Errorf("unknown tab state %d", status.State)
+	}
+	switch status.Kind {
+	case browserapi.TabKindNone:
+		r.Kind = programstatus.KindNone
+	case browserapi.TabKindPermission:
+		r.Kind = programstatus.KindPermission
+	case browserapi.TabKindQuestion:
+		r.Kind = programstatus.KindQuestion
+	case browserapi.TabKindAuth:
+		r.Kind = programstatus.KindAuth
+	default:
+		return programstatus.Report{}, fmt.Errorf("unknown tab blocked kind %d", status.Kind)
+	}
+	return programstatus.Normalize(r)
+}
+
+// TabStatusFromReport converts a protocol report into the status the
+// SDK carries, which has no App. An unknown state converts to TabIdle
+// and an unknown kind to TabKindNone.
+func TabStatusFromReport(r programstatus.Report) browserapi.TabStatus {
+	ts := browserapi.TabStatus{
+		ID:       r.ID,
+		Progress: r.Progress,
+		Title:    r.Title,
+		Message:  r.Msg,
+	}
+	switch r.State {
+	case programstatus.Working:
+		ts.State = browserapi.TabWorking
+	case programstatus.Done:
+		ts.State = browserapi.TabDone
+	case programstatus.Blocked:
+		ts.State = browserapi.TabBlocked
+	case programstatus.Error:
+		ts.State = browserapi.TabError
+	case programstatus.Clear:
+		ts.State = browserapi.TabClear
+	}
+	switch r.Kind {
+	case programstatus.KindPermission:
+		ts.Kind = browserapi.TabKindPermission
+	case programstatus.KindQuestion:
+		ts.Kind = browserapi.TabKindQuestion
+	case programstatus.KindAuth:
+		ts.Kind = browserapi.TabKindAuth
+	}
+	return ts
 }
 
 // EventPublisher is the interface that wraps the method PublishEvent.
@@ -202,10 +291,26 @@ type DragTarget interface {
 	DragDrop(pos term.Coordinates, paths []string) bool
 }
 
+// Prompter is the interface that wraps the OpenPrompt and ButtonImages
+// methods.
+type Prompter interface {
+	// OpenPrompt opens cfg in the host's theme, as
+	// browserapi.Prompter.Prompt does, and fails when cfg.Validate
+	// does. It reports false, along with the window of the prompt
+	// already open for cfg.Message, when it de-duplicates cfg; h is
+	// then never called. It must be called on the host event loop.
+	OpenPrompt(cfg browserapi.PromptConfig, h handler.PromptHandler) (win Window, opened bool, err error)
+	// ButtonImages returns the images the buttons of its prompts are
+	// drawn over, for buttons drawn elsewhere to match. It is nil when
+	// they are drawn in colour alone.
+	ButtonImages() *component.ButtonImages
+}
+
 // Browser is an interface that groups methods to manipulate
 // the user interface of a browser.
 type Browser interface {
 	WindowManager
+	Prompter
 	EventPublisher
 	ResourceOpener
 	Notifications

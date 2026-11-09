@@ -139,12 +139,7 @@ func (c *Crier) openFloating(content string) error {
 	if err != nil {
 		return err
 	}
-	var win browserapi.Window
-	bh := browserapi.FuncHandler(inner, func() error {
-		return c.wm.CloseWindow(win)
-	})
-	floating := browserapi.FuncFloating(bh, inner.Dimensions)
-	win, err = c.wm.Floating(floating, browserapi.FloatingConfig{
+	_, err = c.wm.Floating(browserapi.NopFloatingHandler(inner), browserapi.FloatingConfig{
 		Alignment: component.AlignmentCentered,
 	})
 	if err != nil {

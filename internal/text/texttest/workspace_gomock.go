@@ -73,6 +73,36 @@ func (mr *MockWorkspaceMockRecorder) Load(file, buf, swapDir, readOnly any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Load", reflect.TypeOf((*MockWorkspace)(nil).Load), file, buf, swapDir, readOnly)
 }
 
+// LoaderFor mocks base method.
+func (m *MockWorkspace) LoaderFor(file workspaceapi.URI) (workspace.FileLoader, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LoaderFor", file)
+	ret0, _ := ret[0].(workspace.FileLoader)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// LoaderFor indicates an expected call of LoaderFor.
+func (mr *MockWorkspaceMockRecorder) LoaderFor(file any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoaderFor", reflect.TypeOf((*MockWorkspace)(nil).LoaderFor), file)
+}
+
+// LookPath mocks base method.
+func (m *MockWorkspace) LookPath(ctx context.Context, name, dir string) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LookPath", ctx, name, dir)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// LookPath indicates an expected call of LookPath.
+func (mr *MockWorkspaceMockRecorder) LookPath(ctx, name, dir any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LookPath", reflect.TypeOf((*MockWorkspace)(nil).LookPath), ctx, name, dir)
+}
+
 // Open mocks base method.
 func (m *MockWorkspace) Open(arg0 string) (workspaceapi.File, error) {
 	m.ctrl.T.Helper()
@@ -101,6 +131,20 @@ func (m *MockWorkspace) OpenFile(path string, flag int, perm os.FileMode) (works
 func (mr *MockWorkspaceMockRecorder) OpenFile(path, flag, perm any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OpenFile", reflect.TypeOf((*MockWorkspace)(nil).OpenFile), path, flag, perm)
+}
+
+// PathCaseSensitive mocks base method.
+func (m *MockWorkspace) PathCaseSensitive() bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PathCaseSensitive")
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// PathCaseSensitive indicates an expected call of PathCaseSensitive.
+func (mr *MockWorkspaceMockRecorder) PathCaseSensitive() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PathCaseSensitive", reflect.TypeOf((*MockWorkspace)(nil).PathCaseSensitive))
 }
 
 // ReadDir mocks base method.

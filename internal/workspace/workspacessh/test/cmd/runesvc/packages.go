@@ -40,29 +40,25 @@ const installSteps = 4
 // packages stands in for the package manager `rune -x` serves, which
 // cannot be built here: it links tree-sitter, and this binary is built
 // without CGO. Installing a package writes an executable named after it
-// into the data directory's bin directory, which is on PATH from
-// startup as `rune -x` puts it there.
+// into the data directory's bin directory, which the host environment
+// puts on PATH at startup. Like a package that changes gui.env, an
+// approved install re-applies the host environment.
 type packages struct {
 	pkgrpcpb.UnimplementedPackageManagerServer
-	binDir string
+	binDir   string
+	applyEnv func()
 
 	mu        sync.Mutex
 	installed map[string]string
 }
 
-func servePackages(grpcServer *grpc.Server, dataDir string) error {
-	if dataDir == "" {
-		dataDir = defaultDataDir()
-	}
-	binDir := filepath.Join(dataDir, "bin")
+func servePackages(grpcServer *grpc.Server, binDir string, applyEnv func()) error {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return err
 	}
-	if err := os.Setenv("PATH", binDir+":"+os.Getenv("PATH")); err != nil {
-		return err
-	}
-	pkgrpcpb.RegisterPackageManagerServer(grpcServer,
-		&packages{binDir: binDir, installed: map[string]string{}})
+	pkgrpcpb.RegisterPackageManagerServer(grpcServer, &packages{
+		binDir: binDir, applyEnv: applyEnv, installed: map[string]string{},
+	})
 	return nil
 }
 
@@ -141,6 +137,7 @@ func (p *packages) Install(
 	if err != nil || !answer.GetAnswer().GetApproved() {
 		return nil
 	}
+	p.applyEnv()
 	return stream.Send(&pkgrpcpb.ChangeEvent{
 		Event: &pkgrpcpb.ChangeEvent_Notice{Notice: &pkgrpcpb.Notice{
 			Level: uint32(browserapi.LevelSuccess),

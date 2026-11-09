@@ -34,6 +34,10 @@ const (
 	ClaudeFable5 = "claude-fable-5"
 	// ClaudeOpus5Dot5 is Anthropic's Claude Opus 5.5 model.
 	ClaudeOpus5Dot5 = "claude-opus-5-5"
+	// ClaudeSonnet5Dot5 is Anthropic's Claude Sonnet 5.5 model.
+	ClaudeSonnet5Dot5 = "claude-sonnet-5-5"
+	// ClaudeHaiku5Dot5 is Anthropic's Claude Haiku 5.5 model.
+	ClaudeHaiku5Dot5 = "claude-haiku-5-5"
 	// ClaudeOpus5 is Anthropic's Claude Opus 5 model.
 	ClaudeOpus5 = "claude-opus-5"
 	// ClaudeSonnet5 is Anthropic's Claude Sonnet 5 model.
@@ -76,6 +80,8 @@ func AvailableModels() map[string]int {
 		ClaudeFable5Dot1:  1000000,
 		ClaudeFable5:      1000000,
 		ClaudeOpus5Dot5:   1000000,
+		ClaudeSonnet5Dot5: 1000000,
+		ClaudeHaiku5Dot5:  1000000,
 		ClaudeOpus5:       1000000,
 		ClaudeSonnet5:     1000000,
 		ClaudeOpus4Dot8:   1000000,
@@ -99,8 +105,8 @@ func AvailableModels() map[string]int {
 func SupportsAdaptiveThinking(model string) bool {
 	switch model {
 	case ClaudeOpus4Dot6, ClaudeSonnet4Dot6, ClaudeOpus4Dot7, ClaudeOpus4Dot8,
-		ClaudeOpus5, ClaudeOpus5Dot5, ClaudeSonnet5, ClaudeFable5,
-		ClaudeFable5Dot1:
+		ClaudeOpus5, ClaudeOpus5Dot5, ClaudeSonnet5, ClaudeSonnet5Dot5,
+		ClaudeHaiku5Dot5, ClaudeFable5, ClaudeFable5Dot1:
 		return true
 	default:
 		return false
@@ -114,6 +120,8 @@ var maxOutputTokens = map[string]int{
 	ClaudeFable5Dot1:  128000,
 	ClaudeFable5:      128000,
 	ClaudeOpus5Dot5:   128000,
+	ClaudeSonnet5Dot5: 128000,
+	ClaudeHaiku5Dot5:  128000,
 	ClaudeOpus5:       128000,
 	ClaudeSonnet5:     128000,
 	ClaudeOpus4Dot8:   128000,
@@ -161,11 +169,11 @@ var claude46Efforts = map[string]bool{
 // DefaultEffortFor returns the effort level the provider applies when a
 // request omits one, or an empty string when the model publishes no
 // such default. Adaptive-thinking models document high, except Opus 5.5
-// which documents medium; earlier models take an explicit thinking
-// budget instead of an effort level.
+// and Haiku 5.5 which document medium; earlier models take an explicit
+// thinking budget instead of an effort level.
 func DefaultEffortFor(model string) string {
 	switch {
-	case model == ClaudeOpus5Dot5:
+	case model == ClaudeOpus5Dot5, model == ClaudeHaiku5Dot5:
 		return "medium"
 	case SupportsAdaptiveThinking(model):
 		return "high"

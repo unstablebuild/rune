@@ -27,6 +27,20 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 )
 
+func TestService_ImageGenerationUnsupported(t *testing.T) {
+	var svc llmapi.Service = New(nil)
+	ctx := context.Background()
+	model := llmapi.ModelEntry{Name: "m"}
+
+	supported, err := svc.CanGenerateImages(ctx, model)
+	require.NoError(t, err)
+	assert.False(t, supported)
+
+	image, err := svc.GenerateImage(ctx, model, llmapi.ImageRequest{})
+	assert.ErrorIs(t, err, llmapi.ErrImageGenerationUnsupported)
+	assert.Equal(t, llmapi.Image{}, image)
+}
+
 func TestService_CreateCompletion_emits_text_chunks_and_done(t *testing.T) {
 	svc := New(nil, Response{
 		Chunks:       []string{"hello ", "world"},

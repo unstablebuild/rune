@@ -18,6 +18,7 @@ package workspacessh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -501,10 +502,10 @@ func TestIntegrationManagerIsWorkspaceFile(t *testing.T) {
 
 	ctx := context.Background()
 
-	fileWorkspace, err := manager.AddWorkspace(ctx, fileWorkspaceURI)
+	fileWorkspace, err := manager.AcquireWorkspace(ctx, fileWorkspaceURI)
 	require.NoError(t, err)
 
-	sshWorkspace, err := manager.AddWorkspace(ctx, sshWorkspaceURI)
+	sshWorkspace, err := manager.AcquireWorkspace(ctx, sshWorkspaceURI)
 	require.NoError(t, err)
 
 	tsuite := []struct {
@@ -599,6 +600,11 @@ func (n nopExecutor) StartCommand(
 func (n nopExecutor) Signal(workspaceapi.Pid, syscall.Signal) error {
 	return nil
 }
+
+func (nopExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (n nopExecutor) Close() error {
 	return nil
 }
@@ -656,6 +662,10 @@ func (e *recordingExecutor) StartCommand(
 func (e *recordingExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
 func (e *recordingExecutor) Close() error                                  { return nil }
 
+func (*recordingExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 type blockingRemote struct {
 	started chan struct{}
 	session *blockingExecutor
@@ -708,6 +718,10 @@ func (e *blockingExecutor) StartCommand(
 }
 
 func (e *blockingExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
+
+func (*blockingExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
 
 func (e *blockingExecutor) Close() error {
 	e.closed.Store(true)
@@ -934,6 +948,10 @@ func (e *failingServerExecutor) StartCommand(
 func (e *failingServerExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
 func (e *failingServerExecutor) Close() error                                  { return nil }
 
+func (*failingServerExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func TestConnectSchemeUnblocksWhenAttemptContextCancelled(t *testing.T) {
 	rec := &hangingServerRemote{}
 
@@ -1040,6 +1058,11 @@ func (e *hangingServerExecutor) StartCommand(
 }
 
 func (e *hangingServerExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
+
+func (*hangingServerExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (e *hangingServerExecutor) Close() error {
 	e.closeOnce.Do(func() { close(e.done) })
 	return nil
@@ -1118,6 +1141,10 @@ func (e startFailingExecutor) StartCommand(
 
 func (startFailingExecutor) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
 func (startFailingExecutor) Close() error                                  { return nil }
+
+func (startFailingExecutor) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
 
 func TestStderrTailBounded(t *testing.T) {
 	tail := newStderrTail()

@@ -15,9 +15,6 @@ permissions:
   contents: read
 
 jobs:
-  # Runs on amd64 runners so neither build needs emulation: the Go
-  # toolchain segfaults under qemu-user, which rules out building the
-  # amd64-only archlinux image on an arm64 host.
   deb:
     name: .deb (${{ matrix.arch }})
     runs-on: ubuntu-24.04
@@ -40,31 +37,3 @@ jobs:
           name: rune-deb-${{ matrix.arch }}
           path: target/pkg/*.deb
           if-no-files-found: error
-
-  arch:
-    name: Arch package
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: docker/setup-buildx-action@v3
-      - run: make pkg-arch
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rune-arch
-          path: target/pkg/*.pkg.tar.zst
-          if-no-files-found: error
-
-  # Guards against dist/arch/.SRCINFO drifting from PKGBUILD, which the
-  # AUR rejects on push.
-  srcinfo:
-    name: .SRCINFO up to date
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - run: make pkg-arch-srcinfo
-      - run: git diff --exit-code -- dist/arch/.SRCINFO

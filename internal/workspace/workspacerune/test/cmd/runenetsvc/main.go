@@ -31,12 +31,15 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/runenet"
 	"unstable.build/rune/internal/workspace"
 )
@@ -44,12 +47,14 @@ import (
 // Lines printed on stdout for the test harness. readyLine comes once
 // the instance is reachable by peers, after the addr and login lines;
 // the harness blocks on it instead of polling, so a slow join delays
-// the test rather than flaking it.
+// the test rather than flaking it. envLine comes each time the instance
+// applied its gui_env.
 const (
 	readyLine    = "runenetsvc: ready"
 	addrPrefix   = "runenetsvc: addr "
 	loginPrefix  = "runenetsvc: login "
 	acceptPrefix = "runenetsvc: accepted "
+	envLine      = "runenetsvc: env applied"
 )
 
 func main() {
@@ -72,6 +77,16 @@ func main() {
 		os.Exit(2)
 	}
 
+	// Like a running Rune, apply gui.env at startup and again whenever
+	// the user changes it, which SIGHUP stands in for.
+	host := hostenv.New(*dataDir, "")
+	applyEnv := func() {
+		if err := host.Apply(guiEnv(*dataDir)); err != nil {
+			fmt.Fprintln(os.Stderr, "runenetsvc: apply host environment:", err)
+		}
+	}
+	applyEnv()
+
 	node := runenet.New(runenet.Config{
 		Hostname:   *hostname,
 		ControlURL: *controlURL,
@@ -92,7 +107,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "runenetsvc: root uri:", err)
 		os.Exit(4)
 	}
-	scheme, err := workspace.NewFileScheme(
+	scheme, err := workspace.NewFileSchemeFunc(*dataDir, "")(
 		context.Background(), config.NopConfig(), uri)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "runenetsvc: root scheme:", err)
@@ -127,8 +142,30 @@ func main() {
 	fmt.Println(readyLine)
 
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
-	<-sig
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	for s := range sig {
+		if s != syscall.SIGHUP {
+			return
+		}
+		applyEnv()
+		fmt.Println(envLine)
+	}
+}
+
+// guiEnv stands in for the gui.env block of the user config: KEY=VALUE
+// lines in the data directory's gui_env file, if present.
+func guiEnv(dataDir string) config.Config {
+	env := map[string]any{}
+	data, err := os.ReadFile(filepath.Join(dataDir, "gui_env"))
+	if err != nil {
+		return config.MapConfig(env)
+	}
+	for line := range strings.Lines(string(data)) {
+		if k, v, ok := strings.Cut(strings.TrimRight(line, "\n"), "="); ok {
+			env[k] = v
+		}
+	}
+	return config.MapConfig(env)
 }
 
 func reportAccepts(lis net.Listener) {

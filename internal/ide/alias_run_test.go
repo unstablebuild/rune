@@ -123,6 +123,24 @@ func TestAliasStepErrorAbortsChainAsync(t *testing.T) {
 		"the notification must name the step that failed")
 }
 
+func TestNestedAliasDoesNotReexpandArgs(t *testing.T) {
+	t.Setenv("RUNE_TEST_SECRET", "leaked")
+	b := newExForAliasRun(t, map[string]text.CommandAlias{
+		"outer": {Commands: []string{"inner $1"}},
+		"inner": {Commands: []string{"sink $1"}},
+	})
+	defer b.Close()
+
+	var steps []string
+	subscribeStepRecorder(t, b, "sink", &steps)
+
+	require.NoError(t, b.ex.dispatchCommand("outer", "$$RUNE_TEST_SECRET"))
+	b.drainAliasRuns()
+
+	assert.Equal(t, []string{"$RUNE_TEST_SECRET"}, steps,
+		"a value a step passes to a nested alias must not be expanded again")
+}
+
 func TestAliasDispatchQueuesFollowingCommands(t *testing.T) {
 	b := newExForAliasRun(t, map[string]text.CommandAlias{
 		"queuing": {Commands: []string{"!! CAPTURED=x", "sink first"}},

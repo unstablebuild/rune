@@ -34,7 +34,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"go.starlark.net/starlark"
 	"go.starlark.net/syntax"
@@ -42,6 +41,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 
 	"unstable.build/rune/internal/handler/command"
@@ -718,37 +718,51 @@ func (t *Tutorial) Handle(ev term.Event) (bool, bool) {
 	return false, handled
 }
 
-// SeekUp satisfies component.Scrollable by scrolling the active
-// screen's viewer, so the tile's scroll bar drives the step's copy.
+// SeekUp satisfies component.Scrollable by scrolling the screen on
+// show: a step's copy, or the question of a prompt the tile is too
+// short for. The tile's scroll bar drives it.
 func (t *Tutorial) SeekUp() bool {
-	if r, _ := t.visibleScreen(); r != nil && r.viewer != nil {
-		return r.viewer.SeekUp()
+	if s := t.visibleScrollable(); s != nil {
+		return s.SeekUp()
 	}
 	return false
 }
 
 // SeekDown satisfies component.Scrollable.
 func (t *Tutorial) SeekDown() bool {
-	if r, _ := t.visibleScreen(); r != nil && r.viewer != nil {
-		return r.viewer.SeekDown()
+	if s := t.visibleScrollable(); s != nil {
+		return s.SeekDown()
 	}
 	return false
 }
 
 // SeekOffset satisfies component.Scrollable.
 func (t *Tutorial) SeekOffset() int {
-	if r, _ := t.visibleScreen(); r != nil && r.viewer != nil {
-		return r.viewer.SeekOffset()
+	if s := t.visibleScrollable(); s != nil {
+		return s.SeekOffset()
 	}
 	return 0
 }
 
 // MaxSeekOffset satisfies component.Scrollable.
 func (t *Tutorial) MaxSeekOffset() int {
-	if r, _ := t.visibleScreen(); r != nil && r.viewer != nil {
-		return r.viewer.MaxSeekOffset()
+	if s := t.visibleScrollable(); s != nil {
+		return s.MaxSeekOffset()
 	}
 	return 0
+}
+
+func (t *Tutorial) visibleScrollable() component.Scrollable {
+	r, _ := t.visibleScreen()
+	switch {
+	case r == nil:
+		return nil
+	case r.viewer != nil:
+		return r.viewer
+	case r.prompt != nil:
+		return r.prompt
+	}
+	return nil
 }
 
 // dismissalOrPendingResponse returns the response a closed request
@@ -932,7 +946,7 @@ func (t *Tutorial) publishRequest(r *request) (response, error) {
 	t.skipStranded = false
 	t.mu.Unlock()
 
-	t.openScreen(r, width)
+	t.openScreen(r)
 	if r.body != nil {
 		r.body.Resize(width, height)
 	}
@@ -962,37 +976,17 @@ func (t *Tutorial) publishRequest(r *request) (response, error) {
 	}
 }
 
-// padPromptOptions surrounds each option label with pad spaces on
-// either side so the rendered prompt buttons are naturally padded,
-// matching the IDE's browser-driven prompts. The returned slice is for
-// display only; the unpadded labels remain the authoritative selection
-// values via request.options.
-func padPromptOptions(options []string, pad int) []string {
-	gutter := strings.Repeat(" ", max(pad, 0))
+// padPromptOptions surrounds each option label with a space on either
+// side so the rendered prompt buttons are naturally padded, matching
+// the IDE's browser-driven prompts. The returned slice is for display
+// only; the unpadded labels remain the authoritative selection values
+// via request.options.
+func padPromptOptions(options []string) []string {
 	padded := make([]string, len(options))
 	for i, o := range options {
-		padded[i] = gutter + o + gutter
+		padded[i] = " " + o + " "
 	}
 	return padded
-}
-
-// promptOptionPad is how much every option label can be padded in a
-// prompt width cells wide. The prompt gives each button the width of
-// the widest one and spreads what is left over the gaps between them,
-// so padding labels that leave nothing over buries the buttons in one
-// another. A cramped row drops the padding rather than the air that
-// tells the buttons apart.
-func promptOptionPad(options []string, width int) int {
-	widest := 0
-	for _, o := range options {
-		widest = max(widest, utf8.RuneCountInString(o))
-	}
-	n := len(options)
-	// One cell between every pair of buttons and at both edges.
-	if n*(widest+2)+n+1 <= width {
-		return 1
-	}
-	return 0
 }
 
 // resolve delivers res to r and clears the active slot. The TUI loop

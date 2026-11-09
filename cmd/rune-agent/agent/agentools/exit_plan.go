@@ -160,6 +160,7 @@ func (t *ExitPlanTool) execute(ctx context.Context, title, plan string) agent.To
 		Title:  "Plan ready for review",
 		Header: "Plan",
 		Body:   plan,
+		Kind:   agent.PromptKindPermission,
 		Options: []agent.PromptOption{
 			{
 				Label:       "Approve",

@@ -48,6 +48,10 @@ type List struct {
 	cancelPush    func()
 	height        int
 	width         int
+	// generation counts the times the data was discarded. A push
+	// consumer carries the value it started under, so elements it
+	// buffered before a discard are never appended after it.
+	generation int
 
 	cfg listConfig
 
@@ -183,8 +187,9 @@ func (l *List) Push(ctx context.Context) chan<- []byte {
 
 	datachan := make(chan []byte)
 	quitChan := l.quitChan
+	generation := l.generation
 	go debug.CapturePanicReport(func() {
-		l.consumeAsyncElements(ctx, cancelWait, datachan, quitChan)
+		l.consumeAsyncElements(ctx, cancelWait, generation, datachan, quitChan)
 	})
 	return datachan
 }
@@ -292,11 +297,14 @@ func (l *List) IterateVisible(fn func(Match)) {
 	})
 }
 
-// DataReset resets the current data list.
+// DataReset resets the current data list. Elements that a consumer
+// started by an earlier Push has received but not yet appended are
+// dropped with it, so Push must come after DataReset, never before.
 func (l *List) DataReset() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.cancelSearch()
+	l.generation++
 	l.input = nil
 	l.list.Reset()
 	l.userMovedFocus = false
@@ -319,21 +327,17 @@ func (l *List) RemoveFocus() bool {
 	match := listNode.Value().(searchResultComponent)
 	matchIdx := match.idx
 
-	nextNode, _ := listNode.Next()
-
 	// Remove the node on focus and shift focus if possible.
 	l.list.Remove(&listNode)
 
-	// Correct the rest of match results indices by shifting them, since we are
-	// removing one.
-	for nn := nextNode; ok; nn, ok = nn.Next() {
-		nv := nn.Value()
-		if nv == nil {
-			break
+	// Matches are sorted by score, so those built from later inputs can
+	// sit anywhere in the list.
+	for nn, ok := l.list.Front(); ok; nn, ok = nn.Next() {
+		match := nn.Value().(searchResultComponent)
+		if match.idx > matchIdx {
+			match.idx--
+			nn.SetValue(match)
 		}
-		match := nv.(searchResultComponent)
-		match.idx--
-		nn.SetValue(match)
 	}
 
 	// Align the `l.list` with the `l.input`.
@@ -463,6 +467,7 @@ func (l *List) Close() error {
 
 	l.cancelSearch()
 	l.cancelPush()
+	l.generation++
 	l.input = nil
 	l.list.Reset()
 	if l.quitChan == nil {
@@ -539,7 +544,7 @@ func (l *List) pushData(data [][]byte, slab *util.Slab, sortList bool) {
 }
 
 func (l *List) consumeAsyncElements(
-	ctx context.Context, cancel func(),
+	ctx context.Context, cancel func(), generation int,
 	datachan chan []byte, quitChan chan struct{},
 ) {
 	defer cancel()
@@ -554,7 +559,7 @@ func (l *List) consumeAsyncElements(
 	var dirty bool
 	sort := func() {
 		l.mu.Lock()
-		if !dirty {
+		if !dirty || l.generation != generation {
 			l.mu.Unlock()
 			return
 		}
@@ -571,14 +576,22 @@ func (l *List) consumeAsyncElements(
 	buf := make([][]byte, 0, l.cfg.setFileCountEvery)
 	slab := makeSlab()
 	pushData := func() {
-		if len(buf) > 0 {
-			l.mu.Lock()
-			l.pushData(buf, slab, false)
-			l.setFilesCount()
-			dirty = true
+		if len(buf) == 0 {
+			return
+		}
+		l.mu.Lock()
+		// A canceled ctx cannot stand in for this check: the Push
+		// barrier relies on a canceled consumer still flushing.
+		if l.generation != generation {
 			l.mu.Unlock()
 			buf = buf[:0]
+			return
 		}
+		l.pushData(buf, slab, false)
+		l.setFilesCount()
+		dirty = true
+		l.mu.Unlock()
+		buf = buf[:0]
 	}
 
 	go debug.CapturePanicReport(func() {
@@ -626,7 +639,7 @@ func (l *List) getSearchQuery() string {
 
 func (l *List) handleSearch(
 	ctx context.Context, cancelFn func(), input [][]byte,
-	searchInput string,
+	searchInput string, caseSensitive bool,
 ) {
 	// defer cancel search context so Wait can rely on searchCtx
 	// to wait for search to be done. Cleanup resources
@@ -643,7 +656,7 @@ func (l *List) handleSearch(
 		Attributes:      l.cfg.textAttr,
 		TokenAttributes: l.cfg.matchedTextAttr,
 	}
-	search(l.cfg.algo, input, searchInput, slab, l.cfg.caseSensitive,
+	search(l.cfg.algo, input, searchInput, slab, caseSensitive,
 		func(match Match) {
 			template.Tokens = match.tokens
 			template.Data = match.data
@@ -713,13 +726,15 @@ func (l *List) asyncSearchLocked(ctx context.Context) {
 	input := make([][]byte, len(l.input))
 	copy(input, l.input)
 	searchInput := l.getSearchQuery()
+	// A later toggle may flip this while the search is still scanning.
+	caseSensitive := l.cfg.caseSensitive
 	// reset data now, so moving forward, all the prior input
 	// is managed by the goroutine below, and the new items are
 	// managed by the Push goroutine
 	l.list.Reset()
 	l.userMovedFocus = false
 	go debug.CapturePanicReport(func() {
-		l.handleSearch(ctx, cancelWait, input, searchInput)
+		l.handleSearch(ctx, cancelWait, input, searchInput, caseSensitive)
 	})
 }
 
@@ -736,7 +751,7 @@ func (l *List) syncSearchLocked(ctx context.Context) {
 	l.userMovedFocus = false
 	l.mu.Unlock()
 	defer l.mu.Lock()
-	l.handleSearch(ctx, cancelWait, input, searchInput)
+	l.handleSearch(ctx, cancelWait, input, searchInput, l.cfg.caseSensitive)
 }
 
 func (l *List) startSearchLocked(ctx context.Context) {

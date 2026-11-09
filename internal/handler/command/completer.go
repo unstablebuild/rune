@@ -193,12 +193,12 @@ func walkDirCompleter(reader walkdir.Reader, dirOnly bool) Completer {
 			if err != nil {
 				return nil, "", err
 			}
-			return iterator.Map(it, quotePathCandidate), "", nil
+			return iterator.Map(it, QuoteCandidate), "", nil
 		}
 
 		var modifiedLast string
 		last := UnquoteToken(args[len(args)-1])
-		resolved := dispatchedArg(ctx, last)
+		resolved := DispatchedArg(ctx, last)
 
 		// take ~ as the home of the user using the editor.
 		// rather than the home directory of the user at the workspace.
@@ -252,7 +252,7 @@ func walkDirCompleter(reader walkdir.Reader, dirOnly bool) Completer {
 				return workspaceapi.Join(cwd, val).Path()
 			})
 		}
-		return iterator.Map(it, quotePathCandidate), modifiedLast, nil
+		return iterator.Map(it, QuoteCandidate), modifiedLast, nil
 	})
 }
 
@@ -303,7 +303,7 @@ func listNonRecursiveDirCompletions(
 	// host separator instead would also collide with the shell-escape
 	// layer, which treats a backslash as a metacharacter.
 	last = filepath.ToSlash(last)
-	resolved := dispatchedArg(ctx, last)
+	resolved := DispatchedArg(ctx, last)
 
 	pathURI := cwd
 	completeURI := false
@@ -375,12 +375,12 @@ func listNonRecursiveDirCompletions(
 	return results, nil
 }
 
-// dispatchedArg returns the value command dispatch passes for the
+// DispatchedArg returns the value command dispatch passes for the
 // unquoted argument arg: $VAR and ${VAR} expanded and "$$" read as a
 // literal "$". Completion resolves this value because workspace paths
 // take "$" literally. arg is returned unchanged when expansion fails,
 // e.g. while a "${" is still being typed.
-func dispatchedArg(ctx context.Context, arg string) string {
+func DispatchedArg(ctx context.Context, arg string) string {
 	expanded, err := cmdenv.Expand(ctx, cmdenv.EscapeDoubleDollar(arg), nil)
 	if err != nil {
 		return arg
@@ -394,9 +394,9 @@ func escapeDollar(s string) string {
 	return strings.ReplaceAll(s, "$", "$$")
 }
 
-// quotePathCandidate returns the path s as a completion candidate that
-// the prompt keeps as one argument and dispatch expands back to s.
-func quotePathCandidate(s string) string {
+// QuoteCandidate returns the literal value s as a completion candidate
+// that the prompt keeps as one argument and dispatch expands back to s.
+func QuoteCandidate(s string) string {
 	return ShellQuote(escapeDollar(s))
 }
 

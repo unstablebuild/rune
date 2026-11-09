@@ -17,8 +17,6 @@
 package glslshader
 
 import (
-	"math"
-
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/component/shader"
 )
@@ -30,15 +28,17 @@ import (
 // - glslshader.Flames
 // - glslshader.Embers
 // - glslshader.RisingChars
+//
+// Every timing is a fraction of the run, so a longer run plays the same
+// incendium slower.
 func Incendium(
-	params IncendiumParams, defaultAttr term.Attributes, fps float,
+	params IncendiumParams, defaultAttr term.Attributes,
 ) shader.Shader {
-	shFlames := Flames(params.Flames, defaultAttr, fps).(*flames)
-	shEmbers := Embers(params.Embers, defaultAttr, fps).(*embers)
+	shFlames := Flames(params.Flames, defaultAttr).(*flames)
+	shEmbers := Embers(params.Embers, defaultAttr).(*embers)
 	shRisingChars := RisingChars(params.RisingChars, defaultAttr).(*risingChars)
 	return &incendium{
 		IncendiumParams:   params,
-		fps:               fps,
 		shaderFlames:      shFlames,
 		shaderEmbers:      shEmbers,
 		shaderRisingChars: shRisingChars,
@@ -73,14 +73,14 @@ func DefaultIncendiumParams() IncendiumParams {
 
 type incendium struct {
 	IncendiumParams
-	fps               float
 	shaderFlames      *flames
 	shaderEmbers      *embers
 	shaderRisingChars *risingChars
 }
 
 func (s *incendium) Shade(frame, total int, cells [][]term.Cell) {
-	if frame < 0 || frame >= total {
+	if total <= 0 || frame < 0 || frame >= total ||
+		len(cells) == 0 || len(cells[0]) == 0 {
 		return
 	}
 
@@ -102,36 +102,43 @@ func (s *incendium) Shade(frame, total int, cells [][]term.Cell) {
 	// result (since it blends nicer) and it's more performant (since you don't
 	// throw renders away by painting on top of existing paint).
 
-	// Forget about Flames shader if all are done with the Flames animation.
-	s.shaderFlames.analizePlayingDirection(frame)
-	wouldRenderNoFlames := s.shaderFlames.wouldRenderNothing()
-	if !wouldRenderNoFlames {
-		s.shaderFlames.ensureSliceFieldsCap(frame, total, cells)
-		s.shaderFlames.jitterActivations(frame, total, cells)
-	}
+	progress := float(frame) / float(total)
+	step := progress * tunedSteps
+	// The flames burn slower so more of them show before the embers take
+	// over.
+	speed := flamesSpeed(1 + 2*s.ExtraFlames)
+	table := s.shaderFlames.tableFor(len(cells[0]), len(cells))
 
-	s.shaderRisingChars.computeTranslations(frame, total, cells)
+	// Forget about Flames shader if all are done with the Flames animation.
+	wouldRenderNoFlames := s.shaderFlames.wouldRenderNothing(table, step, speed)
+
+	txs := s.shaderRisingChars.translations(progress, cells)
 
 	for y := range cells {
 		for x := 0; x < len(cells[0]); x++ {
+			if x >= len(cells[y]) {
+				break
+			}
+
 			// Don't bother rendering Flames shader if no cells would be changed.
 			if !wouldRenderNoFlames {
-				s.shaderFlames.processCell(x, y, frame, total+int(2*s.ExtraFlames*float(total)), cells)
+				s.shaderFlames.processCell(table, x, y, step, speed, cells)
 			}
 
 			// Do not render embers if unless the incendium passed over the cells.
-			if s.shaderFlames.flamesCellStatuses[y][x] != flamesPassed {
+			if status, _ := s.shaderFlames.phase(table, x, y, step, speed); status != flamesPassed {
 				continue
 			}
 
-			offsets := s.shaderFlames.flamesOffsets[y][x]
-			flamesDuration := len(s.Flames.Chars)
-			offsetFrame := frame - int(math.Round(offsets)) - flamesDuration
-			s.shaderEmbers.processCell(x, y, offsetFrame, total, cells)
+			// The embers of a cell start a flame's worth of characters,
+			// in steps, after its flame did.
+			flamesDuration := float(len(s.Flames.Chars))
+			delayed := (step - table.cells[y][x].offset - flamesDuration) / tunedSteps
+			s.shaderEmbers.processCell(x, y, delayed, cells)
 
 			// Have some characters rising up from the screen as it were light
 			// ashes following the flames heat.
-			s.shaderRisingChars.processCell(x, y, offsetFrame, total, cells)
+			s.shaderRisingChars.processCell(x, y, delayed, txs, cells)
 		}
 	}
 }

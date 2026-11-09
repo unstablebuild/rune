@@ -29,6 +29,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/text"
 )
@@ -230,6 +231,26 @@ func TestIconsBarNormalizesReversedLocationCoordinates(t *testing.T) {
 ! b    
   c    
   d    `}})
+}
+
+func TestIconsBarPointerLeaves(t *testing.T) {
+	t.Parallel()
+	newBar := func() text.Handler {
+		ed := newPointerEditor()
+		bar := text.WithIconsBar(vctrl.NopService(), false, ed, ed.buf, ed.Scroll,
+			text.IconsBarConfig{ScheduleNextTick: func(fn func()) bool { fn(); return true }})
+		bar.SetLocationList(textapi.LocationPriorityInfo, "marks", text.LocationSlice(
+			[]textapi.Location{
+				{From: term.Coordinates{Y: 2}, To: term.Coordinates{Y: 2, X: 3}, Icon: "日"},
+				{From: term.Coordinates{Y: 9}, To: term.Coordinates{Y: 11}, Icon: "🙂"},
+			}))
+		return bar
+	}
+	for _, size := range pointerSizes {
+		handlertest.RunPointerLeaves(t, newBar(), size.width, size.height)
+	}
+	requirePointerLeavesKeepState(t, newBar(), 40, 10,
+		term.Coordinates{X: 10, Y: 2}, term.Coordinates{X: 16, Y: 4}, nil)
 }
 
 func TestGitBarDraw(t *testing.T) {

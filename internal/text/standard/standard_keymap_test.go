@@ -116,7 +116,7 @@ func TestStandardKeymapSelectAll(t *testing.T) {
 			require.True(t, handled)
 			sel, ok := h.Selection()
 			require.True(t, ok, "%s must create a selection", tc.name)
-			assert.Equal(t, "hello\nworld\n", sel)
+			assert.Equal(t, "hello\nworld", sel)
 		})
 	}
 }
@@ -275,18 +275,18 @@ func TestStandardKeymapDeletion(t *testing.T) {
 		assert.Equal(t, "foo ", buf.String())
 	})
 
-	t.Run("ctrl-delete deletes word to the right", func(t *testing.T) {
+	t.Run("ctrl-delete deletes to the end of the word to the right", func(t *testing.T) {
 		h, buf, _ := newStandardKeymapHandler(t, "foo bar", term.Coordinates{})
 		_, handled := h.Handle(term.Event{Type: term.EventKey, Mod: term.ModCtrl, Key: term.KeyDelete})
 		require.True(t, handled)
-		assert.Equal(t, "bar", buf.String())
+		assert.Equal(t, " bar", buf.String())
 	})
 
-	t.Run("ctrl-delete stops at a following empty line", func(t *testing.T) {
+	t.Run("ctrl-delete stops at the end of the line", func(t *testing.T) {
 		h, buf, _ := newStandardKeymapHandler(t, "one\n\ntwo", term.Coordinates{X: 2})
 		_, handled := h.Handle(term.Event{Type: term.EventKey, Mod: term.ModCtrl, Key: term.KeyDelete})
 		require.True(t, handled)
-		assert.Equal(t, "on\ntwo", buf.String())
+		assert.Equal(t, "on\n\ntwo", buf.String())
 	})
 
 	t.Run("ctrl-delete on an empty line joins the next line", func(t *testing.T) {
@@ -303,11 +303,11 @@ func TestStandardKeymapDeletion(t *testing.T) {
 		assert.Equal(t, "left  right", buf.String())
 	})
 
-	t.Run("alt-delete deletes word to the right", func(t *testing.T) {
+	t.Run("alt-delete deletes to the end of the word to the right", func(t *testing.T) {
 		h, buf, _ := newStandardKeymapHandler(t, "left middle right", term.Coordinates{X: 5})
 		_, handled := h.Handle(term.Event{Type: term.EventKey, Mod: term.ModAlt, Key: term.KeyDelete})
 		require.True(t, handled)
-		assert.Equal(t, "left right", buf.String())
+		assert.Equal(t, "left  right", buf.String())
 	})
 
 	t.Run("alt-backspace at buffer start leaves no selection", func(t *testing.T) {
@@ -390,7 +390,7 @@ func TestStandardKeymapTypingReplacesSelection(t *testing.T) {
 			name:    "typed char replaces select-all",
 			content: "one\ntwo",
 			setup:   "<m-a>",
-			wantSel: "one\ntwo\n",
+			wantSel: "one\ntwo",
 			input:   "X",
 			want:    "X",
 		},
@@ -991,6 +991,274 @@ func TestStandardKeymapLinuxCtrlLayer(t *testing.T) {
 			if tc.wantAt != nil {
 				assert.Equal(t, *tc.wantAt, h.CursorAtScroll())
 			}
+		})
+	}
+}
+
+func TestStandardKeymapLineAndWordEditsMatchVSCode(t *testing.T) {
+	// The expectations come from VS Code, whose line and word commands the
+	// standard keymap follows: monaco's word operations for the word motions,
+	// and its cut, copy, paste, deleteLines, moveLines, copyLines and
+	// expandLineSelection commands for the lines.
+	deleteLine := term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'K'}
+	cases := []struct {
+		name     string
+		content  string
+		at       term.Coordinates
+		clip     string
+		keys     string
+		then     []term.Event
+		want     string
+		wantAt   term.Coordinates
+		wantClip string
+		wantSel  string
+	}{
+		{name: "cut a middle line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 1}, keys: "<meta-x>", want: "ab\nef", wantAt: term.Coordinates{Y: 1}, wantClip: "cd\n"},
+		{name: "cut the first line", content: "ab\ncd\nef", keys: "<meta-x>", want: "cd\nef", wantAt: term.Coordinates{}, wantClip: "ab\n"},
+		{name: "cut the last line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 2}, keys: "<meta-x>", want: "ab\ncd", wantAt: term.Coordinates{X: 2, Y: 1}, wantClip: "ef\n"},
+		{name: "cut the trailing empty line", content: "ab\ncd\n", at: term.Coordinates{Y: 2}, keys: "<meta-x>", want: "ab\ncd", wantAt: term.Coordinates{X: 2, Y: 1}, wantClip: "\n"},
+		{name: "cut the line before the trailing empty line", content: "ab\ncd\n", at: term.Coordinates{Y: 1}, keys: "<meta-x>", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantClip: "cd\n"},
+		{name: "cut the only line", content: "ab", at: term.Coordinates{X: 1}, keys: "<meta-x>", want: "", wantAt: term.Coordinates{}, wantClip: "ab\n"},
+		{name: "cut on an empty buffer", content: "", keys: "<meta-x>", want: "", wantAt: term.Coordinates{}, wantClip: "\n"},
+		{name: "cut a double-width last line", content: "ab\n日本", at: term.Coordinates{X: 1, Y: 1}, keys: "<meta-x>", want: "ab", wantAt: term.Coordinates{X: 2}, wantClip: "日本\n"},
+		{name: "cut an emoji line", content: "\U0001F600\ncd", keys: "<meta-x>", want: "cd", wantAt: term.Coordinates{}, wantClip: "\U0001F600\n"},
+		{name: "cut a tab-indented last line", content: "ab\n\tcd", at: term.Coordinates{X: 2, Y: 1}, keys: "<meta-x>", want: "ab", wantAt: term.Coordinates{X: 2}, wantClip: "\tcd\n"},
+		{name: "cut past the line end", content: "ab\ncd", at: term.Coordinates{X: 9, Y: 1}, keys: "<meta-x>", want: "ab", wantAt: term.Coordinates{X: 2}, wantClip: "cd\n"},
+		{name: "cut below the last line", content: "ab\ncd", at: term.Coordinates{Y: 9}, keys: "<meta-x>", want: "ab", wantAt: term.Coordinates{X: 2}, wantClip: "cd\n"},
+		{name: "delete line a middle line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 1}, then: []term.Event{deleteLine}, want: "ab\nef", wantAt: term.Coordinates{X: 1, Y: 1}},
+		{name: "delete line the first line", content: "ab\ncd\nef", then: []term.Event{deleteLine}, want: "cd\nef", wantAt: term.Coordinates{}},
+		{name: "delete line the last line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 2}, then: []term.Event{deleteLine}, want: "ab\ncd", wantAt: term.Coordinates{X: 1, Y: 1}},
+		{name: "delete line the trailing empty line", content: "ab\ncd\n", at: term.Coordinates{Y: 2}, then: []term.Event{deleteLine}, want: "ab\ncd", wantAt: term.Coordinates{Y: 1}},
+		{name: "delete line the line before the trailing empty line", content: "ab\ncd\n", at: term.Coordinates{Y: 1}, then: []term.Event{deleteLine}, want: "ab\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "delete line the only line", content: "ab", at: term.Coordinates{X: 1}, then: []term.Event{deleteLine}, want: "", wantAt: term.Coordinates{}},
+		{name: "delete line on an empty buffer", content: "", then: []term.Event{deleteLine}, want: "", wantAt: term.Coordinates{}},
+		{name: "delete line a double-width last line", content: "ab\n日本", at: term.Coordinates{X: 1, Y: 1}, then: []term.Event{deleteLine}, want: "ab", wantAt: term.Coordinates{X: 1}},
+		{name: "delete line an emoji line", content: "\U0001F600\ncd", then: []term.Event{deleteLine}, want: "cd", wantAt: term.Coordinates{}},
+		{name: "delete line a tab-indented last line", content: "ab\n\tcd", at: term.Coordinates{X: 2, Y: 1}, then: []term.Event{deleteLine}, want: "ab", wantAt: term.Coordinates{X: 2}},
+		{name: "delete line past the line end", content: "ab\ncd", at: term.Coordinates{X: 9, Y: 1}, then: []term.Event{deleteLine}, want: "ab", wantAt: term.Coordinates{X: 2}},
+		{name: "delete line below the last line", content: "ab\ncd", at: term.Coordinates{Y: 9}, then: []term.Event{deleteLine}, want: "ab", wantAt: term.Coordinates{}},
+		{name: "select the last two lines then backspace", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l><backspace>", want: "ab\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "select the last line then backspace", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "<meta-l><backspace>", want: "ab\ncd\n", wantAt: term.Coordinates{Y: 2}},
+		{name: "select two middle lines then backspace", content: "ab\ncd\nef\ngh", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l><backspace>", want: "ab\ngh", wantAt: term.Coordinates{Y: 1}},
+		{name: "select the trailing empty line then backspace", content: "ab\ncd\n", at: term.Coordinates{Y: 2}, keys: "<meta-l><backspace>", want: "ab\ncd", wantAt: term.Coordinates{X: 2, Y: 1}},
+		{name: "select two lines over the trailing empty line then backspace", content: "ab\ncd\n", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l><backspace>", want: "ab\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "select all then backspace", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<meta-a><backspace>", want: "", wantAt: term.Coordinates{}},
+		{name: "select the last two lines then delete", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l><delete>", want: "ab\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "select the last line then delete", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "<meta-l><delete>", want: "ab\ncd\n", wantAt: term.Coordinates{Y: 2}},
+		{name: "select two middle lines then delete", content: "ab\ncd\nef\ngh", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l><delete>", want: "ab\ngh", wantAt: term.Coordinates{Y: 1}},
+		{name: "select the trailing empty line then delete", content: "ab\ncd\n", at: term.Coordinates{Y: 2}, keys: "<meta-l><delete>", want: "ab\ncd\n", wantAt: term.Coordinates{Y: 2}},
+		{name: "select two lines over the trailing empty line then delete", content: "ab\ncd\n", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l><delete>", want: "ab\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "select all then delete", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<meta-a><delete>", want: "", wantAt: term.Coordinates{}},
+		{name: "select the last two lines then cut", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l><meta-x>", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantClip: "cd\nef"},
+		{name: "select the last line then cut", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "<meta-l><meta-x>", want: "ab\ncd\n", wantAt: term.Coordinates{Y: 2}, wantClip: "ef"},
+		{name: "select two middle lines then cut", content: "ab\ncd\nef\ngh", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l><meta-x>", want: "ab\ngh", wantAt: term.Coordinates{Y: 1}, wantClip: "cd\nef\n"},
+		{name: "select the trailing empty line then cut", content: "ab\ncd\n", at: term.Coordinates{Y: 2}, keys: "<meta-l><meta-x>", want: "ab\ncd", wantAt: term.Coordinates{X: 2, Y: 1}, wantClip: "\n"},
+		{name: "select two lines over the trailing empty line then cut", content: "ab\ncd\n", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l><meta-x>", want: "ab\n", wantAt: term.Coordinates{Y: 1}, wantClip: "cd\n"},
+		{name: "select all then cut", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<meta-a><meta-x>", want: "", wantAt: term.Coordinates{}, wantClip: "ab\ncd\nef"},
+		{name: "select the last two lines then typing", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l>z", want: "ab\nz", wantAt: term.Coordinates{X: 1, Y: 1}},
+		{name: "select the last line then typing", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "<meta-l>z", want: "ab\ncd\nz", wantAt: term.Coordinates{X: 1, Y: 2}},
+		{name: "select two middle lines then typing", content: "ab\ncd\nef\ngh", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l>z", want: "ab\nzgh", wantAt: term.Coordinates{X: 1, Y: 1}},
+		{name: "select the trailing empty line then typing", content: "ab\ncd\n", at: term.Coordinates{Y: 2}, keys: "<meta-l>z", want: "ab\ncd\nz", wantAt: term.Coordinates{X: 1, Y: 2}},
+		{name: "select two lines over the trailing empty line then typing", content: "ab\ncd\n", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l>z", want: "ab\nz", wantAt: term.Coordinates{X: 1, Y: 1}},
+		{name: "select all then typing", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<meta-a>z", want: "z", wantAt: term.Coordinates{X: 1}},
+		{name: "select the last two lines then enter", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l><enter>", want: "ab\n\n", wantAt: term.Coordinates{Y: 2}},
+		{name: "select the last line then enter", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "<meta-l><enter>", want: "ab\ncd\n\n", wantAt: term.Coordinates{Y: 3}},
+		{name: "select two middle lines then enter", content: "ab\ncd\nef\ngh", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l><enter>", want: "ab\n\ngh", wantAt: term.Coordinates{Y: 2}},
+		{name: "select the trailing empty line then enter", content: "ab\ncd\n", at: term.Coordinates{Y: 2}, keys: "<meta-l><enter>", want: "ab\ncd\n\n", wantAt: term.Coordinates{Y: 3}},
+		{name: "select two lines over the trailing empty line then enter", content: "ab\ncd\n", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l><enter>", want: "ab\n\n", wantAt: term.Coordinates{Y: 2}},
+		{name: "select all then enter", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<meta-a><enter>", want: "\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "select the last two lines then paste a line", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, clip: "zz\n", keys: "<meta-l><meta-l><meta-v>", want: "ab\nzz\n", wantAt: term.Coordinates{Y: 2}, wantClip: "zz\n"},
+		{name: "select the last line then paste a line", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, clip: "zz\n", keys: "<meta-l><meta-v>", want: "ab\ncd\nzz\n", wantAt: term.Coordinates{Y: 3}, wantClip: "zz\n"},
+		{name: "select a double-width last line pair then backspace", content: "ab\n日本\n\U0001F600", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l><backspace>", want: "ab\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "select tab lines to the end then backspace", content: "ab\n\tcd\n\tef", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l><backspace>", want: "ab\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "move the last line up", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 2}, keys: "<alt-up>", want: "ab\nef\ncd", wantAt: term.Coordinates{X: 1, Y: 1}},
+		{name: "move the second to last line down", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 1}, keys: "<alt-down>", want: "ab\nef\ncd", wantAt: term.Coordinates{X: 1, Y: 2}},
+		{name: "move the last line down", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "<alt-down>", want: "ab\ncd\nef", wantAt: term.Coordinates{Y: 2}},
+		{name: "move the first line up", content: "ab\ncd\nef", keys: "<alt-up>", want: "ab\ncd\nef", wantAt: term.Coordinates{}},
+		{name: "move the last two lines up", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l><alt-up>", want: "cd\nef\nab", wantAt: term.Coordinates{X: 2, Y: 1}, wantSel: "cd\nef"},
+		{name: "move the trailing empty line up", content: "ab\ncd\n", at: term.Coordinates{Y: 2}, keys: "<alt-up>", want: "ab\n\ncd", wantAt: term.Coordinates{Y: 1}},
+		{name: "move the line before the trailing empty line down", content: "ab\ncd\n", at: term.Coordinates{Y: 1}, keys: "<alt-down>", want: "ab\n\ncd", wantAt: term.Coordinates{Y: 2}},
+		{name: "move a double-width last line up", content: "ab\n日本", at: term.Coordinates{X: 1, Y: 1}, keys: "<alt-up>", want: "日本\nab", wantAt: term.Coordinates{X: 1}},
+		{name: "move a tab-indented last line up", content: "ab\n\tcd", at: term.Coordinates{X: 1, Y: 1}, keys: "<alt-up>", want: "\tcd\nab", wantAt: term.Coordinates{X: 1}},
+		{name: "move a line up past the line end", content: "ab\ncd", at: term.Coordinates{X: 9, Y: 1}, keys: "<alt-up>", want: "cd\nab", wantAt: term.Coordinates{X: 2}},
+		{name: "move a line up on an empty buffer", content: "", keys: "<alt-up>", want: "", wantAt: term.Coordinates{}},
+		{name: "duplicate the last line down", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "<alt-shift-down>", want: "ab\ncd\nef\nef", wantAt: term.Coordinates{Y: 3}},
+		{name: "duplicate the last line up", content: "ab\ncd\nef", at: term.Coordinates{Y: 2}, keys: "<alt-shift-up>", want: "ab\ncd\nef\nef", wantAt: term.Coordinates{Y: 2}},
+		{name: "alt-right from ascii to an emoji", content: "ab\U0001F600cd", keys: "<alt-right>", want: "ab\U0001F600cd", wantAt: term.Coordinates{X: 5}},
+		{name: "alt-right from an emoji", content: "\U0001F600ab cd", keys: "<alt-right>", want: "\U0001F600ab cd", wantAt: term.Coordinates{X: 3}},
+		{name: "alt-right from cjk", content: "日本ab cd", keys: "<alt-right>", want: "日本ab cd", wantAt: term.Coordinates{X: 4}},
+		{name: "alt-right from ascii to cjk", content: "ab日本 cd", keys: "<alt-right>", want: "ab日本 cd", wantAt: term.Coordinates{X: 4}},
+		{name: "alt-right over a tab", content: "ab\tcd", at: term.Coordinates{X: 2}, keys: "<alt-right>", want: "ab\tcd", wantAt: term.Coordinates{X: 5}},
+		{name: "alt-right at the line end", content: "foo\nbar", at: term.Coordinates{X: 3}, keys: "<alt-right>", want: "foo\nbar", wantAt: term.Coordinates{X: 3, Y: 1}},
+		{name: "alt-right over an empty line", content: "ab\n\ncd", at: term.Coordinates{X: 2}, keys: "<alt-right>", want: "ab\n\ncd", wantAt: term.Coordinates{Y: 1}},
+		{name: "alt-right past the line end", content: "ab cd\nef", at: term.Coordinates{X: 9}, keys: "<alt-right>", want: "ab cd\nef", wantAt: term.Coordinates{X: 2, Y: 1}},
+		{name: "alt-right below the last line", content: "ab\ncd", at: term.Coordinates{Y: 9}, keys: "<alt-right>", want: "ab\ncd", wantAt: term.Coordinates{X: 2, Y: 1}},
+		{name: "alt-right on an empty buffer", content: "", keys: "<alt-right>", want: "", wantAt: term.Coordinates{}},
+		{name: "alt-right on the trailing empty line", content: "ab\n", at: term.Coordinates{Y: 1}, keys: "<alt-right>", want: "ab\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "alt-left from ascii to an emoji", content: "ab\U0001F600cd", at: term.Coordinates{X: 5}, keys: "<alt-left>", want: "ab\U0001F600cd", wantAt: term.Coordinates{}},
+		{name: "alt-left after an emoji", content: "ab \U0001F600", at: term.Coordinates{X: 4}, keys: "<alt-left>", want: "ab \U0001F600", wantAt: term.Coordinates{X: 3}},
+		{name: "alt-left after cjk", content: "ab 日本", at: term.Coordinates{X: 5}, keys: "<alt-left>", want: "ab 日本", wantAt: term.Coordinates{X: 3}},
+		{name: "alt-left from ascii after cjk", content: "日本ab", at: term.Coordinates{X: 4}, keys: "<alt-left>", want: "日本ab", wantAt: term.Coordinates{}},
+		{name: "alt-left over a tab", content: "ab\tcd", at: term.Coordinates{X: 3}, keys: "<alt-left>", want: "ab\tcd", wantAt: term.Coordinates{}},
+		{name: "alt-left at the line start", content: "foo bar\nbaz", at: term.Coordinates{Y: 1}, keys: "<alt-left>", want: "foo bar\nbaz", wantAt: term.Coordinates{X: 4}},
+		{name: "alt-left over an empty line", content: "ab\n\ncd", at: term.Coordinates{Y: 2}, keys: "<alt-left>", want: "ab\n\ncd", wantAt: term.Coordinates{Y: 1}},
+		{name: "alt-left over two empty lines", content: "ab\n\n\ncd", at: term.Coordinates{Y: 3}, keys: "<alt-left>", want: "ab\n\n\ncd", wantAt: term.Coordinates{Y: 2}},
+		{name: "alt-left past the line end", content: "ab cd", at: term.Coordinates{X: 9}, keys: "<alt-left>", want: "ab cd", wantAt: term.Coordinates{X: 3}},
+		{name: "alt-left below the last line", content: "ab\ncd", at: term.Coordinates{Y: 9}, keys: "<alt-left>", want: "ab\ncd", wantAt: term.Coordinates{}},
+		{name: "alt-left on an empty buffer", content: "", keys: "<alt-left>", want: "", wantAt: term.Coordinates{}},
+		{name: "alt-left on the trailing empty line", content: "ab cd\n", at: term.Coordinates{Y: 1}, keys: "<alt-left>", want: "ab cd\n", wantAt: term.Coordinates{X: 3}},
+		{name: "alt-backspace after an emoji word", content: "ab\U0001F600cd", at: term.Coordinates{X: 5}, keys: "<alt-backspace>", want: "", wantAt: term.Coordinates{}},
+		{name: "alt-backspace after cjk", content: "ab 日本", at: term.Coordinates{X: 5}, keys: "<alt-backspace>", want: "ab ", wantAt: term.Coordinates{X: 3}},
+		{name: "alt-backspace at the line start", content: "ab cd\nef", at: term.Coordinates{Y: 1}, keys: "<alt-backspace>", want: "ab cdef", wantAt: term.Coordinates{X: 5}},
+		{name: "alt-backspace over an empty line", content: "ab\n\ncd", at: term.Coordinates{Y: 2}, keys: "<alt-backspace>", want: "ab\ncd", wantAt: term.Coordinates{Y: 1}},
+		{name: "alt-backspace over a tab", content: "ab\tcd", at: term.Coordinates{X: 3}, keys: "<alt-backspace>", want: "cd", wantAt: term.Coordinates{}},
+		{name: "alt-delete before an emoji", content: "ab\U0001F600cd", keys: "<alt-delete>", want: "", wantAt: term.Coordinates{}},
+		{name: "alt-delete on cjk", content: "日本 ab", keys: "<alt-delete>", want: " ab", wantAt: term.Coordinates{}},
+		{name: "alt-delete at the line end", content: "ab\ncd", at: term.Coordinates{X: 2}, keys: "<alt-delete>", want: "abcd", wantAt: term.Coordinates{X: 2}},
+		{name: "alt-delete over an empty line", content: "ab\n\ncd", at: term.Coordinates{X: 2}, keys: "<alt-delete>", want: "ab\ncd", wantAt: term.Coordinates{X: 2}},
+		{name: "alt-delete over a tab", content: "ab\tcd", keys: "<alt-delete>", want: "\tcd", wantAt: term.Coordinates{}},
+		{name: "alt-shift-right over an emoji", content: "ab\U0001F600cd", keys: "<alt-shift-right>", want: "ab\U0001F600cd", wantAt: term.Coordinates{X: 5}, wantSel: "ab\U0001F600cd"},
+		{name: "alt-shift-left over cjk", content: "ab 日本", at: term.Coordinates{X: 5}, keys: "<alt-shift-left>", want: "ab 日本", wantAt: term.Coordinates{X: 3}, wantSel: "日本"},
+		{name: "cmd-d selects a word next to an emoji", content: "foo\U0001F600bar", at: term.Coordinates{X: 1}, keys: "<meta-d>", want: "foo\U0001F600bar", wantAt: term.Coordinates{X: 7}, wantSel: "foo\U0001F600bar"},
+		{name: "cmd-d selects cjk", content: "ab 日本 cd", at: term.Coordinates{X: 3}, keys: "<meta-d>", want: "ab 日本 cd", wantAt: term.Coordinates{X: 5}, wantSel: "日本"},
+		{name: "cut a tab-indented middle line", content: "\tab\ncd", at: term.Coordinates{X: 1}, keys: "<meta-x>", want: "cd", wantAt: term.Coordinates{}, wantClip: "\tab\n"},
+		{name: "cut a double-width middle line", content: "日本\ncd", at: term.Coordinates{X: 1}, keys: "<meta-x>", want: "cd", wantAt: term.Coordinates{}, wantClip: "日本\n"},
+		{name: "cut past the end of a middle line", content: "ab\ncd", at: term.Coordinates{X: 9}, keys: "<meta-x>", want: "cd", wantAt: term.Coordinates{}, wantClip: "ab\n"},
+		{name: "cut an empty middle line", content: "ab\n\ncd", at: term.Coordinates{Y: 1}, keys: "<meta-x>", want: "ab\ncd", wantAt: term.Coordinates{Y: 1}, wantClip: "\n"},
+		{name: "delete line a tab-indented middle line", content: "\tab\ncd", at: term.Coordinates{X: 1}, then: []term.Event{deleteLine}, want: "cd", wantAt: term.Coordinates{X: 1}},
+		{name: "delete line a double-width middle line", content: "日本\ncd", at: term.Coordinates{X: 1}, then: []term.Event{deleteLine}, want: "cd", wantAt: term.Coordinates{X: 1}},
+		{name: "delete line past the end of a middle line", content: "ab\ncd", at: term.Coordinates{X: 9}, then: []term.Event{deleteLine}, want: "cd", wantAt: term.Coordinates{X: 2}},
+		{name: "delete line an empty middle line", content: "ab\n\ncd", at: term.Coordinates{Y: 1}, then: []term.Event{deleteLine}, want: "ab\ncd", wantAt: term.Coordinates{Y: 1}},
+		{name: "select a double-width middle line then backspace", content: "日本\ncd", at: term.Coordinates{X: 1}, keys: "<meta-l><backspace>", want: "cd", wantAt: term.Coordinates{}},
+		{name: "select a tab-indented middle line then backspace", content: "\tab\ncd", at: term.Coordinates{X: 2}, keys: "<meta-l><backspace>", want: "cd", wantAt: term.Coordinates{}},
+		{name: "select a line past its end then backspace", content: "ab\ncd\nef", at: term.Coordinates{X: 9}, keys: "<meta-l><backspace>", want: "cd\nef", wantAt: term.Coordinates{}},
+		{name: "alt-right over a double-width word", content: "ab 日本 cd", at: term.Coordinates{X: 2}, keys: "<alt-right>", want: "ab 日本 cd", wantAt: term.Coordinates{X: 5}},
+		{name: "alt-left over a tab-indented word", content: "\tab", at: term.Coordinates{X: 3}, keys: "<alt-left>", want: "\tab", wantAt: term.Coordinates{X: 1}},
+		{name: "copy a middle line then paste it on the next line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 1}, keys: "<meta-c><down><meta-v>", want: "ab\ncd\ncd\nef", wantAt: term.Coordinates{X: 1, Y: 3}, wantClip: "cd\n"},
+		{name: "copy an empty line", content: "ab\n\ncd", at: term.Coordinates{Y: 1}, keys: "<meta-c>", want: "ab\n\ncd", wantAt: term.Coordinates{Y: 1}, wantClip: "\n"},
+		{name: "copy the last line", content: "ab\ncd", at: term.Coordinates{X: 1, Y: 1}, keys: "<meta-c>", want: "ab\ncd", wantAt: term.Coordinates{X: 1, Y: 1}, wantClip: "cd\n"},
+		{name: "copy a shift selection", content: "ab\ncd", keys: "<shift-right><meta-c>", want: "ab\ncd", wantAt: term.Coordinates{X: 1}, wantClip: "a", wantSel: "a"},
+		{name: "copy the last line selected by line", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-c>", want: "ab\ncd", wantAt: term.Coordinates{X: 2, Y: 1}, wantClip: "cd", wantSel: "cd"},
+		{name: "copy a middle line selected by line", content: "ab\ncd", keys: "<meta-l><meta-c>", want: "ab\ncd", wantAt: term.Coordinates{Y: 1}, wantClip: "ab\n", wantSel: "ab\n"},
+		{name: "paste a line with the caret mid-line", content: "ab\ncd", at: term.Coordinates{X: 1, Y: 1}, clip: "zz\n", keys: "<meta-v>", want: "ab\nzz\ncd", wantAt: term.Coordinates{X: 1, Y: 2}, wantClip: "zz\n"},
+		{name: "paste a line on the last line", content: "ab\ncd", at: term.Coordinates{X: 2, Y: 1}, clip: "zz\n", keys: "<meta-v>", want: "ab\nzz\ncd", wantAt: term.Coordinates{X: 2, Y: 2}, wantClip: "zz\n"},
+		{name: "paste a line on an empty buffer", content: "", clip: "zz\n", keys: "<meta-v>", want: "zz\n", wantAt: term.Coordinates{Y: 1}, wantClip: "zz\n"},
+		{name: "paste a line over a shift selection", content: "ab\ncd", clip: "zz\n", keys: "<shift-right><meta-v>", want: "zz\nb\ncd", wantAt: term.Coordinates{Y: 1}, wantClip: "zz\n"},
+		{name: "paste a line with a double-width caret line", content: "ab\n日本", at: term.Coordinates{X: 1, Y: 1}, clip: "zz\n", keys: "<meta-v>", want: "ab\nzz\n日本", wantAt: term.Coordinates{X: 1, Y: 2}, wantClip: "zz\n"},
+		{name: "move a shift selection down", content: "ab\ncd\nef\ngh", at: term.Coordinates{X: 1, Y: 1}, keys: "<shift-down><alt-down>", want: "ab\ngh\ncd\nef", wantAt: term.Coordinates{X: 1, Y: 3}, wantSel: "d\ne"},
+		{name: "move a selection that ends at a line start up", content: "ab\ncd\nef\ngh", at: term.Coordinates{Y: 1}, keys: "<shift-down><alt-up>", want: "cd\nab\nef\ngh", wantAt: term.Coordinates{Y: 1}, wantSel: "cd\n"},
+		{name: "move a line down past the line end", content: "ab\ncd", at: term.Coordinates{X: 9}, keys: "<alt-down>", want: "cd\nab", wantAt: term.Coordinates{X: 2, Y: 1}},
+		{name: "move the only line down", content: "ab", at: term.Coordinates{X: 1}, keys: "<alt-down>", want: "ab", wantAt: term.Coordinates{X: 1}},
+		{name: "move a line down on an empty buffer", content: "", keys: "<alt-down>", want: "", wantAt: term.Coordinates{}},
+		{name: "move a tab-indented line down", content: "\tab\ncd", at: term.Coordinates{X: 2}, keys: "<alt-down>", want: "cd\n\tab", wantAt: term.Coordinates{X: 2, Y: 1}},
+		{name: "move a double-width line down", content: "日本\ncd", at: term.Coordinates{X: 1}, keys: "<alt-down>", want: "cd\n日本", wantAt: term.Coordinates{X: 1, Y: 1}},
+		{name: "move a line over a double-width line", content: "ab\n日本", at: term.Coordinates{X: 2}, keys: "<alt-down>", want: "日本\nab", wantAt: term.Coordinates{X: 2, Y: 1}},
+		{name: "duplicate a shift selection down", content: "ab\ncd\nef", keys: "<shift-down><alt-shift-down>", want: "ab\nab\ncd\nef", wantAt: term.Coordinates{Y: 2}, wantSel: "ab\n"},
+		{name: "duplicate a shift selection up", content: "ab\ncd\nef", at: term.Coordinates{X: 1}, keys: "<shift-down><alt-shift-up>", want: "ab\ncd\nab\ncd\nef", wantAt: term.Coordinates{X: 1, Y: 1}, wantSel: "b\nc"},
+		{name: "duplicate a middle line down", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 1}, keys: "<alt-shift-down>", want: "ab\ncd\ncd\nef", wantAt: term.Coordinates{X: 1, Y: 2}},
+		{name: "duplicate the only line down", content: "ab", at: term.Coordinates{X: 2}, keys: "<alt-shift-down>", want: "ab\nab", wantAt: term.Coordinates{X: 2, Y: 1}},
+		{name: "duplicate on an empty buffer", content: "", keys: "<alt-shift-down>", want: "\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "duplicate the trailing empty line down", content: "ab\n", at: term.Coordinates{Y: 1}, keys: "<alt-shift-down>", want: "ab\n\n", wantAt: term.Coordinates{Y: 2}},
+		{name: "duplicate a line past its end", content: "ab\ncd", at: term.Coordinates{X: 9}, keys: "<alt-shift-down>", want: "ab\nab\ncd", wantAt: term.Coordinates{X: 2, Y: 1}},
+		{name: "delete line with a selection over two lines", content: "ab\ncd\nef\ngh", at: term.Coordinates{X: 1}, keys: "<shift-down>", then: []term.Event{deleteLine}, want: "ef\ngh", wantAt: term.Coordinates{X: 1}},
+		{name: "delete line with a selection ending at a line start", content: "ab\ncd\nef", keys: "<shift-down>", then: []term.Event{deleteLine}, want: "cd\nef", wantAt: term.Coordinates{}},
+		{name: "delete line on a line selection to the end", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-l>", then: []term.Event{deleteLine}, want: "ab", wantAt: term.Coordinates{X: 2}},
+		{name: "cut a shift selection over a line break", content: "ab\ncd", at: term.Coordinates{X: 1}, keys: "<shift-down><meta-x>", want: "ad", wantAt: term.Coordinates{X: 1}, wantClip: "b\nc"},
+		{name: "cut a line selection in the middle", content: "ab\ncd\nef\ngh", at: term.Coordinates{X: 1, Y: 1}, keys: "<meta-l><meta-x>", want: "ab\nef\ngh", wantAt: term.Coordinates{Y: 1}, wantClip: "cd\n"},
+		{name: "alt-right over a separator glued to a word", content: "a.b c", at: term.Coordinates{X: 1}, keys: "<alt-right>", want: "a.b c", wantAt: term.Coordinates{X: 3}},
+		{name: "alt-right over a separator run", content: "foo::bar", at: term.Coordinates{X: 3}, keys: "<alt-right>", want: "foo::bar", wantAt: term.Coordinates{X: 5}},
+		{name: "alt-right from mid-word", content: "foo bar", at: term.Coordinates{X: 1}, keys: "<alt-right>", want: "foo bar", wantAt: term.Coordinates{X: 3}},
+		{name: "alt-right on a separator-only line", content: "...", keys: "<alt-right>", want: "...", wantAt: term.Coordinates{X: 3}},
+		{name: "alt-right over blanks before a word", content: "ab   cd", at: term.Coordinates{X: 2}, keys: "<alt-right>", want: "ab   cd", wantAt: term.Coordinates{X: 7}},
+		{name: "alt-right at the end of the buffer", content: "ab", at: term.Coordinates{X: 2}, keys: "<alt-right>", want: "ab", wantAt: term.Coordinates{X: 2}},
+		{name: "alt-right over a tab-indented line", content: "ab\n\tcd", at: term.Coordinates{X: 2}, keys: "<alt-right>", want: "ab\n\tcd", wantAt: term.Coordinates{X: 3, Y: 1}},
+		{name: "alt-left over a separator run", content: "foo::bar", at: term.Coordinates{X: 5}, keys: "<alt-left>", want: "foo::bar", wantAt: term.Coordinates{X: 3}},
+		{name: "alt-left from mid-word", content: "foo bar", at: term.Coordinates{X: 5}, keys: "<alt-left>", want: "foo bar", wantAt: term.Coordinates{X: 4}},
+		{name: "alt-left at the start of the buffer", content: "ab", keys: "<alt-left>", want: "ab", wantAt: term.Coordinates{}},
+		{name: "alt-left over blanks", content: "ab   cd", at: term.Coordinates{X: 5}, keys: "<alt-left>", want: "ab   cd", wantAt: term.Coordinates{}},
+		{name: "alt-left onto a double-width line", content: "日本\nab", at: term.Coordinates{Y: 1}, keys: "<alt-left>", want: "日本\nab", wantAt: term.Coordinates{}},
+		{name: "alt-backspace over two blanks", content: "ab  cd", at: term.Coordinates{X: 4}, keys: "<alt-backspace>", want: "abcd", wantAt: term.Coordinates{X: 2}},
+		{name: "alt-backspace over one blank", content: "ab cd", at: term.Coordinates{X: 3}, keys: "<alt-backspace>", want: "cd", wantAt: term.Coordinates{}},
+		{name: "alt-backspace mid-word", content: "foo bar", at: term.Coordinates{X: 6}, keys: "<alt-backspace>", want: "foo r", wantAt: term.Coordinates{X: 4}},
+		{name: "alt-backspace at the start of the buffer", content: "ab", keys: "<alt-backspace>", want: "ab", wantAt: term.Coordinates{}},
+		{name: "alt-backspace past the line end", content: "ab cd\nef", at: term.Coordinates{X: 9}, keys: "<alt-backspace>", want: "ab \nef", wantAt: term.Coordinates{X: 3}},
+		{name: "alt-backspace below the last line", content: "ab\ncd", at: term.Coordinates{Y: 9}, keys: "<alt-backspace>", want: "abcd", wantAt: term.Coordinates{X: 2}},
+		{name: "alt-backspace after a separator", content: "ab.", at: term.Coordinates{X: 3}, keys: "<alt-backspace>", want: "ab", wantAt: term.Coordinates{X: 2}},
+		{name: "alt-backspace after an emoji", content: "ab \U0001F600", at: term.Coordinates{X: 4}, keys: "<alt-backspace>", want: "ab ", wantAt: term.Coordinates{X: 3}},
+		{name: "alt-backspace on an empty buffer", content: "", keys: "<alt-backspace>", want: "", wantAt: term.Coordinates{}},
+		{name: "alt-delete over blanks", content: "ab  cd", at: term.Coordinates{X: 2}, keys: "<alt-delete>", want: "abcd", wantAt: term.Coordinates{X: 2}},
+		{name: "alt-delete mid-word", content: "foo bar", at: term.Coordinates{X: 1}, keys: "<alt-delete>", want: "f bar", wantAt: term.Coordinates{X: 1}},
+		{name: "alt-delete before a separator", content: "a.b", at: term.Coordinates{X: 1}, keys: "<alt-delete>", want: "ab", wantAt: term.Coordinates{X: 1}},
+		{name: "alt-delete at the end of the buffer", content: "ab", at: term.Coordinates{X: 2}, keys: "<alt-delete>", want: "ab", wantAt: term.Coordinates{X: 2}},
+		{name: "alt-delete at a line end before blanks", content: "ab\n  cd", at: term.Coordinates{X: 2}, keys: "<alt-delete>", want: "abcd", wantAt: term.Coordinates{X: 2}},
+		{name: "alt-delete past the line end", content: "ab\ncd", at: term.Coordinates{X: 9}, keys: "<alt-delete>", want: "abcd", wantAt: term.Coordinates{X: 2}},
+		{name: "alt-delete below the last line", content: "ab\ncd", at: term.Coordinates{Y: 9}, keys: "<alt-delete>", want: "ab\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "alt-delete on an empty buffer", content: "", keys: "<alt-delete>", want: "", wantAt: term.Coordinates{}},
+		{name: "alt-delete over an empty last line", content: "ab\n", at: term.Coordinates{X: 2}, keys: "<alt-delete>", want: "ab", wantAt: term.Coordinates{X: 2}},
+		{name: "ctrl-right", content: "ab cd", keys: "<ctrl-right>", want: "ab cd", wantAt: term.Coordinates{X: 2}},
+		{name: "ctrl-left", content: "ab cd", at: term.Coordinates{X: 5}, keys: "<ctrl-left>", want: "ab cd", wantAt: term.Coordinates{X: 3}},
+		{name: "ctrl-backspace", content: "ab cd", at: term.Coordinates{X: 5}, keys: "<ctrl-backspace>", want: "ab ", wantAt: term.Coordinates{X: 3}},
+		{name: "ctrl-delete", content: "ab cd", keys: "<ctrl-delete>", want: " cd", wantAt: term.Coordinates{}},
+		{name: "alt-shift-right twice", content: "ab cd ef", keys: "<alt-shift-right><alt-shift-right>", want: "ab cd ef", wantAt: term.Coordinates{X: 5}, wantSel: "ab cd"},
+		{name: "alt-shift-left across a line", content: "ab\ncd", at: term.Coordinates{X: 1, Y: 1}, keys: "<alt-shift-left><alt-shift-left>", want: "ab\ncd", wantAt: term.Coordinates{}, wantSel: "ab\nc"},
+		{name: "alt-backspace with a selection", content: "ab cd", at: term.Coordinates{X: 1}, keys: "<shift-right><alt-backspace>", want: "a cd", wantAt: term.Coordinates{X: 1}},
+		{name: "alt-delete with a selection", content: "ab cd", at: term.Coordinates{X: 1}, keys: "<shift-right><alt-delete>", want: "a cd", wantAt: term.Coordinates{X: 1}},
+		{name: "alt-delete with a line selection on the last line", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "<meta-l><alt-delete>", want: "ab\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "select a line then extend it right", content: "ab\ncd\nef", keys: "<meta-l><shift-right>", want: "ab\ncd\nef", wantAt: term.Coordinates{X: 1, Y: 1}, wantSel: "ab\nc"},
+		{name: "select the last line then shrink it left", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "<meta-l><shift-left>", want: "ab\ncd", wantAt: term.Coordinates{X: 1, Y: 1}, wantSel: "c"},
+		{name: "select a line then shrink it up", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<meta-l><shift-up>", want: "ab\ncd\nef", wantAt: term.Coordinates{Y: 1}},
+		{name: "select a line then extend it down", content: "ab\ncd\nef", keys: "<meta-l><shift-down>", want: "ab\ncd\nef", wantAt: term.Coordinates{Y: 2}, wantSel: "ab\ncd\n"},
+		{name: "select all then shrink it left", content: "ab\ncd", keys: "<meta-a><shift-left>", want: "ab\ncd", wantAt: term.Coordinates{X: 1, Y: 1}, wantSel: "ab\nc"},
+		{name: "copy a line selection then paste it over itself", content: "ab\ncd", keys: "<meta-l><meta-c><meta-v>", want: "ab\ncd", wantAt: term.Coordinates{Y: 1}, wantClip: "ab\n"},
+		{name: "copy a shift selection then type over it", content: "ab", keys: "<shift-right><meta-c>X", want: "Xb", wantAt: term.Coordinates{X: 1}, wantClip: "a"},
+		{name: "select the empty last line", content: "ab\n", at: term.Coordinates{Y: 1}, keys: "<meta-l>", want: "ab\n", wantAt: term.Coordinates{Y: 1}},
+		{name: "select a single line twice", content: "ab", at: term.Coordinates{X: 1}, keys: "<meta-l><meta-l>", want: "ab", wantAt: term.Coordinates{X: 2}, wantSel: "ab"},
+		{name: "select a line from past its end", content: "ab\ncd", at: term.Coordinates{X: 9}, keys: "<meta-l>", want: "ab\ncd", wantAt: term.Coordinates{Y: 1}, wantSel: "ab\n"},
+		{name: "select a line from below the buffer", content: "ab\ncd", at: term.Coordinates{Y: 9}, keys: "<meta-l>", want: "ab\ncd", wantAt: term.Coordinates{X: 2, Y: 1}, wantSel: "cd"},
+		{name: "select a wide line", content: "界界\nb", at: term.Coordinates{X: 1}, keys: "<meta-l>", want: "界界\nb", wantAt: term.Coordinates{Y: 1}, wantSel: "界界\n"},
+		{name: "select a tab line", content: "\tx\ny", at: term.Coordinates{X: 1}, keys: "<meta-l>", want: "\tx\ny", wantAt: term.Coordinates{Y: 1}, wantSel: "\tx\n"},
+		{name: "select a line with a null", content: "a\u0000b\nc", keys: "<meta-l>", want: "a\u0000b\nc", wantAt: term.Coordinates{Y: 1}, wantSel: "a\u0000b\n"},
+		{name: "select an emoji line", content: "\U0001F600x\ny", at: term.Coordinates{X: 1}, keys: "<meta-l>", want: "\U0001F600x\ny", wantAt: term.Coordinates{Y: 1}, wantSel: "\U0001F600x\n"},
+		{name: "select an empty buffer line", content: "", keys: "<meta-l>", want: "", wantAt: term.Coordinates{}},
+		{name: "delete a middle line selected by line", content: "ab\ncd\nef", at: term.Coordinates{X: 1, Y: 1}, keys: "<meta-l>", then: []term.Event{deleteLine}, want: "ab\nef", wantAt: term.Coordinates{Y: 1}},
+		{name: "select a shift selection's lines", content: "ab\ncd\nef", at: term.Coordinates{Y: 1}, keys: "<shift-down><meta-l>", want: "ab\ncd\nef", wantAt: term.Coordinates{X: 2, Y: 2}, wantSel: "cd\nef"},
+		{name: "copy two lines selected by line", content: "ab\ncd\nef", keys: "<meta-l><meta-l><meta-c>", want: "ab\ncd\nef", wantAt: term.Coordinates{Y: 2}, wantClip: "ab\ncd\n", wantSel: "ab\ncd\n"},
+		{name: "move a line selection down", content: "ab\ncd\nef", keys: "<meta-l><alt-down>", want: "cd\nab\nef", wantAt: term.Coordinates{Y: 2}, wantSel: "ab\n"},
+		{name: "copy a line selection down", content: "ab\ncd", keys: "<meta-l><alt-shift-down>", want: "ab\nab\ncd", wantAt: term.Coordinates{Y: 2}, wantSel: "ab\n"},
+		{name: "backspace a line selection", content: "ab\ncd", keys: "<meta-l><backspace>", want: "cd", wantAt: term.Coordinates{}},
+		{name: "copy all", content: "ab\ncd", keys: "<meta-a><meta-c>", want: "ab\ncd", wantAt: term.Coordinates{X: 2, Y: 1}, wantClip: "ab\ncd", wantSel: "ab\ncd"},
+		{name: "copy a wide shift selection", content: "界界", keys: "<shift-right><meta-c>", want: "界界", wantAt: term.Coordinates{X: 1}, wantClip: "界", wantSel: "界"},
+		{name: "copy a line selection at the last line then type", content: "ab\ncd", at: term.Coordinates{Y: 1}, keys: "<meta-l><meta-c>X", want: "ab\nX", wantAt: term.Coordinates{X: 1, Y: 1}, wantClip: "cd"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, buf, clip := newStandardKeymapHandler(t, tc.content, term.Coordinates{})
+			h.SetCursorAtScroll(tc.at)
+			if h.CursorAtScroll() != tc.at {
+				// SetCursorAtScroll clamps; only a buffer shrinking under
+				// the cursor leaves it out of bounds.
+				h.(*standardHandler).cursor.MoveToScroll(tc.at)
+			}
+			require.Equal(t, tc.at, h.CursorAtScroll())
+			if tc.clip != "" {
+				require.NoError(t, clip.Copy(clipboard.DefaultRegisterID,
+					clipboard.Data{Text: tc.clip, Metadata: text.LineSelection}))
+			}
+
+			if tc.keys != "" {
+				feedKeys(t, h, tc.keys)
+			}
+			for _, ev := range tc.then {
+				h.Handle(ev)
+			}
+
+			assert.Equal(t, tc.want, buf.String(), "content")
+			assert.Equal(t, tc.wantAt, h.CursorAtScroll(), "cursor")
+			data, _ := clip.Paste(clipboard.DefaultRegisterID)
+			assert.Equal(t, tc.wantClip, data.Text, "clipboard")
+			sel, _ := h.Selection()
+			assert.Equal(t, tc.wantSel, sel, "selection")
 		})
 	}
 }

@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -210,4 +211,42 @@ func (s *Server) GetModel(
 		Model: llmrpc.ToProtoModelEntry(entry),
 		Found: true,
 	}, nil
+}
+
+// CanGenerateImages reports the selected service's capability, subject to the
+// same request metadata budget as GenerateImage.
+func (s *Server) CanGenerateImages(
+	ctx context.Context, req *llmrpc.CanGenerateImagesRequest,
+) (*llmrpc.CanGenerateImagesResponse, error) {
+	if size := proto.Size(req); size > llmrpc.MaxImageMessageSize {
+		return nil, status.Errorf(codes.ResourceExhausted, "llm: image availability request is %d bytes; maximum is %d bytes", size, llmrpc.MaxImageMessageSize)
+	}
+	ctx, cancel := bluectx.First(ctx, s.ctx)
+	defer cancel()
+	available, err := s.svc.CanGenerateImages(ctx, llmrpc.FromProtoModelEntry(req.GetModel()))
+	if err != nil {
+		return nil, err
+	}
+	return &llmrpc.CanGenerateImagesResponse{Available: available}, nil
+}
+
+// GenerateImage caps encoded requests and responses
+// at the SDK image budget, including model metadata and provider identifiers.
+func (s *Server) GenerateImage(
+	ctx context.Context, req *llmrpc.GenerateImageRequest,
+) (*llmrpc.GenerateImageResponse, error) {
+	if size := proto.Size(req); size > llmrpc.MaxImageMessageSize {
+		return nil, status.Errorf(codes.ResourceExhausted, "llm: image generation request is %d bytes; maximum is %d bytes; reduce prompt or reference images", size, llmrpc.MaxImageMessageSize)
+	}
+	ctx, cancel := bluectx.First(ctx, s.ctx)
+	defer cancel()
+	image, err := s.svc.GenerateImage(ctx, llmrpc.FromProtoModelEntry(req.GetModel()), llmrpc.FromProtoImageRequest(req.GetRequest()))
+	if err != nil {
+		return nil, err
+	}
+	resp := &llmrpc.GenerateImageResponse{Image: llmrpc.ToProtoImage(image)}
+	if size := proto.Size(resp); size > llmrpc.MaxImageMessageSize {
+		return nil, status.Errorf(codes.ResourceExhausted, "llm: generated image response is %d bytes; maximum is %d bytes", size, llmrpc.MaxImageMessageSize)
+	}
+	return resp, nil
 }

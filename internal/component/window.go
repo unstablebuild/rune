@@ -158,6 +158,19 @@ func (w Window) Frame() (*component.Frame, bool) {
 	return frame, ok
 }
 
+// ContentSize returns the size the content of this Window was last
+// resized to: the window less its frame, or zero before it was ever
+// resized.
+func (w Window) ContentSize() (width, height int) {
+	if w.wm == nil {
+		panic(errCalledZeroValuedWin)
+	}
+	if f, ok := w.Frame(); ok {
+		return f.ContentSize()
+	}
+	return w.node.Width(), w.node.Height()
+}
+
 // SetContent sets the content of this Window to content and
 // returns the previous content.
 func (w Window) SetContent(content tui.Component) (

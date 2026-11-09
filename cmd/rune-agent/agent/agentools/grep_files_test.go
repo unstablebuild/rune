@@ -18,6 +18,8 @@ package agentools
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +28,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/searchapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
 )
 
@@ -174,7 +177,7 @@ func TestGrepFiles(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := setupWorkspace(t)
-			tool := NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker())
+			tool := NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker(), NoIndex())
 
 			if tt.setup != nil {
 				tt.setup(t, dir)
@@ -186,8 +189,128 @@ func TestGrepFiles(t *testing.T) {
 	}
 }
 
+func TestGrepFiles_index(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     string
+		searcher fakeSearcher
+		// wantRoots is relative to the workspace, or nil when the index
+		// must not be asked.
+		wantRoots   []string
+		wantInclude []string
+		wantError   bool
+		want        string
+	}{
+		{
+			name: "lists matching files by modification time",
+			args: `{"pattern":"line"}`,
+			searcher: fakeSearcher{results: []searchapi.RegexpResult{
+				{Path: "old.txt", Line: 1, Text: "line"},
+				{Path: "hello.txt", Line: 2, Text: "second line"},
+			}},
+			wantRoots: []string{"."},
+			want:      "hello.txt\nold.txt",
+		},
+		{
+			name: "limit truncates",
+			args: `{"pattern":"line","limit":1}`,
+			searcher: fakeSearcher{results: []searchapi.RegexpResult{
+				{Path: "old.txt", Line: 1, Text: "line"},
+				{Path: "hello.txt", Line: 2, Text: "second line"},
+			}},
+			wantRoots: []string{"."},
+			want:      "hello.txt\n\n(results truncated at 1 files)",
+		},
+		{
+			name:        "path and include are forwarded",
+			args:        `{"pattern":"Foo","path":"sub","include":"*.go"}`,
+			searcher:    fakeSearcher{results: []searchapi.RegexpResult{{Path: "sub/nested.go", Line: 3, Text: "func Foo() {}"}}},
+			wantRoots:   []string{"sub"},
+			wantInclude: []string{"*.go"},
+			want:        filepath.Join("sub", "nested.go"),
+		},
+		{
+			name:      "absolute path inside the workspace",
+			args:      `{"pattern":"Foo","path":"$DIR/sub"}`,
+			searcher:  fakeSearcher{results: []searchapi.RegexpResult{{Path: "sub/nested.go", Line: 3, Text: "func Foo() {}"}}},
+			wantRoots: []string{"sub"},
+			want:      filepath.Join("sub", "nested.go"),
+		},
+		{
+			name: "skip dirs are dropped",
+			args: `{"pattern":"line"}`,
+			searcher: fakeSearcher{results: []searchapi.RegexpResult{
+				{Path: "vendor/lib.go", Line: 1, Text: "line"},
+				{Path: "hello.txt", Line: 2, Text: "second line"},
+			}},
+			wantRoots: []string{"."},
+			want:      "hello.txt",
+		},
+		{
+			name:     "path outside the workspace walks without the index",
+			args:     `{"pattern":"elsewhere","path":"$OUT"}`,
+			searcher: fakeSearcher{results: []searchapi.RegexpResult{{Path: "wrong.txt", Line: 1, Text: "elsewhere"}}},
+			want:     "outside.txt",
+		},
+		{
+			name:      "unsupported walks",
+			args:      `{"pattern":"hello"}`,
+			searcher:  fakeSearcher{err: fmt.Errorf("no index: %w", searchapi.ErrUnsupported)},
+			wantRoots: []string{"."},
+			want:      "hello.txt",
+		},
+		{
+			name:      "index error is surfaced",
+			args:      `{"pattern":"hello"}`,
+			searcher:  fakeSearcher{err: errors.New("index is broken")},
+			wantRoots: []string{"."},
+			wantError: true,
+			want:      "error: index is broken",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := setupWorkspace(t)
+			old := filepath.Join(dir, "old.txt")
+			require.NoError(t, os.WriteFile(old, []byte("line\n"), 0o644))
+			require.NoError(t, os.Chtimes(old, time.Now().Add(-time.Hour), time.Now().Add(-time.Hour)))
+			out := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(out, "outside.txt"), []byte("elsewhere\n"), 0o644))
+			args := strings.NewReplacer("$DIR", dir, "$OUT", out).Replace(tt.args)
+
+			searcher := tt.searcher
+			tracker := NewFileTracker()
+			tool := NewGrepFiles(localFS{root: dir}, dirURI(dir), tracker, &searcher)
+			result := tool.Execute(agent.WithParentToolCallID(t.Context(), "grep_1"), args)
+
+			assert.Equal(t, tt.wantError, result.IsError, result.Content)
+			if tt.wantRoots == nil {
+				assert.Contains(t, result.Content, tt.want)
+				assert.Empty(t, searcher.reqs)
+				return
+			}
+			assert.Equal(t, tt.want, result.Content)
+			wantRoots := make([]string, len(tt.wantRoots))
+			for i, root := range tt.wantRoots {
+				wantRoots[i] = filepath.Join(dir, root)
+			}
+			require.Len(t, searcher.reqs, 1)
+			assert.Equal(t, searchapi.RegexpRequest{
+				Pattern:    searcher.reqs[0].Pattern,
+				Roots:      wantRoots,
+				Include:    tt.wantInclude,
+				MaxPerFile: 1,
+			}, searcher.reqs[0])
+			if !tt.wantError {
+				first, _, _ := strings.Cut(result.Content, "\n")
+				assert.Equal(t, []string{"grep_1"}, tracker.ConsumeDiscoveries(filepath.Join(dir, first)))
+			}
+		})
+	}
+}
+
 func TestGrepFiles_definition(t *testing.T) {
-	tool := NewGrepFiles(localFS{}, dirURI("/workspace"), NewFileTracker())
+	tool := NewGrepFiles(localFS{}, dirURI("/workspace"), NewFileTracker(), NoIndex())
 	def := tool.Definition()
 	assert.Equal(t, "grep_files", def.Function.Name)
 	assert.Equal(t, "Finds files whose contents match the pattern and lists them by modification time.",
@@ -197,7 +320,7 @@ func TestGrepFiles_definition(t *testing.T) {
 func TestGrepFiles_tracksDiscovery(t *testing.T) {
 	dir := setupWorkspace(t)
 	tracker := NewFileTracker()
-	tool := NewGrepFiles(localFS{root: dir}, dirURI(dir), tracker)
+	tool := NewGrepFiles(localFS{root: dir}, dirURI(dir), tracker, NoIndex())
 
 	ctx := agent.WithParentToolCallID(t.Context(), "grep_1")
 	result := tool.Execute(ctx, `{"pattern":"hello"}`)
@@ -212,7 +335,7 @@ func TestGrepFiles_tracksDiscovery(t *testing.T) {
 }
 
 func TestGrepFiles_summary(t *testing.T) {
-	tool := NewGrepFiles(localFS{}, dirURI("/workspace"), NewFileTracker())
+	tool := NewGrepFiles(localFS{}, dirURI("/workspace"), NewFileTracker(), NoIndex())
 	tests := []struct {
 		name     string
 		args     string
@@ -238,7 +361,7 @@ func TestGrepFiles_skipsBinaryFiles(t *testing.T) {
 	// Plain text file with the same token.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "text.txt"), []byte("a needle in a haystack\n"), 0o644))
 
-	tool := NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker())
+	tool := NewGrepFiles(localFS{root: dir}, dirURI(dir), NewFileTracker(), NoIndex())
 	result := tool.Execute(t.Context(), `{"pattern":"needle"}`)
 
 	require.False(t, result.IsError)

@@ -35,10 +35,16 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension/langext"
 	"unstable.build/rune/internal/extension/langext/langexttest"
 	"unstable.build/rune/internal/ide/idelsp/lspcmd"
 )
+
+func TestNewExtensionVersion(t *testing.T) {
+	_, meta := NewExtension()
+	assert.Equal(t, debug.Tag, meta.ExtensionVersion)
+}
 
 func TestDetectZigProject(t *testing.T) {
 	cases := []struct {
@@ -145,11 +151,12 @@ func TestResolveZls(t *testing.T) {
 			"Looking for one on the host instead."}, notify.notifMessages())
 	})
 
-	t.Run("falls back to shell lookup", func(t *testing.T) {
-		ex := newFakeExecutor().respond(
-			"sh -lc command -v zls", scriptedCmd{stdout: "/usr/bin/zls\n"})
+	t.Run("falls back to PATH", func(t *testing.T) {
+		ex := newFakeExecutor().onPath("zls", "/usr/bin/zls")
 		got := resolveZls(ctx, nil, newFakeNotifications(), newFakeFS(), ex, zigTools(t, notInstalled))
 		assert.Equal(t, "/usr/bin/zls", got)
+		assert.Empty(t, ex.callsSnapshot(),
+			"looking zls up must not run a command the user is asked to approve")
 	})
 
 	t.Run("missing everywhere warns and resolves empty", func(t *testing.T) {
@@ -177,6 +184,13 @@ func TestResolveZig(t *testing.T) {
 		got := resolveZig(ctx, nil, newFakeNotifications(), newFakeFS(),
 			newFakeExecutor(), zigTools(t, &langexttest.Installer{Files: packaged}))
 		assert.Equal(t, "/data/bin/zig", got)
+	})
+
+	t.Run("falls back to PATH", func(t *testing.T) {
+		ex := newFakeExecutor().onPath("zig", "/usr/bin/zig")
+		got := resolveZig(ctx, nil, newFakeNotifications(), newFakeFS(), ex, zigTools(t, notInstalled))
+		assert.Equal(t, "/usr/bin/zig", got)
+		assert.Empty(t, ex.callsSnapshot())
 	})
 
 	t.Run("missing everywhere resolves empty without warning", func(t *testing.T) {

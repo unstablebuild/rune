@@ -176,6 +176,7 @@ command:
     "<shift-meta-`>": "tabsearch"
     # Workspaces: digits focus, <shift> moves.
     "<meta-`>": "workspacesearch"
+    "<ctrl-`>": "programstatus"
     "<meta-1>": "workspacefocus 1"
     "<meta-2>": "workspacefocus 2"
     "<meta-3>": "workspacefocus 3"
@@ -232,13 +233,37 @@ command:
     "<s-m-f>": ""
 
 # ---------------------------------------------------------------------------
+# Wallpaper
+# ---------------------------------------------------------------------------
+# The Rune logo shows unless one of these is set.
+# workspace:
+#   wallpaper_image:
+#     path:   ~/Pictures/wallpaper.png
+#     width:  100%                        # cells, or a percentage of the window
+#     height: 100%
+#     fit:    cover                       # contain | cover | fill
+#   wallpaper_image_ascii: ~/Pictures/my-logo.png
+#   wallpaper_density_characters: " ░▒▓█"
+#   wallpaper_ascii: |
+#     ┌─────────────┐
+#     │   R U N E   │
+#     └─────────────┘
+#   wallpaper_attr:            {fg: "#D34728", bg: default}
+#   wallpaper_background_attr: {bg: default}
+
+# ---------------------------------------------------------------------------
 # Animations
 #
 # `active_content_tab` plays over tabs with work in progress, such as an agent
 # turn, and `active_workspace_tab` over the workspace tabs that own them. Their
-# shaders: blaze, burn, inferno, noise, pulse, shine, trippy.
+# shaders: blaze, burn, inferno, pulse, shine.
+#
+# `open_workspace` plays any shader of :shaderrun. The reveals uncover the
+# workspace from the screen it takes over: burn, beams, binaryPath, decrypt,
+# expand, matrix, middleOut, pour, print, rain and slide.
 # ---------------------------------------------------------------------------
 # animations:
+#   intro: true
 #   loading_workspace: true
 #   open_workspace:
 #     enabled:  true

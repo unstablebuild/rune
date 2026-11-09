@@ -19,7 +19,9 @@ package shader
 import "github.com/unstablebuild/rune-go-sdk/term"
 
 // Mix combines multiple shaders into one. They're run
-// in the same order they're passed to this constructor.
+// in the same order they're passed to this constructor,
+// and the images each returns, as [ShadeImages] does,
+// are passed on to the next.
 func Mix(shaders ...Shader) Shader {
 	if len(shaders) == 0 {
 		panic("shaders must not be 0")
@@ -35,4 +37,11 @@ func (m mixShader) Shade(frame, total int, in [][]term.Cell) {
 	for _, shader := range m.shaders {
 		shader.Shade(frame, total, in)
 	}
+}
+
+func (m mixShader) ShadeImages(frame, total int, in [][]term.Cell, images []term.Image) []term.Image {
+	for _, shader := range m.shaders {
+		images = ShadeImages(shader, frame, total, in, images)
+	}
+	return images
 }

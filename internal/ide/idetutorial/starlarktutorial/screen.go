@@ -41,7 +41,7 @@ const moreBelowArrow = ''
 // on the run goroutine before the request becomes active, so nothing
 // else can be touching r yet. A screen with nothing to render leaves
 // body nil and the tile empty.
-func (t *Tutorial) openScreen(r *request, width int) {
+func (t *Tutorial) openScreen(r *request) {
 	switch r.kind {
 	case reqWaitCommand, reqWaitShell, reqWaitEvent:
 		md, ok := newScreenMarkdown(screenMarkdown(r.title, t.stepBody(r)))
@@ -50,7 +50,7 @@ func (t *Tutorial) openScreen(r *request, width int) {
 		}
 		r.viewer, r.body = newScreenContent(md)
 	case reqConfirm, reqChoice:
-		t.openPrompt(r, width)
+		t.openPrompt(r)
 	}
 }
 
@@ -123,7 +123,7 @@ func screenMarkdown(title, body string) string {
 // closed; the TUI loop resolves the request with the stamped or
 // per-kind dismissal response right after routing the event that
 // triggered them.
-func (t *Tutorial) openPrompt(r *request, width int) {
+func (t *Tutorial) openPrompt(r *request) {
 	ph := handler.FuncPromptHandler(
 		func(idx int, option string) {
 			value := option
@@ -148,24 +148,19 @@ func (t *Tutorial) openPrompt(r *request, width int) {
 	message := newPromptMessage(r.message)
 	r.prompt = handler.NewPrompt(handler.PromptConfig{
 		PromptConfig: component.PromptConfig{
-			Message: r.message,
-			Options: padPromptOptions(r.options,
-				promptOptionPad(r.options, width-screenPadHorizontal)),
+			Message:              r.message,
+			Options:              padPromptOptions(r.options),
 			NewMessage:           func(string) component.Floating { return message },
 			BackgroundAttributes: t.promptStyle.BackgroundAttr,
+			ButtonImages:         t.promptStyle.ButtonImages,
 		},
 		PromptHandler: ph,
 		OptionAttr:    t.promptStyle.TextAttr,
 		HighlightAttr: t.promptStyle.HighlightAttr,
+		HoverAttr:     t.promptStyle.HoverAttr,
+		ClickedAttr:   t.promptStyle.ClickedAttr,
 	})
-	_, promptHeight := r.prompt.Dimensions()
-	_, messageHeight := message.Dimensions()
-	body := &promptBody{
-		Prompt:  r.prompt,
-		message: message,
-		options: max(promptHeight-messageHeight, 1),
-	}
-	r.body = handler.NewSpan(body, component.SpanConfig{
+	r.body = handler.NewSpan(&promptBody{Prompt: r.prompt}, component.SpanConfig{
 		PadHorizontal: screenPadHorizontal,
 		ContentAlignment: component.AlignmentTop |
 			component.AlignmentHorizontallyCentered,
@@ -175,16 +170,15 @@ func (t *Tutorial) openPrompt(r *request, width int) {
 // promptBody keeps a prompt screen's buttons under the copy that asks
 // the question. component.Prompt pins its options to the bottom edge
 // of whatever height it is given, and the tile's body is as tall as
-// the pane, so the prompt is given only the height its message needs.
+// the pane, so the prompt is given only the height it needs: its
+// message over the rows its options wrap onto.
 type promptBody struct {
 	*handler.Prompt
-	message *component.Span
-	options int
 }
 
 // Resize satisfies tui.Component.
 func (b *promptBody) Resize(width, height int) {
-	b.Prompt.Resize(width, min(b.message.Height(width)+b.options, height))
+	b.Prompt.Resize(width, min(b.Prompt.Height(width), height))
 }
 
 // newPromptMessage renders a prompt's message as markdown so a

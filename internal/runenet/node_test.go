@@ -21,6 +21,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -201,14 +203,54 @@ func (c *countingCredentials) get(context.Context) (string, string, error) {
 
 func newTestNode(t *testing.T, creds *countingCredentials) *Node {
 	t.Helper()
+	return newHostTestNode(t, "workstation", creds)
+}
+
+func newHostTestNode(t *testing.T, hostname string, creds *countingCredentials) *Node {
+	t.Helper()
 	node := New(Config{
-		Hostname:    "workstation",
+		Hostname:    hostname,
 		Port:        DefaultPort,
 		Dir:         t.TempDir(),
 		Credentials: creds.get,
 	})
 	t.Cleanup(func() { _ = node.Close() })
 	return node
+}
+
+func TestPing(t *testing.T) {
+	controlURL := startTestControl(t)
+	creds := &countingCredentials{controlURL: controlURL}
+	laptop := newHostTestNode(t, "laptop", creds)
+	desktop := newHostTestNode(t, "desktop", creds)
+	ctx, cancel := context.WithTimeout(context.Background(), joinTimeout)
+	defer cancel()
+	require.NoError(t, laptop.Up(ctx))
+	require.NoError(t, desktop.Up(ctx))
+	st, err := desktop.Status(ctx)
+	require.NoError(t, err)
+
+	var got PingResult
+	require.Eventually(t, func() bool {
+		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		got, err = laptop.Ping(pingCtx, "desktop")
+		return err == nil
+	}, joinTimeout, 100*time.Millisecond, "no pong: %v", err)
+	assert.Equal(t, "desktop", got.Peer)
+	assert.Equal(t, st.Addrs[0], got.Addr)
+	assert.Positive(t, got.Latency)
+	assert.True(t, got.Endpoint != "" || got.DERPRegion != "", "%+v", got)
+
+	_, err = laptop.Ping(ctx, "nope")
+	assert.ErrorIs(t, err, ErrPeerNotFound)
+}
+
+func TestPingResultDirect(t *testing.T) {
+	assert.True(t, PingResult{Endpoint: "192.168.1.5:41641"}.Direct())
+	assert.False(t, PingResult{DERPRegion: "fra"}.Direct())
+	assert.False(t, PingResult{Endpoint: "10.0.0.1:41641", PeerRelay: "10.0.0.2:7777:vni:1"}.Direct())
+	assert.False(t, PingResult{}.Direct())
 }
 
 // requireJoined checks the node reached the configured coordination
@@ -311,9 +353,11 @@ func logOut(t *testing.T, node *Node, creds *countingCredentials) {
 	require.NoError(t, err)
 	require.NoError(t, lc.Logout(ctx))
 
-	st, err := node.Status(ctx)
-	require.NoError(t, err)
-	require.Equal(t, ipn.NeedsLogin.String(), st.State)
+	// The backend can pass through Stopped on its way out.
+	require.Eventually(t, func() bool {
+		st, err := node.Status(ctx)
+		return err == nil && st.State == ipn.NeedsLogin.String()
+	}, joinTimeout, 50*time.Millisecond)
 	creds.calls.Store(0)
 }
 
@@ -397,6 +441,227 @@ func TestStatusBeforeStart(t *testing.T) {
 	assert.Equal(t, "workstation", st.Hostname)
 	assert.Equal(t, "NotRunning", st.State)
 	assert.Empty(t, st.LastError)
+}
+
+func TestIdentityDir(t *testing.T) {
+	custom := func(url string) Config {
+		return Config{ControlURL: url, CustomControl: true}
+	}
+	assert.Equal(t, "runenet", identityDir(Config{}))
+	// The harnesses imitate Rune's network with a control URL of
+	// their own; that is still Rune's network.
+	assert.Equal(t, "runenet",
+		identityDir(Config{ControlURL: "http://127.0.0.1:8080"}))
+
+	dir := identityDir(custom("https://headscale.example.com"))
+	assert.Regexp(t, `^runenet-[0-9a-f]{12}$`, dir)
+	assert.Equal(t, dir, identityDir(custom("https://headscale.example.com")))
+	assert.NotEqual(t, dir, identityDir(custom("https://other.example.com")))
+
+	node := New(Config{Dir: "/data", ControlURL: "https://headscale.example.com",
+		CustomControl: true})
+	assert.Equal(t, filepath.Join("/data", dir), node.srv.Dir)
+}
+
+func TestNoteAuthURL(t *testing.T) {
+	var reported []string
+	node := New(Config{Dir: t.TempDir(), OnAuthURL: func(url string) {
+		reported = append(reported, url)
+	}})
+
+	node.noteAuthURL("https://control.example.com/a/1")
+	assert.Equal(t, "https://control.example.com/a/1", node.PendingAuthURL())
+	// A re-established watch repeats the pending URL.
+	node.noteAuthURL("https://control.example.com/a/1")
+	node.clearAuthURL()
+	assert.Empty(t, node.PendingAuthURL())
+	node.noteAuthURL("https://control.example.com/a/2")
+
+	assert.Equal(t, []string{
+		"https://control.example.com/a/1", "https://control.example.com/a/2",
+	}, reported)
+}
+
+func TestSelfOwner(t *testing.T) {
+	users := map[tailcfg.UserID]tailcfg.UserProfile{
+		1:          {LoginName: "alice@example.com"},
+		2147455555: {LoginName: "tagged-devices"},
+	}
+	tags := func(tags ...string) *views.Slice[string] {
+		v := views.SliceOf(tags)
+		return &v
+	}
+	cases := []struct {
+		name     string
+		self     *ipnstate.PeerStatus
+		wantUser string
+	}{
+		{"not logged in", nil, ""},
+		{"owned by a user", &ipnstate.PeerStatus{UserID: 1}, "alice@example.com"},
+		{"tagged", &ipnstate.PeerStatus{UserID: 2147455555, Tags: tags("tag:server")}, ""},
+		// On the user's own tailnet a serve tag is just a tag.
+		{"serve tag is not an account",
+			&ipnstate.PeerStatus{UserID: 2147455555, Tags: tags("tag:serve-alice")}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &ipnstate.Status{Self: tc.self, User: users}
+			assert.Equal(t, tc.wantUser, selfOwner(st))
+		})
+	}
+}
+
+// startAuthTestControl runs an in-process coordination server that
+// signs nodes in by URL, as the user's own Tailscale or Headscale
+// does.
+func startAuthTestControl(t *testing.T) (*testcontrol.Server, string) {
+	t.Helper()
+	netns.SetEnabled(false)
+	t.Cleanup(func() { netns.SetEnabled(true) })
+
+	control := &testcontrol.Server{
+		DERPMap:          integration.RunDERPAndSTUN(t, logger.Discard, "127.0.0.1"),
+		RequireAuth:      true,
+		AllNodesSameUser: true,
+		Logf:             logger.Discard,
+	}
+	server := httptest.NewUnstartedServer(control)
+	// The sign-in URLs it hands out are rooted here.
+	control.HTTPTestServer = server
+	server.Start()
+	t.Cleanup(server.Close)
+	return control, server.URL
+}
+
+// newCustomNode builds a node named hostname on the user's own server
+// at controlURL, keeping its identity in dir. The returned channel
+// receives every sign-in URL the node reports.
+func newCustomNode(
+	t *testing.T, hostname, controlURL, dir string,
+) (*Node, <-chan string) {
+	t.Helper()
+	urls := make(chan string, 16)
+	node := New(Config{
+		Hostname:      hostname,
+		Port:          DefaultPort,
+		Dir:           dir,
+		ControlURL:    controlURL,
+		CustomControl: true,
+		OnAuthURL:     func(url string) { urls <- url },
+	})
+	t.Cleanup(func() { _ = node.Close() })
+	return node, urls
+}
+
+func nextAuthURL(t *testing.T, urls <-chan string) string {
+	t.Helper()
+	select {
+	case url := <-urls:
+		return url
+	case <-time.After(joinTimeout):
+		t.Fatal("the node never reported a sign-in URL")
+		return ""
+	}
+}
+
+// signIn completes the sign-in the node asks for next and waits for it
+// to join.
+func signIn(
+	t *testing.T, control *testcontrol.Server, node *Node, urls <-chan string,
+) string {
+	t.Helper()
+	url := nextAuthURL(t, urls)
+	require.True(t, control.CompleteAuth(url), "unknown sign-in URL %s", url)
+	ctx, cancel := context.WithTimeout(context.Background(), joinTimeout)
+	defer cancel()
+	require.NoError(t, node.Up(ctx))
+	return url
+}
+
+func waitStatus(t *testing.T, node *Node, ok func(Status) bool) {
+	t.Helper()
+	var last Status
+	require.Eventually(t, func() bool {
+		st, err := node.Status(context.Background())
+		last = st
+		return err == nil && ok(st)
+	}, joinTimeout, 100*time.Millisecond, "last status: %+v", last)
+}
+
+func TestCustomControlSignIn(t *testing.T) {
+	control, controlURL := startAuthTestControl(t)
+	node, urls := newCustomNode(t, "workstation", controlURL, t.TempDir())
+
+	// Up waits for the sign-in, as `rune --headless --control-url` does.
+	require.NoError(t, node.Start(context.Background()))
+	up := make(chan error, 1)
+	go debug.CapturePanicReport(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), joinTimeout)
+		defer cancel()
+		up <- node.Up(ctx)
+	})
+	url := nextAuthURL(t, urls)
+	assert.Contains(t, url, controlURL)
+	require.True(t, control.CompleteAuth(url))
+	require.NoError(t, <-up)
+
+	requireJoined(t, node, controlURL)
+	require.Eventually(t, func() bool { return node.PendingAuthURL() == "" },
+		joinTimeout, 50*time.Millisecond)
+	st, err := node.Status(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "user-123@fake-control.example.net", st.LoginName)
+
+	// Signed in, the machine must not sign in again: a new node key
+	// would leave its peers holding the old one.
+	assert.Never(t, func() bool {
+		return len(control.AllNodes()) > 1 || len(urls) > 0
+	}, 2*time.Second, 50*time.Millisecond, "the machine signed in again")
+}
+
+func TestCustomControlIgnoresEnvCredentials(t *testing.T) {
+	_, controlURL := startAuthTestControl(t)
+	for _, name := range envCredentials {
+		t.Setenv(name, "tskey-from-the-environment")
+	}
+	node, urls := newCustomNode(t, "workstation", controlURL, t.TempDir())
+
+	require.NoError(t, node.Start(context.Background()))
+	for _, name := range envCredentials {
+		_, ok := os.LookupEnv(name)
+		assert.False(t, ok, "%s is still set", name)
+	}
+	nextAuthURL(t, urls)
+}
+
+// setKeyExpiry has control expire the key of each of its machines at
+// expiry.
+func setKeyExpiry(control *testcontrol.Server, expiry time.Time) {
+	for _, n := range control.AllNodes() {
+		n.KeyExpiry = expiry
+		control.UpdateNode(n)
+	}
+}
+
+func TestCustomControlKeyExpiry(t *testing.T) {
+	control, controlURL := startAuthTestControl(t)
+	node, urls := newCustomNode(t, "workstation", controlURL, t.TempDir())
+	require.NoError(t, node.Start(context.Background()))
+	first := signIn(t, control, node, urls)
+
+	setKeyExpiry(control, time.Now().Add(-time.Minute))
+	waitStatus(t, node, func(st Status) bool {
+		return st.State == ipn.NeedsLogin.String()
+	})
+
+	second := nextAuthURL(t, urls)
+	assert.NotEqual(t, first, second)
+	assert.Equal(t, second, node.PendingAuthURL())
+	// The server signs the machine in again with a fresh expiry, where
+	// the in-process one carries the expired key's over.
+	setKeyExpiry(control, time.Time{})
+	require.True(t, control.CompleteAuth(second))
+	waitStatus(t, node, func(st Status) bool { return st.State == StateRunning })
 }
 
 type credentialsCtxKey struct{}

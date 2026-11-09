@@ -17,6 +17,7 @@
 package extension
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -39,7 +41,6 @@ import (
 
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/agent/agentools"
-	"unstable.build/rune/cmd/rune-agent/agent/agentools/webfetch"
 	"unstable.build/rune/cmd/rune-agent/agent/audit"
 	"unstable.build/rune/cmd/rune-agent/agent/geminitools"
 	"unstable.build/rune/cmd/rune-agent/agent/taskstore"
@@ -49,6 +50,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
+	"github.com/unstablebuild/rune-go-sdk/api/searchapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
@@ -71,11 +73,8 @@ import (
 	"unstable.build/rune/cmd/rune-agent/memory"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/extension/extutil"
 	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/text"
-
-	tconfig "unstable.build/rune/internal/config"
 )
 
 const (
@@ -116,146 +115,21 @@ const (
 	dreamModelAlias   = "dream"
 )
 
-var (
-	defaultComponentCfg = dialoguetui.ComponentConfig{
-		MessagesRowConfig: component.SpanConfig{
-			PadHorizontal:    -80,
-			PadVertical:      2,
-			ContentAlignment: component.AlignmentCentered,
-		},
-		InputRowColumns: 10,
-		InputBox: dialoguetui.InputBoxConfig{
-			Placeholder: "Message your assistant...",
-			PlaceholderConfig: component.StringResponsiveConfig{
-				NoSplitWords: true,
-				StringConfig: component.StringConfig{
-					Alignment:            component.AlignmentLeft,
-					Attributes:           term.Attributes{Fg: term.ColorGray},
-					BackgroundAttributes: term.Attributes{},
-				},
-			},
-			ContentAttr: term.Attributes{},
-			FrameAttr:   term.Attributes{},
-		},
-		ReceiveMessageStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorSilver},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ReceiveMessageSpanConfig: component.SpanConfig{
-			ContentAlignment: component.AlignmentLeft,
-		},
-		ReasoningStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.GetColor("dimgray")},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ReasoningSpanConfig: component.SpanConfig{
-			ContentAlignment: component.AlignmentLeft,
-		},
-		SendMessageStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{},
-			BackgroundAttributes: term.Attributes{},
-		},
-		SendMessageSpanConfig: component.SpanConfig{
-			ContentAlignment: component.AlignmentLeft,
-		},
-		SendMessageBottomPad: 1,
-		ToolCallStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorPurple},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ToolCallSpanConfig: component.SpanConfig{
-			ContentAlignment: component.AlignmentLeft,
-		},
-		ToolCallArgsStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorGray},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ToolResultStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorGray},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ToolResultSpanConfig: component.SpanConfig{
-			ContentAlignment: component.AlignmentLeft,
-		},
-		ErrorStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorRed},
-			BackgroundAttributes: term.Attributes{},
-		},
-		ErrorSpanConfig: component.SpanConfig{
-			PadVertical:      1,
-			ContentAlignment: component.AlignmentLeft,
-		},
-		WarningStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorYellow},
-			BackgroundAttributes: term.Attributes{},
-		},
-		WarningSpanConfig: component.SpanConfig{
-			PadVertical:      1,
-			ContentAlignment: component.AlignmentLeft,
-		},
-		CommandOutputSpanConfig: component.SpanConfig{
-			PadVertical: 1,
-		},
-		ToolResultMaxLines: 5,
-		StartCollapsed:     true,
-		ReasoningAnnotationStringConfig: component.StringConfig{
-			Alignment:  component.AlignmentLeft,
-			Attributes: term.Attributes{Attrs: term.AttrDim},
-		},
-		MarkdownConfig: dialoguetui.DefaultMarkdownConfig(),
-		PromptToolCallStringConfig: component.StringConfig{
-			Alignment:            component.AlignmentLeft,
-			Attributes:           term.Attributes{Fg: term.ColorAqua},
-			BackgroundAttributes: term.Attributes{},
-		},
-		SelectionConfig: dialoguetui.SelectionConfig{
-			TitleStringConfig: component.StringConfig{
-				Alignment:  component.AlignmentLeft,
-				Attributes: term.Attributes{Fg: term.ColorSilver},
-			},
-			OptionStringConfig: component.StringConfig{
-				Alignment:  component.AlignmentLeft,
-				Attributes: term.Attributes{Fg: term.ColorSilver},
-			},
-			CursorStringConfig: component.StringConfig{
-				Alignment:  component.AlignmentLeft,
-				Attributes: term.Attributes{Attrs: term.AttrReverse},
-			},
-			HeaderStringConfig: component.StringConfig{
-				Alignment:  component.AlignmentLeft,
-				Attributes: term.Attributes{Fg: term.ColorYellow},
-			},
-			DescStringConfig: component.StringConfig{
-				Alignment:  component.AlignmentLeft,
-				Attributes: term.Attributes{Fg: term.GetColor("dimgray")},
-			},
-		},
-		// Mirrors the command prompt overlay shipped in cmd/rune/rune.star
-		// ("command.*_attr") rather than the library fallbacks, which the
-		// shipped config overrides.
-		CompletionMatchedTextAttr: term.Attributes{
-			Fg: term.ColorBlue, Attrs: term.AttrBold,
-		},
-		CompletionFocusElementAttr: term.Attributes{Fg: term.ColorPurple},
-		CompletionElementAttr:      term.Attributes{Attrs: term.AttrDim},
-		// Deliberately neutral rather than the command prompt's red: the
-		// shader bakes its blend into literal RGB inside this process,
-		// which has no access to the host's themed palette, so a hue would
-		// clash with themes that remap it.
-		CompletionRadarColor: term.GetColor("dimgray"),
-		InlineAttachmentAttr: term.Attributes{
-			Fg: term.ColorAqua, Attrs: term.AttrUnderline,
-		},
+func registerOpenAITools(
+	registry *agent.Registry, fs workspaceapi.FileSystem, cwd workspaceapi.URI,
+	searcher searchapi.Searcher, tracker *agentools.FileTracker,
+	sessions *agentools.SessionManager, cfg configedit.Config,
+) {
+	for _, provider := range []string{"openai", "codex"} {
+		registry.RegisterOverrides(provider,
+			agentools.NewListDir(fs, cwd),
+			agentools.NewWriteStdin(sessions),
+			agentools.NewGrepFiles(fs, cwd, tracker, searcher),
+		)
+		registry.RegisterReplacement(provider, "bash",
+			agentools.NewExecCommand(sessions, cwd, cfg))
 	}
-)
+}
 
 func defaultMarkdownConfig() *markdown.Config {
 	cfg := markdown.DefaultConfig()
@@ -263,22 +137,37 @@ func defaultMarkdownConfig() *markdown.Config {
 	return &cfg
 }
 
-// loadMCPConfig reads the workspace .mcp.json. A missing or malformed
-// file simply means no MCP servers.
-func loadMCPConfig(fs workspaceapi.FileSystem, root string) (runemcp.Config, bool) {
-	data, err := readWorkspaceFile(fs, filepath.Join(root, ".mcp.json"))
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			slog.Warn("mcp: failed to read .mcp.json", "error", err)
+// loadMCPServers returns the MCP servers of the user configuration's
+// mcpServers merged with the ones the workspace .mcp.json declares.
+// Invalid configuration is reported through noti and contributes no
+// servers.
+func loadMCPServers(
+	fs workspaceapi.FileSystem, root string, pconfig config.Config,
+	noti browserapi.Notifications,
+) map[string]runemcp.ServerConfig {
+	var user map[string]runemcp.ServerConfig
+	if raw, err := pconfig.GetMap("mcpServers"); err == nil {
+		if user, err = runemcp.ParseServers(raw); err != nil {
+			_, _ = noti.Notify(browserapi.LevelWarn, "mcpServers: invalid config: %v", err)
 		}
-		return runemcp.Config{}, false
+	} else if !errors.Is(err, config.ErrNotFound) {
+		_, _ = noti.Notify(browserapi.LevelWarn, "mcpServers: invalid config: %v", err)
 	}
-	cfg, err := runemcp.LoadConfig(data)
-	if err != nil {
-		slog.Warn("mcp: failed to parse .mcp.json", "error", err)
-		return runemcp.Config{}, false
+
+	var workspace map[string]runemcp.ServerConfig
+	data, err := readWorkspaceFile(fs, filepath.Join(root, ".mcp.json"))
+	switch {
+	case err == nil:
+		cfg, err := runemcp.LoadConfig(data)
+		if err != nil {
+			_, _ = noti.Notify(browserapi.LevelWarn, ".mcp.json: invalid config: %v", err)
+			break
+		}
+		workspace = cfg.MCPServers
+	case !errors.Is(err, os.ErrNotExist):
+		_, _ = noti.Notify(browserapi.LevelWarn, "read .mcp.json: %v", err)
 	}
-	return cfg, len(cfg.MCPServers) > 0
+	return runemcp.Merge(user, workspace)
 }
 
 func defaultAgentsConfig(systemPrompt string) *agent.Cfg {
@@ -290,6 +179,20 @@ func defaultAgentsConfig(systemPrompt string) *agent.Cfg {
 			AllowAny:     true,
 		},
 	})
+}
+
+// resolveMaxTokens reads max_tokens, the global max-output-token budget
+// the console's `max_tokens` command persists. Zero means the
+// provider/config default; non-positive or malformed values map to it.
+func resolveMaxTokens(pconfig config.Config) int {
+	v, err := pconfig.GetInt("max_tokens")
+	if err != nil {
+		if !errors.Is(err, config.ErrNotFound) {
+			slog.Warn("get 'max_tokens' from config", "error", err)
+		}
+		return 0
+	}
+	return max(0, v)
 }
 
 func newCommandEventHandler(
@@ -312,18 +215,13 @@ func newCommandEventHandler(
 	}
 
 	lsp := w.LSP(ctx)
+	searcher := w.Search(ctx)
 	cfg := configedit.NewConfig(fs, cwd, pconfig)
-	tools, tracker := agentools.DefaultTools(fs, executor, cwd, lsp, toolsCfg, cfg)
-
-	fetcher := webfetch.NewHTTPFetcher(webfetch.DefaultConfig())
-	tools = append(tools, agentools.NewWebFetch(fetcher))
+	tools, tracker := agentools.DefaultTools(fs, executor, cwd, lsp, searcher, toolsCfg, cfg)
 
 	parser := w.Parser(ctx)
 	tools = append(tools, agentools.LSPTools(lsp, fs, parser, cwd, tracker)...)
 	tools = append(tools, agentools.SyntaxTools(parser, fs, cwd, tracker)...)
-
-	mcpManager := runemcp.NewManager(executor, cwd.Path())
-	mcpCfg, hasMCP := loadMCPConfig(fs, cwd.Path())
 
 	// Discover skills from config dirs.
 	var skillDirs []string
@@ -350,30 +248,21 @@ func newCommandEventHandler(
 	dialogueStore := dialoguemanager.NewStore(db, sessionsDir)
 	tools = append(tools, agentools.ConversationTools(dialogueStore, fs, sessionsDir)...)
 
+	mcpManager := runemcp.NewManager(executor, cwd.Path(),
+		runemcp.NewCredentialStore(w.DataDir(ctx), db))
+	mcpServers := loadMCPServers(fs, cwd.Path(), pconfig, w.Notifications(ctx))
+
 	ret = new(aiEditorHandler)
 	ret.ctx, ret.cancelCtx = context.WithCancel(context.Background())
 	ret.ed = ed
 	ret.config = cfg
 	ret.mcpManager = mcpManager
+	ret.mcpServers = mcpServers
 	ret.baseTools = tools
 	ret.toolRegistry = agent.NewRegistry(tools...)
 	ret.executor = executor
 	ret.sessionMgr = agentools.NewSessionManager(ret.ctx, executor, terminal)
-	ret.toolRegistry.RegisterOverrides("openai",
-		agentools.NewListDir(fs, cwd),
-		agentools.NewWriteStdin(ret.sessionMgr),
-	)
-	ret.toolRegistry.RegisterOverrides("codex",
-		agentools.NewListDir(fs, cwd),
-		agentools.NewWriteStdin(ret.sessionMgr),
-	)
-	for _, provider := range []string{"openai", "codex"} {
-		ret.toolRegistry.RegisterReplacement(provider, "search_content",
-			agentools.NewGrepFiles(fs, cwd, tracker))
-		ret.toolRegistry.RegisterReplacement(provider, "bash",
-			agentools.NewExecCommand(ret.sessionMgr, cwd, cfg))
-		ret.toolRegistry.RegisterExclusions(provider, "compact")
-	}
+	registerOpenAITools(ret.toolRegistry, fs, cwd, searcher, tracker, ret.sessionMgr, cfg)
 	geminitools.Register(ret.toolRegistry)
 	ret.systemPrompt = agent.DefaultSystemPrompt(cwd)
 	ret.attribution = agent.DefaultAttribution()
@@ -411,6 +300,11 @@ func newCommandEventHandler(
 	} else {
 		ret.browserDir = dir
 	}
+	if dir, err := imageGenDir(ctx, w); err != nil {
+		slog.Warn("imagegen tool unavailable", "error", err)
+	} else {
+		ret.imagesDir = dir
+	}
 	ret.memoryPath = memoryPath
 	ret.cwd = cwd
 	ret.fs = fs
@@ -432,6 +326,7 @@ func newCommandEventHandler(
 	} else if err != nil && !errors.Is(err, config.ErrNotFound) {
 		slog.Warn("get 'auto_compact_ratio' from config", "error", err)
 	}
+	ret.defaultMaxTokens = resolveMaxTokens(pconfig)
 	ret.reviewContextLines = resolveReviewContextLines(pconfig)
 	ret.git = vctrl.NewGitCommand(cwd, executor, fs)
 	// The host-provided llmapi.Service (w.LLM(ctx)) owns provider auth,
@@ -460,194 +355,18 @@ func newCommandEventHandler(
 	ret.hookRunner = hooks.NewRunner(hooksCfg, executor, noti, cwd.Path())
 
 	hostConfig := w.Config(ctx)
-	ret.cfg = defaultComponentCfg
+	ret.clip = text.NewSystemClipboard()
+	ret.cfg = dialoguetui.ReadConfig(pconfig, hostConfig, ret.clip, noti)
 	ret.cfg.MarkdownConfig.Parser = w.Parser(ctx)
-	backgroundAttr, err := config.GetAttributes(pconfig, "background_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'background_attr' from extension config", "error", err)
-		}
-	}
-	ret.cfg.ReceiveMessageStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.InputBox.PlaceholderConfig.BackgroundAttributes = backgroundAttr
-
-	ret.cfg.InputBox.FrameAttr.Bg = backgroundAttr.Bg
-	ret.cfg.InputBox.PlaceholderConfig.Bg = backgroundAttr.Bg
-	ret.cfg.InputBox.ContentAttr.Bg = backgroundAttr.Bg
-
-	ret.cfg.ReceiveMessageStringConfig.Bg = backgroundAttr.Bg
-
-	sendMsgBackgroundAttr, err := config.GetAttributes(pconfig, "user_msg_background_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'user_msg_background_attr' from extension config", "error", err)
-		}
-		sendMsgBackgroundAttr = term.Attributes{Bg: term.ColorGray}
-	}
-	ret.cfg.SendMessageStringConfig.BackgroundAttributes = sendMsgBackgroundAttr
-	ret.cfg.SendMessageStringConfig.Bg = sendMsgBackgroundAttr.Bg
-	ret.cfg.ReasoningStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ReasoningStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.ToolCallStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ToolCallStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.ToolCallArgsStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ToolCallArgsStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.ToolResultStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ToolResultStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.ReasoningAnnotationStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ReasoningAnnotationStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.ErrorStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.ErrorStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.WarningStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.WarningStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.PromptToolCallStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.PromptToolCallStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.SelectionConfig.TitleStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.SelectionConfig.TitleStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.SelectionConfig.OptionStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.SelectionConfig.OptionStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.SelectionConfig.CursorStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.SelectionConfig.CursorStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.SelectionConfig.HeaderStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.SelectionConfig.HeaderStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.SelectionConfig.DescStringConfig.BackgroundAttributes = backgroundAttr
-	ret.cfg.SelectionConfig.DescStringConfig.Bg = backgroundAttr.Bg
-	ret.cfg.BackgroundColor = backgroundAttr.Bg
-	ret.backgroundAttr = backgroundAttr
-
-	sendMsgAttr, err := config.GetAttributes(pconfig, "user_msg_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'user_msg_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.SendMessageStringConfig.Attributes = sendMsgAttr
-	}
-	recvMsgAttr, err := config.GetAttributes(pconfig, "assistant_msg_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'assistant_msg_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.ReceiveMessageStringConfig.Attributes = recvMsgAttr
-	}
-
-	inputBoxAttr, err := config.GetAttributes(pconfig, "input_box_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'input_box_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InputBox.ContentAttr = inputBoxAttr
-	}
-	ret.cfg.InputBackgroundColor = resolveInputBackgroundColor(
-		ret.cfg.InputBackgroundColor, pconfig)
-	inputBoxPlaceholderAttr, err := config.GetAttributes(pconfig, "input_box_placeholder_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("Error getting 'input_box_placeholder_attr'"+
-				" from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InputBox.PlaceholderConfig.Attributes = inputBoxPlaceholderAttr
-	}
-
-	inputBoxFrameAttr, err := config.GetAttributes(pconfig, "input_box_frame_attr")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("Error getting 'input_box_frame_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InputBox.FrameAttr = inputBoxFrameAttr
-	}
-
-	inputBoxFrameCharset, err := tconfig.GetFrameCharset(
-		pconfig, "input_box_frame_charset", ret.cfg.InputBox.FrameCharSet)
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'input_box_frame_charset' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InputBox.FrameCharSet = inputBoxFrameCharset
-	}
-
-	inputBgColor, err := pconfig.GetColor("input_background_color")
-	if err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'input_background_color' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InputBackgroundColor = inputBgColor
-	}
-
-	if attr, err := config.GetAttributes(pconfig, "completion_matched_text_attr"); err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'completion_matched_text_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.CompletionMatchedTextAttr = attr
-	}
-	if attr, err := config.GetAttributes(pconfig, "completion_focus_element_attr"); err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'completion_focus_element_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.CompletionFocusElementAttr = attr
-	}
-	if attr, err := config.GetAttributes(pconfig, "completion_element_attr"); err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'completion_element_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.CompletionElementAttr = attr
-	}
-	if col, err := pconfig.GetColor("completion_radar_color"); err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'completion_radar_color' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.CompletionRadarColor = col
-	}
-	if attr, err := config.GetAttributes(pconfig, "inline_attachment_attr"); err != nil {
-		if err != config.ErrNotFound {
-			slog.Warn("get 'inline_attachment_attr' from extension config", "error", err)
-		}
-	} else {
-		ret.cfg.InlineAttachmentAttr = attr
-	}
-	ret.cfg.StatusBar = statusBarConfig(pconfig, hostConfig, noti)
-	ret.cfg.StatusBar.DurationPrecision = ret.cfg.DurationPrecision
 
 	ret.queryDefaultModel = queryModelAlias
 
 	ret.compactModel = compactModelAlias
 
-	ret.clip = text.NewSystemClipboard()
-	ret.cfg.Clipboard = ret.clip
-	// Copy confirmations are UI feedback, not agent events, so they skip
-	// the Notification hooks that wrap h.n.
-	ret.cfg.Notifications = noti
-
-	// Resolve the configured editor for composing messages. On error the
-	// compose editor stays nil and dialoguetui falls back to its inputbox.
-	if editor, cerr := extutil.Editor(ret.clip, hostConfig); cerr != nil {
-		slog.Warn("resolve dialogue editor, using inputbox", "error", cerr)
-	} else {
-		ret.cfg.Editor = editor
-		if modal, merr := extutil.EditorModal(w.Config(ctx)); merr != nil {
-			slog.Warn("resolve dialogue editor mode", "error", merr)
-		} else {
-			ret.cfg.EditorModal = modal
-		}
-		ret.cfg.ModalStartInsert = true
-		if startInsert, serr := pconfig.GetBool("editor_modal_start_insert"); serr == nil {
-			ret.cfg.ModalStartInsert = startInsert
-		} else if !errors.Is(serr, config.ErrNotFound) {
-			slog.Warn("get 'editor_modal_start_insert' from config", "error", serr)
-		}
-	}
-
 	ret.db = db
+	ret.cfg.StatusBar.Storage = storageapi.WithPartition(db, statusBarImagesPartition)
+	ret.cfg.InputBox.GraphicsStorage = storageapi.WithPartition(db, frameImagesPartition)
+	ret.imageCache = storageapi.WithPartition(db, transcriptImagesPartition)
 	if auditEnabled, _ := pconfig.GetBool("audit_enabled"); auditEnabled {
 		ret.auditStore = audit.NewStore(ret.db)
 	}
@@ -704,31 +423,203 @@ func newCommandEventHandler(
 			Hooks:               ret.hookRunner,
 		},
 	)
+	ret.queryAgent.SetMaxOutputTokens(ret.defaultMaxTokens)
 
 	ret.agentsConfig = defaultAgentsConfig(ret.systemPrompt)
 
-	// Starting an MCP server needs StartCommand authorization, which
-	// blocks until the user answers a prompt. Connect in the background
-	// so the agent registers its commands immediately.
-	if hasMCP {
-		mcpManager.OnServerExit = func(name, detail string) {
-			_, _ = ret.n.Notify(browserapi.LevelError,
-				"MCP server %q %s", name, detail)
-		}
+	ret.mcpTrust = newMCPTrust(db, w.Prompter(ctx))
+	ret.wireMCPManager()
+	// Starting an MCP server needs StartCommand authorization or the
+	// user's trust, which block until the user answers a prompt.
+	// Connect in the background so the agent registers its commands
+	// immediately.
+	if len(mcpServers) > 0 {
 		go debug.CapturePanicReport(func() {
-			ret.connectMCPServers(mcpCfg)
+			ret.connectMCPServers(mcpServers)
 		})
 	}
 
 	return ret, nil
 }
 
+// newLinkClickHandler shows http, https and file links through o, resolving
+// scheme-less file paths against cwd. A file link to a source location then
+// moves the cursor of the editor ed returns for it. Fragment-only links,
+// network references and other schemes are left to the dialogue.
+func newLinkClickHandler(
+	mu sync.Locker,
+	cwd workspaceapi.URI,
+	o browserapi.ResourceOpener,
+	ed cursorEditor,
+	noti browserapi.Notifications,
+) func(*url.URL) bool {
+	return func(link *url.URL) bool {
+		switch link.Scheme {
+		case "http", "https", "file":
+		case "":
+			if link.Path == "" || link.Host != "" || link.User != nil {
+				return false
+			}
+		default:
+			return false
+		}
+		// The dialogue calls this holding mu, which its stream consumer needs
+		// too, and the opener, editor and Notify wait on the host's lock.
+		// Relock in a defer so a panic still hands mu back to the dialogue's
+		// deferred Unlock.
+		mu.Unlock()
+		defer mu.Lock()
+		if err := showDialogueLink(cwd, link, o, ed); err != nil {
+			_, _ = noti.Notify(browserapi.LevelError, "open %s: %v", link, err)
+		}
+		return true
+	}
+}
+
+func showDialogueLink(
+	cwd workspaceapi.URI, link *url.URL, o browserapi.ResourceOpener, ed cursorEditor,
+) error {
+	uri, pos, err := dialogueLinkURI(cwd, link)
+	if err != nil {
+		return err
+	}
+	if err := o.Show(uri); err != nil {
+		return err
+	}
+	if pos == nil {
+		return nil
+	}
+	// Show also succeeds for resources it routes to another workspace,
+	// whose editors ed cannot reach, so a failed lookup is reported as
+	// the navigation failing rather than the file failing to open.
+	eh, err := ed.Editor(uri)
+	if err == nil {
+		err = ed.SetCursor(eh, *pos)
+	}
+	if err != nil {
+		return fmt.Errorf("go to %d:%d: %w", pos.Y+1, pos.X+1, err)
+	}
+	return nil
+}
+
+// dialogueLinkURI resolves link against the workspace directory cwd. When
+// the last path segment of a file or scheme-less link ends in :line or
+// :line:column, the location is removed from the URI and returned as
+// zero-based coordinates, which are nil for links without one. Only
+// unescaped colons delimit a location, so %3A keeps a colon in the file name.
+func dialogueLinkURI(
+	cwd workspaceapi.URI, link *url.URL,
+) (workspaceapi.URI, *term.Coordinates, error) {
+	var pos *term.Coordinates
+	if link.Scheme == "" || link.Scheme == "file" {
+		escaped, loc, err := splitSourceLocation(link.EscapedPath())
+		if err != nil {
+			return workspaceapi.URI{}, nil, err
+		}
+		if loc != nil {
+			stripped := *link
+			if stripped.Path, err = url.PathUnescape(escaped); err != nil {
+				return workspaceapi.URI{}, nil, err
+			}
+			stripped.RawPath = escaped
+			link, pos = &stripped, loc
+		}
+	}
+	if link.Scheme == "" {
+		base, err := url.Parse(cwd.String())
+		if err != nil {
+			return workspaceapi.URI{}, nil, err
+		}
+		// The workspace URI denotes a directory even without a trailing slash.
+		base.Path = strings.TrimSuffix(base.Path, "/") + "/"
+		base.RawPath = ""
+		link = base.ResolveReference(link)
+	}
+	uri, err := workspaceapi.ParseURI(link.String())
+	return uri, pos, err
+}
+
+// splitSourceLocation splits a one-based :line or :line:column suffix off
+// the last segment of the escaped path p. A colon followed by anything but
+// a decimal number is part of the file name. A number that cannot be a
+// position, such as zero, a signed number or one overflowing int32, is an
+// error rather than a file name, so the link never opens a file named after
+// part of its location.
+func splitSourceLocation(p string) (string, *term.Coordinates, error) {
+	dir, file := path.Split(p)
+	fields := strings.Split(file, ":")
+	n := len(fields)
+	if n < 2 || !isLocationField(fields[n-1]) {
+		return p, nil, nil
+	}
+	loc := fields[n-1:]
+	if n > 2 && isLocationField(fields[n-2]) {
+		loc = fields[n-2:]
+	}
+	name := strings.Join(fields[:n-len(loc)], ":")
+	suffix := ":" + strings.Join(loc, ":")
+	if name == "" {
+		return "", nil, fmt.Errorf("source location %q names no file", suffix)
+	}
+	lineCol := [2]int{1, 1}
+	for i, f := range loc {
+		v, err := strconv.ParseInt(f, 10, 32)
+		if err != nil || v < 1 || f[0] < '0' || f[0] > '9' {
+			return "", nil, fmt.Errorf("invalid source location %q", suffix)
+		}
+		lineCol[i] = int(v)
+	}
+	return dir + name, &term.Coordinates{X: lineCol[1] - 1, Y: lineCol[0] - 1}, nil
+}
+
+// isLocationField reports whether f is written as a decimal number, signed
+// or not, whether or not it is a valid position.
+func isLocationField(f string) bool {
+	if f != "" && (f[0] == '+' || f[0] == '-') {
+		f = f[1:]
+	}
+	return f != "" && strings.Trim(f, "0123456789") == ""
+}
+
+const transcriptImagesPartition = "transcript-images"
+
+// frameImagesPartition caches the images of the compose box frame.
+const frameImagesPartition = "frame_images"
+
+// statusBarImagesPartition caches the images status bar layouts download.
+const statusBarImagesPartition = "status_bar_images"
+
+// dialogueConfig returns the config for a dialogue whose handler is given
+// mu, which the dialogue holds while it calls OnLinkClick.
+func (h *aiEditorHandler) dialogueConfig(mu sync.Locker) dialoguetui.ComponentConfig {
+	h.statusBarMu.Lock()
+	cfg := h.cfg
+	h.statusBarMu.Unlock()
+	cfg.OnLinkClick = newLinkClickHandler(mu, h.cwd, h.o, h.ed, h.n)
+	md := dialoguetui.DefaultMarkdownConfig()
+	if cfg.MarkdownConfig != nil {
+		shared := *cfg.MarkdownConfig
+		md = &shared
+	}
+	md.FS = h.fs
+	md.Dir = h.cwd.Path()
+	// Markdown rejects an interrupter without storage, so set them together.
+	if h.imageCache != nil {
+		md.Storage = h.imageCache
+		md.Interrupter = h.p
+	}
+	cfg.MarkdownConfig = md
+	return cfg
+}
+
 type aiEditorHandler struct {
-	exit                atomic.Uint32
-	llmSvc              llmapi.Service
-	defaultModel        string
+	exit         atomic.Uint32
+	llmSvc       llmapi.Service
+	defaultModel string
+	// statusBarMu guards cfg.StatusBar, cfg.InputBox and
+	// cfg.InputBackgroundColor, which a config reload replaces.
+	statusBarMu         sync.Mutex
 	cfg                 dialoguetui.ComponentConfig
-	backgroundAttr      term.Attributes
 	dialogueStore       dialoguemanager.Store
 	queryAgent          *agent.Agent
 	queryDefaultModel   string
@@ -743,6 +634,8 @@ type aiEditorHandler struct {
 	baseTools           []agent.Tool
 	chatRegistries      map[string][]*agent.Registry
 	mcpManager          *runemcp.Manager
+	mcpTrust            *mcpTrust
+	mcpServers          map[string]runemcp.ServerConfig
 	sessionMgr          *agentools.SessionManager
 
 	maxToolOutputBytes int
@@ -757,10 +650,12 @@ type aiEditorHandler struct {
 	o              browserapi.ResourceOpener
 	p              term.Interrupter
 	db             storageapi.Service
+	imageCache     storageapi.Service
 	config         configedit.Config
 	skillRegistry  *skills.SkillRegistry
 	plansDir       string
 	browserDir     string
+	imagesDir      string
 	memoryDataPath string
 	exec           workspaceapi.Executor
 	lsp            semanticapi.LSP
@@ -812,38 +707,61 @@ func (h *aiEditorHandler) tools() []agent.Tool {
 	return slices.Clone(h.baseTools)
 }
 
-// addTools appends late-arriving tools to the base set and forwards
-// them to every subscribed conversation, so tools from MCP servers that
-// finish connecting mid-session reach chats that are already open.
-func (h *aiEditorHandler) addTools(tools ...agent.Tool) {
-	if len(tools) == 0 {
+// replaceMCPTools applies a change to an MCP server's tools: removed
+// leave the base set and added join it. The change reaches every
+// subscribed conversation, so servers that connect, sign in or change
+// their tools mid-session update chats that are already open.
+func (h *aiEditorHandler) replaceMCPTools(server string, added []agent.Tool, removed []string) {
+	if len(added) == 0 && len(removed) == 0 {
 		return
 	}
 	h.baseToolsMu.Lock()
 	defer h.baseToolsMu.Unlock()
-	h.baseTools = append(h.baseTools, tools...)
-	h.toolRegistry.Add(tools...)
+	if len(removed) > 0 {
+		h.baseTools = slices.DeleteFunc(h.baseTools, func(t agent.Tool) bool {
+			return slices.Contains(removed, t.Definition().Function.Name)
+		})
+	}
+	h.baseTools = append(h.baseTools, added...)
+	h.toolRegistry.Remove(removed...)
+	h.toolRegistry.Add(added...)
 	for _, regs := range h.chatRegistries {
 		for _, r := range regs {
-			r.Add(tools...)
+			r.Remove(removed...)
+			r.Add(added...)
 		}
 	}
 }
 
-// subscribeTools registers a conversation's registries to receive tools
-// that arrive after its snapshot was taken. The delta between the
-// snapshot and the current base set is applied immediately, under the
-// same lock addTools uses, so no tool can fall between snapshot and
-// subscription.
+// subscribeTools registers a conversation's registries, built from
+// snapshot, to receive later MCP tool changes. Whatever changed between
+// the snapshot and the subscription is applied immediately, under the
+// same lock replaceMCPTools uses, so no change can fall between them.
 func (h *aiEditorHandler) subscribeTools(
-	id string, snapshotLen int, regs ...*agent.Registry,
+	id string, snapshot []agent.Tool, regs ...*agent.Registry,
 ) {
 	h.baseToolsMu.Lock()
 	defer h.baseToolsMu.Unlock()
-	if delta := h.baseTools[snapshotLen:]; len(delta) > 0 {
-		for _, r := range regs {
-			r.Add(delta...)
+	stale := make(map[string]llmapi.Tool, len(snapshot))
+	for _, t := range snapshot {
+		def := t.Definition()
+		stale[def.Function.Name] = def
+	}
+	var added []agent.Tool
+	for _, t := range h.baseTools {
+		def := t.Definition()
+		old, ok := stale[def.Function.Name]
+		delete(stale, def.Function.Name)
+		// A server that redefines a tool keeps its name, so compare the
+		// definitions too.
+		if !ok || !reflect.DeepEqual(old, def) {
+			added = append(added, t)
 		}
+	}
+	removed := slices.Collect(maps.Keys(stale))
+	for _, r := range regs {
+		r.Remove(removed...)
+		r.Add(added...)
 	}
 	if h.chatRegistries == nil {
 		h.chatRegistries = make(map[string][]*agent.Registry)
@@ -857,55 +775,201 @@ func (h *aiEditorHandler) unsubscribeTools(id string) {
 	delete(h.chatRegistries, id)
 }
 
-// warnPendingMCPServers tells a freshly opened conversation which MCP
-// servers are still starting, so missing tools are explained rather
-// than silently absent.
-func (h *aiEditorHandler) warnPendingMCPServers(tx chan<- dialoguetui.MessageEvent) {
+// wireMCPManager routes the MCP manager's events to the user: changed
+// tools to every conversation, and servers that stop or need sign-in to
+// a notification and to every open chat.
+func (h *aiEditorHandler) wireMCPManager() {
+	h.mcpManager.OnServerExit = func(name, detail string) {
+		_, _ = h.n.Notify(browserapi.LevelError, "MCP server %q %s", name, detail)
+		h.warnChatsAboutMCPServer(name)
+	}
+	h.mcpManager.OnToolsChanged = h.replaceMCPTools
+	h.mcpManager.OnNeedsAuth = func(name string) {
+		_, _ = h.n.Notify(browserapi.LevelWarn,
+			"MCP server %q needs sign-in: run `agent mcp login %s`", name, name)
+		h.warnChatsAboutMCPServer(name)
+	}
+	h.mcpManager.Open = h.openURL
+}
+
+// mcpChatWarning explains to a conversation why the tools of srv are
+// missing, or returns "" when they are not.
+func mcpChatWarning(srv *runemcp.ServerInfo) string {
+	switch srv.Status {
+	case runemcp.StatusConnecting:
+		return fmt.Sprintf("MCP server %q is still starting. "+
+			"Its tools will join this conversation once connected.", srv.Name)
+	case runemcp.StatusNeedsAuth:
+		reason := srv.Error
+		if reason == "" {
+			reason = fmt.Sprintf("needs sign-in: run `agent mcp login %s`", srv.Name)
+		}
+		return fmt.Sprintf("MCP server %q %s. "+
+			"Its tools will join this conversation once you sign in.", srv.Name, reason)
+	case runemcp.StatusError:
+		if srv.Blocked {
+			return fmt.Sprintf("MCP server %q is unavailable: %s", srv.Name, srv.Error)
+		}
+		return fmt.Sprintf("MCP server %q is unavailable: %s\n"+
+			"Run `agent mcp reconnect %s` to try again.", srv.Name, srv.Error, srv.Name)
+	}
+	return ""
+}
+
+// warnUnavailableMCPServers tells a freshly opened conversation which
+// MCP servers are still starting, wait for sign-in or failed, so missing
+// tools are explained rather than silently absent.
+func (h *aiEditorHandler) warnUnavailableMCPServers(tx chan<- dialoguetui.MessageEvent) {
 	if h.mcpManager == nil {
 		return
 	}
-	var pending []string
+	var lines []string
 	for _, srv := range h.mcpManager.Servers() {
-		if srv.Status == runemcp.StatusConnecting {
-			pending = append(pending, srv.Name)
+		if w := mcpChatWarning(srv); w != "" {
+			lines = append(lines, w)
 		}
 	}
-	if len(pending) == 0 {
+	if len(lines) == 0 {
 		return
 	}
 	tx <- dialoguetui.MessageEvent{
 		Type: dialoguetui.MessageEventWarning,
-		Text: fmt.Sprintf(
-			"MCP server(s) still starting: %s. Their tools will join this conversation once connected.",
-			strings.Join(pending, ", ")),
+		Text: strings.Join(lines, "\n"),
 	}
 }
 
-// connectMCPServers brings up every configured MCP server, keeping the
-// user informed: a progress notification stays open while a server
-// starts (authorization may hold it for a while), and resolves into a
-// success or error notification. Tools reach the base set and every
-// open conversation as each server comes up.
-func (h *aiEditorHandler) connectMCPServers(cfg runemcp.Config) {
-	for _, name := range slices.Sorted(maps.Keys(cfg.MCPServers)) {
-		id, nerr := h.n.Notify(browserapi.LevelInfo,
-			"Starting MCP server %q…", name)
-		if nerr == nil {
-			_ = h.n.UpdateNotificationProgress(id, "", 0, 1)
+// warnChatsAboutMCPServer tells every open chat why the server named
+// name became unavailable, so a chat that was promised its tools, or
+// relied on them, learns why they are missing. Chats opened later learn
+// it from warnUnavailableMCPServers.
+func (h *aiEditorHandler) warnChatsAboutMCPServer(name string) {
+	var text string
+	for _, srv := range h.mcpManager.Servers() {
+		// A server back to starting is being reconnected, which settles
+		// in its own warning or in its tools joining.
+		if srv.Name == name && srv.Status != runemcp.StatusConnecting {
+			text = mcpChatWarning(srv)
 		}
-		tools, err := h.mcpManager.ConnectServer(h.ctx, name, cfg.MCPServers[name])
-		if nerr == nil {
-			_ = h.n.UpdateNotificationProgress(id, "", 1, 1)
+	}
+	if text == "" {
+		return
+	}
+	// The warning goes straight to each chat's component rather than
+	// through its event channel, which its agent loop closes when the
+	// chat closes.
+	warned := false
+	h.openChats.Range(func(_, v any) bool {
+		if sc, ok := v.(syncComponent); ok {
+			sc.addWarning(text)
+			warned = true
 		}
-		if err != nil {
-			_, _ = h.n.Notify(browserapi.LevelError,
-				"MCP server %q failed to start: %v", name, err)
-			continue
+		return true
+	})
+	if warned && h.p != nil {
+		_ = h.p.Interrupt(h.ctx)
+	}
+}
+
+// connectMCPServers brings up every configured MCP server concurrently,
+// keeping the user informed: a progress notification stays open while a
+// server starts (authorization may hold it for a while), and resolves
+// into a success, warning or error notification. Tools reach the base
+// set and every open conversation as each server comes up.
+func (h *aiEditorHandler) connectMCPServers(servers map[string]runemcp.ServerConfig) {
+	var wg sync.WaitGroup
+	for _, name := range slices.Sorted(maps.Keys(servers)) {
+		wg.Add(1)
+		go debug.CapturePanicReport(func() {
+			defer wg.Done()
+			h.connectMCPServer(name, servers[name])
+		})
+	}
+	wg.Wait()
+}
+
+func (h *aiEditorHandler) connectMCPServer(name string, raw runemcp.ServerConfig) {
+	cfg, err := h.prepareMCPServer(h.ctx, name, raw)
+	if err != nil {
+		if h.ctx.Err() == nil {
+			_, _ = h.n.Notify(browserapi.LevelWarn, "MCP server %q is not connected: %v", name, err)
+			h.warnChatsAboutMCPServer(name)
 		}
-		h.addTools(tools...)
+		return
+	}
+	id, nerr := h.n.Notify(browserapi.LevelInfo, "Starting MCP server %q…", name)
+	if nerr == nil {
+		_ = h.n.UpdateNotificationProgress(id, "", 0, 1)
+	}
+	tools, err := h.mcpManager.ConnectServer(h.ctx, name, cfg)
+	if nerr == nil {
+		_ = h.n.UpdateNotificationProgress(id, "", 1, 1)
+	}
+	switch {
+	case errors.Is(err, runemcp.ErrNeedsAuth):
+		_, _ = h.n.Notify(browserapi.LevelWarn,
+			"MCP server %q needs sign-in: run `agent mcp login %s`", name, name)
+		h.warnChatsAboutMCPServer(name)
+	case err != nil:
+		_, _ = h.n.Notify(browserapi.LevelError,
+			"MCP server %q failed to start: %v", name, err)
+		h.warnChatsAboutMCPServer(name)
+	default:
+		h.replaceMCPTools(name, tools, nil)
 		_, _ = h.n.Notify(browserapi.LevelSuccess,
 			"MCP server %q is up: %d tools available", name, len(tools))
 	}
+}
+
+// prepareMCPServer expands the environment variables in the server's
+// config raw and asks for the user's trust where needed, recording the
+// server with the manager either way. It returns the config to connect
+// with, or why the server must not connect, which the manager keeps as
+// the server's error until the server is prepared again.
+func (h *aiEditorHandler) prepareMCPServer(
+	ctx context.Context, name string, raw runemcp.ServerConfig,
+) (runemcp.ServerConfig, error) {
+	cfg, exp, err := runemcp.ExpandConfig(raw, os.LookupEnv)
+	if err != nil {
+		h.mcpManager.Register(name, raw, nil, err)
+		return runemcp.ServerConfig{}, err
+	}
+	var warnings []string
+	for _, v := range exp.Missing {
+		warnings = append(warnings, fmt.Sprintf("environment variable %s is not set", v))
+	}
+	if kind, _ := cfg.Transport(); kind != runemcp.TransportStdio && h.cwd.Scheme() != "file" {
+		if u, err := url.Parse(cfg.URL); err == nil && runemcp.IsLoopbackHost(u.Hostname()) {
+			warnings = append(warnings, fmt.Sprintf(
+				"%s resolves on this machine, not the workspace host", u.Host))
+			_, _ = h.n.Notify(browserapi.LevelWarn,
+				"MCP server %q uses %s, which resolves on this machine, not the workspace host",
+				name, u.Host)
+		}
+	}
+	h.mcpManager.Register(name, cfg, warnings, nil)
+
+	ok, err := h.mcpTrust.Allow(ctx, h.cwd, name, raw, exp)
+	if err == nil && !ok {
+		err = fmt.Errorf("not trusted: run `agent mcp trust %s`", name)
+	}
+	if err != nil {
+		h.mcpManager.Register(name, cfg, warnings, err)
+		return runemcp.ServerConfig{}, err
+	}
+	return cfg, nil
+}
+
+// openURL shows an http or https URL through the host, which opens it
+// in the user's browser.
+func (h *aiEditorHandler) openURL(rawURL string) error {
+	uri, err := workspaceapi.ParseURI(rawURL)
+	if err != nil {
+		return err
+	}
+	if s := uri.Scheme(); s != "http" && s != "https" {
+		return fmt.Errorf("refusing to open %s URL", s)
+	}
+	return h.o.Show(uri)
 }
 
 // modelService resolves a model entry from the host-provided LLM
@@ -951,12 +1015,92 @@ func (h *aiEditorHandler) setDefaultMaxTokens(n int) {
 	h.defaultMaxTokens = n
 	h.defaultsMu.Unlock()
 	h.queryAgent.SetMaxOutputTokens(n)
-	h.openChatAgents.Range(func(_, v any) bool {
+	h.openChatAgents.Range(func(id, v any) bool {
 		if ag, ok := v.(*agent.Agent); ok {
 			ag.SetMaxOutputTokens(n)
 		}
+		if sc, ok := h.openChats.Load(id); ok {
+			if sc, ok := sc.(syncComponent); ok {
+				sc.setStatusBarState(func(s *dialoguetui.StatusBarState) {
+					s.MaxTokens = n
+				})
+			}
+		}
 		return true
 	})
+}
+
+// watchReload reloads the style of the chats from the config fetch
+// returns each time reload delivers, until ctx ends. A nil reload never
+// delivers.
+func (h *aiEditorHandler) watchReload(
+	ctx context.Context, reload <-chan os.Signal, fetch func(context.Context) config.Config,
+) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-reload:
+		}
+		if err := h.reloadStyle(ctx, fetch(ctx)); err != nil {
+			slog.Warn("reload the chat style", "error", err)
+		}
+	}
+}
+
+// reloadStyle configures the status bar, the compose box frame and the
+// compose box colours of the open chats, and of those opened from now on,
+// with the status_bar block, input_box_frame_charset and input box colours
+// host holds for this extension, reading their images again. host is the
+// config Rune serves; a host that could not be fetched leaves the chats as
+// they are.
+func (h *aiEditorHandler) reloadStyle(ctx context.Context, host config.Config) error {
+	own, err := ownConfig(host)
+	if err != nil {
+		return err
+	}
+	h.statusBarMu.Lock()
+	cfg := h.cfg
+	h.statusBarMu.Unlock()
+	cfg, frameImages := dialoguetui.ReadStyle(ctx, cfg, own, host, h.n)
+
+	h.statusBarMu.Lock()
+	h.cfg.StatusBar = cfg.StatusBar
+	h.cfg.InputBox.FrameCharSet = cfg.InputBox.FrameCharSet
+	h.cfg.InputBox.FrameAttr = cfg.InputBox.FrameAttr
+	h.cfg.InputBox.ContentAttr = cfg.InputBox.ContentAttr
+	h.cfg.InputBackgroundColor = cfg.InputBackgroundColor
+	h.statusBarMu.Unlock()
+	h.openChats.Range(func(_, v any) bool {
+		// Chats still opening hold no component yet; they read the
+		// config they open with afterwards.
+		if sc, ok := v.(syncComponent); ok {
+			sc.setStatusBarConfig(cfg.StatusBar)
+			sc.setInputBoxFrameCharSet(cfg.InputBox.FrameCharSet, frameImages)
+			sc.setInputBoxColors(cfg)
+		}
+		return true
+	})
+	return h.p.Interrupt(ctx)
+}
+
+// ownConfig returns the config Rune started this extension with, which
+// host, the config Rune serves, holds under extensions.<id>.config. A host
+// without it gives an empty config. It fails when host could not be
+// fetched.
+func ownConfig(host config.Config) (config.Config, error) {
+	cfg := host
+	for _, key := range []string{"extensions", extensionID, "config"} {
+		sub, err := cfg.GetConfig(key)
+		if errors.Is(err, config.ErrNotFound) {
+			return config.NopConfig(), nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("get %q from the config: %w", key, err)
+		}
+		cfg = sub
+	}
+	return cfg, nil
 }
 
 func (h *aiEditorHandler) Handle(ctx context.Context, ev textapi.Event) (exit bool) {
@@ -1055,6 +1199,40 @@ func (h *aiEditorHandler) OpenResource(
 		return nil, err
 	}
 	return c.content, nil
+}
+
+// CompleteResource satisfies textapi.ResourceOpenHandler. It yields the URIs
+// starting with prefix of the dialogues chat completes without --all, in the
+// order the store lists them. An open chat is offered as the URI of its tab,
+// so opening it shows that tab rather than failing as already open.
+func (h *aiEditorHandler) CompleteResource(
+	ctx context.Context, prefix string,
+) (iterator.Iterator[string], error) {
+	it, err := h.dialogueStore.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("dialogue store list: %w", err)
+	}
+	chats := iterator.Filter(it, func(d dialoguemanager.DialogueHeader) bool {
+		return d.ID != "" && !d.SubAgent && !h.isForeignDialogue(d)
+	})
+	return iterator.Filter(iterator.Map(chats, h.chatURI), func(uri string) bool {
+		return uri != "" && strings.HasPrefix(uri, prefix)
+	}), nil
+}
+
+// chatURI returns the URI that opens the chat of d, or "" when it has none.
+func (h *aiEditorHandler) chatURI(d dialoguemanager.DialogueHeader) string {
+	if v, ok := h.openChats.Load(d.ID); ok {
+		if sc, ok := v.(syncComponent); ok && sc.tab.hasTab() {
+			return sc.tab.uri.String()
+		}
+	}
+	uri, err := getModelUri(d.ID, cmp.Or(d.Model, h.defaultModel))
+	if err != nil {
+		// newChat cannot open such a dialogue either.
+		return ""
+	}
+	return uri.String()
 }
 
 // routeChatCommand forwards a workspace command-prompt command (the
@@ -1211,15 +1389,15 @@ func (h *aiEditorHandler) Close() error {
 // newDialogueComponent builds the transient dialogue used by the `?`
 // query popup. The popup sizes itself to its content and has no model
 // switching of its own, so it renders without a status bar.
-func (h *aiEditorHandler) newDialogueComponent() *dialoguetui.Component {
-	cfg := h.cfg
+func (h *aiEditorHandler) newDialogueComponent(mu sync.Locker) *dialoguetui.Component {
+	cfg := h.dialogueConfig(mu)
 	cfg.StatusBar.Enabled = false
 	return dialoguetui.NewComponent(cfg)
 }
 
 func (h *aiEditorHandler) newAgentShell() textapi.REPLHandler {
 	opts := []agentshell.Option{
-		agentshell.WithMCPInfo(h.mcpManager),
+		agentshell.WithMCPInfo(mcpCommands{Manager: h.mcpManager, h: h}),
 		agentshell.WithHistorySystemPrompt(true),
 		agentshell.WithEffort(h.getDefaultEffort, h.setDefaultEffort),
 		agentshell.WithMaxTokens(h.getDefaultMaxTokens, h.setDefaultMaxTokens),
@@ -1329,7 +1507,7 @@ func (h *aiEditorHandler) newChat(
 	// before the chat can run any command.
 	var chatAgent *agent.Agent
 	cmdShellOpts := []agentshell.Option{
-		agentshell.WithMCPInfo(h.mcpManager),
+		agentshell.WithMCPInfo(mcpCommands{Manager: h.mcpManager, h: h}),
 		agentshell.WithMaxTokens(func() int { return chatAgent.MaxOutputTokens() }, nil),
 	}
 	if h.auditStore != nil {
@@ -1378,8 +1556,8 @@ func (h *aiEditorHandler) newChat(
 			return nil, err
 		}
 	}
-	comp = dialoguetui.NewComponent(h.cfg)
-	syncComp := syncComponent{mu: mu, comp: comp, h: h, uri: uri}
+	comp = dialoguetui.NewComponent(h.dialogueConfig(mu))
+	syncComp := syncComponent{mu: mu, comp: comp, h: h, tab: newTabStatusReporter(h.wm, uri, h.n)}
 
 	// Replay dialogue history.
 	pendingTools := make(map[string]llmapi.ToolCall)
@@ -1391,11 +1569,12 @@ func (h *aiEditorHandler) newChat(
 		dialoguetui.WithCommands(adapter),
 		dialoguetui.WithContextCompleter(newContextCompleter(h.fs, h.parser)),
 		dialoguetui.WithAttachmentOpener(attachmentPreviewer{h}),
+		dialoguetui.WithToolCallOpener(newToolCallPreviewer(h)),
 		dialoguetui.WithCloseFunc(cancel),
 	)
 
 	// Build the agent registry now that tx is available for ask_user.
-	prompter := &tuiPrompter{tx: tx, noti: h.n, status: syncComp}
+	prompter := &tuiPrompter{tx: tx, chat: syncComp}
 	askUser := agentools.NewAskUser(prompter)
 	requestSkill := agentools.NewRequestSkill(prompter)
 	exitPlan := agentools.NewExitPlan(h.plansDir, prompter)
@@ -1419,7 +1598,7 @@ func (h *aiEditorHandler) newChat(
 	sessionTools := agentools.SessionTools(spawner, spawner.ListAgents(), childEvents, h.skillRegistry)
 	skillTool := agentools.NewSkillTool(h.skillRegistry, spawner, childEvents)
 	taskStore := taskstore.New()
-	progressUpdater := &tuiProgressUpdater{tx: tx}
+	progressUpdater := newTUIProgressUpdater(tx, syncComp.tab)
 	taskTools := agentools.NewTaskTools(taskStore, progressUpdater)
 	allTools := make([]agent.Tool, 0, len(baseTools)+len(sessionTools)+len(taskTools)+5)
 	allTools = append(allTools, baseTools...)
@@ -1435,6 +1614,10 @@ func (h *aiEditorHandler) newChat(
 	}
 	chatRegistry := agent.NewRegistry(allTools...)
 	chatRegistry.AddOverrides(h.toolRegistry.Overrides())
+	adapter.modelToolsFn = func(svc llmapi.Service, model llmapi.ModelEntry) {
+		h.registerImageGen(chatRegistry, svc, model)
+	}
+	adapter.modelToolsFn(backendService, chatEntry)
 	chatRegistry.RegisterOverrides("openai",
 		agentools.NewUpdatePlan(progressUpdater),
 		agentools.NewRequestUserInput(prompter),
@@ -1491,19 +1674,21 @@ func (h *aiEditorHandler) newChat(
 	})
 	h.openChatAgents.Store(d.ID, chatAgent)
 	h.openChatTx.Store(d.ID, tx)
-	h.subscribeTools(d.ID, len(baseTools), chatRegistry, cmdRegistry)
-	h.warnPendingMCPServers(tx)
+	h.subscribeTools(d.ID, baseTools, chatRegistry, cmdRegistry)
+	h.warnUnavailableMCPServers(tx)
 
 	handler, msgRx := h.wrapDialogueHandler(ctx, syncComp, dhandler, rx, d.ID)
 	go debug.CapturePanicReport(func() {
-		createAgentCompletions(ctx, cancel, tx, msgRx, chatAgent, spawner, childEvents, h.skillRegistry, d.ID, syncComp, h.n,
+		createAgentCompletions(ctx, cancel, tx, msgRx, chatAgent, spawner, childEvents, h.skillRegistry, d.ID, syncComp,
 			makeOnCompacted(h.dialogueStore, adapter.compactFn),
 			h.dialogueStore)
 	})
 
 	bhandler := browserapi.FuncHandler(handler, func() error {
 		cancel()
+		mu.Lock()
 		_ = comp.Close()
+		mu.Unlock()
 		if webBrowser != nil {
 			webBrowser.Close()
 		}
@@ -1556,6 +1741,28 @@ func (h *aiEditorHandler) webBrowser(dialogueID string) *agentools.WebBrowser {
 	return agentools.NewWebBrowser(h.executor, h.fs, bin, h.browserDir, dialogueID)
 }
 
+func (h *aiEditorHandler) registerImageGen(registry *agent.Registry, svc llmapi.Service, model llmapi.ModelEntry) {
+	registry.RegisterExclusions(model.Provider, "imagegen")
+	if tool := h.imageGen(svc, model); tool != nil {
+		registry.RegisterOverrides(model.Provider, tool)
+	}
+}
+
+func (h *aiEditorHandler) imageGen(svc llmapi.Service, model llmapi.ModelEntry) *agentools.ImageGen {
+	if svc == nil || h.imagesDir == "" || h.fs == nil {
+		return nil
+	}
+	available, err := svc.CanGenerateImages(h.ctx, model)
+	if err != nil {
+		slog.Debug("imagegen tool unavailable", "error", err)
+		return nil
+	}
+	if !available {
+		return nil
+	}
+	return agentools.NewImageGen(svc, model, h.fs, h.imagesDir)
+}
+
 // installRoot resolves paths under the data directory of the workspace
 // host, which the IDE resolves for extensions (extensionapi.Workspace).
 type installRoot interface {
@@ -1574,6 +1781,14 @@ func webBrowserDir(ctx context.Context, root installRoot) (string, error) {
 	return path.Join(dataDir, "agent-browser"), nil
 }
 
+func imageGenDir(ctx context.Context, root installRoot) (string, error) {
+	dataDir, err := root.FindInstalledResource(ctx, ".")
+	if err != nil {
+		return "", fmt.Errorf("resolve the data directory on the workspace host: %w", err)
+	}
+	return path.Join(dataDir, "generated_images"), nil
+}
+
 func getModelUri(id, model string) (workspaceapi.URI, error) {
 	model = strings.ReplaceAll(model, "/", "_") // i.e. hf.co/org/model
 	model = strings.ReplaceAll(model, ":", "_") // i.e. llama4:scout
@@ -1584,7 +1799,7 @@ func getModelUri(id, model string) (workspaceapi.URI, error) {
 
 func (h *aiEditorHandler) handleQuery(cmd textapi.Command) error {
 	mu := new(sync.Mutex)
-	comp := h.newDialogueComponent()
+	comp := h.newDialogueComponent(mu)
 	queryID := strconv.Itoa(rand.Int())
 	ctx, cancel := context.WithCancel(h.ctx)
 	dhandler, tx, rx := dialoguetui.Handler(ctx, mu, comp, h.p)
@@ -1596,7 +1811,7 @@ func (h *aiEditorHandler) handleQuery(cmd textapi.Command) error {
 	msg := llmapi.Message{Content: query, Role: llmapi.RoleUser}
 	addMessage(comp, msg, nil)
 
-	syncComp := syncComponent{mu: mu, comp: comp, h: h}
+	syncComp := syncComponent{mu: mu, comp: comp, h: h, tab: newTabStatusReporter(h.wm, workspaceapi.URI{}, h.n)}
 
 	qrx := make(chan dialoguetui.SubmitMessage)
 	handler, msgRx := h.wrapDialogueHandler(ctx, syncComp, dhandler, qrx, "")
@@ -1632,7 +1847,7 @@ func (h *aiEditorHandler) handleQuery(cmd textapi.Command) error {
 	serviceFactory := func(model string) (llmapi.Service, llmapi.ModelEntry, error) {
 		return h.modelService(h.ctx, model)
 	}
-	prompter := &tuiPrompter{tx: tx, noti: h.n, status: syncComp}
+	prompter := &tuiPrompter{tx: tx, chat: syncComp}
 	spawner := agent.NewGoroutineSpawner(
 		h.dialogueStore, serviceFactory,
 		h.agentsConfig,
@@ -1649,17 +1864,14 @@ func (h *aiEditorHandler) handleQuery(cmd textapi.Command) error {
 
 	go debug.CapturePanicReport(func() {
 		createAgentCompletions(ctx, cancel, tx, msgRx,
-			h.queryAgent, spawner, childEvents, h.skillRegistry, queryID, syncComp, h.n, nil, h.dialogueStore)
+			h.queryAgent, spawner, childEvents, h.skillRegistry, queryID, syncComp, nil, h.dialogueStore)
 	})
 
-	var err error
-	var win browserapi.Window
 	bhandler := browserapi.FuncHandler(handler, func() error {
 		cancel()
-		if win != nil {
-			return h.wm.CloseWindow(win)
-		}
-		return nil
+		mu.Lock()
+		defer mu.Unlock()
+		return comp.Close()
 	})
 	floating := browserapi.FuncFloating(bhandler, func() (int, int) {
 		mu.Lock()
@@ -1670,8 +1882,7 @@ func (h *aiEditorHandler) handleQuery(cmd textapi.Command) error {
 	floatingConfig := browserapi.FloatingConfig{
 		Alignment: component.AlignmentCentered,
 	}
-	win, err = h.wm.Floating(floating, floatingConfig)
-	if err != nil {
+	if _, err := h.wm.Floating(floating, floatingConfig); err != nil {
 		return fmt.Errorf("floating window: %v", err)
 	}
 	return nil
@@ -1721,10 +1932,6 @@ func (h *aiEditorHandler) completeWithDialoguesIterator(ctx context.Context, sho
 		}
 		return 3
 	}
-	isForeign := func(d dialoguemanager.DialogueHeader) bool {
-		ws, hasWS := d.Workspace()
-		return hasWS && !ws.Equal(h.cwd) && h.gitID.worktrees[ws.String()] == ""
-	}
 
 	// Filter: drop empty IDs, sub-agents, and (unless showAll)
 	// foreign-workspace dialogues.
@@ -1733,7 +1940,7 @@ func (h *aiEditorHandler) completeWithDialoguesIterator(ctx context.Context, sho
 		if d.ID == "" || d.SubAgent {
 			continue
 		}
-		if !showAll && isForeign(d) {
+		if !showAll && h.isForeignDialogue(d) {
 			continue
 		}
 		filtered = append(filtered, d)
@@ -1769,6 +1976,13 @@ func (h *aiEditorHandler) completeWithDialoguesIterator(ctx context.Context, sho
 		}
 	}
 	return iterator.FromSlice(out), nil
+}
+
+// isForeignDialogue reports whether d belongs to a workspace that is
+// neither this one nor one of its sibling worktrees.
+func (h *aiEditorHandler) isForeignDialogue(d dialoguemanager.DialogueHeader) bool {
+	ws, hasWS := d.Workspace()
+	return hasWS && !ws.Equal(h.cwd) && h.gitID.worktrees[ws.String()] == ""
 }
 
 func (h *aiEditorHandler) completeWithModelsIterator(ctx context.Context) (
@@ -1941,18 +2155,26 @@ func addMessage(c *dialoguetui.Component, msg llmapi.Message, pendingTools map[s
 			}
 		}
 	case llmapi.RoleUser:
+		attachments := replayedAttachments(msg)
+		// Tool images are carried in synthetic user messages for providers
+		// that cannot accept images in tool results. They are not user turns.
+		if msg.Content == "" && len(attachments) == 0 && slices.ContainsFunc(msg.MultiContent, func(part llmapi.ContentPart) bool {
+			return part.Type == llmapi.ContentPartTypeImageURL
+		}) {
+			return
+		}
 		if replayed, ok := parseStoredCommandMessage(msg.Content); ok {
 			c.AddSendMessage(replayed)
 		} else if strings.HasPrefix(msg.Content, agent.CompactSummaryPrefix) ||
 			strings.HasPrefix(msg.Content, "Plan approved. Saved to ") {
 			c.AddSendMessageMarkdown(msg.Content)
 		} else {
-			c.AddSendMessageAttachments(msg.Content, replayedAttachments(msg))
+			c.AddSendMessageAttachments(msg.Content, attachments)
 		}
 	case llmapi.RoleSystem:
 	case llmapi.RoleTool:
 		id := msg.ToolCallID
-		name := "tool"
+		name := cmp.Or(msg.Name, "tool")
 		args := ""
 		if pendingTools != nil {
 			if call, ok := pendingTools[id]; ok {
@@ -1985,9 +2207,52 @@ func addMessage(c *dialoguetui.Component, msg llmapi.Message, pendingTools map[s
 				return
 			}
 		}
-		c.AddToolCall(id, name, args, "")
-		c.CompleteToolCall(id, name, args, "", msg.Content, false)
+		summary := ""
+		if name == "imagegen" {
+			var parsed struct {
+				Prompt string `json:"prompt"`
+			}
+			if json.Unmarshal([]byte(args), &parsed) == nil {
+				summary = parsed.Prompt
+			}
+		}
+		c.AddToolCall(id, name, args, summary)
+		c.CompleteToolCall(id, name, args, summary, msg.Content, false)
+		for _, image := range toolResultImages(name, msg.Content, false) {
+			c.AddToolCallImage(id, image, summary)
+		}
 	}
+}
+
+func toolResultImages(name, output string, isError bool) []string {
+	if name == "imagegen" && !isError {
+		if image, ok := agentools.GeneratedImagePath(output); ok {
+			return []string{image}
+		}
+	}
+	return nil
+}
+
+// childToolMessage returns the chat event that shows ev, a tool call or
+// tool result of a sub-agent, nested under the tool call parentID.
+func childToolMessage(parentID string, ev agent.Event) dialoguetui.MessageEvent {
+	msg := dialoguetui.MessageEvent{
+		Type:             dialoguetui.MessageEventToolCall,
+		ToolCallID:       ev.ToolCallID,
+		ToolName:         ev.ToolName,
+		ToolArgs:         ev.ToolArgs,
+		ToolSummary:      ev.ToolSummary,
+		ToolStartTime:    ev.ToolStartTime,
+		ParentToolCallID: parentID,
+	}
+	if ev.Type == agent.EventToolResult {
+		msg.Type = dialoguetui.MessageEventToolResult
+		msg.ToolOutput = ev.ToolOutput
+		msg.IsError = ev.IsError
+		msg.ToolDuration = ev.ToolDuration
+		msg.ImagePaths = toolResultImages(ev.ToolName, ev.ToolOutput, ev.IsError)
+	}
+	return msg
 }
 
 func firstModel(svc llmapi.Service) string {
@@ -2034,31 +2299,34 @@ const (
 	turnOutcomeError
 )
 
-func notifyTurnOutcome(noti browserapi.Notifications, outcome turnOutcome, reason string) {
-	var level browserapi.NotificationLevel
-	var msg string
+// reportTurnOutcome reports how the turn ended as the chat's status:
+// done, summarized by the reply; failed, with the reason; or withdrawn
+// when the user canceled it.
+func reportTurnOutcome(tab *tabStatusReporter, outcome turnOutcome, reason, reply string) {
 	switch outcome {
 	case turnOutcomeCompleted:
-		level = browserapi.LevelSuccess
-		msg = "Turn completed"
-	case turnOutcomeTruncated:
-		level = browserapi.LevelWarn
-		msg = "Turn stopped after reaching the token limit"
-	case turnOutcomeCanceled:
-		return
-	case turnOutcomeError:
-		level = browserapi.LevelError
-		if reason == "" {
-			msg = "Turn failed"
-		} else {
-			msg = fmt.Sprintf("Turn failed: %s", reason)
+		msg := replySummary(reply)
+		if msg == "" {
+			msg = statusMsgCompleted
 		}
-	default:
-		return
+		tab.done(msg)
+	case turnOutcomeTruncated:
+		tab.truncated()
+	case turnOutcomeCanceled:
+		tab.canceled()
+	case turnOutcomeError:
+		if reason == "" {
+			tab.failed(statusMsgFailed)
+		} else {
+			tab.failed(fmt.Sprintf("%s: %s", statusMsgFailed, reason))
+		}
 	}
-	if _, err := noti.Notify(level, "%s", msg); err != nil {
-		slog.Error("notify", "error", err)
-	}
+}
+
+// spawnsSubAgent reports whether the tool named name may run a
+// sub-agent whose events arrive as agent.ChildEvents of its call.
+func spawnsSubAgent(name string) bool {
+	return name == "agent" || name == "skill"
 }
 
 func outcomeAndReasonForFinishReason(reason llmapi.FinishReason) (turnOutcome, string) {
@@ -2167,7 +2435,6 @@ func createAgentCompletions(
 	skillRegistry *skills.SkillRegistry,
 	id string,
 	syncComp syncComponent,
-	noti browserapi.Notifications,
 	onCompacted func(dialogueID string),
 	parentStore dialoguemanager.Store,
 ) {
@@ -2191,27 +2458,11 @@ func createAgentCompletions(
 					var msg dialoguetui.MessageEvent
 					switch cev.Event.Type {
 					case agent.EventToolCall:
-						msg = dialoguetui.MessageEvent{
-							Type:             dialoguetui.MessageEventToolCall,
-							ToolCallID:       cev.Event.ToolCallID,
-							ToolName:         cev.Event.ToolName,
-							ToolArgs:         cev.Event.ToolArgs,
-							ToolSummary:      cev.Event.ToolSummary,
-							ToolStartTime:    cev.Event.ToolStartTime,
-							ParentToolCallID: cev.ParentToolCallID,
-						}
+						syncComp.tab.childToolCall(cev.ParentToolCallID,
+							cev.Event.ToolName, cev.Event.ToolSummary)
+						msg = childToolMessage(cev.ParentToolCallID, cev.Event)
 					case agent.EventToolResult:
-						msg = dialoguetui.MessageEvent{
-							Type:             dialoguetui.MessageEventToolResult,
-							ToolCallID:       cev.Event.ToolCallID,
-							ToolName:         cev.Event.ToolName,
-							ToolArgs:         cev.Event.ToolArgs,
-							ToolSummary:      cev.Event.ToolSummary,
-							ToolOutput:       cev.Event.ToolOutput,
-							IsError:          cev.Event.IsError,
-							ToolDuration:     cev.Event.ToolDuration,
-							ParentToolCallID: cev.ParentToolCallID,
-						}
+						msg = childToolMessage(cev.ParentToolCallID, cev.Event)
 					case agent.EventToolsDropped:
 						msg = dialoguetui.MessageEvent{
 							Type:               dialoguetui.MessageEventToolsDropped,
@@ -2293,20 +2544,16 @@ func createAgentCompletions(
 			case tx <- dialoguetui.MessageEvent{Type: dialoguetui.MessageEventBreak}:
 			case <-ctx.Done():
 			}
+			syncComp.tab.failed(reason)
 			endTurn()
 			continue
 		}
 
-		// Agent-type skills: spawn a sub-agent whose events are
-		// rendered as top-level (tool calls, text, reasoning all
-		// visible in the TUI).
+		// Agent-type skills run in a sub-agent, shown like one the
+		// model spawns with the skill tool.
 		var it iterator.Iterator[agent.Event]
 		if req.skillName != "" {
 			if skill, ok := skillRegistry.Get(req.skillName); ok && skill.Type == "agent" {
-				var allowedTools []string
-				if skill.AllowedTools != "" {
-					allowedTools = strings.Fields(skill.AllowedTools)
-				}
 				var initialMessages []llmapi.Message
 				if skill.ParentContext {
 					initialMessages = parentDialogueContextMessages(
@@ -2315,13 +2562,12 @@ func createAgentCompletions(
 				}
 				handle, skillErr := spawner.Run(req.ctx, agent.RunRequest{
 					Label:             skill.Name,
+					Skill:             skill.Name,
 					Model:             llmarg.Qualify(ag.ModelEntry()),
 					Message:           req.modelText,
 					DisplayMessage:    req.displayText,
 					Attachments:       req.attachments,
 					AdditionalContext: upsRes.AdditionalContext,
-					AllowedTools:      allowedTools,
-					SystemPrompt:      skill.Body,
 					InitialMessages:   initialMessages,
 				})
 				if skillErr != nil {
@@ -2333,11 +2579,16 @@ func createAgentCompletions(
 					case tx <- dialoguetui.MessageEvent{Type: dialoguetui.MessageEventBreak}:
 					case <-ctx.Done():
 					}
-					_, _ = noti.Notify(browserapi.LevelError, "skill %s: %v", skill.Name, skillErr)
+					syncComp.tab.failed(fmt.Sprintf("skill %s: %v", skill.Name, skillErr))
 					endTurn()
 					continue
 				}
-				it = handle.Events
+				it = newAgentSkillEvents(skill, handle, tx, syncComp.tab,
+					func(ctx context.Context, replies []llmapi.Message) error {
+						return ag.AppendTurn(ctx, id, req.modelText, replies,
+							agent.WithDisplayMessage(req.displayText),
+							agent.WithAttachments(req.attachments))
+					})
 			}
 		}
 		if it == nil {
@@ -2374,6 +2625,9 @@ func createAgentCompletions(
 			}()
 			outcome := turnOutcomeNone
 			outcomeReason := ""
+			// reply collects the text of the inference in progress, so
+			// that the turn's outcome can be summarized by its last one.
+			var reply strings.Builder
 			defer func() {
 				if outcome == turnOutcomeNone {
 					switch {
@@ -2382,7 +2636,7 @@ func createAgentCompletions(
 						outcomeReason = string(llmapi.FinishReasonNull)
 					}
 				}
-				notifyTurnOutcome(noti, outcome, outcomeReason)
+				reportTurnOutcome(syncComp.tab, outcome, outcomeReason, reply.String())
 			}()
 			for {
 				ev, ok := it.Next(req.ctx)
@@ -2398,10 +2652,14 @@ func createAgentCompletions(
 					}
 				case agent.EventInferenceStart:
 					setPhase(phaseSending)
+					syncComp.tab.setTitle(statusTitleSending)
+					reply.Reset()
 				case agent.EventInferenceReady:
 					setPhase(phaseThinking)
+					syncComp.tab.setTitle(statusTitleReasoning)
 				case agent.EventFirstContent:
 					setPhase(phaseReceiving)
+					syncComp.tab.setTitle(statusTitleWriting)
 				case agent.EventReasoning:
 					if ev.Reasoning == "" {
 						continue
@@ -2418,6 +2676,7 @@ func createAgentCompletions(
 					if ev.Text == "" {
 						continue
 					}
+					reply.WriteString(ev.Text)
 					select {
 					case tx <- dialoguetui.MessageEvent{
 						Type: dialoguetui.MessageEventText,
@@ -2428,7 +2687,12 @@ func createAgentCompletions(
 					}
 				case agent.EventToolsStart:
 					setPhase(phaseToolCalling)
+					syncComp.tab.setTitle(statusTitleTools)
 				case agent.EventToolCall:
+					syncComp.tab.setToolCall(ev.ToolName, ev.ToolSummary)
+					if spawnsSubAgent(ev.ToolName) {
+						syncComp.tab.childStart(ev.ToolCallID, ev.ToolSummary)
+					}
 					select {
 					case tx <- dialoguetui.MessageEvent{
 						Type:          dialoguetui.MessageEventToolCall,
@@ -2442,6 +2706,7 @@ func createAgentCompletions(
 						return
 					}
 				case agent.EventToolResult:
+					syncComp.tab.childEnd(ev.ToolCallID)
 					select {
 					case tx <- dialoguetui.MessageEvent{
 						Type:         dialoguetui.MessageEventToolResult,
@@ -2452,6 +2717,7 @@ func createAgentCompletions(
 						ToolOutput:   ev.ToolOutput,
 						IsError:      ev.IsError,
 						ToolDuration: ev.ToolDuration,
+						ImagePaths:   toolResultImages(ev.ToolName, ev.ToolOutput, ev.IsError),
 					}:
 					case <-ctx.Done():
 						return
@@ -2468,6 +2734,7 @@ func createAgentCompletions(
 				case agent.EventRateLimitWarning:
 					setPhase(phaseRateLimited)
 					if ev.RateLimit != nil {
+						syncComp.tab.notify(statusTitleRateLimit, ev.RateLimit.Message)
 						select {
 						case tx <- dialoguetui.MessageEvent{
 							Type: dialoguetui.MessageEventWarning,
@@ -2487,8 +2754,10 @@ func createAgentCompletions(
 					})
 				case agent.EventCompacting:
 					setPhase(phaseCompacting)
+					syncComp.tab.setTitle(statusTitleCompacting)
 				case agent.EventCompacted:
 					setPhase(phaseSending)
+					syncComp.tab.setTitle(statusTitleSending)
 					if onCompacted != nil {
 						onCompacted(id)
 					}
@@ -2618,16 +2887,4 @@ func agentMemoriesToTUI(ev agent.Event) dialoguetui.MessageEvent {
 		Memories:       entries,
 		MemoryDuration: ev.MemoryDuration,
 	}
-}
-
-// resolveInputBackgroundColor returns the compose input background color.
-// It keeps def unless input_box_attr.bg is set to an explicit,
-// non-default color, letting the shared input_box_attr drive the compose
-// background without a dedicated key.
-func resolveInputBackgroundColor(def term.Color, pconfig config.Config) term.Color {
-	attr, err := config.GetAttributes(pconfig, "input_box_attr")
-	if err != nil || attr.Bg == term.ColorDefault {
-		return def
-	}
-	return attr.Bg
 }

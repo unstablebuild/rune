@@ -31,6 +31,20 @@ func Build(
 	template string, value any, attrs, defAttrs term.Attributes,
 	bgColor term.Color,
 ) []component.Floating {
+	return build(template, func(text string) string {
+		if strings.Contains(text, "%s") || strings.Contains(text, "%d") {
+			return fmt.Sprintf(text, value)
+		}
+		return text
+	}, attrs, defAttrs, bgColor)
+}
+
+// build is Build with format turning each run of template drawn with the
+// same attributes into the text drawn.
+func build(
+	template string, format func(string) string,
+	attrs, defAttrs term.Attributes, bgColor term.Color,
+) []component.Floating {
 	if attrs.Bg == 0 && attrs.Fg == 0 {
 		attrs = defAttrs
 	}
@@ -62,35 +76,27 @@ func Build(
 		case !isBackground && !currentBackground:
 			buf.WriteRune(r)
 		case !isBackground && currentBackground:
-			components = appendComponent(components, &buf, value, backgroundRunesCfg)
+			components = appendComponent(components, format(buf.String()), backgroundRunesCfg)
 			currentBackground = isBackground
 			buf.Reset()
 			buf.WriteRune(r)
 		case isBackground && !currentBackground:
-			components = appendComponent(components, &buf, value, cfg)
+			components = appendComponent(components, format(buf.String()), cfg)
 			currentBackground = isBackground
 			buf.Reset()
 			buf.WriteRune(r)
 		}
 	}
 	if currentBackground {
-		components = appendComponent(components, &buf, value, backgroundRunesCfg)
+		components = appendComponent(components, format(buf.String()), backgroundRunesCfg)
 	} else {
-		components = appendComponent(components, &buf, value, cfg)
+		components = appendComponent(components, format(buf.String()), cfg)
 	}
 	return components
 }
 
 func appendComponent(
-	components []component.Floating, buf *strings.Builder,
-	value any, cfg component.StringConfig,
+	components []component.Floating, str string, cfg component.StringConfig,
 ) []component.Floating {
-	str := buf.String()
-	if strings.Contains(str, "%s") || strings.Contains(str, "%d") {
-		str = fmt.Sprintf(str, value)
-	}
-	components = append(components,
-		component.NewStringWithConfig(str, cfg),
-	)
-	return components
+	return append(components, component.NewStringWithConfig(str, cfg))
 }

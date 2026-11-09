@@ -20,8 +20,10 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/ernestrc/logd-go/logging"
@@ -31,6 +33,14 @@ import (
 
 var _ io.Writer = (*logCollector)(nil)
 
+// lifecycleFormatter renders the runner's lifecycle lines. Unlike the
+// extension's own records they carry no time of their own, so the
+// formatter stamps them.
+var lifecycleFormatter = &log.TextFormatter{
+	DisableColors: true,
+	FullTimestamp: true,
+}
+
 // logCollector parses an extension's stderr stream into structured
 // log records. Lines that parse as JSON are forwarded to logrus and
 // end up homogenized in ~/.rune/debug.log; the same record is also
@@ -38,13 +48,13 @@ var _ io.Writer = (*logCollector)(nil)
 // that file remains the full record of the extension's stderr.
 // Lines that do not parse as JSON are written verbatim to the same
 // per-extension file. Either way, `extensions logs <id>` shows
-// exactly what the extension said.
+// exactly what the extension said, interleaved with the runner's
+// lifecycle lines.
 //
-// It is written to from a single goroutine — os/exec's internal
+// Write is called from a single goroutine — os/exec's internal
 // stderr-copy goroutine — so it is not safe for concurrent Write
-// calls. Close must only be called after that goroutine has finished
-// (i.e. after exec.Cmd.Wait returns), which the workspaceRunner
-// guarantees by invoking Close from setExtensionExit.
+// calls. lifecycle may be called from any goroutine: an *os.File
+// serializes its Writes.
 type logCollector struct {
 	buffer        bytes.Buffer
 	scanner       *bufio.Reader
@@ -65,7 +75,7 @@ type logCollector struct {
 	// without retaining a reference, so we can reuse it across
 	// Write iterations to avoid one map allocation per line.
 	fields      log.Fields
-	writeErrLog bool
+	writeErrLog atomic.Bool
 }
 
 // newCollector creates a logCollector that forwards JSON log records
@@ -160,13 +170,28 @@ func (c *logCollector) writeFormattedToFile(level log.Level, fields log.Fields) 
 	c.writeToFile(b)
 }
 
+// lifecycle records the runner's account of the extension's lifecycle in
+// the log file, marked source=rune so it is not mistaken for what the
+// extension wrote.
+func (c *logCollector) lifecycle(level log.Level, format string, args ...any) {
+	entry := log.NewEntry(c.logger)
+	entry.Time = time.Now()
+	entry.Level = level
+	entry.Message = fmt.Sprintf(format, args...)
+	entry.Data = log.Fields{"source": "rune"}
+	b, err := lifecycleFormatter.Format(entry)
+	if err != nil {
+		return
+	}
+	c.writeToFile(b)
+}
+
 // writeToFile writes raw bytes to the per-extension log file owned
 // by this collector. Write errors are logged once and then ignored
 // so a broken disk does not stop the collector.
 func (c *logCollector) writeToFile(b []byte) {
 	if _, err := c.logFile.Write(b); err != nil {
-		if !c.writeErrLog {
-			c.writeErrLog = true
+		if c.writeErrLog.CompareAndSwap(false, true) {
 			log.WithFields(log.Fields{
 				logging.KeyThread: c.extensionID,
 				"workspace":       c.workspace.String(),
@@ -175,16 +200,9 @@ func (c *logCollector) writeToFile(b []byte) {
 	}
 }
 
-// Close releases the per-extension log file. It must only be called
-// after the writer goroutine (os/exec's stderr copier) has exited,
-// which the workspaceRunner ensures by invoking Close from
-// setExtensionExit. Calling Close more than once is safe; subsequent
-// calls are no-ops.
+// Close releases the per-extension log file. Anything the extension
+// writes after it is lost, so the workspaceRunner only calls it once
+// exec.Cmd.Wait has returned.
 func (c *logCollector) Close() error {
-	if c.logFile == nil {
-		return nil
-	}
-	err := c.logFile.Close()
-	c.logFile = nil
-	return err
+	return c.logFile.Close()
 }

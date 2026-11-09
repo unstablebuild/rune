@@ -23,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/component/shader"
 )
 
 // nopShader is useful to assert the frame it has been given upon Shade()
@@ -40,6 +41,32 @@ func (s *nopShader) Shade(frame, total int, in [][]term.Cell) {
 func (s *nopShader) reset() {
 	s.shadeCalled = false
 	s.frame = 0
+}
+
+// imageShader records what it shades, and replaces the placements it is
+// given with images.
+type imageShader struct {
+	nopShader
+	images, got []term.Image
+}
+
+func (s *imageShader) ShadeImages(frame, total int, in [][]term.Cell, images []term.Image) []term.Image {
+	s.Shade(frame, total, in)
+	s.got = images
+	return s.images
+}
+
+func TestTimeShaderShadesImagesWithTheBaseShader(t *testing.T) {
+	images := []term.Image{{ID: 1, Width: 1, Height: 1}}
+	moved := []term.Image{{ID: 2, Width: 1, Height: 1}}
+	base := &imageShader{images: moved}
+
+	got := shader.ShadeImages(Reverse(base), 6, 10, [][]term.Cell{}, images)
+
+	assert.Equal(t, moved, got)
+	assert.Equal(t, images, base.got)
+	assert.Equal(t, 3, base.frame)
+	assert.Equal(t, 10, base.total)
 }
 
 func TestTimeShader(t *testing.T) {

@@ -102,3 +102,18 @@ func TestRunHeadlessExitCodes(t *testing.T) {
 		assert.Equal(t, 1, runHeadless([]string{"--headless", path}))
 	})
 }
+
+func TestRunACPExitCodes(t *testing.T) {
+	t.Run("unexpected arguments exit 1", func(t *testing.T) {
+		assert.Equal(t, 1, runACP([]string{"--model", "x"}))
+	})
+
+	t.Run("no plugin environment exits 1", func(t *testing.T) {
+		t.Setenv("RUNE_SOCKET", "")
+		t.Setenv("RUNE_DATADIR", "")
+		stdout := os.Stdout
+
+		assert.Equal(t, 1, runACP(nil))
+		assert.Same(t, stdout, os.Stdout)
+	})
+}

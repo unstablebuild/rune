@@ -18,13 +18,18 @@ package dialoguetui
 
 import (
 	"context"
+	"fmt"
+	"net/url"
+	"path"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/term/graphemecluster"
 	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/markdown"
 )
 
 // collapseMode controls how a Turn renders its tool calls.
@@ -77,6 +82,9 @@ type toolNode struct {
 	name          string
 	args          string // stored for collapsed rendering
 	summary       string
+	output        string
+	resultOf      *toolNode // parent invocation for sub-agent result leaves
+	hovered       bool
 	done          bool
 	isError       bool
 	dropped       bool            // true when the tool result was dropped from history
@@ -87,6 +95,155 @@ type toolNode struct {
 	startTime     time.Time       // when the tool call was announced (for live elapsed display)
 	duration      time.Duration   // final execution duration (set on completion)
 	childTurn     *Turn           // non-nil for sub-agent tool calls with children
+	images        []*markdown.Component
+}
+
+// ToolCallDetails is a snapshot of an invocation and its full response.
+// Output may be empty even after completion when a tool returns no text.
+// A sub-agent result row leaves Args empty so its preview opens on the
+// response rather than on a possibly long prompt.
+type ToolCallDetails struct {
+	Key                         ToolCallKey
+	Name, Args, Summary, Output string
+	Done                        bool
+	IsError                     bool
+	MarkdownOutput              bool // response comes from a sub-agent
+}
+
+// ToolCallKey identifies the invocation behind a transcript row for the
+// lifetime of that row. Unlike tool call IDs, which providers may reuse
+// across turns, keys never collide. A sub-agent result row shares the key
+// of the invocation whose response it displays; replaying a transcript
+// yields new keys.
+type ToolCallKey struct{ tn *toolNode }
+
+func (tn *toolNode) details() ToolCallDetails {
+	if tn.resultOf != nil {
+		return ToolCallDetails{
+			Key:  ToolCallKey{tn.resultOf},
+			Name: tn.resultOf.name, Output: tn.output,
+			Done: true, IsError: tn.isError, MarkdownOutput: true,
+		}
+	}
+	return ToolCallDetails{
+		Key:  ToolCallKey{tn},
+		Name: tn.name, Args: tn.args, Summary: tn.summary, Output: tn.output,
+		Done: tn.done, IsError: tn.isError,
+		MarkdownOutput: tn.name == "agent" || (tn.name == "skill" && tn.childTurn != nil),
+	}
+}
+
+// ToolCallAt returns the tool whose name is drawn at pos, which is
+// relative to the turn. Every other cell of a tool entry, such as its
+// summary, arguments or output, reports false so it stays selectable.
+func (t *Turn) ToolCallAt(pos term.Coordinates) (ToolCallDetails, bool) {
+	tn := t.toolNodeAt(pos)
+	if tn == nil {
+		return ToolCallDetails{}, false
+	}
+	return tn.details(), true
+}
+
+func (t *Turn) toolNodeAt(pos term.Coordinates) *toolNode {
+	if pos.X < 0 || pos.X >= t.width || pos.Y < 0 || pos.Y >= t.Height(t.width) {
+		return nil
+	}
+	if t.mode.isCollapsed() {
+		return t.collapsedToolAt(pos)
+	}
+	// Expanded entries (including memory and child tools) live in a flat
+	// list; their order can differ from insertion order after replay.
+	entries := make(map[component.ListNode]*toolNode)
+	t.collectExpandedEntries(entries)
+	y := 0
+	for node, ok := t.list.Front(); ok; node, ok = node.Next() {
+		h := node.Value().(component.Responsive).Height(t.width)
+		if pos.Y >= y && pos.Y < y+h {
+			// The header is the first row of every entry.
+			tn := entries[node]
+			if tn == nil || tn.header == nil || pos.Y != y ||
+				!labelContains(tn.header.prefix, tn.header.name, pos.X) {
+				return nil
+			}
+			return tn
+		}
+		y += h
+	}
+	return nil
+}
+
+// labelContains reports whether column x falls on label when label is
+// drawn right after prefix.
+func labelContains(prefix, label string, x int) bool {
+	start := graphemecluster.StringWidth(prefix)
+	return x >= start && x < start+graphemecluster.StringWidth(label)
+}
+
+// setHovered marks only the hovered tool, including a child tool, so
+// moving between turns also clears the previous highlight.
+func (t *Turn) setHovered(target *toolNode) (changed bool) {
+	for _, id := range t.toolOrder {
+		tn := t.tools[id]
+		hovered := tn == target
+		if tn.hovered != hovered {
+			tn.hovered = hovered
+			if tn.header != nil {
+				tn.header.hovered = hovered
+			}
+			changed = true
+		}
+		if tn.childTurn != nil && tn.childTurn.setHovered(target) {
+			changed = true
+		}
+	}
+	return
+}
+
+func (t *Turn) collectExpandedEntries(entries map[component.ListNode]*toolNode) {
+	for _, id := range t.toolOrder {
+		tn := t.tools[id]
+		if tn.listNode != nil {
+			entries[*tn.listNode] = tn
+		}
+		if tn.childTurn != nil {
+			tn.childTurn.collectExpandedEntries(entries)
+		}
+	}
+}
+
+func (t *Turn) collapsedToolAt(pos term.Coordinates) *toolNode {
+	return t.collapsedToolAtWidth(pos, t.width)
+}
+
+func (t *Turn) collapsedToolAtWidth(pos term.Coordinates, width int) *toolNode {
+	y := pos.Y
+	for _, id := range t.toolOrder {
+		tn := t.tools[id]
+		if y == 0 {
+			status, _ := t.collapsedStatus(tn, 0)
+			if !labelContains(status, tn.name, pos.X-collapsedIndent) {
+				return nil
+			}
+			return tn
+		}
+		y--
+		for _, image := range tn.images {
+			h := image.Height(max(0, width-collapsedIndent))
+			if y < h {
+				return nil
+			}
+			y -= h
+		}
+		if tn.childTurn != nil {
+			h := tn.childTurn.collapsedHeightAt(max(0, width-collapsedIndent))
+			if y < h {
+				return tn.childTurn.collapsedToolAtWidth(
+					term.Coordinates{X: pos.X - collapsedIndent, Y: y}, max(0, width-collapsedIndent))
+			}
+			y -= h
+		}
+	}
+	return nil
 }
 
 // NewTurn creates a new Turn. The interrupter is used to drive
@@ -113,7 +270,7 @@ func (t *Turn) AddToolCall(id, name, args, summary string) {
 		prefixAttr = t.promptAttr()
 		cfg = t.cfg.PromptToolCallStringConfig
 	}
-	entry, _ := toolCallEntryWithConfig(t.cfg, prefix, prefixAttr, name, args, summary, cfg)
+	entry, hdr := toolCallEntryWithConfig(t.cfg, prefix, prefixAttr, name, args, summary, cfg)
 	*node = t.list.PushBack(entry)
 	t.tools[id] = &toolNode{
 		listNode: node,
@@ -121,6 +278,7 @@ func (t *Turn) AddToolCall(id, name, args, summary string) {
 		args:     args,
 		summary:  summary,
 		prompt:   isPrompt,
+		header:   hdr,
 	}
 	t.toolOrder = append(t.toolOrder, id)
 	if !isPrompt {
@@ -145,7 +303,7 @@ func (t *Turn) AddMemoryRecall(memories []MemoryRecallEntry, duration time.Durat
 	hdr := &toolCallHeader{
 		prefix:     memoryPrefix,
 		prefixAttr: t.memoryAttr(),
-		rest:       "memory recall",
+		name:       "memory recall",
 		restAttr:   t.cfg.MemoryIDStringConfig.Attributes,
 	}
 	parentEntry.PushBack(hdr)
@@ -179,7 +337,7 @@ func (t *Turn) AddMemoryRecall(memories []MemoryRecallEntry, duration time.Durat
 		childHdr := &toolCallHeader{
 			prefix:     memoryPrefix,
 			prefixAttr: t.memoryAttr(),
-			rest:       mem.ID,
+			name:       mem.ID,
 			restAttr:   t.cfg.MemoryIDStringConfig.Attributes,
 		}
 		childEntry.PushBack(childHdr)
@@ -198,6 +356,8 @@ func (t *Turn) AddMemoryRecall(memories []MemoryRecallEntry, duration time.Durat
 
 		// Link expanded-mode list node into child turn.
 		parentTN.childTurn.tools[mem.ID].listNode = childNode
+		parentTN.childTurn.tools[mem.ID].header = childHdr
+		parentTN.childTurn.tools[mem.ID].output = mem.Content
 	}
 }
 
@@ -210,7 +370,7 @@ func (t *Turn) addMemoryChild(id, content string) {
 	hdr := &toolCallHeader{
 		prefix:     memoryPrefix,
 		prefixAttr: t.memoryAttr(),
-		rest:       id,
+		name:       id,
 		restAttr:   t.cfg.MemoryIDStringConfig.Attributes,
 	}
 	entry.PushBack(hdr)
@@ -231,6 +391,7 @@ func (t *Turn) addMemoryChild(id, content string) {
 	t.tools[id] = &toolNode{
 		listNode: node,
 		name:     id,
+		output:   content,
 		done:     true,
 		isMemory: true,
 		header:   hdr,
@@ -247,6 +408,16 @@ func (t *Turn) CompleteToolCall(id, name, args, summary, output string, isError 
 	}
 	tn.done = true
 	tn.isError = isError
+	if name != "" {
+		tn.name = name
+	}
+	if args != "" {
+		tn.args = args
+	}
+	if summary != "" {
+		tn.summary = summary
+	}
+	tn.output = output
 
 	prefix := donePrefix
 	prefixAttr := t.successAttr()
@@ -258,9 +429,10 @@ func (t *Turn) CompleteToolCall(id, name, args, summary, output string, isError 
 	// Build a list with the header and optional truncated output.
 	entry := new(component.ResponsiveList)
 	entry.Init()
-	headerEntry, hdr := toolCallEntry(t.cfg, prefix, prefixAttr, name, args, summary)
+	headerEntry, hdr := toolCallEntry(t.cfg, prefix, prefixAttr, tn.name, args, summary)
 	entry.PushBack(headerEntry)
 	tn.header = hdr
+	hdr.hovered = tn.hovered
 
 	truncatedText := truncateToolOutput(t.cfg, output)
 	if truncatedText != "" {
@@ -272,6 +444,9 @@ func (t *Turn) CompleteToolCall(id, name, args, summary, output string, isError 
 		entry.PushBack(component.NewSpan(result, t.cfg.ToolResultSpanConfig))
 	}
 
+	for _, image := range tn.images {
+		entry.PushBack(image)
+	}
 	// Replace the running entry with the completed one.
 	tn.listNode.SetValue(entry)
 
@@ -280,13 +455,52 @@ func (t *Turn) CompleteToolCall(id, name, args, summary, output string, isError 
 	}
 }
 
-// AddChildToolCall adds a tool call nested under a parent
-// tool call. If the parent doesn't exist, it's added as a
-// top-level tool call.
-func (t *Turn) AddChildToolCall(parentID, id, name, args, summary string) {
-	parent, ok := t.tools[parentID]
+// AddToolCallImage appends an image to an existing invocation, including child
+// invocations. Unknown IDs and empty paths are ignored. An empty caption uses
+// the filename. imagePath is a slash-separated path in the filesystem supplied
+// by MarkdownConfig, which need not match the local OS.
+func (t *Turn) AddToolCallImage(id, imagePath, caption string) {
+	if imagePath == "" {
+		return
+	}
+	tn, ok := t.tools[id]
 	if !ok {
-		// Parent not found — add as top-level.
+		for _, parent := range t.tools {
+			if parent.childTurn != nil {
+				parent.childTurn.AddToolCallImage(id, imagePath, caption)
+			}
+		}
+		return
+	}
+	cfg := *DefaultMarkdownConfig()
+	if t.cfg.MarkdownConfig != nil {
+		cfg = *t.cfg.MarkdownConfig
+	}
+	cfg.Dir = path.Dir(imagePath)
+	if caption == "" {
+		caption = path.Base(imagePath)
+	}
+	title := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "\n", " ", "\r", " ").Replace(caption)
+	caption = strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]", "\n", " ", "\r", " ").Replace(caption)
+	destination := (&url.URL{Path: path.Base(imagePath)}).String()
+	image, err := markdown.NewWithConfig(fmt.Sprintf("![%s](<%s> \"%s\"){rows=12}", caption, destination, title), cfg)
+	if err != nil {
+		return
+	}
+	tn.images = append(tn.images, image)
+	entry := new(component.ResponsiveList)
+	entry.Init()
+	entry.PushBack(tn.listNode.Value().(component.Responsive))
+	entry.PushBack(image)
+	tn.listNode.SetValue(entry)
+}
+
+// AddChildToolCall adds a tool call nested under a parent tool call at
+// any depth. If the parent doesn't exist, it's added as a top-level tool
+// call.
+func (t *Turn) AddChildToolCall(parentID, id, name, args, summary string) {
+	parent, ancestors := t.findTool(parentID)
+	if parent == nil {
 		t.AddToolCall(id, name, args, summary)
 		return
 	}
@@ -297,25 +511,33 @@ func (t *Turn) AddChildToolCall(parentID, id, name, args, summary string) {
 
 	parent.childTurn.AddToolCall(id, name, args, summary)
 
-	// Insert child entry after the parent's last inserted node.
+	// Expanded mode draws the whole tree as this turn's flat list, so the
+	// entry goes after the parent's last descendant, and becomes the last
+	// descendant of every ancestor whose subtree ended there.
 	insertAfter := parent.listNode
 	if parent.lastChildNode != nil {
 		insertAfter = parent.lastChildNode
 	}
 	childNode := new(component.ListNode)
-	entry, _ := toolCallEntry(t.cfg, runningPrefix, term.Attributes{}, name, args, summary)
+	entry, hdr := toolCallEntry(t.cfg, runningPrefix, term.Attributes{}, name, args, summary)
 	*childNode = t.list.InsertAfter(entry, *insertAfter)
 	parent.lastChildNode = childNode
+	for _, ancestor := range ancestors {
+		if ancestor.lastChildNode == insertAfter {
+			ancestor.lastChildNode = childNode
+		}
+	}
 
 	// Keep a reference so CompleteChildToolCall can update it.
 	parent.childTurn.tools[id].listNode = childNode
+	parent.childTurn.tools[id].header = hdr
 }
 
 // CompleteChildToolCall completes a tool call nested under a
-// parent tool call.
+// parent tool call at any depth.
 func (t *Turn) CompleteChildToolCall(parentID, id, name, args, summary, output string, isError bool) {
-	parent, ok := t.tools[parentID]
-	if !ok {
+	parent, _ := t.findTool(parentID)
+	if parent == nil {
 		t.CompleteToolCall(id, name, args, summary, output, isError)
 		return
 	}
@@ -326,13 +548,13 @@ func (t *Turn) CompleteChildToolCall(parentID, id, name, args, summary, output s
 }
 
 // AddChildResult registers a sub-agent result leaf node under a parent
-// tool call for collapsed-mode rendering. In collapsed mode the node is
+// tool call at any depth for collapsed-mode rendering. In collapsed mode the node is
 // shown with a dedicated icon (󰆈 success / 󰅽 error). In expanded mode
 // the parent tool call already displays the full output, so no extra
 // list entry is inserted.
 func (t *Turn) AddChildResult(parentID, output string, isError bool) {
-	parent, ok := t.tools[parentID]
-	if !ok {
+	parent, _ := t.findTool(parentID)
+	if parent == nil {
 		return
 	}
 
@@ -350,12 +572,34 @@ func (t *Turn) AddChildResult(parentID, output string, isError bool) {
 	// call already shows the full sub-agent output.
 	tn := &toolNode{
 		name:     summary,
+		output:   output,
+		resultOf: parent,
 		done:     true,
 		isError:  isError,
 		isResult: true,
 	}
 	parent.childTurn.tools[resultID] = tn
 	parent.childTurn.toolOrder = append(parent.childTurn.toolOrder, resultID)
+}
+
+// findTool returns the tool call with the given ID at any depth and the
+// tool calls it is nested under, innermost first, or nil if there is none.
+// Sub-agents may reuse the IDs of other conversations, so a top-level
+// call wins over a nested one and an earlier call over a later one.
+func (t *Turn) findTool(id string) (tn *toolNode, ancestors []*toolNode) {
+	if tn, ok := t.tools[id]; ok {
+		return tn, nil
+	}
+	for _, parentID := range t.toolOrder {
+		parent := t.tools[parentID]
+		if parent.childTurn == nil {
+			continue
+		}
+		if tn, ancestors := parent.childTurn.findTool(id); tn != nil {
+			return tn, append(ancestors, parent)
+		}
+	}
+	return nil, nil
 }
 
 // SetToolStartTime sets the start time for a tool call, used for live
@@ -446,6 +690,7 @@ func (t *Turn) completeRunning() {
 			t.CompleteToolCall(id, tn.name, tn.args, tn.summary, "canceled", true)
 		}
 	}
+	t.stopAnimation()
 }
 
 // Close releases resources associated with this Turn, including
@@ -453,6 +698,9 @@ func (t *Turn) completeRunning() {
 func (t *Turn) Close() {
 	t.stopAnimation()
 	for _, tn := range t.tools {
+		for _, image := range tn.images {
+			image.Close()
+		}
 		if tn.childTurn != nil {
 			tn.childTurn.Close()
 		}
@@ -499,12 +747,19 @@ func (t *Turn) stopAnimation() {
 // collapsedHeight returns the number of lines needed to render
 // the collapsed tree view: one per tool plus recursive children.
 func (t *Turn) collapsedHeight() int {
+	return t.collapsedHeightAt(t.width)
+}
+
+func (t *Turn) collapsedHeightAt(width int) int {
 	h := 0
 	for _, id := range t.toolOrder {
 		h++
 		tn := t.tools[id]
+		for _, image := range tn.images {
+			h += image.Height(max(0, width-collapsedIndent))
+		}
 		if tn.childTurn != nil {
-			h += tn.childTurn.collapsedHeight()
+			h += tn.childTurn.collapsedHeightAt(max(0, width-collapsedIndent))
 		}
 	}
 	return h
@@ -513,7 +768,7 @@ func (t *Turn) collapsedHeight() int {
 // Height satisfies component.Responsive.
 func (t *Turn) Height(width int) int {
 	if t.mode == collapseModeCollapsed {
-		h := t.collapsedHeight()
+		h := t.collapsedHeightAt(width)
 		if h > 0 {
 			if t.root {
 				h++ // expand hint line
@@ -646,14 +901,21 @@ func (t *Turn) drawCollapsedAt(w term.Writer, width int) {
 		}
 
 		x := writeRuneLineAttr(w, 0, y, connector, width, tAttr)
-		x = t.writeCollapsedStatus(w, x, y, tn, frame, width)
+		status, statusAttr := t.collapsedStatus(tn, frame)
+		x = writeRuneLineAttr(w, x, y, status, width, statusAttr)
+		labelAttr := nameAttr
 		if tn.isMemory {
-			x = writeRuneLineAttr(w, x, y, tn.name, width, t.memoryIDAttr())
-			t.writeCollapsedDuration(w, x, y, tn, width)
+			labelAttr = t.memoryIDAttr()
 		} else if tn.isResult {
-			writeRuneLineAttr(w, x, y, tn.name, width, argsAttr)
-		} else {
-			x = writeRuneLineAttr(w, x, y, tn.name, width, nameAttr)
+			labelAttr = argsAttr
+		}
+		if tn.hovered {
+			labelAttr.Fg = term.ColorWhite
+		}
+		x = writeRuneLineAttr(w, x, y, tn.name, width, labelAttr)
+		if tn.isMemory {
+			t.writeCollapsedDuration(w, x, y, tn, width)
+		} else if !tn.isResult {
 			x = t.writeCollapsedDuration(w, x, y, tn, width)
 
 			if tn.summary != "" {
@@ -667,9 +929,18 @@ func (t *Turn) drawCollapsedAt(w term.Writer, width int) {
 		}
 		y++
 
+		for _, image := range tn.images {
+			imageWidth := max(0, width-collapsedIndent)
+			h := image.Height(imageWidth)
+			image.Resize(imageWidth, h)
+			image.Draw(&component.VirtualWriter{Writer: w,
+				Offset: term.Coordinates{X: collapsedIndent, Y: y}, Width: imageWidth, Height: h})
+			y += h
+		}
+
 		if tn.childTurn != nil && len(tn.childTurn.toolOrder) > 0 {
-			childH := tn.childTurn.collapsedHeight()
-			childWidth := width - 3
+			childWidth := max(0, width-collapsedIndent)
+			childH := tn.childTurn.collapsedHeightAt(childWidth)
 			if !isLast {
 				for cy := 0; cy < childH; cy++ {
 					w.SetCell(term.Coordinates{X: 0, Y: y + cy}, term.NewCell('│', 1, tAttr))
@@ -677,7 +948,7 @@ func (t *Turn) drawCollapsedAt(w term.Writer, width int) {
 			}
 			childVW := &component.VirtualWriter{
 				Writer: w,
-				Offset: term.Coordinates{X: 3, Y: y},
+				Offset: term.Coordinates{X: collapsedIndent, Y: y},
 				Width:  childWidth,
 				Height: childH,
 			}
@@ -690,35 +961,34 @@ func (t *Turn) drawCollapsedAt(w term.Writer, width int) {
 	}
 }
 
-// writeCollapsedStatus writes the status icon for a collapsed tool node
-// and returns the new x position.
-func (t *Turn) writeCollapsedStatus(w term.Writer, x, y int, tn *toolNode, frame, maxWidth int) int {
+// collapsedStatus returns the status icon drawn before a collapsed tool
+// node's name. Every spinner frame has the same width.
+func (t *Turn) collapsedStatus(tn *toolNode, frame int) (string, term.Attributes) {
 	if tn.isMemory {
-		return writeRuneLineAttr(w, x, y, memoryPrefix, maxWidth, t.memoryAttr())
+		return memoryPrefix, t.memoryAttr()
 	}
 	if !tn.done {
 		if tn.prompt {
-			return writeRuneLineAttr(w, x, y, promptPrefix, maxWidth, t.promptAttr())
+			return promptPrefix, t.promptAttr()
 		}
-		ch := spinnerFrames[frame%len(spinnerFrames)]
-		return writeRuneLineAttr(w, x, y, string(ch)+" ", maxWidth, term.Attributes{})
+		return string(spinnerFrames[frame%len(spinnerFrames)]) + " ", term.Attributes{}
 	}
 	if tn.dropped {
 		if tn.isError {
-			return writeRuneLineAttr(w, x, y, errorPrefix, maxWidth, t.droppedAttr())
+			return errorPrefix, t.droppedAttr()
 		}
-		return writeRuneLineAttr(w, x, y, donePrefix, maxWidth, t.droppedAttr())
+		return donePrefix, t.droppedAttr()
 	}
 	if tn.isResult {
 		if tn.isError {
-			return writeRuneLineAttr(w, x, y, resultErrPrefix, maxWidth, t.resultErrorAttr())
+			return resultErrPrefix, t.resultErrorAttr()
 		}
-		return writeRuneLineAttr(w, x, y, resultPrefix, maxWidth, t.resultAttr())
+		return resultPrefix, t.resultAttr()
 	}
 	if tn.isError {
-		return writeRuneLineAttr(w, x, y, errorPrefix, maxWidth, t.errorAttr())
+		return errorPrefix, t.errorAttr()
 	}
-	return writeRuneLineAttr(w, x, y, donePrefix, maxWidth, t.successAttr())
+	return donePrefix, t.successAttr()
 }
 
 // writeRuneLineAttr writes s at (x, y) with the given attributes,
@@ -786,6 +1056,9 @@ const (
 	resultPrefix    = "󰆈 "
 	resultErrPrefix = "󰅽 "
 	expandHintText  = "Press <ctrl-o> to expand"
+	// collapsedIndent is the width of a tree connector, which is also how
+	// far each level of child tools is indented.
+	collapsedIndent = 3
 )
 
 var (
@@ -845,13 +1118,16 @@ func truncateToolOutput(cfg *ComponentConfig, output string) string {
 }
 
 // toolCallHeader renders a tool call header with the prefix (icon)
-// styled independently from the name+summary text. It satisfies
+// styled independently from the name+summary text. Only the name is
+// highlighted on hover, since it is the only clickable part. It satisfies
 // component.Responsive with a fixed height of 1.
 type toolCallHeader struct {
 	prefix     string
 	prefixAttr term.Attributes
-	rest       string
+	name       string
+	rest       string // drawn after name
 	restAttr   term.Attributes
+	hovered    bool
 	width      int
 }
 
@@ -859,6 +1135,11 @@ func (h *toolCallHeader) Height(int) int  { return 1 }
 func (h *toolCallHeader) Resize(w, _ int) { h.width = w }
 func (h *toolCallHeader) Draw(w term.Writer) {
 	x := writeRuneLineAttr(w, 0, 0, h.prefix, h.width, h.prefixAttr)
+	nameAttr := h.restAttr
+	if h.hovered {
+		nameAttr.Fg = term.ColorWhite
+	}
+	x = writeRuneLineAttr(w, x, 0, h.name, h.width, nameAttr)
 	writeRuneLineAttr(w, x, 0, h.rest, h.width, h.restAttr)
 }
 
@@ -874,13 +1155,14 @@ func toolCallEntryWithConfig(cfg *ComponentConfig, prefix string, prefixAttr ter
 	list := new(component.ResponsiveList)
 	list.Init()
 
-	rest := name
+	var rest string
 	if summary != "" {
-		rest += " " + summary
+		rest = " " + summary
 	}
 	header := &toolCallHeader{
 		prefix:     prefix,
 		prefixAttr: prefixAttr,
+		name:       name,
 		rest:       rest,
 		restAttr:   headerCfg.Attributes,
 	}

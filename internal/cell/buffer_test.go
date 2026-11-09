@@ -81,6 +81,93 @@ func TestBufferInitPerformance(t *testing.T) {
 		c.GroupUndo()
 		c.MarkStartUndo()
 	})
+
+	ran := false
+	c.GroupEdits(func() { ran = true })
+	assert.True(t, ran)
+}
+
+func TestBufferGroupEdits(t *testing.T) {
+	commentRows := func(b *Buffer) {
+		for y := 2; y >= 0; y-- {
+			b.InsertString(term.Coordinates{Y: y}, "# ")
+		}
+	}
+	tests := []struct {
+		name      string
+		run       func(b *Buffer)
+		want      string
+		wantUndos []string
+	}{
+		{
+			name:      "every edit undoes in one step",
+			run:       func(b *Buffer) { b.GroupEdits(func() { commentRows(b) }) },
+			want:      "# a\n# b\n# c",
+			wantUndos: []string{"a\nb\nc"},
+		},
+		{
+			name:      "no edits leave nothing to undo",
+			run:       func(b *Buffer) { b.GroupEdits(func() {}) },
+			want:      "a\nb\nc",
+			wantUndos: nil,
+		},
+		{
+			name: "edits around the group stay separate steps",
+			run: func(b *Buffer) {
+				b.InsertString(term.Coordinates{Y: 0, X: 1}, "x")
+				b.GroupEdits(func() { commentRows(b) })
+				b.InsertString(term.Coordinates{Y: 2, X: 3}, "y")
+			},
+			want:      "# ax\n# b\n# cy",
+			wantUndos: []string{"# ax\n# b\n# c", "ax\nb\nc", "a\nb\nc"},
+		},
+		{
+			name: "an enclosing MarkStartUndo scope still covers the group",
+			run: func(b *Buffer) {
+				b.MarkStartUndo()
+				b.InsertString(term.Coordinates{Y: 0, X: 1}, "x")
+				b.GroupEdits(func() { commentRows(b) })
+				b.InsertString(term.Coordinates{Y: 2, X: 3}, "y")
+				b.GroupUndo()
+			},
+			want:      "# ax\n# b\n# cy",
+			wantUndos: []string{"a\nb\nc"},
+		},
+		{
+			name: "a scope opened midway through the group still covers it",
+			run: func(b *Buffer) {
+				b.InsertString(term.Coordinates{Y: 0, X: 1}, "x")
+				b.GroupEdits(func() {
+					b.InsertString(term.Coordinates{Y: 2}, "# ")
+					b.MarkStartUndo()
+					b.InsertString(term.Coordinates{Y: 1}, "# ")
+				})
+				b.InsertString(term.Coordinates{Y: 2, X: 3}, "y")
+				b.GroupUndo()
+			},
+			want:      "ax\n# b\n# cy",
+			wantUndos: []string{"ax\nb\nc", "a\nb\nc"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newBufferWithContent(t, "a\nb\nc")
+			tc.run(b)
+			require.Equal(t, tc.want, b.String())
+			for _, want := range tc.wantUndos {
+				ok, _ := b.Undo()
+				require.True(t, ok)
+				assert.Equal(t, want, b.String())
+			}
+			ok, _ := b.Undo()
+			assert.False(t, ok, "nothing left to undo")
+			for range tc.wantUndos {
+				ok, _ := b.Redo()
+				require.True(t, ok)
+			}
+			assert.Equal(t, tc.want, b.String())
+		})
+	}
 }
 
 func TestBufferConflateWrap(t *testing.T) {
@@ -854,6 +941,79 @@ func TestBufferDeleteLine(t *testing.T) {
 			input:  "\nbla\n\nbleh\n",
 			output: "\nbla\n\n",
 			start:  term.Coordinates{},
+		},
+		{
+			// only a lone last line takes the line break before it
+			from:   term.Coordinates{Y: 1},
+			to:     term.Coordinates{Y: 2},
+			input:  "ab\ncd\nef",
+			output: "cd\nef",
+			start:  term.Coordinates{Y: 1},
+		},
+		{
+			from:   term.Coordinates{Y: 1},
+			to:     term.Coordinates{Y: 9},
+			input:  "ab\ncd\nef",
+			output: "cd\nef",
+			start:  term.Coordinates{Y: 1},
+		},
+		{
+			from:   term.Coordinates{},
+			to:     term.Coordinates{},
+			input:  "",
+			output: "",
+			start:  term.Coordinates{},
+		},
+		{
+			// nothing to delete below the last line
+			from:   term.Coordinates{Y: 5},
+			to:     term.Coordinates{Y: 6},
+			input:  "ab\ncd",
+			output: "",
+			start:  term.Coordinates{},
+		},
+		{
+			from:   term.Coordinates{X: 9},
+			to:     term.Coordinates{X: 9},
+			input:  "ab\ncd",
+			output: "ab\n",
+			start:  term.Coordinates{},
+		},
+		{
+			from:   term.Coordinates{},
+			to:     term.Coordinates{Y: 9},
+			input:  "ab\ncd",
+			output: "ab\ncd",
+			start:  term.Coordinates{},
+		},
+		{
+			from:   term.Coordinates{Y: 1},
+			to:     term.Coordinates{Y: 1},
+			input:  "ab\n日本",
+			output: "\n日本",
+			start:  term.Coordinates{X: 2},
+		},
+		{
+			from:   term.Coordinates{Y: 1},
+			to:     term.Coordinates{Y: 1},
+			input:  "\U0001F600\ncd",
+			output: "\ncd",
+			start:  term.Coordinates{X: 1},
+		},
+		{
+			from:   term.Coordinates{Y: 1},
+			to:     term.Coordinates{Y: 2},
+			input:  "\tab\n\tcd\n\tef",
+			output: "\tcd\n\tef",
+			start:  term.Coordinates{Y: 1},
+		},
+		{
+			// the trailing empty line
+			from:   term.Coordinates{Y: 2},
+			to:     term.Coordinates{Y: 2},
+			input:  "ab\ncd\n",
+			output: "\n",
+			start:  term.Coordinates{X: 2, Y: 1},
 		},
 		{
 			from: term.Coordinates{Y: 1},

@@ -29,8 +29,10 @@ import (
 	blueauth "github.com/unstablebuild/blue/auth"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
+	"github.com/unstablebuild/rune-go-sdk/api/searchapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -42,7 +44,8 @@ import (
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/extension"
 	"unstable.build/rune/internal/ide/ideauthorizer"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/text/texttest"
 	"unstable.build/rune/internal/workspace"
 )
@@ -79,6 +82,12 @@ func (p *e2ePromptOpener) Prompt(
 		}
 	}
 	panic("test prompt option was not provided")
+}
+
+func (p *e2ePromptOpener) Floating(
+	browser.Floating, browserapi.FloatingConfig,
+) (browser.Window, error) {
+	panic("e2e prompts never answer Always or Never, so open no scope picker")
 }
 
 func (p *e2ePromptOpener) message(t *testing.T, wantPrompts int) string {
@@ -120,13 +129,22 @@ func (e2eBrowser) Floating(
 	return browsertest.NopWindow(), nil
 }
 
+func (e2eBrowser) OpenPrompt(
+	browserapi.PromptConfig, handler.PromptHandler,
+) (browser.Window, bool, error) {
+	return browsertest.NopWindow(), true, nil
+}
+
+func (e2eBrowser) ButtonImages() *component.ButtonImages { return nil }
+
 func (e2eBrowser) Bar(browserapi.BarConfig, tui.Handler) error { return nil }
 
 func (e2eBrowser) SetTabName(workspaceapi.URI, string, term.Attributes) error { return nil }
 
 func (e2eBrowser) OnTabExit(workspaceapi.URI) bool { return false }
 
-func (e2eBrowser) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (e2eBrowser) SetTabStatus(workspaceapi.URI, programstatus.Report) error { return nil }
+func (e2eBrowser) EndTabStatus(workspaceapi.URI) error                       { return nil }
 
 func (e2eBrowser) Tab(
 	workspaceapi.URI, rune, string, browserapi.Handler,
@@ -141,6 +159,8 @@ func (e2eBrowser) CloseWindow(browser.Window) error { return nil }
 func (e2eBrowser) Open(workspaceapi.URI) (browserapi.Handler, error) {
 	return browsertest.NewTestHandler(), nil
 }
+
+func (e2eBrowser) Show(workspaceapi.URI) error { return nil }
 
 func (e2eBrowser) Resource(workspaceapi.URI) (browserapi.Handler, bool) {
 	return browsertest.NewTestHandler(), true
@@ -182,10 +202,32 @@ func (s stubPackages) LibDir(context.Context, string) (iterator.Iterator[string]
 	return iterator.FromSlice(s.paths), nil
 }
 
+// stubSearcher is the workspace's searcher as seen by the search
+// service: it answers regexp searches with results, or fails with err.
+type stubSearcher struct {
+	results []searchapi.RegexpResult
+	err     error
+}
+
+func (s stubSearcher) RegexpSearch(context.Context, searchapi.RegexpRequest) (
+	iterator.Iterator[searchapi.RegexpResult], error,
+) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return iterator.FromSlice(s.results), nil
+}
+
+func (s stubSearcher) SemanticSearch(context.Context, searchapi.SemanticRequest) (
+	iterator.Iterator[searchapi.SemanticResult], searchapi.SemanticStatus, error,
+) {
+	return nil, searchapi.SemanticStatus{}, s.err
+}
+
 // dialExtensionWorkspace serves res through the runner, authorizer and
 // transport an extension process talks to, and returns the SDK
-// workspace such a process would get, so a test crosses every layer a
-// language extension's package lookup does.
+// workspace such a process would get, holding the permissions of res,
+// so a test crosses every layer an extension's call does.
 func dialExtensionWorkspace(
 	t *testing.T,
 	res map[extensionapi.Permission]extension.ResourceRegistrar,
@@ -214,7 +256,7 @@ func dialExtensionWorkspace(
 	authorizer, err := ideauthorizer.NewAuthorizer(
 		texttest.NopEditor(), prompt, storage,
 		func(fn func()) bool { fn(); return true },
-		nil, pkgtrust.NewStore(t.TempDir(), nil), ideauthorizer.Config{},
+		e2eBrowser{}, pkgtrust.NewStore(), execScheme, uri, ideauthorizer.Config{},
 	)
 	require.NoError(t, err)
 
@@ -231,13 +273,17 @@ func dialExtensionWorkspace(
 
 	signKey, err := baseRunner.keys.Sign(ctx)
 	require.NoError(t, err)
-	const extID = "packages-e2e-extension"
+	const extID = "resources-e2e-extension"
+	perms := extensionapi.Permissions{}
+	for perm := range res {
+		perms[perm] = nil
+	}
 	claims := ideauthorizer.Extension{
 		Metadata: extensionapi.Metadata{
 			DeveloperID:   "you",
 			ExtensionID:   extID,
 			ExtensionName: extID,
-			Permissions:   extensionapi.Permissions{extensionapi.PermissionPackages: nil},
+			Permissions:   perms,
 		},
 		Path: "/test/extension",
 	}

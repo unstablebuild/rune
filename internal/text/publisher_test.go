@@ -26,6 +26,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/handler/handlertest"
 )
 
 // nopPubHandler is a minimal Handler used to exercise the Publisher
@@ -134,4 +135,39 @@ func TestPublishExternalEditHandlerHandlesEventsWithoutPanic(t *testing.T) {
 		_ = h.MoveToNextLocation("")
 		_ = h.MoveToPrevLocation("")
 	})
+}
+
+func TestCursorPublisherPointerLeaves(t *testing.T) {
+	t.Parallel()
+	uri, err := workspaceapi.ParseURI("memory:///tmp/pointer.go")
+	require.NoError(t, err)
+	publish := func(sub EventHandler) Handler {
+		var pub Publisher
+		pub.Init()
+		ed := newPointerEditor(t, uri)
+		h := pub.PublishEdit(uri, ed.cursor.buffer(), ed, ed.cursor)
+		pub.SubscribeEvents([]textapi.EventType{
+			textapi.EventTypeCursor, textapi.EventTypeSelection, textapi.EventTypeScroll,
+		}, sub)
+		return h
+	}
+	for _, size := range []struct{ width, height int }{{40, 10}, {1, 1}} {
+		handlertest.RunPointerLeaves(t, publish(new(captureSub)), size.width, size.height)
+	}
+
+	sub := new(captureSub)
+	h := publish(sub)
+	h.Resize(40, 10)
+	_, _ = h.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 3, MouseY: 2})
+	_, _ = h.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 12, MouseY: 4})
+	_, _ = h.Handle(term.Event{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 12, MouseY: 4})
+	require.NotEmpty(t, sub.events)
+	sub.events = nil
+	for _, out := range []term.Coordinates{{X: -1, Y: 5}, {X: 40, Y: 5}, {X: 20, Y: -1}, {X: 20, Y: 10}} {
+		_, _ = h.Handle(term.Event{Type: term.EventMouse, MouseX: out.X, MouseY: out.Y})
+	}
+	assert.Empty(t, sub.events, "a leave must not publish cursor, selection or scroll events")
+
+	requirePointerLeavesKeepState(t, publish(new(captureSub)), 40, 10,
+		term.Coordinates{X: 3, Y: 2}, term.Coordinates{X: 12, Y: 4})
 }

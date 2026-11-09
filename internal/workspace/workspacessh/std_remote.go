@@ -575,6 +575,12 @@ func (s *goSshSession) Signal(_ workspaceapi.Pid, sig syscall.Signal) error {
 	return s.ses.Signal(signal)
 }
 
+// LookPath reports errors.ErrUnsupported: the session hands its command
+// to the login shell of the remote user, which alone decides what runs.
+func (s *goSshSession) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
 func (r *goSshSession) Close() error {
 	return r.ses.Close()
 }

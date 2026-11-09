@@ -17,9 +17,15 @@
 package ide
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"maps"
 	"os"
@@ -38,11 +44,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	blueauth "github.com/unstablebuild/blue/auth"
 	"github.com/unstablebuild/blue/document"
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/blue/release/docrelease"
+	"github.com/unstablebuild/rune-go-sdk/api/acpapi"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/config/configrpc"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
@@ -53,27 +62,38 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
+	"github.com/unstablebuild/rune-go-sdk/handler/repl"
+	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"golang.org/x/oauth2"
+	"google.golang.org/grpc"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/cell"
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/asciiart"
+	"unstable.build/rune/internal/component/fileexplorer/fileexplorertest"
 	"unstable.build/rune/internal/component/imageuri/imageuritest"
 	"unstable.build/rune/internal/component/notifications"
 	"unstable.build/rune/internal/component/shader"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension"
+	"unstable.build/rune/internal/extension/extensionv2"
 	thandler "unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/handlertest"
 	handlermarkdown "unstable.build/rune/internal/handler/markdown"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idehistory"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
+	"unstable.build/rune/internal/ide/idestatus"
 	"unstable.build/rune/internal/ide/idetask"
-	"unstable.build/rune/internal/ide/pkgtrust"
+	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/ide/vctrl/testgit"
+	"unstable.build/rune/internal/llm/llamaserver"
 	"unstable.build/rune/internal/localstorage"
+	"unstable.build/rune/internal/sounds"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte/vtereservoir"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/textrpc"
@@ -395,6 +415,165 @@ func TestFileExplorerReactsToFilesystemChangesIntegration(t *testing.T) {
 		}})
 }
 
+func TestFileExplorerFlushIntegration(t *testing.T) {
+	cases := []struct {
+		name string
+		// files seeds the workspace; see fileexplorertest.WriteTree.
+		files map[string]string
+		// keys edits the explorer, which starts focused with every
+		// directory collapsed and the cursor on the first row. The
+		// edit is then written and the confirmation accepted.
+		keys string
+		// want is the workspace afterwards; see
+		// fileexplorertest.ReadTree.
+		want map[string]string
+	}{
+		{
+			name: "cut_paste_collapsed_dir_into_sibling",
+			files: map[string]string{
+				"agent/agent.go":            "agent",
+				"toolpolicy/policy.go":      "policy",
+				"toolpolicy/policy_test.go": "test",
+			},
+			// Rows after <enter>: agent/, │agent.go, toolpolicy/.
+			keys: "<enter>jjddp\\>\\>",
+			want: map[string]string{
+				"agent/agent.go":                  "agent",
+				"agent/toolpolicy/policy.go":      "policy",
+				"agent/toolpolicy/policy_test.go": "test",
+			},
+		},
+		{
+			name: "cut_paste_expanded_dir_into_sibling",
+			files: map[string]string{
+				"agent/agent.go":            "agent",
+				"toolpolicy/policy.go":      "policy",
+				"toolpolicy/policy_test.go": "test",
+			},
+			// Rows after both <enter>s: agent/, │agent.go,
+			// toolpolicy/, │policy.go, │policy_test.go.
+			keys: "<enter>jj<enter>3ddp\\>\\>j\\>\\>j\\>\\>",
+			want: map[string]string{
+				"agent/agent.go":                  "agent",
+				"agent/toolpolicy/policy.go":      "policy",
+				"agent/toolpolicy/policy_test.go": "test",
+			},
+		},
+		{
+			name: "replace_empty_dir_with_moved_dir",
+			files: map[string]string{
+				"agent/agent.go":            "agent",
+				"agent/toolpolicy/":         "",
+				"toolpolicy/policy.go":      "policy",
+				"toolpolicy/policy_test.go": "test",
+			},
+			// Rows after <enter>: agent/, │toolpolicy/, │agent.go,
+			// toolpolicy/.
+			keys: "<enter>jddj<enter>3ddp\\>\\>j\\>\\>j\\>\\>",
+			want: map[string]string{
+				"agent/agent.go":                  "agent",
+				"agent/toolpolicy/policy.go":      "policy",
+				"agent/toolpolicy/policy_test.go": "test",
+			},
+		},
+		{
+			name: "move_dir_carries_gitignored_files",
+			files: map[string]string{
+				".gitignore":           "*.log\n",
+				"agent/":               "",
+				"toolpolicy/debug.log": "log",
+				"toolpolicy/policy.go": "policy",
+			},
+			// Rows after j<enter>: agent/, toolpolicy/, │policy.go,
+			// .gitignore.
+			keys: "j<enter>\\>\\>j\\>\\>",
+			want: map[string]string{
+				".gitignore":                 "*.log\n",
+				"agent/toolpolicy/debug.log": "log",
+				"agent/toolpolicy/policy.go": "policy",
+			},
+		},
+		{
+			name: "delete_collapsed_dir",
+			files: map[string]string{
+				"keep.go":      "keep",
+				"pkg/a.go":     "a",
+				"pkg/sub/b.go": "b",
+			},
+			keys: "dd",
+			want: map[string]string{"keep.go": "keep"},
+		},
+		{
+			name: "delete_expanded_dir",
+			files: map[string]string{
+				"keep.go":      "keep",
+				"pkg/a.go":     "a",
+				"pkg/sub/b.go": "b",
+			},
+			// Rows after <enter>: pkg/, │sub/, │a.go, keep.go.
+			keys: "<enter>3dd",
+			want: map[string]string{"keep.go": "keep"},
+		},
+		{
+			name:  "move_file_out_then_delete_its_dir",
+			files: map[string]string{"src/a.go": "a", "src/b.go": "b"},
+			// Rows after <enter>: src/, │a.go, │b.go.
+			keys: "<enter>jcc-<space>a.go<esc>jddggdd",
+			want: map[string]string{"a.go": "a"},
+		},
+		{
+			name:  "rename_chain",
+			files: map[string]string{"a": "A", "b": "B"},
+			keys:  "jcc-<space>c<esc>kcc-<space>b<esc>",
+			want:  map[string]string{"b": "A", "c": "B"},
+		},
+		{
+			name:  "rename_swap",
+			files: map[string]string{"a": "A", "b": "B"},
+			keys:  "cc-<space>b<esc>jcc-<space>a<esc>",
+			want:  map[string]string{"a": "B", "b": "A"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The watcher reports canonical paths; see
+			// TestFileExplorerReactsToFilesystemChangesIntegration.
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			fileexplorertest.WriteTree(t, dir, tc.files)
+
+			cfg := defaultConfigWithWrap(false)
+			editorCfg := cfg.cfg["editor"].(map[string]any)
+			editorCfg["mode"] = editorModeVim
+			editorCfg["file_explorer"] = map[string]any{"read_only": false}
+			uri, err := workspaceapi.ParseURI("file://" + dir)
+			require.NoError(t, err)
+			m := newTestWorkspaceManagerHandlerWithDirs(t, cfg, dir,
+				t.TempDir(), nopShutdownShaderConfig())
+			require.NoError(t, m.addOrCreateWorkspace(uri))
+			m.quiesce()
+			t.Cleanup(func() { _ = m.Close() })
+
+			h := newSafeHandler(m)
+			h.Resize(60, 24)
+			sendExplorerKeys(t, h, "<c-\\\\>fexplorer<enter>")
+			m.mu.Lock()
+			ex := m.focusEx()
+			_, err = ex.comp.SetFocus(ex.fileExplorerWin)
+			m.mu.Unlock()
+			require.NoError(t, err)
+
+			sendExplorerKeys(t, h, tc.keys+"<c-\\\\>write<enter>y")
+
+			m.mu.Lock()
+			rows := ex.fileExplorerHandler.buf.String()
+			m.mu.Unlock()
+			assert.Equal(t, tc.want, fileexplorertest.ReadTree(t, dir),
+				"explorer after write:\n%s", rows)
+		})
+	}
+}
+
 func TestGitlinkIntegration(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not available")
@@ -694,12 +873,15 @@ func TestSetTabNameWithAttrIntegration(t *testing.T) {
 
 	cfg := defaultConfigWithWrap(false)
 	bellRung := make(chan struct{}, 8)
-	cfg.ringBell = func() {
+	cfg.sounds = sounds.PlayerFunc(func(name string) {
+		if name != sounds.Warning {
+			return
+		}
 		select {
 		case bellRung <- struct{}{}:
 		default:
 		}
-	}
+	})
 	mu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
 	manager := workspace.NewManager(config.NopConfig(), sched)
 	require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme,
@@ -731,7 +913,6 @@ func TestSetTabNameWithAttrIntegration(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, m.addOrCreateWorkspace(uri1))
 	m.quiesce()
-	m.tabAttentionNameSuffix = "*"
 
 	h := newSafeHandler(m)
 	cases := []handlertest.SequenceTestCase{
@@ -775,23 +956,30 @@ func TestSetTabNameWithAttrIntegration(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("bell never rang after injecting BEL into the pty")
 	}
-	// SetTabName routes the attention attribute through
+	// SetTabName routes the bell attribute through
 	// f.parent.scheduleNextTick, which under the default test stub
 	// dispatches on a fresh goroutine. The bell fires from the vte
 	// parser path before that scheduled tick runs, so bellRung above
 	// only proves the bell was rung — it does not guarantee the
-	// attention attr propagated to workspaces[1] yet. Block here
-	// until the bar tab actually reflects the attention attr so the
-	// final render is deterministic.
+	// bell attr propagated to workspaces[1] yet. Block here until the
+	// bar tab actually reflects the bell attr so the final render is
+	// deterministic.
 	require.Eventually(t, func() bool {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		if len(m.workspaces) < 2 || m.workspaces[1] == nil {
 			return false
 		}
-		return m.workspaces[1].attentionAttr != (term.Attributes{})
+		return m.workspaces[1].bellAttr != (term.Attributes{})
 	}, 5*time.Second, 5*time.Millisecond,
-		"workspace attention attr never propagated after bell")
+		"workspace bell attr never propagated after bell")
+	m.mu.Lock()
+	bellAttr := m.workspaces[1].bellAttr
+	barIdx := slices.Index(m.barIdxToSlot, 1)
+	require.GreaterOrEqual(t, barIdx, 0)
+	assert.Equal(t, bellAttr, m.bar.TabAttr(barIdx),
+		"the bar tab of the unfocused workspace carries the bell attr")
+	m.mu.Unlock()
 	cases = []handlertest.SequenceTestCase{
 		{InputSequence: "",
 			Expected: `┌────────────────────────────┐
@@ -801,7 +989,7 @@ func TestSetTabNameWithAttrIntegration(t *testing.T) {
 │     workspaceWallpaper     │
 │                            │
 ├────────────────────────────┤
-│1 1  2 2*                   │
+│1 1  2 2                    │
 └━━━─────────────────────────┘`},
 	}
 	handlertest.RunHandlerSequence(t, h, 30, 9, cases)
@@ -828,6 +1016,7 @@ func TestCrossWorkspaceNotifications(t *testing.T) {
 	m.quiesce()
 
 	m.workspaces[0].notifications.Notify(browserapi.LevelError, "sh")
+	m.quiesce()
 
 	h := newSafeHandler(m)
 	cases := []handlertest.SequenceTestCase{
@@ -839,8 +1028,8 @@ func TestCrossWorkspaceNotifications(t *testing.T) {
 │     workspaceWallpaper     │
 │                            │
 ├────────────────────────────┤
-│1 #  2 #                    │
-└─────###────────────────────┘`},
+│1 ##  2 #                   │
+└──────###───────────────────┘`},
 	}
 	handlertest.RunHandlerSequenceWriter(t, newWriterForAttrTesting(30, 9),
 		h, 30, 9, cases)
@@ -876,6 +1065,73 @@ func newActivityTestManager(t *testing.T, cfg ideConfig) (*testWorkspaceManagerH
 	return nil, 0
 }
 
+func TestWorkspaceManagerHandlerPointerLeaves(t *testing.T) {
+	for _, size := range []term.Coordinates{{X: 100, Y: 30}, {X: 2, Y: 2}} {
+		m, _ := newActivityTestManager(t, defaultConfigWithWrap(false))
+		h := newSafeHandler(m)
+		h.mu.Lock()
+		focus := m.focus
+		h.mu.Unlock()
+		handlertest.RunPointerLeaves(t, h, size.X, size.Y)
+		h.mu.Lock()
+		workspaces := m.workspaceCount
+		h.mu.Unlock()
+		assert.Equal(t, 2, workspaces, "a leave closes no workspace")
+		if size.X == 2 {
+			h.mu.Lock()
+			assert.Equal(t, focus, m.focus)
+			h.mu.Unlock()
+		}
+		require.NoError(t, m.Close())
+	}
+}
+
+// pointerProbe records the events its window is sent.
+type pointerProbe struct {
+	*browsertest.TestHandler
+	events        []term.Event
+	width, height int
+}
+
+func (p *pointerProbe) Resize(width, height int) {
+	p.width, p.height = width, height
+	p.TestHandler.Resize(width, height)
+}
+
+func (p *pointerProbe) Handle(ev term.Event) (bool, bool) {
+	p.events = append(p.events, ev)
+	return p.TestHandler.Handle(ev)
+}
+
+func TestWorkspaceManagerHandlerTellsTheWorkspaceThePointerLeftForTheBar(t *testing.T) {
+	m, _ := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	probe := &pointerProbe{TestHandler: browsertest.NewTestHandler()}
+	h := newSafeHandler(m)
+	h.Resize(30, 9)
+	h.mu.Lock()
+	win, err := m.focusEx().comp.Focus()
+	if err == nil {
+		err = win.SetContent(probe)
+	}
+	// The bar's first row is the frame it shares with the workspace.
+	barTabsRow := m.height - m.barSize() + 1
+	h.mu.Unlock()
+	require.NoError(t, err)
+	m.quiesce()
+
+	_, _ = h.Handle(term.Event{Type: term.EventMouse, MouseX: 15, MouseY: 4})
+	require.NotEmpty(t, probe.events, "sanity: the window is under the pointer")
+	probe.events = nil
+	_, _ = h.Handle(term.Event{Type: term.EventMouse, MouseX: 15, MouseY: barTabsRow})
+	require.Len(t, probe.events, 1, "the window is told the pointer left it")
+	leave := probe.events[0]
+	assert.Zero(t, leave.Key)
+	assert.False(t, leave.MouseX >= 0 && leave.MouseX < probe.width &&
+		leave.MouseY >= 0 && leave.MouseY < probe.height,
+		"off the window: %+v in %dx%d", leave, probe.width, probe.height)
+}
+
 func TestWorkspaceBarShadesActiveWorkspaces(t *testing.T) {
 	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
 	chat, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox")
@@ -888,7 +1144,7 @@ func TestWorkspaceBarShadesActiveWorkspaces(t *testing.T) {
 	comp := &m.workspaces[slot].ex.comp
 	_, err = comp.Tab(chat, 'x', "rolling-fox", browsertest.NewTestHandler())
 	require.NoError(t, err)
-	require.NoError(t, comp.SetTabActivity(chat, true))
+	require.NoError(t, comp.SetTabStatus(chat, workingStatus()))
 	assert.True(t, m.shadedBar.Running(),
 		"an unfocused workspace's activity shows on the bar")
 	barIdx := slices.Index(m.barIdxToSlot, slot)
@@ -896,7 +1152,7 @@ func TestWorkspaceBarShadesActiveWorkspaces(t *testing.T) {
 	assert.Equal(t, []int{barIdx}, m.activeWorkspaceBarIndices())
 
 	require.True(t, comp.OnTabExit(chat))
-	assert.False(t, comp.HasActiveTabs())
+	assert.False(t, comp.HasWorkingTabs())
 	assert.False(t, m.shadedBar.Running(),
 		"closing the active tab stops the effect")
 	assert.Empty(t, m.activeWorkspaceBarIndices())
@@ -905,7 +1161,7 @@ func TestWorkspaceBarShadesActiveWorkspaces(t *testing.T) {
 	require.NoError(t, m.Close())
 }
 
-func TestWorkspaceBarNotificationOverridesActivity(t *testing.T) {
+func TestWorkspaceBarNotificationBadge(t *testing.T) {
 	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
 	chat, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox")
 	require.NoError(t, err)
@@ -914,7 +1170,7 @@ func TestWorkspaceBarNotificationOverridesActivity(t *testing.T) {
 	comp := &m.workspaces[slot].ex.comp
 	_, err = comp.Tab(chat, 'x', "rolling-fox", browsertest.NewTestHandler())
 	require.NoError(t, err)
-	require.NoError(t, comp.SetTabActivity(chat, true))
+	require.NoError(t, comp.SetTabStatus(chat, workingStatus()))
 	require.True(t, m.shadedBar.Running())
 	barIdx := slices.Index(m.barIdxToSlot, slot)
 	require.GreaterOrEqual(t, barIdx, 0)
@@ -922,26 +1178,1464 @@ func TestWorkspaceBarNotificationOverridesActivity(t *testing.T) {
 	uri := m.workspaces[slot].uri
 	m.mu.Unlock()
 
-	m.setWorkspaceRequiresAttention(uri, term.Attributes{Fg: term.ColorYellow})
+	yellow := term.Attributes{Fg: term.ColorYellow}
+	red := term.Attributes{Fg: term.ColorRed}
+	m.addWorkspaceNotification(uri, browserapi.LevelWarn, yellow)
+	m.quiesce()
+	m.addWorkspaceNotification(uri, browserapi.LevelError, red)
+	m.quiesce()
+	m.addWorkspaceNotification(uri, browserapi.LevelInfo, term.Attributes{Fg: term.ColorBlue})
 	m.quiesce()
 
 	m.mu.Lock()
-	require.NotEqual(t, term.Attributes{}, m.workspaces[slot].attentionAttr)
-	assert.Empty(t, m.activeWorkspaceBarIndices(),
-		"a workspace with a pending notification is not shaded")
-	assert.False(t, m.shadedBar.Running(),
-		"the effect stops when every active workspace has a notification")
+	assert.Equal(t, pendingNotifications{3, browserapi.LevelError, red},
+		m.workspaces[slot].notifs)
+	badge, badgeAttr := m.bar.TabBadge(barIdx)
+	assert.Equal(t, "³", badge)
+	assert.Equal(t, term.AttributesUnion(m.barNonFocusAttr, red), badgeAttr,
+		"the badge takes the colour of the highest level pending")
+	assert.Equal(t, []int{barIdx}, m.activeWorkspaceBarIndices(),
+		"notifications no longer stop the working effect")
+	assert.True(t, m.shadedBar.Running())
+	m.mu.Unlock()
 
+	h := newSafeHandler(m)
+	handlertest.RunHandlerSequence(t, h, 30, 9, []handlertest.SequenceTestCase{
+		{InputSequence: "", Expected: `┌────────────────────────────┐
+│                            │
+├────────────────────────────┤
+│                            │
+│     workspaceWallpaper     │
+│                            │
+├────────────────────────────┤
+│1 1³  2 2                   │
+└──────━━━───────────────────┘`},
+	})
+
+	m.mu.Lock()
 	require.True(t, m.switchToWorkspace(slot))
-	assert.Equal(t, term.Attributes{}, m.workspaces[slot].attentionAttr)
-	assert.True(t, m.shadedBar.Running(),
-		"focusing clears the notification and restores the effect")
+	assert.Equal(t, pendingNotifications{}, m.workspaces[slot].notifs)
 	barIdx = slices.Index(m.barIdxToSlot, slot)
 	require.GreaterOrEqual(t, barIdx, 0)
+	badge, _ = m.bar.TabBadge(barIdx)
+	assert.Empty(t, badge, "focusing clears the badge")
+	assert.True(t, m.shadedBar.Running())
 	assert.Contains(t, m.activeWorkspaceBarIndices(), barIdx)
 	m.mu.Unlock()
 
 	require.NoError(t, m.Close())
+}
+
+func TestTabStatusNotifications(t *testing.T) {
+	cfg := defaultConfigWithWrap(false)
+	// idestatus covers the rate limiting.
+	cfg.cfg["terminal"] = map[string]any{"status": map[string]any{"notify_interval": "0s"}}
+	cfg.cfg["program_status"] = map[string]any{"sounds": map[string]any{"working": sounds.Info}}
+	var soundsMu sync.Mutex
+	var played []string
+	cfg.sounds = sounds.PlayerFunc(func(name string) {
+		soundsMu.Lock()
+		defer soundsMu.Unlock()
+		played = append(played, name)
+	})
+	newSounds := func() []string {
+		soundsMu.Lock()
+		defer soundsMu.Unlock()
+		ret := played
+		played = nil
+		return ret
+	}
+	m, slot := newActivityTestManager(t, cfg)
+	chat, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox")
+	require.NoError(t, err)
+	seen, err := workspaceapi.ParseURI("rune-agent://model/seen")
+	require.NoError(t, err)
+	notiCfg := notificationsConfig()
+	warn := term.Attributes{Fg: notiCfg.ColorWarning.Fg}
+
+	m.mu.Lock()
+	w := m.workspaces[slot]
+	comp := &w.comp
+	notes := &recordingNotifications{inner: w.notifications}
+	w.notifications = notes
+	for _, tab := range []struct {
+		uri  workspaceapi.URI
+		name string
+	}{{chat, "rolling-fox"}, {seen, "seen"}} {
+		_, err = comp.Tab(tab.uri, 'x', tab.name, browsertest.NewTestHandler())
+		require.NoError(t, err)
+	}
+
+	send := func(tab workspaceapi.URI, reports ...programstatus.Report) {
+		t.Helper()
+		for _, r := range reports {
+			require.NoError(t, comp.SetTabStatus(tab, r))
+		}
+		m.mu.Unlock()
+		m.quiesce()
+		m.mu.Lock()
+	}
+	taken := 0
+	newNotes := func() []capturedNote {
+		all := notes.snapshot()
+		ret := all[taken:]
+		taken = len(all)
+		return ret
+	}
+	note := func(level browserapi.NotificationLevel, msg string) []capturedNote {
+		return []capturedNote{{level: level, msg: msg}}
+	}
+	report := func(state programstatus.State, msg string) programstatus.Report {
+		return programstatus.Report{State: state, Progress: -1, Msg: msg}
+	}
+	updated := 0
+	newUpdates := func() []capturedUpdate {
+		all := notes.updatesSnapshot()
+		ret := all[updated:]
+		updated = len(all)
+		return ret
+	}
+
+	send(chat, report(programstatus.Working, ""))
+	assert.Empty(t, newNotes(), "working without a message is not notified")
+	assert.Equal(t, []string{sounds.Info}, newSounds(), "program_status.sounds adds working")
+
+	send(chat, report(programstatus.Working, "Compiling"))
+	assert.Equal(t, note(browserapi.LevelInfo, "rolling-fox: Compiling"), newNotes(),
+		"a message comes through whatever the state")
+	assert.Equal(t, []capturedUpdate{{progress: 0, total: 1, ok: true}}, newUpdates(),
+		"a working notification stays")
+
+	send(chat, programstatus.Report{State: programstatus.Working, Progress: 40, Msg: "Linking"})
+	assert.Empty(t, newNotes(), "the next working message updates it")
+	assert.Contains(t, newUpdates(),
+		capturedUpdate{msg: "rolling-fox: Linking", progress: 40, total: 100, ok: true})
+
+	send(chat, programstatus.Report{State: programstatus.Working, Progress: 60, Msg: "Linking"})
+	assert.Empty(t, newNotes(), "an unchanged message is not repeated")
+	assert.Equal(t, []capturedUpdate{{progress: 60, total: 100, ok: true}}, newUpdates(),
+		"the working notification follows the progress")
+
+	send(chat, programstatus.Report{
+		ID: "tests", State: programstatus.Working, Progress: -1, App: "go", Msg: "ok ./internal",
+	})
+	assert.Empty(t, newNotes())
+	assert.Contains(t, newUpdates(),
+		capturedUpdate{msg: "rolling-fox (go): ok ./internal", progress: 0, total: 1, ok: true},
+		"messages of child records come through")
+	assert.Empty(t, newSounds(), "staying working plays nothing")
+
+	send(chat, programstatus.Report{
+		State: programstatus.Blocked, Kind: programstatus.KindPermission,
+		Progress: -1, App: "claude", Msg: "run make test?",
+	})
+	assert.Equal(t, note(browserapi.LevelWarn, "rolling-fox (claude): run make test?"), newNotes(),
+		"the message stands for the transition it comes with")
+	assert.Equal(t, []capturedUpdate{{progress: 1, total: 1, ok: true}}, newUpdates(),
+		"leaving working closes the working notification")
+	assert.Equal(t, pendingNotifications{2, browserapi.LevelWarn, warn}, w.notifs,
+		"an unfocused workspace counts every notification")
+	assert.Equal(t, []string{sounds.Warning}, newSounds())
+
+	send(chat, report(programstatus.Done, "ok"), report(programstatus.Error, "boom"))
+	assert.Equal(t, []capturedNote{
+		{level: browserapi.LevelSuccess, msg: "rolling-fox: ok"},
+		{level: browserapi.LevelError, msg: "rolling-fox: boom"},
+	}, newNotes(), "messages are never rate limited")
+	assert.Equal(t, []string{sounds.Success, sounds.Error}, newSounds())
+
+	send(chat, report(programstatus.Done, ""))
+	assert.Equal(t, note(browserapi.LevelSuccess, "rolling-fox: done"), newNotes(),
+		"a transition without a message names the state")
+	send(chat, programstatus.Report{State: programstatus.Clear})
+	assert.Empty(t, newNotes(), "clearing is not notified")
+	assert.Equal(t, []string{sounds.Success}, newSounds(), "clearing plays nothing")
+
+	require.True(t, m.switchToWorkspace(slot))
+	win, err := comp.Focus()
+	require.NoError(t, err)
+	idx := slices.IndexFunc(comp.Tabs(), func(tab *browser.Tab) bool {
+		return tab.URI().Equal(seen)
+	})
+	require.True(t, comp.Browser().SetContentToTab(win, idx))
+	focusTab, ok := comp.FocusTab()
+	require.True(t, ok)
+	require.True(t, focusTab.URI().Equal(seen))
+
+	send(seen, report(programstatus.Blocked, ""))
+	assert.Empty(t, newNotes(), "a transition in sight is not notified")
+	assert.Equal(t, []string{sounds.Warning}, newSounds(), "but plays its sound")
+
+	send(seen, report(programstatus.Blocked, "approve?"))
+	assert.Empty(t, newNotes(), "nor is a blocked message, as the tab shows what it asks")
+	assert.Empty(t, newSounds(), "a message in the same state plays nothing")
+
+	m.Handle(term.Event{Type: term.EventUnfocus})
+	send(seen, report(programstatus.Blocked, "approve again?"))
+	assert.Equal(t, note(browserapi.LevelWarn, "seen: approve again?"), newNotes(),
+		"with Rune out of focus, it comes through")
+	m.Handle(term.Event{Type: term.EventFocus})
+
+	send(chat, report(programstatus.Error, ""))
+	assert.Equal(t, note(browserapi.LevelError, "rolling-fox: error"), newNotes(),
+		"another tab of the focused workspace is out of sight")
+	assert.Equal(t, pendingNotifications{}, w.notifs)
+	m.mu.Unlock()
+
+	require.NoError(t, m.Close())
+}
+
+func TestWorkspaceBarStatusProgress(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			cfg := defaultConfigWithWrap(false)
+			cfg.cfg["terminal"] = map[string]any{
+				"status": map[string]any{
+					"content_tab":   map[string]any{"progress": !enabled},
+					"workspace_tab": map[string]any{"progress": enabled},
+				},
+			}
+			cfg.cfg["animations"] = map[string]any{
+				"active_workspace_tab": map[string]any{"shader": "shine"},
+			}
+			m, slot := newActivityTestManager(t, cfg)
+			t.Cleanup(func() { require.NoError(t, m.Close()) })
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			const width = 120
+			m.workspaces[slot].tabname = "tinygrad"
+			m.Resize(width, 9)
+			chat, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox")
+			require.NoError(t, err)
+			comp := &m.workspaces[slot].ex.comp
+			_, err = comp.Tab(chat, 'x', "rolling-fox", browsertest.NewTestHandler())
+			require.NoError(t, err)
+			barIdx := slices.Index(m.barIdxToSlot, slot)
+			require.GreaterOrEqual(t, barIdx, 0)
+			m.bar.SetTabProgress(barIdx, 25, term.Attributes{Fg: term.ColorGreen})
+			for _, progress := range []int{0, 50, 100} {
+				require.NoError(t, comp.SetTabStatus(chat, programstatus.Report{
+					State: programstatus.Working, Progress: progress,
+				}))
+				m.bar.Draw(term.NewStringWriter(width, m.barSize()))
+				pct, _ := m.bar.TabProgress(barIdx)
+				offset, fullWidth, ok := m.bar.TabRect(barIdx)
+				require.True(t, ok)
+				shadeOffset, shadeWidth, shadeOK := m.bar.TabShadeRect(barIdx)
+				if enabled {
+					assert.Equal(t, progress, pct)
+					if progress == 100 {
+						assert.False(t, shadeOK)
+					} else {
+						require.True(t, shadeOK)
+						if progress > 0 {
+							assert.Less(t, shadeWidth, fullWidth)
+						}
+					}
+				} else {
+					assert.Equal(t, -1, pct)
+					require.True(t, shadeOK)
+					assert.Equal(t, offset, shadeOffset)
+					assert.Equal(t, fullWidth, shadeWidth)
+				}
+				assert.True(t, m.shadedBar.Running())
+				summary, _ := m.workspaceStatus(slot)
+				assert.Equal(t, progress, summary.Progress)
+			}
+		})
+	}
+}
+
+func TestWorkspaceBarStatusRollup(t *testing.T) {
+	cfg := defaultConfigWithWrap(false)
+	cfg.cfg["terminal"] = map[string]any{
+		"status": map[string]any{
+			"workspace_tab": map[string]any{"progress": true},
+		},
+	}
+	m, slot := newActivityTestManager(t, cfg)
+	chat, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox")
+	require.NoError(t, err)
+	other, err := workspaceapi.ParseURI("rune-agent://model/other")
+	require.NoError(t, err)
+	status := browser.DefaultTabStatusConfig().WorkspaceTab
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// A name long enough to split, on a bar wide enough to show it.
+	const width = 120
+	m.workspaces[slot].tabname = "tinygrad"
+	m.Resize(width, 9)
+	comp := &m.workspaces[slot].ex.comp
+	_, err = comp.Tab(chat, 'x', "rolling-fox", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	_, err = comp.Tab(other, 'x', "other", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	barIdx := slices.Index(m.barIdxToSlot, slot)
+	require.GreaterOrEqual(t, barIdx, 0)
+
+	assert.Equal(t, term.Attributes{}, m.bar.TabAttr(barIdx))
+
+	require.NoError(t, comp.SetTabStatus(chat, workingStatus()))
+	assert.Equal(t, term.Attributes{}, m.bar.TabAttr(barIdx),
+		"working keeps the name attribute")
+	assert.Equal(t, m.barNonFocusIconAttr, m.bar.TabIconAttr(barIdx),
+		"the icon keeps the bar's own attributes")
+	assert.True(t, m.shadedBar.Running())
+	pct, _ := m.bar.TabProgress(barIdx)
+	assert.Equal(t, -1, pct, "indeterminate progress paints nothing")
+	// TabShadeRect needs the layout of a draw.
+	m.bar.Draw(term.NewStringWriter(width, m.barSize()))
+	_, fullWidth, ok := m.bar.TabShadeRect(barIdx)
+	require.True(t, ok)
+
+	halfway := programstatus.Report{State: programstatus.Working, Progress: 50}
+	require.NoError(t, comp.SetTabStatus(chat, halfway))
+	pct, attr := m.bar.TabProgress(barIdx)
+	assert.Equal(t, 50, pct, "the completed part is painted on the bar")
+	assert.Equal(t, status.WorkingDoneAttr, attr)
+	m.bar.Draw(term.NewStringWriter(width, m.barSize()))
+	_, shadedWidth, ok := m.bar.TabShadeRect(barIdx)
+	require.True(t, ok)
+	assert.Less(t, shadedWidth, fullWidth, "the effect runs over the remaining part only")
+	assert.True(t, m.shadedBar.Running())
+
+	done := programstatus.Report{State: programstatus.Done, Progress: -1}
+	require.NoError(t, comp.SetTabStatus(other, done))
+	assert.Equal(t, status.DoneAttr, m.bar.TabAttr(barIdx),
+		"done outranks working")
+	assert.Equal(t, m.barNonFocusIconAttr, m.bar.TabIconAttr(barIdx))
+	assert.False(t, m.shadedBar.Running(), "the effect runs only while working")
+	pct, _ = m.bar.TabProgress(barIdx)
+	assert.Equal(t, -1, pct, "progress goes with the working roll-up")
+
+	blocked := programstatus.Report{State: programstatus.Blocked, Progress: -1}
+	require.NoError(t, comp.SetTabStatus(chat, blocked))
+	assert.Equal(t, status.BlockedAttr, m.bar.TabAttr(barIdx))
+	assert.Equal(t, m.barNonFocusIconAttr, m.bar.TabIconAttr(barIdx))
+
+	failed := programstatus.Report{State: programstatus.Error, Progress: -1}
+	require.NoError(t, comp.SetTabStatus(other, failed))
+	assert.Equal(t, status.BlockedAttr, m.bar.TabAttr(barIdx), "blocked outranks error")
+	require.NoError(t, comp.SetTabStatus(chat, done))
+	assert.Equal(t, status.ErrorAttr, m.bar.TabAttr(barIdx), "error outranks done")
+	assert.Equal(t, m.barNonFocusIconAttr, m.bar.TabIconAttr(barIdx))
+	require.NoError(t, comp.SetTabStatus(chat, blocked))
+
+	// The bell ranks below the status.
+	m.workspaces[slot].bellAttr = term.Attributes{Attrs: term.AttrBlink}
+	m.decorateWorkspaceBar()
+	assert.Equal(t, status.BlockedAttr, m.bar.TabAttr(barIdx))
+
+	idle := programstatus.Report{State: programstatus.Clear}
+	require.NoError(t, comp.SetTabStatus(chat, idle))
+	require.NoError(t, comp.SetTabStatus(other, idle))
+	assert.Equal(t, term.Attributes{Attrs: term.AttrBlink}, m.bar.TabAttr(barIdx),
+		"the bell shows once the status is idle")
+	assert.Equal(t, m.barNonFocusIconAttr, m.bar.TabIconAttr(barIdx))
+
+	reportedIdle := programstatus.Report{State: programstatus.Idle, Progress: -1}
+	require.NoError(t, comp.SetTabStatus(chat, reportedIdle))
+	assert.Equal(t, m.barNonFocusIconAttr, m.bar.TabIconAttr(barIdx))
+	assert.Equal(t, term.Attributes{Attrs: term.AttrBlink}, m.bar.TabAttr(barIdx))
+	assert.False(t, m.shadedBar.Running())
+	require.NoError(t, comp.SetTabStatus(chat, idle))
+	assert.Equal(t, m.barNonFocusIconAttr, m.bar.TabIconAttr(barIdx))
+
+	require.True(t, m.switchToWorkspace(slot))
+	barIdx = slices.Index(m.barIdxToSlot, slot)
+	assert.Equal(t, term.Attributes{}, m.bar.TabAttr(barIdx), "focusing clears the bell")
+}
+
+func TestWorkspaceTabInSightOnlyWhileFocused(t *testing.T) {
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	chat, err := workspaceapi.ParseURI("rune-agent://model/rolling-fox")
+	require.NoError(t, err)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	comp := &m.workspaces[slot].ex.comp
+	tab, err := comp.Tab(chat, 'x', "rolling-fox", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	require.NoError(t, comp.Browser().Focus().SetContent(tab))
+	state := func() programstatus.State {
+		t.Helper()
+		status, ok := comp.Browser().TabStatus(chat)
+		require.True(t, ok)
+		return status.State
+	}
+	done := programstatus.Report{State: programstatus.Done, Progress: -1}
+
+	require.NoError(t, comp.SetTabStatus(chat, done))
+	assert.Equal(t, programstatus.Done, state(), "the tab of a workspace out of focus is not in sight")
+
+	focused := m.focus
+	require.True(t, m.switchToWorkspace(slot))
+	assert.Equal(t, programstatus.Idle, state(), "switching to its workspace sees it")
+
+	require.NoError(t, comp.SetTabStatus(chat, done))
+	assert.Equal(t, programstatus.Idle, state(), "reported in sight")
+
+	require.True(t, m.switchToWorkspace(focused))
+	require.NoError(t, comp.SetTabStatus(chat, done))
+	assert.Equal(t, programstatus.Done, state(), "switching away takes it out of sight")
+}
+
+func TestWorkspaceBarStatusFromTerminalWithoutTab(t *testing.T) {
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	pty, err := workspaceapi.ParseURI("file:///dev/ttys042")
+	require.NoError(t, err)
+	status := browser.DefaultTabStatusConfig().WorkspaceTab
+
+	m.mu.Lock()
+	w := m.workspaces[slot]
+	notes := &recordingNotifications{inner: w.notifications}
+	w.notifications = notes
+	barIdx := slices.Index(m.barIdxToSlot, slot)
+	require.GreaterOrEqual(t, barIdx, 0)
+	publish := func(reports ...programstatus.Report) {
+		t.Helper()
+		// As a vte in a floating window or a task does: its pty is
+		// no tab of the workspace.
+		for _, r := range reports {
+			require.NoError(t, w.ex.tm.SetTabStatus(pty, r))
+		}
+		m.mu.Unlock()
+		m.quiesce()
+		m.mu.Lock()
+	}
+
+	publish(programstatus.Report{State: programstatus.Working, Progress: -1})
+	sum, from := m.workspaceStatus(slot)
+	assert.Equal(t, programstatus.Working, sum.State)
+	assert.Equal(t, pty.String(), from.String())
+	assert.Equal(t, term.AttributesUnion(m.barNonFocusIconAttr, status.WorkingIconAttr),
+		m.bar.TabIconAttr(barIdx))
+	assert.True(t, m.shadedBar.Running())
+
+	publish(programstatus.Report{State: programstatus.Working, Progress: -1, Msg: "Compiling"})
+	publish(programstatus.Report{State: programstatus.Error, Progress: -1, App: "make", Msg: "boom"})
+	assert.Equal(t, status.ErrorAttr, m.bar.TabAttr(barIdx))
+	assert.Equal(t, term.AttributesUnion(m.barNonFocusIconAttr, status.ErrorIconAttr),
+		m.bar.TabIconAttr(barIdx))
+	assert.False(t, m.shadedBar.Running())
+	assert.Equal(t, []capturedNote{
+		{level: browserapi.LevelInfo, msg: "terminal: Compiling"},
+		{level: browserapi.LevelError, msg: "make: boom"},
+	}, notes.snapshot())
+
+	// The program ended, then the terminal closed, withdrawing what it
+	// reported.
+	require.NoError(t, w.ex.tm.EndTabStatus(pty))
+	m.mu.Unlock()
+	m.quiesce()
+	m.mu.Lock()
+	sum, _ = m.workspaceStatus(slot)
+	assert.Equal(t, programstatus.Error, sum.State, "ending keeps the error")
+	require.NoError(t, w.ex.tm.SetTabStatus(pty, programstatus.Report{State: programstatus.Clear}))
+	m.mu.Unlock()
+	m.quiesce()
+	m.mu.Lock()
+	sum, _ = m.workspaceStatus(slot)
+	assert.Equal(t, programstatus.Idle, sum.State)
+	assert.Equal(t, term.Attributes{}, m.bar.TabAttr(barIdx))
+	assert.Equal(t, m.barNonFocusIconAttr, m.bar.TabIconAttr(barIdx))
+	assert.Empty(t, m.status.Items())
+	m.mu.Unlock()
+
+	require.NoError(t, m.Close())
+}
+
+func TestStatusSources(t *testing.T) {
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	assert.Empty(t, m.status.Items())
+
+	other := m.workspaces[slot].ex
+	focused := m.focusEx()
+	open := func(e *ex, name string) workspaceapi.URI {
+		uri, err := workspaceapi.ParseURI("rune-agent://model/" + name)
+		require.NoError(t, err)
+		_, err = e.comp.Tab(uri, 'x', name, browsertest.NewTestHandler())
+		require.NoError(t, err)
+		return uri
+	}
+	summaryOf := func(r programstatus.Report) programstatus.Summary {
+		s := programstatus.New()
+		s.Apply(r)
+		return s.Summary()
+	}
+	assertSource := func(want, got idestatus.Item) {
+		t.Helper()
+		assert.Truef(t, want.Status.Equal(got.Status), "want %+v, got %+v", want.Status, got.Status)
+		want.Status, got.Status = programstatus.Summary{}, programstatus.Summary{}
+		assert.Equal(t, want, got)
+	}
+	workingReport := programstatus.Report{State: programstatus.Working, Progress: 40, Title: "cargo build"}
+	failedReport := programstatus.Report{State: programstatus.Error, Progress: -1, Msg: "exit status 2"}
+	doneReport := programstatus.Report{State: programstatus.Done, Progress: -1, Msg: "ok"}
+	working := open(focused, "worker")
+	require.NoError(t, focused.comp.SetTabStatus(working, workingReport))
+	failed := open(other, "build")
+	require.NoError(t, other.comp.SetTabStatus(failed, failedReport))
+	silent := open(other, "silent")
+	pty, err := workspaceapi.ParseURI("file:///dev/ttys042")
+	require.NoError(t, err)
+	m.status.SetTabStatus(m.workspaces[slot].uri, &other.comp, pty, doneReport)
+
+	otherName := m.makeWorkspaceTabName(slot, m.workspaces[slot])
+	focusedName := m.makeWorkspaceTabName(m.focus, m.workspaces[m.focus])
+	sources := m.status.Items()
+	byTab := map[string]idestatus.Item{}
+	for _, s := range sources {
+		byTab[s.URI.String()] = s
+	}
+	require.Len(t, sources, 3, "every reporting source is listed: %+v", sources)
+	assertSource(idestatus.Item{
+		Slot: m.focus, WS: m.workspaces[m.focus].uri, WorkspaceName: focusedName, URI: working, Name: "worker", Icon: 'x', Status: summaryOf(workingReport),
+	}, byTab[working.String()])
+	assertSource(idestatus.Item{
+		Slot: slot, WS: m.workspaces[slot].uri, WorkspaceName: otherName, URI: failed, Name: "build", Icon: 'x', Status: summaryOf(failedReport),
+	}, byTab[failed.String()])
+	assert.NotContains(t, byTab, silent.String(), "a tab that reported nothing is not tracked")
+	assertSource(idestatus.Item{
+		Slot: slot, WS: m.workspaces[slot].uri, WorkspaceName: otherName, URI: pty, Name: "terminal", Status: summaryOf(doneReport),
+	}, byTab[pty.String()])
+
+	require.NoError(t, m.focusStatusEntry(m.workspaces[slot].uri, pty))
+	assert.Equal(t, slot, m.focus, "a terminal that is no tab focuses its workspace")
+	silentTab, ok := other.comp.Browser().Tab(silent)
+	require.True(t, ok)
+	require.True(t, other.comp.Browser().RemoveTab(silentTab))
+	assert.Error(t, m.focusStatusEntry(m.workspaces[slot].uri, silent))
+}
+
+func TestPermissionPromptStatus(t *testing.T) {
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	status := browser.DefaultTabStatusConfig().WorkspaceTab
+	prompt, err := workspaceapi.ParseURI("ideauthorizer:///prompt/1")
+	require.NoError(t, err)
+
+	m.mu.Lock()
+	w := m.workspaces[slot]
+	notes := &recordingNotifications{inner: w.notifications}
+	w.notifications = notes
+	barIdx := slices.Index(m.barIdxToSlot, slot)
+	require.GreaterOrEqual(t, barIdx, 0)
+	reporter := w.ex.tm
+
+	// As ideauthorizer announces a pending prompt.
+	require.NoError(t, reporter.SetTabStatus(prompt, programstatus.Report{
+		State: programstatus.Blocked, Kind: programstatus.KindPermission, Progress: -1,
+		App: "rune", Title: "Authorization", Msg: "ext wants to run make",
+	}))
+	m.mu.Unlock()
+	m.quiesce()
+	m.mu.Lock()
+	sum, from := m.workspaceStatus(slot)
+	assert.Equal(t, programstatus.Blocked, sum.State)
+	assert.Equal(t, prompt.String(), from.String())
+	assert.Equal(t, status.BlockedAttr, m.bar.TabAttr(barIdx))
+	assert.Equal(t, []capturedNote{{level: browserapi.LevelWarn, msg: "rune: ext wants to run make"}},
+		notes.snapshot())
+	items := m.status.Items()
+	require.Len(t, items, 1)
+	assert.Equal(t, prompt.String(), items[0].URI.String(), "the prompt is listed in the inbox")
+
+	// And withdraws it once answered.
+	require.NoError(t, reporter.SetTabStatus(prompt, programstatus.Report{State: programstatus.Clear}))
+	m.mu.Unlock()
+	m.quiesce()
+	m.mu.Lock()
+	sum, _ = m.workspaceStatus(slot)
+	assert.Equal(t, programstatus.Idle, sum.State)
+	assert.Equal(t, term.Attributes{}, m.bar.TabAttr(barIdx))
+	assert.Empty(t, m.status.Items())
+	m.mu.Unlock()
+}
+
+func TestWorkspaceTabManagerDropsClosedWorkspaceStatus(t *testing.T) {
+	for _, end := range []bool{false, true} {
+		t.Run(fmt.Sprintf("end=%t", end), func(t *testing.T) {
+			m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+			t.Cleanup(func() { _ = m.Close() })
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			w := m.workspaces[slot]
+			uri, err := workspaceapi.ParseURI("file:///dev/closed-status")
+			require.NoError(t, err)
+			var queued func()
+			tm := &workspaceTabManager{workspace: w, parent: m.workspaceManagerHandler, tm: &w.comp}
+			schedule := m.scheduleNextTick
+			m.scheduleNextTick = func(fn func()) bool { queued = fn; return true }
+			if end {
+				require.NoError(t, tm.EndTabStatus(uri))
+			} else {
+				require.NoError(t, tm.SetTabStatus(uri, workingStatus()))
+			}
+			m.scheduleNextTick = schedule
+			require.NotNil(t, queued)
+			m.workspaces[slot] = &workspaceHandler{uri: w.uri}
+			queued()
+			m.workspaces[slot] = w
+			_, ok := m.status.Status(w.uri, uri)
+			assert.False(t, ok)
+		})
+	}
+}
+
+func TestCommandProgramStatusFocusesEntry(t *testing.T) {
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	blocked, err := workspaceapi.ParseURI("rune-agent://model/agent")
+	require.NoError(t, err)
+
+	var other *ex
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		other = m.workspaces[slot].ex
+		_, err = other.comp.Tab(blocked, 'x', "agent", browsertest.NewTestHandler())
+		require.NoError(t, err)
+		require.NoError(t, other.comp.SetTabStatus(blocked, programstatus.Report{
+			State: programstatus.Blocked, Progress: -1, Msg: "needs you",
+		}))
+		focused := m.focusEx()
+		require.NoError(t, m.commandProgramStatus())
+		require.Equal(t, 1, focused.comp.Browser().FloatingWindows())
+		win, err := focused.comp.Focus()
+		require.NoError(t, err)
+		content, err := win.Content()
+		require.NoError(t, err)
+		picker, ok := content.(*idestatus.View)
+		require.True(t, ok)
+		require.Len(t, m.status.Items(), 1)
+		require.True(t, picker.Select(m.workspaces[slot].uri, blocked))
+
+		oldFocus := m.focus
+		require.NoError(t, m.moveWorkspace(strconv.Itoa(slot+1)))
+		slot = oldFocus
+		exit, handled := picker.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+		assert.True(t, exit)
+		assert.True(t, handled)
+	}()
+	m.quiesce()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	assert.Equal(t, slot, m.focus, "the entry's workspace is focused")
+	tab, ok := other.comp.FocusTab()
+	require.True(t, ok)
+	assert.True(t, tab.URI().Equal(blocked), "the entry's tab is shown")
+	assert.NotEqual(t, -1, slices.IndexFunc(other.comp.Browser().Tabs(),
+		func(t *browser.Tab) bool { return t.URI().Equal(blocked) }))
+
+	assert.Error(t, m.commandProgramStatus("extra"))
+}
+
+func TestCommandProgramStatusDrawsEveryProgramOverItsWorkspace(t *testing.T) {
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	focused := m.focusEx()
+	here := m.workspaces[m.focus]
+	require.Same(t, focused, here.ex, "the inbox floats over a workspace that reports too")
+	there := m.workspaces[slot]
+	focused.Resize(120, 40)
+	there.ex.Resize(120, 40)
+	report := func(w *workspaceHandler, uri workspaceapi.URI, app string) {
+		m.status.SetTabStatus(w.uri, &w.ex.comp, uri, programstatus.Report{
+			State: programstatus.Working, Progress: -1, App: app,
+		})
+		_, ok := m.status.Status(w.uri, uri)
+		require.True(t, ok, app)
+	}
+	tab := func(w *workspaceHandler, raw, app string) {
+		uri := mustURI(t, raw)
+		_, err := w.ex.comp.Tab(uri, 'x', app, browsertest.NewTestHandler())
+		require.NoError(t, err)
+		require.NoError(t, w.ex.comp.SetTabStatus(uri, programstatus.Report{
+			State: programstatus.Working, Progress: -1, App: app,
+		}))
+	}
+	tab(here, "rune-agent://model/here", "tab-here")
+	tab(there, "rune-agent://model/there", "tab-there")
+	b := focused.comp.Browser()
+	for i, w := range []*workspaceHandler{here, there} {
+		pty := mustURI(t, "file:///dev/ttys07"+strconv.Itoa(i))
+		tv := newTestVteWithConfig([]string{"sh"})
+		tv.uri = pty
+		win, ok := w.ex.comp.Browser().Split(browserapi.OrientationDefault,
+			w.ex.comp.Browser().Focus(), tv)
+		require.True(t, ok)
+		w.ex.comp.Browser().SetFocus(win)
+		report(w, pty, "terminal-"+strconv.Itoa(i))
+	}
+	cmd := mustURI(t, "file:///dev/ttys080")
+	ph := &pluginAdapter{pluginHandler: &statusTestPluginHandler{testVte: newTestVteWithConfig([]string{"make"}), uri: cmd}}
+	b.Floating(ph, browserapi.FloatingConfig{Alignment: component.AlignmentCentered})
+	report(here, cmd, "command")
+	prompt := mustURI(t, "ideauthorizer:///prompt/1")
+	focused.setStatusWindow(prompt, focused.comp.Prompt("Allow make?", []string{"Yes", "No"}, nil,
+		handler.FuncPromptHandler(func(int, string) {}, func() error { return nil })))
+	report(here, prompt, "prompt")
+	shell := mustURI(t, "terminal://loading/9100")
+	companion := newTestVteWithConfig(nil)
+	companion.uri = shell
+	focused.companionTerminal = companion
+	report(here, shell, "companion")
+
+	require.NoError(t, m.commandProgramStatus())
+	win, err := focused.comp.Focus()
+	require.NoError(t, err)
+	content, err := win.Content()
+	require.NoError(t, err)
+	inbox, ok := content.(*idestatus.View)
+	require.True(t, ok)
+	items := m.status.Items()
+	require.Len(t, items, 7)
+	for _, it := range items {
+		require.True(t, inbox.Select(it.WS, it.URI))
+		name, ok := inbox.Selection()
+		require.True(t, ok)
+		require.Equal(t, it.App, name, "every program is listed by its app")
+		w := term.NewStringWriter(120, 40)
+		require.NotPanics(t, func() { focused.Draw(w) }, name)
+		require.NoError(t, w.Flush())
+		assert.Contains(t, w.String(), name, "the inbox is drawn over its workspace")
+		if name == "command" || name == "prompt" || name == "companion" {
+			// Shown in the very workspace the inbox floats over.
+			_, ok := statusWorkspaces{m.workspaceManagerHandler}.Preview(it.WS, it.URI)
+			assert.True(t, ok, "%s is previewed", name)
+		}
+	}
+}
+
+func TestCommandProgramStatusPreviewsTab(t *testing.T) {
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	uri, err := workspaceapi.ParseURI("rune-agent://model/agent")
+	require.NoError(t, err)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	other := m.workspaces[slot].ex
+	agent := browsertest.NewTestHandler()
+	_, err = other.comp.Tab(uri, 'x', "agent", agent)
+	require.NoError(t, err)
+	b := other.comp.Browser()
+	tab, ok := b.Tab(uri)
+	require.True(t, ok)
+	require.True(t, b.SetContentToTab(b.Focus(), slices.Index(b.Tabs(), tab)))
+	// As if the workspace had been in focus once.
+	other.Resize(60, 30)
+	tabW, tabH := tab.ContentSize()
+	require.NotZero(t, tabW)
+	require.NotZero(t, tabH)
+	require.NoError(t, other.comp.SetTabStatus(uri, programstatus.Report{
+		State: programstatus.Working, Progress: -1,
+	}))
+	focused := m.focusEx()
+	focused.comp.Resize(120, 60)
+	require.NoError(t, m.commandProgramStatus())
+	win, err := focused.comp.Focus()
+	require.NoError(t, err)
+	content, err := win.Content()
+	require.NoError(t, err)
+	picker, ok := content.(*idestatus.View)
+	require.True(t, ok)
+	ws := m.workspaces[slot].uri
+	size := func() (int, int) { return focused.comp.Browser().ContentSize(win) }
+
+	// With room for it, the window is sized to show the tab whole beside
+	// the sidebar.
+	focused.comp.Resize(120, 60)
+	for _, ev := range []term.Event{
+		{Type: term.EventKey, Ch: 'j'},
+		{Type: term.EventKey, Ch: 'k'},
+	} {
+		_, handled := picker.Handle(ev)
+		assert.True(t, handled)
+	}
+	width, height := size()
+	drawn := handlertest.DrawHandler(picker, width, height)
+	sideW := statusInboxSidebarWidth(t, drawn)
+	_, wantH := picker.Dimensions()
+	assert.Equal(t, []int{sideW + tabW, wantH}, []int{width, height})
+	assert.GreaterOrEqual(t, height, tabH)
+	lines := strings.Split(drawn, "\n")
+	for y := range tabH {
+		assert.Equal(t, strings.Repeat("A", tabW), string([]rune(lines[y])[sideW:]),
+			"the tab of another workspace is previewed")
+	}
+	assert.Equal(t, 'A', agent.Ch, "the previewed tab receives no input")
+
+	// The window keeps its top as what it previews changes size.
+	top := win.Position().Y
+	require.Zero(t, top, "the window opens at the top")
+	gone, err := workspaceapi.ParseURI("file:///dev/ttys043")
+	require.NoError(t, err)
+	require.NoError(t, m.status.SetTabStatus(ws, &other.comp, gone, programstatus.Report{
+		State: programstatus.Done, Progress: -1,
+	}))
+	require.True(t, picker.Select(ws, gone))
+	focused.comp.Draw(term.NewStringWriter(120, 60))
+	width, _ = size()
+	assert.NotEqual(t, sideW+tabW, width, "the window follows the preview")
+	wmW, _ := focused.comp.Browser().WindowManagerSize()
+	assert.GreaterOrEqual(t, width, wmW*statusMinWidthPercent/100,
+		"the window takes at least its share of the width")
+	assert.Equal(t, top, win.Position().Y, "the window keeps its top")
+	require.True(t, picker.Select(ws, uri))
+	focused.comp.Draw(term.NewStringWriter(120, 60))
+	width, _ = size()
+	assert.Equal(t, sideW+tabW, width)
+	assert.Equal(t, top, win.Position().Y, "the window keeps its top")
+
+	// Without, the window takes what there is and the preview less
+	// than the tab.
+	focused.comp.Resize(40, 20)
+	width, height = size()
+	assert.Less(t, width, sideW+tabW)
+	assert.Less(t, height, tabH)
+	w, h := tab.ContentSize()
+	assert.Equal(t, []int{tabW, tabH}, []int{w, h}, "the previewed tab keeps its size")
+}
+
+// statusInboxSidebarWidth returns the columns the sidebar of the
+// status inbox drawn takes, its divider included.
+func statusInboxSidebarWidth(t *testing.T, drawn string) int {
+	t.Helper()
+	first, _, _ := strings.Cut(drawn, "\n")
+	i := slices.Index([]rune(first), idestatus.DefaultInboxStyle().Divider.Vertical)
+	require.GreaterOrEqual(t, i, 0, "the sidebar ends with a divider")
+	return i + 1
+}
+
+func TestCommandProgramStatusPreviewsWindowedTerminal(t *testing.T) {
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	pty, err := workspaceapi.ParseURI("file:///dev/ttys042")
+	require.NoError(t, err)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// As :terminal opens it: the content of a window, in no tab.
+	w := m.workspaces[slot]
+	b := w.ex.comp.Browser()
+	tv := newTestVteWithConfig([]string{"brew"})
+	tv.uri = pty
+	termWin := b.Focus()
+	require.NoError(t, termWin.SetContent(tv))
+	w.ex.Resize(60, 30)
+	m.status.SetTabStatus(w.uri, &w.ex.comp, pty, programstatus.Report{
+		State: programstatus.Done, Progress: -1, App: "brew",
+	})
+	_, ok := m.status.Status(w.uri, pty)
+	require.True(t, ok)
+
+	preview, ok := statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, pty)
+	require.True(t, ok, "a terminal outside of a tab is previewed in its window")
+	assert.Same(t, tv, preview.Content)
+	assert.Nil(t, preview.Fit, "a terminal shown in a window is never resized")
+	tvW, tvH := b.ContentSize(termWin)
+	require.NotZero(t, tvW)
+	assert.Equal(t, []int{tvW, tvH}, []int{preview.Width, preview.Height})
+
+	focused := m.focusEx()
+	require.NoError(t, m.commandProgramStatus())
+	inbox, err := focused.comp.Focus()
+	require.NoError(t, err)
+	content, err := inbox.Content()
+	require.NoError(t, err)
+	picker := content.(*idestatus.View)
+	focused.comp.Resize(120, 60)
+	width, height := focused.comp.Browser().ContentSize(inbox)
+	drawn := handlertest.DrawHandler(picker, width, height)
+	lines := strings.Split(drawn, "\n")
+	assert.Equal(t, "brew", strings.TrimSpace(string([]rune(lines[0])[statusInboxSidebarWidth(t, drawn):])))
+
+	// Choosing it focuses its window.
+	split, ok := b.Split(browserapi.OrientationDefault, termWin, browsertest.NewTestHandler())
+	require.True(t, ok)
+	b.SetFocus(split)
+	require.NoError(t, m.focusStatusEntry(w.uri, pty))
+	assert.Equal(t, termWin.WindowID(), b.Focus().WindowID())
+}
+
+func TestCommandProgramStatusPreviewsPermissionPrompt(t *testing.T) {
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	uri, err := workspaceapi.ParseURI("ideauthorizer:///prompt/1")
+	require.NoError(t, err)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	w := m.workspaces[slot]
+	b := w.ex.comp.Browser()
+	tiled := b.Focus()
+	prompt := w.ex.comp.Prompt("Allow make?", []string{"Yes", "No"}, nil,
+		handler.FuncPromptHandler(func(int, string) {}, func() error { return nil }))
+	w.ex.Resize(60, 30)
+	m.status.SetTabStatus(w.uri, &w.ex.comp, uri, programstatus.Report{
+		State: programstatus.Blocked, Kind: programstatus.KindPermission, Progress: -1,
+		App: programstatus.HostApp,
+	})
+	_, ok := statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, uri)
+	require.False(t, ok, "nothing tells which window shows the status yet")
+
+	w.ex.setStatusWindow(uri, prompt)
+	preview, ok := statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, uri)
+	require.True(t, ok, "the permission prompt is previewed")
+	content, err := prompt.Content()
+	require.NoError(t, err)
+	assert.Same(t, content, preview.Content)
+	assert.Positive(t, preview.Width)
+	assert.Positive(t, preview.Height)
+
+	b.SetFocus(tiled)
+	require.NoError(t, m.focusStatusEntry(w.uri, uri))
+	assert.Equal(t, prompt.WindowID(), b.Focus().WindowID(), "choosing it focuses the prompt")
+
+	require.NoError(t, prompt.Close())
+	_, ok = statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, uri)
+	assert.False(t, ok, "a closed prompt has no preview")
+}
+
+func TestCommandProgramStatusPreviewsDetachedPrograms(t *testing.T) {
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	w := m.workspaces[slot]
+	e := w.ex
+	b := e.comp.Browser()
+	w.ex.Resize(60, 30)
+	tiled := b.Focus()
+	report := func(uri workspaceapi.URI) {
+		m.status.SetTabStatus(w.uri, &e.comp, uri, programstatus.Report{
+			State: programstatus.Working, Progress: -1,
+		})
+		_, ok := m.status.Status(w.uri, uri)
+		require.True(t, ok)
+	}
+
+	// A floating "!" command, whose window shows the program behind
+	// layers that report under the uri of its terminal.
+	cmd := mustURI(t, "file:///dev/ttys050")
+	program := &statusTestPluginHandler{testVte: newTestVteWithConfig([]string{"make"}), uri: cmd}
+	assert.Equal(t, cmd, (&asyncPlugin{real: program}).StatusURI())
+	ph := &pluginAdapter{pluginHandler: program}
+	win, err := e.comp.Floating(ph, browserapi.FloatingConfig{Alignment: component.AlignmentCentered})
+	require.NoError(t, err)
+	report(cmd)
+	preview, ok := statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, cmd)
+	require.True(t, ok, "a floating command is previewed in its window")
+	assert.Same(t, ph, preview.Content)
+	assert.False(t, preview.Hidden)
+	b.SetFocus(tiled)
+	require.NoError(t, m.focusStatusEntry(w.uri, cmd))
+	assert.Equal(t, win.WindowID(), b.Focus().WindowID(), "choosing it focuses its window")
+	require.NoError(t, win.Close())
+
+	// The companion terminal, hidden while its shell runs on.
+	shell := mustURI(t, "terminal://loading/9000")
+	tv := newTestVteWithConfig(nil)
+	tv.uri = shell
+	e.companionTerminal = tv
+	report(shell)
+	preview, ok = statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, shell)
+	require.True(t, ok, "a hidden companion terminal is previewed")
+	assert.Same(t, tv, preview.Content)
+	assert.True(t, preview.Hidden, "the inbox sizes what is shown nowhere")
+	assert.NotNil(t, preview.Fit)
+	b.SetFocus(tiled)
+	require.NoError(t, m.focusStatusEntry(w.uri, shell))
+	require.NotNil(t, e.companionTerminalWin, "choosing it shows it")
+	assert.Equal(t, e.companionTerminalWin.WindowID(), b.Focus().WindowID())
+	preview, ok = statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, shell)
+	require.True(t, ok)
+	assert.False(t, preview.Hidden, "shown, it is previewed in its window")
+}
+
+type statusTestPluginHandler struct {
+	*testVte
+	uri workspaceapi.URI
+}
+
+func (h *statusTestPluginHandler) StatusURI() workspaceapi.URI { return h.uri }
+
+func TestCommandProgramStatusClosesPrograms(t *testing.T) {
+	type program struct {
+		m   *testWorkspaceManagerHandler
+		e   *ex
+		uri workspaceapi.URI
+		p   *statusTestProgram
+		win browser.Window
+	}
+	del := term.Event{Type: term.EventKey, Key: term.KeyDelete}
+	backspace := term.Event{Type: term.EventKey, Key: term.KeyBackspace}
+	ctx := context.Background()
+	terminalTab := func(t *testing.T, pr *program) {
+		require.NoError(t, pr.e.terminalnewtab(ctx))
+	}
+	// Shown in no window, its status is not seen when reported.
+	terminalTabOutOfSight := func(t *testing.T, pr *program) {
+		terminalTab(t, pr)
+		other, err := pr.e.comp.Tab(mustURI(t, "rune-agent://model/other"), 'x', "other",
+			browsertest.NewTestHandler())
+		require.NoError(t, err)
+		require.NoError(t, pr.e.invokeWindow().SetContent(other))
+		tab, ok := pr.e.comp.Browser().Tab(pr.uri)
+		require.True(t, ok)
+		_, shown := tab.Window()
+		require.False(t, shown)
+	}
+	task := func(t *testing.T, pr *program, tab bool) {
+		if tab {
+			require.NoError(t, pr.e.newTaskTab(ctx, "build", "--", "make"))
+		} else {
+			require.NoError(t, pr.e.newTask(ctx, "build", "left", "--", "make"))
+		}
+	}
+	taskStopped := func(t *testing.T, pr *program) {
+		assert.True(t, pr.p.calledClose, "the program is closed")
+		assert.Empty(t, pr.e.tasks.ListTasks(), "the task is stopped")
+	}
+	tabGone := func(t *testing.T, pr *program) {
+		assert.True(t, pr.p.calledClose, "the program is closed")
+		_, ok := pr.e.comp.Browser().Tab(pr.uri)
+		assert.False(t, ok, "its tab is gone")
+	}
+	for _, tc := range []struct {
+		name string
+		// here runs the program in the workspace the inbox floats over.
+		here  bool
+		state programstatus.State
+		key   term.Event
+		open  func(t *testing.T, pr *program)
+		// answer is the key answering the question asked before closing,
+		// if any.
+		answer rune
+		// stays is set for what is hidden rather than closed: its row
+		// stays.
+		stays  bool
+		closed func(t *testing.T, pr *program)
+	}{{
+		name: "terminal tab", state: programstatus.Error, key: del,
+		open: terminalTab, closed: tabGone,
+	}, {
+		// The idle report on the tab in sight is seen right away, yet the
+		// row stays until the tab is closed.
+		name: "terminal tab here", here: true, state: programstatus.Idle, key: backspace,
+		open: terminalTab, closed: tabGone,
+	}, {
+		name: "terminal tab out of sight", state: programstatus.Idle, key: del,
+		open: terminalTabOutOfSight, closed: tabGone,
+	}, {
+		name: "working terminal tab", state: programstatus.Working, key: del,
+		open: terminalTab, answer: 'y', closed: tabGone,
+	}, {
+		name: "working terminal tab kept", state: programstatus.Working, key: del,
+		open: terminalTab, answer: 'n', stays: true,
+		closed: func(t *testing.T, pr *program) {
+			assert.False(t, pr.p.calledClose, "the program runs on")
+			_, ok := pr.e.comp.Browser().Tab(pr.uri)
+			assert.True(t, ok, "its tab stays")
+		},
+	}, {
+		name: "terminal in a window", state: programstatus.Error, key: backspace,
+		open: func(t *testing.T, pr *program) {
+			require.NoError(t, pr.e.terminalneworsplit(ctx))
+			win, ok := statusWindowOf(pr.e, pr.uri)
+			require.True(t, ok)
+			pr.win = win
+		},
+		closed: func(t *testing.T, pr *program) {
+			assert.True(t, pr.p.calledClose, "the program is closed")
+			_, ok := statusWindowOf(pr.e, pr.uri)
+			assert.False(t, ok, "no window shows it")
+		},
+	}, {
+		name: "blocked terminal in a split here", here: true, state: programstatus.Blocked, key: del,
+		open: func(t *testing.T, pr *program) {
+			other, err := pr.e.comp.Tab(mustURI(t, "rune-agent://model/other"), 'x', "other",
+				browsertest.NewTestHandler())
+			require.NoError(t, err)
+			require.NoError(t, pr.e.invokeWindow().SetContent(other))
+			require.NoError(t, pr.e.terminalneworsplit(ctx))
+			_, shown := other.(*browser.Tab).Window()
+			require.True(t, shown, "the terminal is split off")
+		},
+		answer: 'y',
+		closed: func(t *testing.T, pr *program) {
+			assert.True(t, pr.p.calledClose, "the program is closed")
+			_, ok := statusWindowOf(pr.e, pr.uri)
+			assert.False(t, ok, "no window shows it")
+		},
+	}, {
+		name: "floating command", here: true, state: programstatus.Done, key: del,
+		open: func(t *testing.T, pr *program) {
+			tiled := pr.e.comp.Browser().Focus()
+			require.NoError(t, pr.e.executePlugin(ctx, "make"))
+			// Reported on its window in focus, it would be seen at once.
+			pr.e.comp.Browser().SetFocus(tiled)
+		},
+		closed: func(t *testing.T, pr *program) {
+			assert.True(t, pr.p.calledClose, "the program is closed")
+			_, ok := statusWindowOf(pr.e, pr.uri)
+			assert.False(t, ok, "its window is closed")
+		},
+	}, {
+		name: "working floating command", state: programstatus.Working, key: backspace,
+		open: func(t *testing.T, pr *program) {
+			require.NoError(t, pr.e.executePlugin(ctx, "make"))
+		},
+		answer: 'y',
+		closed: func(t *testing.T, pr *program) {
+			assert.True(t, pr.p.calledClose, "the program is closed")
+			_, ok := statusWindowOf(pr.e, pr.uri)
+			assert.False(t, ok, "its window is closed")
+		},
+	}, {
+		name: "task", state: programstatus.Error, key: del,
+		open:   func(t *testing.T, pr *program) { task(t, pr, false) },
+		closed: taskStopped,
+	}, {
+		name: "working task in a tab", state: programstatus.Working, key: del,
+		open:   func(t *testing.T, pr *program) { task(t, pr, true) },
+		answer: 'y', closed: taskStopped,
+	}, {
+		name: "permission prompt", state: programstatus.Blocked, key: del,
+		open: func(t *testing.T, pr *program) {
+			// As ideauthorizer prompts: denied when closed, and its status
+			// withdrawn.
+			pr.win = pr.e.comp.Prompt("Allow make?", []string{"Yes", "No"}, nil,
+				handler.FuncPromptHandler(func(int, string) {}, func() error {
+					return pr.e.tm.SetTabStatus(pr.uri, programstatus.Report{State: programstatus.Clear})
+				}))
+			pr.e.setStatusWindow(pr.uri, pr.win)
+		},
+		answer: 'y',
+		closed: func(t *testing.T, pr *program) {
+			assert.True(t, pr.win.Closed(), "the prompt is closed")
+		},
+	}, {
+		name: "shown companion terminal", here: true, state: programstatus.Working, key: del,
+		open: func(t *testing.T, pr *program) {
+			require.NoError(t, pr.e.toggleCompanionTerminal())
+		},
+		answer: 'y', stays: true,
+		closed: func(t *testing.T, pr *program) {
+			assert.False(t, pr.p.calledClose, "its shell runs on")
+			assert.Nil(t, pr.e.companionTerminalWin, "it is hidden")
+			_, ok := hiddenCompanionTerminal(pr.e, pr.uri)
+			assert.True(t, ok)
+		},
+	}, {
+		name: "hidden companion terminal", state: programstatus.Idle, key: backspace,
+		open: func(t *testing.T, pr *program) {
+			require.NoError(t, pr.e.toggleCompanionTerminal())
+			require.NoError(t, pr.e.toggleCompanionTerminal())
+		},
+		stays: true,
+		closed: func(t *testing.T, pr *program) {
+			assert.False(t, pr.p.calledClose, "its shell runs on")
+			assert.Nil(t, pr.e.companionTerminalWin, "it stays hidden")
+		},
+	}, {
+		name: "file with changes", state: programstatus.Error, key: del,
+		open: func(t *testing.T, pr *program) {
+			var err error
+			pr.uri, err = pr.e.workspace.URI("dirty.go")
+			require.NoError(t, err)
+			_, err = pr.e.editFileURI(pr.uri, pr.e.invokeWindow(), false)
+			require.NoError(t, err)
+			editBuffer(t, pr.e, pr.uri, "ABC")
+		},
+		// Asked whether to discard the changes.
+		answer: 'y',
+		closed: func(t *testing.T, pr *program) {
+			_, ok := pr.e.comp.Browser().Tab(pr.uri)
+			assert.False(t, ok, "its tab is gone")
+		},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+			t.Cleanup(func() { _ = m.Close() })
+			pr := program{m: m}
+			var focused *ex
+			ws := m.workspaces[slot].uri
+			m.locked(func() {
+				focused = m.focusEx()
+				pr.e = m.workspaces[slot].ex
+				if tc.here {
+					pr.e = focused
+					ws = m.workspaces[m.focus].uri
+				}
+				require.NotSame(t, focused, m.workspaces[slot].ex)
+				pr.e.Resize(80, 30)
+				focused.Resize(120, 40)
+				pr.uri = mustURI(t, "file:///dev/ttys060")
+				pr.p = newStatusTestProgram(pr.e.tm, pr.uri, "make")
+				pr.e.newEmulatorHandler = func([]string) (vtereservoir.VTE, error) { return pr.p, nil }
+				pr.e.newPluginHandler = func(int, ...string) (pluginHandler, error) { return pr.p, nil }
+				pr.e.tasks.SetProgramBuilder(func(
+					browser.EventPublisher, browser.Notifications, schemeapi.Executor,
+					schemeapi.Terminal, browser.TabManager, []string, int, ...plugin.Option,
+				) (browser.ScrollableFloating, error) {
+					return pr.p, nil
+				})
+				tc.open(t, &pr)
+			})
+			m.quiesce()
+			require.Eventually(t, func() bool {
+				ok := true
+				m.locked(func() {
+					if len(pr.e.tasks.ListTasks()) > 0 {
+						_, ok = pr.e.tasks.StatusTask(pr.uri)
+					}
+				})
+				return ok
+			}, 5*time.Second, time.Millisecond, "a task runs its program")
+			m.locked(func() {
+				require.NoError(t, pr.e.tm.SetTabStatus(pr.uri, programstatus.Report{
+					State: tc.state, Progress: -1, App: "make", Msg: tc.name,
+				}))
+			})
+			m.quiesce()
+
+			var inbox *idestatus.View
+			var inboxWin browser.Window
+			m.locked(func() {
+				require.NoError(t, m.commandProgramStatus())
+				var err error
+				inboxWin, err = focused.comp.Focus()
+				require.NoError(t, err)
+				content, err := inboxWin.Content()
+				require.NoError(t, err)
+				var ok bool
+				inbox, ok = content.(*idestatus.View)
+				require.True(t, ok)
+				require.True(t, inbox.Select(ws, pr.uri), "the program is listed")
+				m.Handle(tc.key)
+			})
+			m.quiesce()
+			if tc.answer != 0 {
+				m.locked(func() {
+					win, err := focused.comp.Focus()
+					require.NoError(t, err)
+					require.NotEqual(t, inboxWin.WindowID(), win.WindowID(), "a question is asked")
+					assert.False(t, pr.p.calledClose, "nothing is closed before the answer")
+					m.Handle(term.Event{Type: term.EventKey, Ch: tc.answer})
+				})
+				m.quiesce()
+			}
+
+			m.locked(func() {
+				tc.closed(t, &pr)
+				_, listed := m.status.Status(ws, pr.uri)
+				listed = listed || inbox.Select(ws, pr.uri)
+				assert.Equal(t, tc.stays, listed, "the row goes with the program")
+				assert.False(t, inboxWin.Closed(), "the inbox stays open")
+				win, err := focused.comp.Focus()
+				require.NoError(t, err)
+				assert.Equal(t, inboxWin.WindowID(), win.WindowID(), "the inbox keeps the focus")
+			})
+		})
+	}
+}
+
+func TestWorkspaceBarStatusSeenFromTerminalWithoutTab(t *testing.T) {
+	type program struct {
+		e   *ex
+		uri workspaceapi.URI
+		p   *statusTestProgram
+	}
+	ctx := context.Background()
+	focusWindow := func(t *testing.T, pr *program) {
+		win, ok := statusWindowOf(pr.e, pr.uri)
+		require.True(t, ok, "a window shows the program")
+		pr.e.comp.Browser().SetFocus(win)
+	}
+	focusTask := func(t *testing.T, pr *program) {
+		require.True(t, pr.e.tasks.FocusTask("build"))
+	}
+	for _, tc := range []struct {
+		name  string
+		open  func(t *testing.T, pr *program)
+		focus func(t *testing.T, pr *program)
+	}{{
+		name: "floating command",
+		open: func(t *testing.T, pr *program) {
+			require.NoError(t, pr.e.executePlugin(ctx, "make"))
+		},
+		focus: focusWindow,
+	}, {
+		name: "companion terminal",
+		open: func(t *testing.T, pr *program) {
+			require.NoError(t, pr.e.toggleCompanionTerminal())
+		},
+		focus: focusWindow,
+	}, {
+		name: "terminal in a split",
+		open: func(t *testing.T, pr *program) {
+			require.NoError(t, pr.e.terminalneworsplit(ctx))
+		},
+		focus: focusWindow,
+	}, {
+		name: "floating task",
+		open: func(t *testing.T, pr *program) {
+			require.NoError(t, pr.e.newTask(ctx, "build", "left", "--", "make"))
+		},
+		focus: focusTask,
+	}, {
+		name: "task in a tab",
+		open: func(t *testing.T, pr *program) {
+			require.NoError(t, pr.e.newTaskTab(ctx, "build", "--", "make"))
+		},
+		focus: focusTask,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, otherSlot := newActivityTestManager(t, defaultConfigWithWrap(false))
+			t.Cleanup(func() { _ = m.Close() })
+			style := browser.DefaultTabStatusConfig().WorkspaceTab
+			pr := program{uri: mustURI(t, "file:///dev/ttys061")}
+			var (
+				slot  int
+				ws    workspaceapi.URI
+				notes *recordingNotifications
+				away  browser.Window
+			)
+			m.locked(func() {
+				slot = m.focus
+				w := m.workspaces[slot]
+				pr.e, ws = w.ex, w.uri
+				notes = &recordingNotifications{inner: w.notifications}
+				w.notifications = notes
+				pr.e.Resize(80, 30)
+				pr.p = newStatusTestProgram(pr.e.tm, pr.uri, "make")
+				pr.e.newEmulatorHandler = func([]string) (vtereservoir.VTE, error) { return pr.p, nil }
+				pr.e.newPluginHandler = func(int, ...string) (pluginHandler, error) { return pr.p, nil }
+				pr.e.tasks.SetProgramBuilder(func(
+					browser.EventPublisher, browser.Notifications, schemeapi.Executor,
+					schemeapi.Terminal, browser.TabManager, []string, int, ...plugin.Option,
+				) (browser.ScrollableFloating, error) {
+					return pr.p, nil
+				})
+				b := pr.e.comp.Browser()
+				tiled := b.Focus()
+				other, err := pr.e.comp.Tab(mustURI(t, "rune-agent://model/other"), 'x', "other",
+					browsertest.NewTestHandler())
+				require.NoError(t, err)
+				require.NoError(t, tiled.SetContent(other))
+				tc.open(t, &pr)
+				var ok bool
+				away, ok = b.Split(browserapi.OrientationRight, tiled, browsertest.NewTestHandler())
+				require.True(t, ok)
+				b.SetFocus(away)
+			})
+			m.quiesce()
+			require.Eventually(t, func() bool {
+				ok := true
+				m.locked(func() {
+					if len(pr.e.tasks.ListTasks()) > 0 {
+						_, ok = pr.e.tasks.StatusTask(pr.uri)
+					}
+				})
+				return ok
+			}, 5*time.Second, time.Millisecond, "a task runs its program")
+
+			report := func(msg string) {
+				t.Helper()
+				m.locked(func() {
+					require.NoError(t, pr.e.tm.SetTabStatus(pr.uri, programstatus.Report{
+						State: programstatus.Error, Progress: -1, App: "make", Msg: msg,
+					}))
+				})
+				m.quiesce()
+			}
+			assertSeen := func(seen bool, msgAndArgs ...any) {
+				t.Helper()
+				m.locked(func() {
+					sum, _ := m.workspaceStatus(slot)
+					_, listed := m.status.Status(ws, pr.uri)
+					barIdx := slices.Index(m.barIdxToSlot, slot)
+					require.GreaterOrEqual(t, barIdx, 0)
+					if seen {
+						assert.Equal(t, programstatus.Idle, sum.State, msgAndArgs...)
+						assert.False(t, listed, msgAndArgs...)
+						assert.Equal(t, term.Attributes{}, m.bar.TabAttr(barIdx), msgAndArgs...)
+					} else {
+						assert.Equal(t, programstatus.Error, sum.State, msgAndArgs...)
+						assert.True(t, listed, msgAndArgs...)
+						assert.Equal(t, style.ErrorAttr, m.bar.TabAttr(barIdx), msgAndArgs...)
+					}
+				})
+			}
+
+			report("failed out of sight")
+			assertSeen(false, "reported while another window has focus")
+
+			m.locked(func() { tc.focus(t, &pr) })
+			m.quiesce()
+			assertSeen(true, "focusing its window sees it")
+
+			report("failed in sight")
+			assertSeen(true, "reported while its window has focus")
+			assert.Contains(t, notes.snapshot(),
+				capturedNote{level: browserapi.LevelError, msg: "make: failed in sight"},
+				"its message is notified all the same")
+
+			m.locked(func() { require.True(t, m.switchToWorkspace(otherSlot)) })
+			report("failed in another workspace")
+			assertSeen(false, "reported while its workspace is out of focus")
+			m.locked(func() { require.True(t, m.switchToWorkspace(slot)) })
+			m.quiesce()
+			assertSeen(true, "switching to its workspace sees it")
+
+			m.locked(func() { m.Handle(term.Event{Type: term.EventUnfocus}) })
+			report("failed out of focus")
+			assertSeen(false, "reported while Rune is out of focus")
+			m.locked(func() {
+				require.True(t, m.switchToWorkspace(otherSlot))
+				require.True(t, m.switchToWorkspace(slot))
+			})
+			m.quiesce()
+			report("failed out of focus again")
+			assertSeen(false, "switching workspaces leaves Rune out of focus")
+			m.locked(func() { m.Handle(term.Event{Type: term.EventFocus}) })
+			m.quiesce()
+			assertSeen(true, "focus coming back sees it")
+		})
+	}
+}
+
+// statusTestProgram is a program that, as a terminal does, reports its
+// statuses through tm under the uri of its own, and withdraws them when
+// closed.
+type statusTestProgram struct {
+	*testVte
+	tm browser.TabManager
+}
+
+func newStatusTestProgram(tm browser.TabManager, uri workspaceapi.URI, cmd string) *statusTestProgram {
+	tv := newTestVteWithConfig([]string{cmd})
+	tv.uri = uri
+	return &statusTestProgram{testVte: tv, tm: tm}
+}
+
+func (p *statusTestProgram) StatusURI() workspaceapi.URI { return p.uri }
+
+func (p *statusTestProgram) Close() error {
+	err := p.testVte.Close()
+	_ = p.tm.SetTabStatus(p.uri, programstatus.Report{State: programstatus.Clear})
+	return err
 }
 
 func TestWorkspaceBarActiveTabAnimationConfig(t *testing.T) {
@@ -973,8 +2667,8 @@ func TestWorkspaceBarActiveTabAnimationConfig(t *testing.T) {
 			comp := &m.workspaces[slot].ex.comp
 			_, err = comp.Tab(chat, 'x', "rolling-fox", browsertest.NewTestHandler())
 			require.NoError(t, err)
-			require.NoError(t, comp.SetTabActivity(chat, true))
-			assert.True(t, comp.HasActiveTabs())
+			require.NoError(t, comp.SetTabStatus(chat, workingStatus()))
+			assert.True(t, comp.HasWorkingTabs())
 			assert.Equal(t, tc.running, m.shadedBar.Running())
 			m.mu.Unlock()
 
@@ -1302,6 +2996,86 @@ func TestEditFileURIRedirectsToWorkspaceWithOpenFile(t *testing.T) {
 	assert.True(t, ok)
 }
 
+// caseRuleWorkspace fixes the case rule of a workspace so tests do not
+// depend on the host filesystem.
+type caseRuleWorkspace struct {
+	workspace.Workspace
+	caseSensitive bool
+}
+
+func (w caseRuleWorkspace) PathCaseSensitive() bool { return w.caseSensitive }
+
+func TestOpenFileTargetMatchesTabUnderOtherCase(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		caseSensitive bool
+		wantTab       bool
+	}{
+		{"case-sensitive host", true, false},
+		{"case-insensitive host", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp1 := t.TempDir()
+			tmp2 := t.TempDir()
+			sharedDir := t.TempDir()
+			sharedPath := filepath.Join(sharedDir, "Shared.txt")
+			require.NoError(t, os.WriteFile(sharedPath, []byte("shared"), 0o666))
+
+			cfg := defaultConfigWithWrap(false)
+			mu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
+			manager := workspace.NewManagerWithWorkspaceFunc(config.NopConfig(), sched,
+				func(
+					uri workspaceapi.URI, scheme schemeapi.Scheme, tick func(func()) bool,
+				) workspace.Workspace {
+					return caseRuleWorkspace{
+						Workspace:     workspace.NewSchemeWorkspace(uri, scheme, tick),
+						caseSensitive: tc.caseSensitive,
+					}
+				})
+			require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme,
+				workspace.NewMemoryScheme))
+			require.NoError(t, manager.RegisterScheme(workspace.FileScheme,
+				workspace.NewFileScheme))
+			homeURI, err := workspaceapi.ParseURI("memory://" + tmp1)
+			require.NoError(t, err)
+			m := newTestWorkspaceManagerHandlerWithManagerMu(t, manager, mu, drain,
+				&homeURI, cfg, FuncExtensionsRunner(testRunnerFn), nil, tmp1, nil,
+				nopShutdownShaderConfig())
+			defer func() {
+				require.NoError(t, m.Close())
+			}()
+
+			uri2, err := workspaceapi.ParseURI("file://" + tmp2)
+			require.NoError(t, err)
+			require.NoError(t, m.addOrCreateWorkspace(uri2))
+			m.quiesce()
+
+			sharedURI, err := workspaceapi.ParseURI("file://" + sharedPath)
+			require.NoError(t, err)
+			otherCaseURI, err := workspaceapi.ParseURI(
+				"file://" + filepath.Join(sharedDir, "shared.txt"))
+			require.NoError(t, err)
+
+			openTab, err := m.workspaces[1].ex.editFileURI(
+				sharedURI, m.workspaces[1].ex.invokeWindow(), false)
+			require.NoError(t, err)
+			m.workspaces[1].ex.Wait()
+
+			// Opening the other case only reaches openFileTarget when the
+			// host filesystem folds case and the swap files collide, so
+			// the case rule is exercised here rather than through Open.
+			target, ok := m.openFileTarget(otherCaseURI)
+			if tc.wantTab {
+				require.True(t, ok)
+				assert.Equal(t, 1, target.workspaceIdx)
+				assert.Same(t, openTab, target.tab)
+			} else if ok {
+				assert.Nil(t, target.tab)
+			}
+		})
+	}
+}
+
 func TestOpenPrevSessionFilesSkipsNonTextHandler(t *testing.T) {
 	tmp := t.TempDir()
 	mdPath := filepath.Join(tmp, "README.md")
@@ -1386,7 +3160,7 @@ func assertExoDelegatesMarkdown(t *testing.T, fileName string, readOnly bool) {
 		"command": `vim -Nu NONE -n {file}`,
 		"goto":    "<esc>:{line}<enter>{col}|",
 	}
-	cfg.ringBell = func() {}
+	cfg.sounds = sounds.Silent
 	require.Equal(t, "exo", cfg.editorMode())
 
 	uri, err := workspaceapi.ParseURI("file://" + dir)
@@ -1812,13 +3586,13 @@ func TestViewImageUnderCommandPromptShader(t *testing.T) {
 │ ▐                                      │
 │ !                                      │
 │ !!                                     │
+│ acp                                    │
 │ addBlaBla                              │
 │ cheatsheet                             │
 │ clipboardcopy                          │
 │ clipboardpaste                         │
 │ console                                │
 │ cursorhistory                          │
-│ debugger                               │
 ├────────────────────────────────────────┤
 │1 1  2 2                                │
 └─────━━━────────────────────────────────┘`,
@@ -1879,6 +3653,71 @@ func TestReadfileCrossWorkspaceIntegration(t *testing.T) {
 		_, ok = m.workspaces[1].ex.comp.FocusTab()
 		assert.False(t, ok)
 	})
+}
+
+func TestSiblingDirectoryOpenRoutingIntegration(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		sdkOpen bool
+	}{
+		{"SDK workspace open", true},
+		{"SDK workspace not open", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			mainDir := filepath.Join(root, "src", "rune")
+			sdkDir := filepath.Join(root, "src", "rune-go-sdk")
+			worktreeDir := filepath.Join(root, "worktrees", "RUNE-389")
+			for _, dir := range []string{mainDir, sdkDir, worktreeDir} {
+				require.NoError(t, os.MkdirAll(dir, 0o755))
+			}
+			targetPath := filepath.Join(sdkDir, "definition.go")
+			require.NoError(t, os.WriteFile(targetPath, []byte("package sdk\n"), 0o666))
+			targetURI, err := workspaceapi.ParseURI("file://" + targetPath)
+			require.NoError(t, err)
+
+			m := newTestWorkspaceManagerHandlerWithDir(t, defaultConfigWithWrap(false), "",
+				nopShutdownShaderConfig())
+			t.Cleanup(func() {
+				require.NoError(t, m.Close())
+			})
+			dirs := []string{mainDir}
+			if tc.sdkOpen {
+				dirs = append(dirs, sdkDir)
+			}
+			dirs = append(dirs, worktreeDir)
+			for _, dir := range dirs {
+				uri, err := workspaceapi.ParseURI("file://" + dir)
+				require.NoError(t, err)
+				require.NoError(t, m.addOrCreateWorkspace(uri))
+				m.waitForWorkspace(t, uri)
+			}
+
+			origin := len(dirs) - 1
+			wantFocus := origin
+			if tc.sdkOpen {
+				wantFocus = 1
+			}
+			var openedTab *browser.Tab
+			m.locked(func() {
+				require.True(t, m.switchToWorkspace(origin))
+				e := m.workspaces[origin].ex
+				openedTab, err = e.editFileURI(targetURI, e.invokeWindow(), false)
+			})
+			require.NoError(t, err)
+			m.quiesce()
+
+			m.locked(func() {
+				assert.Equal(t, wantFocus, m.focus)
+				assert.Empty(t, m.workspaces[0].ex.comp.Tabs())
+				focusTab, ok := m.workspaces[wantFocus].ex.comp.FocusTab()
+				require.True(t, ok)
+				assert.Same(t, openedTab, focusTab)
+				assert.Equal(t, targetURI.String(), focusTab.URI().String())
+				assert.Len(t, m.workspaces[wantFocus].ex.comp.Tabs(), 1)
+			})
+		})
+	}
 }
 
 func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
@@ -1951,13 +3790,13 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 				{
 					InputSequence: "<c-\\\\>openCase<enter>",
 					Expected: `┌━━━━━━━━━━──────────────────┐
-│o ········                  │
+│o·········                  │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 ·  2 2                    │
+│1··  2 2                    │
 └━━━─────────────────────────┘`,
 				},
 				{
@@ -1969,19 +3808,19 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 │     workspaceWallpaper     │
 │                            │
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 				{
 					InputSequence: "<c-\\\\>to1<enter>",
 					Expected: `┌━━━━━━━━━━──────────────────┐
-│o ········                  │
+│o·········                  │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 ·  2 2                    │
+│1··  2 2                    │
 └━━━─────────────────────────┘`,
 				},
 			},
@@ -2005,13 +3844,13 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 				{
 					InputSequence: "<c-\\\\>openCase<enter>",
 					Expected: `┌━━━━━━━━━━──────────────────┐
-│o ········                  │
+│o·········                  │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 				{
@@ -2023,19 +3862,19 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 │     workspaceWallpaper     │
 │                            │
 ├────────────────────────────┤
-│1 ·  2 2                    │
+│1··  2 2                    │
 └━━━─────────────────────────┘`,
 				},
 				{
 					InputSequence: "<c-\\\\>to2<enter>",
 					Expected: `┌━━━━━━━━━━──────────────────┐
-│o ········                  │
+│o·········                  │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 			},
@@ -2064,13 +3903,13 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 				{
 					InputSequence: "<c-\\\\>openCase<enter>",
 					Expected: `┌━━━━━━━━━━━─────────────────┐
-│o ·········                 │
+│o··········                 │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 				{
@@ -2082,19 +3921,19 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 │     workspaceWallpaper     │
 │                            │
 ├────────────────────────────┤
-│1 ·  2 2                    │
+│1··  2 2                    │
 └━━━─────────────────────────┘`,
 				},
 				{
 					InputSequence: "<c-\\\\>to2<enter>",
 					Expected: `┌━━━━━━━━━━━─────────────────┐
-│o ·········                 │
+│o··········                 │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 			},
@@ -2118,13 +3957,13 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 				{
 					InputSequence: "<c-\\\\>openCase<enter>",
 					Expected: `┌━━━━━━━━━───────────────────┐
-│o ·······                   │
+│o········                   │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 				{
@@ -2136,19 +3975,19 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 │     workspaceWallpaper     │
 │                            │
 ├────────────────────────────┤
-│1 ·  2 2                    │
+│1··  2 2                    │
 └━━━─────────────────────────┘`,
 				},
 				{
 					InputSequence: "<c-\\\\>to2<enter>",
 					Expected: `┌━━━━━━━━━───────────────────┐
-│o ·······                   │
+│o········                   │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 			},
@@ -2256,7 +4095,7 @@ func TestWorkspaceConfig(t *testing.T) {
 			notificationsConfig(), cfg, storage, dir,
 			func(term.Event) bool {
 				return true
-			}, runner, pkgtrust.NewStore(dir, nil), mu, nil,
+			}, runner, pkgtrust.NewStore(), mu, nil,
 			func() (ideConfig, error) { return cfg, errors.New("boom") },
 			".sixrc", 0, 0, 0, '1', 0, 0, true, nil, releaseManager, shRunner, 0, nil, false,
 			false, newCommandObserverRegistry())
@@ -2496,8 +4335,8 @@ func TestWorkspaceManagerHandlerDraw(t *testing.T) {
 			`┌━━━━━━━━━━━───────┐
 │o 12345aZZ*       │
 ├──────────────────┤
-│hell▐             │
 │hello             │
+│▐ello             │
 │                  │
 │                  │
 │                  │
@@ -2547,8 +4386,8 @@ func TestWorkspaceManagerHandlerDraw(t *testing.T) {
 │  Do you want to  │
 │  restore the     │
 │  previous        │
-│                  │
-│  Yes        No   │
+│       Yes        │
+│       No         │
 └──────────────────┘`},
 		// prompt resets cache (use file scheme to avoid needing
 		// to use ':' to indicate memory scheme)
@@ -2734,8 +4573,8 @@ func TestWorkspaceManagerClosePromptIntegration(t *testing.T) {
 │  Are you sure    │
 │  you want to     │
 │  exit?           │
-│                  │
-│  Yes        No   │
+│       Yes        │
+│       No         │
 └──────────────────┘`},
 		}
 		h := newSafeHandler(m)
@@ -2762,8 +4601,8 @@ func TestWorkspaceManagerClosePromptIntegration(t *testing.T) {
 │  Are you sure    │
 │  you want to     │
 │  exit?           │
-│                  │
-│  Yes        No   │
+│       Yes        │
+│       No         │
 └──────────────────┘`},
 			{":quit>",
 				`┌──────────────────┐
@@ -2773,8 +4612,8 @@ func TestWorkspaceManagerClosePromptIntegration(t *testing.T) {
 │  Are you sure    │
 │  you want to     │
 │  exit?           │
-│                  │
-│  Yes        No   │
+│       Yes        │
+│       No         │
 └──────────────────┘`},
 		}
 		h := newSafeHandler(m)
@@ -2796,8 +4635,8 @@ func TestWorkspaceManagerClosePromptIntegration(t *testing.T) {
 │  Are you sure    │
 │  you want to     │
 │  exit?           │
-│                  │
-│  Yes        No   │
+│       Yes        │
+│       No         │
 └──────────────────┘`},
 			{"n",
 				`┌──────────────────┐
@@ -2818,8 +4657,8 @@ func TestWorkspaceManagerClosePromptIntegration(t *testing.T) {
 │  Are you sure    │
 │  you want to     │
 │  exit?           │
-│                  │
-│  Yes        No   │
+│       Yes        │
+│       No         │
 └──────────────────┘`},
 		}
 		h := newSafeHandler(m)
@@ -2857,8 +4696,8 @@ func TestWorkspaceManagerClosePromptIntegration(t *testing.T) {
 │  There are open  │
 │  files with      │
 │  changes         │
-│                  │
-│  Yes        No   │
+│       Yes        │
+│       No         │
 └──────────────────┘`},
 		}
 		h := newSafeHandler(m)
@@ -2904,8 +4743,8 @@ func TestWorkspaceManagerClosePromptIntegration(t *testing.T) {
 │  There are open  │
 │  files with      │
 │  changes         │
-│                  │
-│  Yes        No   │
+│       Yes        │
+│       No         │
 └──────────────────┘`},
 		}
 		h := newSafeHandler(m)
@@ -3011,8 +4850,8 @@ func TestWorkspaceManagerClosePromptIntegration(t *testing.T) {
 │  Are you sure    │
 │  you want to     │
 │  exit?           │
-│                  │
-│  Yes        No   │
+│       Yes        │
+│       No         │
 └──────────────────┘`},
 			}
 
@@ -3100,8 +4939,8 @@ func TestWorkspaceManagerHandlerDrawWithInitialFiles(t *testing.T) {
 │  Do you want to  │
 │  restore the     │
 │  previous        │
-│                  │
-│  Yes        No   │
+│       Yes        │
+│       No         │
 └──────────────────┘`},
 					{"y",
 						`┌────────━━━━━━────┐
@@ -3334,7 +5173,7 @@ func TestWorkspaceManagerRestoresOpenTerminalSessions(t *testing.T) {
 		})
 		cfg := defaultConfigWithWrap(false)
 		cfg.cfg["workspace"] = map[string]any{"auto_restore": true}
-		cfg.ringBell = func() {}
+		cfg.sounds = sounds.Silent
 		mu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
 		manager := workspace.NewManager(config.NopConfig(), sched)
 		require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme,
@@ -3424,6 +5263,66 @@ func TestWorkspaceManagerRestoresOpenTerminalSessions(t *testing.T) {
 		require.NoError(t, m.Close())
 	})
 
+	t.Run("tabs opened by workspaceready before the restore stay focusable", func(t *testing.T) {
+		cfg := defaultConfigWithWrap(false)
+		cfg.cfg["workspace"] = map[string]any{"auto_restore": true}
+		cfg.sounds = sounds.Silent
+		mu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
+		manager := workspace.NewManager(config.NopConfig(), sched)
+		require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme,
+			workspace.NewMemoryScheme))
+		const terminalWorkspaceScheme = "terminaltest"
+		require.NoError(t, manager.RegisterScheme(terminalWorkspaceScheme,
+			func(ctx context.Context, cfg config.Config, uri workspaceapi.URI) (schemeapi.Scheme, error) {
+				return newTerminalSessionTestScheme(ctx, cfg, uri)
+			}))
+		uri, err := workspaceapi.ParseURI(terminalWorkspaceScheme + ":///workspace")
+		require.NoError(t, err)
+		runner := FuncExtensionsRunner(testRunnerFn)
+
+		m := newTestWorkspaceManagerHandlerWithManagerMu(t, manager, mu, drain,
+			&uri, cfg, runner, nil, t.TempDir(), nil, nopShutdownShaderConfig())
+		t.Cleanup(func() { _ = m.Close() })
+		m.mu.Lock()
+		ex1 := m.exHandler(m.focusHandler())
+		require.NoError(t, ex1.windownew(context.Background(), "right"))
+		require.NoError(t, ex1.terminalnewtab(context.Background(), "previous run"))
+		require.NoError(t, m.commandCloseWorkspace())
+
+		// Reopening runs the queued commands and then restores the
+		// stored session over the layout they built.
+		require.NoError(t, m.addWorkspace(uri, true, false, -1))
+		for _, cmd := range [][]string{
+			{"windowcloseall"},
+			{"windownew", "left"},
+			{"terminalnewtab", "this run"},
+		} {
+			require.NoError(t, m.commandWorkspaceReady(cmd...))
+		}
+		m.mu.Unlock()
+		m.waitForWorkspace(t, uri)
+
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.Resize(80, 24)
+		ex2 := m.exHandler(m.focusHandler())
+		tabs := ex2.comp.Tabs()
+		require.Len(t, tabs, 2)
+		for _, tab := range tabs {
+			win, bound := tab.Window()
+			if !bound {
+				continue
+			}
+			require.False(t, win.Closed(),
+				"tab %s must not stay bound to a window the restore discarded",
+				tab.URI())
+			// What clicking the tab in the tab bar does.
+			_, err := ex2.comp.SetFocus(win)
+			require.NoError(t, err)
+			require.NotPanics(t, func() { _, _ = ex2.comp.Focus() })
+		}
+	})
+
 	t.Run("workspace reload preserves deep layout with minimized task", func(t *testing.T) {
 		dir, err := os.MkdirTemp("", "")
 		require.NoError(t, err)
@@ -3432,7 +5331,7 @@ func TestWorkspaceManagerRestoresOpenTerminalSessions(t *testing.T) {
 		})
 		cfg := defaultConfigWithWrap(false)
 		cfg.cfg["workspace"] = map[string]any{"auto_restore": true}
-		cfg.ringBell = func() {}
+		cfg.sounds = sounds.Silent
 		mu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
 		manager := workspace.NewManager(config.NopConfig(), sched)
 		require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme,
@@ -3565,7 +5464,7 @@ func TestWorkspaceManagerRestoresOpenTerminalSessions(t *testing.T) {
 
 		cfg := defaultConfigWithWrap(false)
 		cfg.cfg["workspace"] = map[string]any{"auto_restore": true}
-		cfg.ringBell = func() {}
+		cfg.sounds = sounds.Silent
 		m := newTestWorkspaceManagerHandlerWithDir(t, cfg, dir, nopShutdownShaderConfig())
 
 		ex1 := m.exHandler(m.focusHandler())
@@ -3617,7 +5516,7 @@ func TestWorkspaceManagerRestoresOpenTerminalSessions(t *testing.T) {
 		newCfg := func() ideConfig {
 			cfg := defaultConfigWithWrap(false)
 			cfg.cfg["workspace"] = map[string]any{"auto_restore": true}
-			cfg.ringBell = func() {}
+			cfg.sounds = sounds.Silent
 			cfg.scheduleNextTick = sched
 			return cfg
 		}
@@ -3818,11 +5717,20 @@ type recordingNotifications struct {
 	mu       sync.Mutex
 	inner    browserapi.Notifications
 	captured []capturedNote
+	updates  []capturedUpdate
 }
 
 type capturedNote struct {
 	level browserapi.NotificationLevel
 	msg   string
+}
+
+// capturedUpdate is an UpdateNotificationProgress call and whether it
+// found the notification.
+type capturedUpdate struct {
+	msg             string
+	progress, total int64
+	ok              bool
 }
 
 // feedAutoSaveSequence feeds the legacy handlertest sequence syntax used by
@@ -3869,7 +5777,17 @@ func (r *recordingNotifications) NotifyOnce(level browserapi.NotificationLevel,
 func (r *recordingNotifications) UpdateNotificationProgress(
 	id, message string, progress, total int64,
 ) error {
-	return r.inner.UpdateNotificationProgress(id, message, progress, total)
+	err := r.inner.UpdateNotificationProgress(id, message, progress, total)
+	r.mu.Lock()
+	r.updates = append(r.updates, capturedUpdate{msg: message, progress: progress, total: total, ok: err == nil})
+	r.mu.Unlock()
+	return err
+}
+
+func (r *recordingNotifications) updatesSnapshot() []capturedUpdate {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.updates)
 }
 
 func (r *recordingNotifications) snapshot() []capturedNote {
@@ -4262,11 +6180,6 @@ func TestMoveWorkspace(t *testing.T) {
 }
 
 func TestExternalCommands(t *testing.T) {
-	// FIXME: flaky under CI; skipped until stabilized.
-	if ci := os.Getenv("CI"); ci == "true" {
-		t.SkipNow()
-	}
-
 	t.Run("happy path", func(t *testing.T) {
 		dir, err := os.MkdirTemp("", "")
 		require.NoError(t, err)
@@ -5086,9 +6999,8 @@ func TestComponentOnTabsClickIntegration(t *testing.T) {
 	assert.Equal(t, 1, called)
 	m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseRelease})
 
-	// the bottom row is a window resize grip: handled, but no tab click
-	_, handled = m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseY: 7})
-	assert.True(t, handled)
+	// the bottom row is the frame of the only window, not a tab
+	m.Handle(term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseY: 7})
 	assert.Equal(t, 1, called)
 
 	m.mu.Unlock()
@@ -5147,25 +7059,25 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			name:      "dense_click_first_tab_focuses_slot_1",
 			filled:    []bool{true, true, true},
 			focusSlot: 2, mouseX: 1,
-			expected: screen("│1 ·  2 2  3 3               │", 0, 3),
+			expected: screen("│1··  2 2  3 3               │", 0, 3),
 		},
 		{
 			name:      "dense_click_middle_tab_focuses_slot_2",
 			filled:    []bool{true, true, true},
 			focusSlot: 0, mouseX: 7,
-			expected: screen("│1 1  2 ·  3 3               │", 5, 3),
+			expected: screen("│1 1  2··  3 3               │", 5, 3),
 		},
 		{
 			name:      "dense_click_last_tab_focuses_slot_3",
 			filled:    []bool{true, true, true},
 			focusSlot: 0, mouseX: 12,
-			expected: screen("│1 1  2 2  3 ·               │", 10, 3),
+			expected: screen("│1 1  2 2  3··               │", 10, 3),
 		},
 		{
 			name:      "dense_click_far_past_last_tab_keeps_focus",
 			filled:    []bool{true, true, true},
 			focusSlot: 0, mouseX: width - 2,
-			expected: screen("│1 ·  2 2  3 3               │", 0, 3),
+			expected: screen("│1··  2 2  3 3               │", 0, 3),
 		},
 
 		// Single empty middle slot — the original RUNE-126 bug. Bar
@@ -5175,19 +7087,19 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			name:      "middle_gap_click_first_visible_tab_focuses_slot_1",
 			filled:    []bool{true, false, true},
 			focusSlot: 2, mouseX: 1,
-			expected: screen("│1 ·  3 3                    │", 0, 3),
+			expected: screen("│1··  3 3                    │", 0, 3),
 		},
 		{
 			name:      "middle_gap_click_second_visible_tab_focuses_slot_3",
 			filled:    []bool{true, false, true},
 			focusSlot: 0, mouseX: 7,
-			expected: screen("│1 1  3 ·                    │", 5, 3),
+			expected: screen("│1 1  3··                    │", 5, 3),
 		},
 		{
 			name:      "middle_gap_click_past_last_visible_tab_keeps_focus",
 			filled:    []bool{true, false, true},
 			focusSlot: 0, mouseX: 15,
-			expected: screen("│1 ·  3 3                    │", 0, 3),
+			expected: screen("│1··  3 3                    │", 0, 3),
 		},
 
 		// Two consecutive empty middle slots: bar renders "1 1  4 4".
@@ -5195,7 +7107,7 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			name:      "double_gap_click_second_visible_tab_focuses_slot_4",
 			filled:    []bool{true, false, false, true},
 			focusSlot: 0, mouseX: 7,
-			expected: screen("│1 1  4 ·                    │", 5, 3),
+			expected: screen("│1 1  4··                    │", 5, 3),
 		},
 
 		// Focused empty middle slot: bar renders "1 1  2    3 3".
@@ -5209,13 +7121,13 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			name:      "focused_empty_middle_click_left_filled_focuses_slot_1",
 			filled:    []bool{true, false, true},
 			focusSlot: 1, mouseX: 1,
-			expected: screen("│1 ·  3 3                    │", 0, 3),
+			expected: screen("│1··  3 3                    │", 0, 3),
 		},
 		{
 			name:      "focused_empty_middle_click_right_filled_focuses_slot_3",
 			filled:    []bool{true, false, true},
 			focusSlot: 1, mouseX: 10,
-			expected: screen("│1 1  3 ·                    │", 5, 3),
+			expected: screen("│1 1  3··                    │", 5, 3),
 		},
 
 		// Focused empty first slot: bar renders "1  2 2  3 3" with
@@ -5226,13 +7138,13 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			name:      "focused_empty_first_click_second_visible_focuses_slot_2",
 			filled:    []bool{false, true, true},
 			focusSlot: 0, mouseX: 5,
-			expected: screen("│2 ·  3 3                    │", 0, 3),
+			expected: screen("│2··  3 3                    │", 0, 3),
 		},
 		{
 			name:      "focused_empty_first_click_third_visible_focuses_slot_3",
 			filled:    []bool{false, true, true},
 			focusSlot: 0, mouseX: 10,
-			expected: screen("│2 2  3 ·                    │", 5, 3),
+			expected: screen("│2 2  3··                    │", 5, 3),
 		},
 	}
 
@@ -5282,10 +7194,12 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			writer := term.NewStringWriter(width, height)
 			writer.BackgroundCh = '·'
 			h.Resize(width, height)
-			h.Handle(term.Event{
-				Type: term.EventMouse, Key: term.MouseLeft,
-				MouseX: tc.mouseX, MouseY: barY,
-			})
+			for _, key := range []term.Key{term.MouseLeft, term.MouseRelease} {
+				h.Handle(term.Event{
+					Type: term.EventMouse, Key: key,
+					MouseX: tc.mouseX, MouseY: barY,
+				})
+			}
 			handlertest.RunHandlerSequenceWriter(t, writer, h,
 				width, height, []handlertest.SequenceTestCase{
 					{InputSequence: "", Expected: tc.expected},
@@ -5536,7 +7450,23 @@ func newTestWorkspaceManagerHandlerWithManagerMu(
 ) *testWorkspaceManagerHandler {
 	homeURI, err := workspaceapi.ParseURI("memory:///home")
 	require.NoError(t, err)
+	return newTestWorkspaceManagerHandlerWithHome(t, homeURI, manager, mu,
+		drainSched, uri, cfg, runner, extensions, dir, onTabsClick,
+		shutdownShaderCfg, prepare...)
+}
 
+// newTestWorkspaceManagerHandlerWithHome is like
+// newTestWorkspaceManagerHandlerWithManagerMu but registers homeURI as
+// the home workspace instead of memory:///home.
+func newTestWorkspaceManagerHandlerWithHome(
+	t *testing.T, homeURI workspaceapi.URI, manager *workspace.Manager,
+	mu *sync.Mutex, drainSched func() uint64,
+	uri *workspaceapi.URI, cfg ideConfig, runner ExtensionsRunner,
+	extensions map[string]Extension, dir string,
+	onTabsClick func(int) bool,
+	shutdownShaderCfg shutdownShaderConfig,
+	prepare ...func(*workspaceManagerHandler),
+) *testWorkspaceManagerHandler {
 	m := new(testWorkspaceManagerHandler)
 	m.workspaceManagerHandler = new(workspaceManagerHandler)
 	// ensure that command manual is never shown while preserving any
@@ -5606,8 +7536,8 @@ func newTestWorkspaceManagerHandlerWithManagerMu(
 	for _, fn := range prepare {
 		fn(m.workspaceManagerHandler)
 	}
-	err = m.workspaceManagerHandler.init(uri, homeURI, manager,
-		notiConfig, cfg, storage, dir, publish, runner, pkgtrust.NewStore(dir, nil), mu, extensions,
+	err := m.workspaceManagerHandler.init(uri, homeURI, manager,
+		notiConfig, cfg, storage, dir, publish, runner, pkgtrust.NewStore(), mu, extensions,
 		func() (ideConfig, error) {
 			// Like a real reload, every workspace build records its
 			// soft errors into its own map.
@@ -5981,8 +7911,8 @@ func defaultCfg() ideConfig {
 			},
 		},
 		"workspace": map[string]any{
-			"wallpaper":    "workspaceWallpaper",
-			"auto_restore": false,
+			"wallpaper_ascii": "workspaceWallpaper",
+			"auto_restore":    false,
 		},
 		"browser": map[string]any{
 			"workspace_bar": "number",
@@ -5993,8 +7923,12 @@ func defaultCfg() ideConfig {
 		"notifications": map[string]any{
 			"progress_bar": false,
 		},
+		// keep goldens deterministic: indexing runs in the background and
+		// posts its progress whenever it gets to it.
+		"search": map[string]any{"regex_enabled": false, "semantic_enabled": false},
 	},
 		configPath: "not-empty",
+		sounds:     sounds.Silent,
 	}
 }
 
@@ -6019,6 +7953,8 @@ func (f fnRunner) Run(extensionID, path string, config config.Config) error {
 func (f fnRunner) Close() error {
 	return nil
 }
+
+func (f fnRunner) SignalReload() int { return 0 }
 
 func (f fnRunner) WaitReady(ctx context.Context, id string) error {
 	return nil
@@ -6126,6 +8062,138 @@ func TestCloseWorkspaceClosesScheme(t *testing.T) {
 		t.Fatal("subprocess survived :workspaceclose: the scheme " +
 			"ctx was not canceled, so spawned commands leak")
 	}
+}
+
+// newHomeSharingTestHandler builds a handler whose home workspace is a
+// real directory on disk, so files and workspaces under it resolve to
+// the same manager entry as the home workspace.
+func newHomeSharingTestHandler(
+	t *testing.T, home string, uri workspaceapi.URI,
+) (*testWorkspaceManagerHandler, *workspace.Manager, workspaceapi.URI) {
+	cfg := defaultCfg()
+	mu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
+	manager := workspace.NewManager(config.NopConfig(), sched)
+	require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme,
+		workspace.NewMemoryScheme))
+	require.NoError(t, manager.RegisterScheme(workspace.FileScheme,
+		workspace.NewFileScheme))
+
+	homeURI, err := workspaceapi.ParseURI("file://" + home)
+	require.NoError(t, err)
+
+	runner := FuncExtensionsRunner(testRunnerFn)
+	m := newTestWorkspaceManagerHandlerWithHome(t, homeURI, manager, mu,
+		drain, &uri, cfg, runner, nil, t.TempDir(), nil,
+		nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+	return m, manager, homeURI
+}
+
+// requireHomeSchemeOpen fails when the home workspace's scheme has been
+// closed. Starting a missing executable is rejected by exec without
+// spawning anything, but only after the scheme checks its own ctx.
+func requireHomeSchemeOpen(
+	t *testing.T, m *testWorkspaceManagerHandler, manager *workspace.Manager,
+	homeURI workspaceapi.URI, home string,
+) {
+	t.Helper()
+	require.True(t, manager.HasWorkspace(homeURI),
+		"home workspace must stay registered with the manager")
+	_, err := m.homeWorkspace.StartCommand(context.Background(),
+		workspaceapi.Cmd{Path: filepath.Join(home, "does-not-exist")})
+	require.Error(t, err)
+	require.NotErrorIs(t, err, context.Canceled,
+		"home workspace scheme was closed: every home terminal now fails")
+}
+
+func TestHomeWorkspaceSurvivesClosingHomeFileOpenedFromWorkspace(t *testing.T) {
+	home := t.TempDir()
+	proj := filepath.Join(home, "proj")
+	require.NoError(t, os.Mkdir(proj, 0o755))
+	file := filepath.Join(home, "script.md")
+	require.NoError(t, os.WriteFile(file, []byte("# script\n"), 0o644))
+
+	uri, err := workspaceapi.ParseURI("file://" + proj)
+	require.NoError(t, err)
+	m, manager, homeURI := newHomeSharingTestHandler(t, home, uri)
+
+	fileURI, err := workspaceapi.ParseURI("file://" + file)
+	require.NoError(t, err)
+
+	m.mu.Lock()
+	ex := m.workspaces[m.focus].ex
+	tab, err := ex.editFileURI(fileURI, ex.invokeWindow(), false)
+	if err == nil {
+		tabWindow, ok := tab.Window()
+		require.True(t, ok)
+		_, err = ex.comp.SetFocus(tabWindow)
+	}
+	if err == nil {
+		err = ex.dispatchCommand("tabclose")
+	}
+	m.mu.Unlock()
+	require.NoError(t, err)
+	m.quiesce()
+
+	requireHomeSchemeOpen(t, m, manager, homeURI, home)
+}
+
+func TestClosingHomeDirWorkspaceKeepsHomeWorkspaceAlive(t *testing.T) {
+	home := t.TempDir()
+	uri, err := workspaceapi.ParseURI("file://" + home)
+	require.NoError(t, err)
+	m, manager, homeURI := newHomeSharingTestHandler(t, home, uri)
+
+	m.mu.Lock()
+	err = m.commandCloseWorkspace()
+	m.mu.Unlock()
+	require.NoError(t, err)
+	m.quiesce()
+	require.Equal(t, 0, m.workspaceCount)
+
+	requireHomeSchemeOpen(t, m, manager, homeURI, home)
+}
+
+func TestStreamingOpenOfAnExtraneousFileUsesTheManagerOnTheEventLoop(t *testing.T) {
+	home := t.TempDir()
+	proj := filepath.Join(home, "proj")
+	require.NoError(t, os.Mkdir(proj, 0o755))
+	projURI, err := workspaceapi.ParseURI("file://" + proj)
+	require.NoError(t, err)
+	m, manager, _ := newHomeSharingTestHandler(t, home, projURI)
+
+	streaming := filepath.Join(home, "streaming")
+	require.NoError(t, os.Mkdir(streaming, 0o755))
+	streamingURI, err := workspaceapi.ParseURI("file://" + streaming)
+	require.NoError(t, err)
+	m.mu.Lock()
+	m.streamingOpen = true
+	require.NoError(t, m.addWorkspace(streamingURI, false, false, -1))
+	m.mu.Unlock()
+	m.waitForWorkspace(t, streamingURI)
+
+	other := t.TempDir()
+	otherURI, err := workspaceapi.ParseURI("file://" + other)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(other, "f.txt"), []byte("x\n"), 0o644))
+	fileURI, err := workspaceapi.ParseURI("file://" + filepath.Join(other, "f.txt"))
+	require.NoError(t, err)
+
+	m.mu.Lock()
+	ex := m.workspaces[m.focus].ex
+	require.True(t, ex.workspaceURI.Equal(streamingURI))
+	_, err = ex.editFileURI(fileURI, ex.invokeWindow(), false)
+	require.NoError(t, err)
+	// Any event-loop use of the manager while the file loads.
+	_ = manager.HasWorkspace(otherURI)
+	m.mu.Unlock()
+	ex.comp.WaitStreamingLoads()
+	m.quiesce()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	require.True(t, manager.HasWorkspace(otherURI),
+		"the open file must hold the workspace of its directory")
 }
 
 func TestReloadWorkspaceClosesAndReopensScheme(t *testing.T) {
@@ -6861,6 +8929,134 @@ func TestPendingWorkspaceScheduleRejectTearsDown(t *testing.T) {
 	require.Equal(t, int32(1), created[0].closeCalls.Load())
 }
 
+func TestWorkspaceConfigRequiresTrust(t *testing.T) {
+	const wsConfig = "authorizer:\n  auto_authorize_commands: true\neditor:\n  tabspaces: 2\n"
+	tests := []struct {
+		name        string
+		answer      int
+		promptErr   error
+		wantApplied bool
+	}{
+		{name: "ignore", answer: workspaceTrustIgnore},
+		{name: "dismiss", answer: -1, promptErr: context.Canceled},
+		{name: "trust once", answer: workspaceTrustOnce, wantApplied: true},
+		{name: "trust", answer: workspaceTrustPersist, wantApplied: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestWorkspaceManagerHandlerWithDir(t, defaultCfg(), "", nopShutdownShaderConfig())
+			t.Cleanup(func() { _ = m.Close() })
+			m.workspaceConfigFilename = ".rune/config.yaml"
+			var prompts []string
+			m.workspaceTrust.prompt = func(_ context.Context, message string, _ []string) (int, error) {
+				prompts = append(prompts, message)
+				return tt.answer, tt.promptErr
+			}
+			uri, err := workspaceapi.ParseURI("memory://" + t.TempDir())
+			require.NoError(t, err)
+
+			for build := range 2 {
+				cfg := buildWorkspaceWithConfig(t, m, uri, wsConfig)
+				assert.Equal(t, tt.wantApplied, cfg.authorizerAutoAuthorizeCommands(), "build %d", build)
+				assert.Equal(t, tt.wantApplied, cfg.editorTabspaces() == 2, "build %d", build)
+			}
+			require.Len(t, prompts, 1, "one answer holds for the session")
+			assert.Contains(t, prompts[0], wsConfig)
+		})
+	}
+
+	t.Run("the user's own config is not offered for trust", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".rune"), 0o755))
+		configPath := filepath.Join(dir, ".rune", "config.yaml")
+		require.NoError(t, os.WriteFile(configPath, []byte(wsConfig), 0o644))
+		m := newTestWorkspaceManagerHandlerWithDir(t, defaultCfg(), "", nopShutdownShaderConfig())
+		t.Cleanup(func() { _ = m.Close() })
+		m.workspaceConfigFilename = ".rune/config.yaml"
+		m.configPath = configPath
+		m.workspaceTrust.prompt = func(context.Context, string, []string) (int, error) {
+			t.Error("the user's own config must not be offered for trust")
+			return workspaceTrustIgnore, nil
+		}
+		uri, err := workspaceapi.CurrentUserHostURI(dir)
+		require.NoError(t, err)
+
+		cfg := buildWorkspaceWithConfig(t, m, uri, "")
+		assert.True(t, cfg.authorizerAutoAuthorizeCommands())
+		assert.Equal(t, 2, cfg.editorTabspaces())
+	})
+
+	t.Run("the authorizer command revokes trust", func(t *testing.T) {
+		m := newTestWorkspaceManagerHandlerWithDir(t, defaultCfg(), "", nopShutdownShaderConfig())
+		t.Cleanup(func() { _ = m.Close() })
+		m.workspaceConfigFilename = ".rune/config.yaml"
+		answers := []int{workspaceTrustPersist, workspaceTrustIgnore}
+		m.workspaceTrust.prompt = func(context.Context, string, []string) (int, error) {
+			require.NotEmpty(t, answers, "unexpected workspace trust prompt")
+			answer := answers[0]
+			answers = answers[1:]
+			return answer, nil
+		}
+		uri, err := workspaceapi.ParseURI("memory:///repo")
+		require.NoError(t, err)
+		require.True(t, buildWorkspaceWithConfig(t, m, uri, wsConfig).authorizerAutoAuthorizeCommands())
+
+		m.mu.Lock()
+		authorizer, ok := m.focusEx().comp.REPLCommand("authorizer")
+		m.mu.Unlock()
+		require.True(t, ok)
+		run := func(args ...string) string {
+			t.Helper()
+			it, err := authorizer.HandleCommand(context.Background(),
+				repl.Command{Name: "authorizer", Args: args}, repl.NopProgressWriter())
+			require.NoError(t, err)
+			return renderResponsives(t, it)
+		}
+		decision := fmt.Sprintf("persisted trust %s sha256:%s",
+			uri.String(), workspaceConfigFingerprint([]byte(wsConfig))[:8])
+		assert.Contains(t, run("list"), decision)
+
+		assert.Contains(t, run(append([]string{"revoke"}, strings.Fields(decision)...)...), "Revoked")
+		assert.Contains(t, run("list"), "No workspace config decisions.")
+		assert.False(t, buildWorkspaceWithConfig(t, m, uri, wsConfig).authorizerAutoAuthorizeCommands(),
+			"a revoked workspace asks again")
+		assert.Empty(t, answers)
+	})
+}
+
+// buildWorkspaceWithConfig builds uri as a workspace open runs it, with
+// contents as its workspace config unless contents is empty, and returns
+// the config the workspace was built with.
+func buildWorkspaceWithConfig(
+	t *testing.T, m *testWorkspaceManagerHandler, uri workspaceapi.URI, contents string,
+) ideConfig {
+	t.Helper()
+	m.mu.Lock()
+	cwd, err := m.createWorkspaceScheme(uri)
+	m.mu.Unlock()
+	require.NoError(t, err)
+	if contents != "" {
+		require.NoError(t, cwd.MkdirAll(cwd.Join(cwd.Root(), ".rune"), 0o755))
+		f, err := cwd.OpenFile(cwd.Join(cwd.Root(), m.workspaceConfigFilename),
+			os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		require.NoError(t, err)
+		_, err = f.Write([]byte(contents))
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+	}
+	built, err := m.buildWorkspaceAsync(context.Background(), uri, cwd,
+		&pendingWorkspace{uri: uri, cancelCtx: func() {}})
+	require.NoError(t, err)
+	m.discardBuiltWorkspace(built)
+	m.mu.Lock()
+	detached, released := m.workspace.ReleaseWorkspace(uri)
+	m.mu.Unlock()
+	if released {
+		require.NoError(t, detached.Close())
+	}
+	return built.cfg
+}
+
 // blockingPtyScheme wraps a scheme so NewPty wedges until the scheme
 // is closed, ignoring the spawn ctx. This models the live deadlock
 // where a VTE warm-up goroutine is stuck in an unbounded remote RPC
@@ -7234,6 +9430,182 @@ func TestBuildExtensionsFailureClosesOwnedResources(t *testing.T) {
 		"failed builds must close every resource allocated before the error")
 }
 
+// authorizerCapturingRunner is an ExtensionsRunner that keeps the
+// authorizer each workspace's extensions are served with.
+type authorizerCapturingRunner struct {
+	mu          sync.Mutex
+	authorizers map[string]extensionv2.ServerAuthorizer
+}
+
+func (r *authorizerCapturingRunner) WorkspaceExtensionsRunner(
+	uri workspaceapi.URI, _ map[extensionapi.Permission]extension.ResourceRegistrar,
+	authorizer extensionv2.ServerAuthorizer, _ extensionv2.TrustVerifier,
+	_, _ string, _ browser.Notifications, _, _ schemeapi.Executor,
+	_ extension.Grantor, _ text.Editor, _ ideauthorizer.PromptOpener,
+	_ storageapi.Service, _ func(func()) bool,
+) (extension.Runner, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.authorizers[uri.String()] = authorizer
+	return fnRunner{fn: func(string, string, config.Config) error { return nil }}, nil
+}
+
+func (r *authorizerCapturingRunner) authorizer(uri workspaceapi.URI) extensionv2.ServerAuthorizer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.authorizers[uri.String()]
+}
+
+// commandAuthorizerTest drives the command authorizer of a file
+// workspace, the one in focus, as an extension running tool, an
+// executable on PATH.
+type commandAuthorizerTest struct {
+	m *testWorkspaceManagerHandler
+	h *safeHandler
+	// authorize asks to run tool with args, and returns the outcome.
+	authorize func(args ...string) <-chan error
+	// waitFor waits for text to be on screen.
+	waitFor func(text string)
+	// await waits for the outcome done holds.
+	await  func(done <-chan error) error
+	screen func() string
+}
+
+func newCommandAuthorizerTest(t *testing.T) commandAuthorizerTest {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	require.NoError(t, os.Mkdir(bin, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "tool"), []byte("#!/bin/sh\n"), 0o755))
+	t.Setenv("PATH", bin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+
+	cfg := defaultConfigWithWrap(false)
+	mu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
+	manager := workspace.NewManager(config.NopConfig(), sched)
+	require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme,
+		workspace.NewMemoryScheme))
+	require.NoError(t, manager.RegisterScheme(workspace.FileScheme,
+		workspace.NewFileScheme))
+	uri, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	runner := &authorizerCapturingRunner{authorizers: map[string]extensionv2.ServerAuthorizer{}}
+	m := newTestWorkspaceManagerHandlerWithManagerMu(t, manager, mu, drain,
+		&uri, cfg, runner, nil, t.TempDir(), nil, nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+	m.quiesce()
+
+	authorizer, ok := runner.authorizer(uri).(*ideauthorizer.Authorizer)
+	require.True(t, ok, "the workspace's extensions are served with the command authorizer")
+	ctx := blueauth.ContextWithClaims(context.Background(),
+		blueauth.UserClaims[ideauthorizer.Extension]{Extra: ideauthorizer.Extension{
+			Metadata: extensionapi.Metadata{
+				DeveloperID: "dev-id", ExtensionID: "test-extension",
+				ExtensionName: "Test Extension",
+				Permissions:   extensionapi.NewPermissions(extensionapi.PermissionExecute),
+			},
+		}})
+	authorize := func(args ...string) <-chan error {
+		done := make(chan error, 1)
+		go debug.CapturePanicReport(func() {
+			done <- authorizer.AuthorizeCommand(ctx, workspaceapi.Cmd{
+				Path: "tool", Args: args, Dir: dir,
+			})
+		})
+		return done
+	}
+	const width, height = 120, 40
+	h := newSafeHandler(m)
+	h.Resize(width, height)
+	screen := func() string { return handlertest.DrawHandler(h, width, height) }
+	waitFor := func(text string) {
+		t.Helper()
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			m.quiesce()
+			assert.Contains(c, screen(), text)
+		}, 5*time.Second, 10*time.Millisecond)
+	}
+	await := func(done <-chan error) error {
+		t.Helper()
+		var err error
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			m.quiesce()
+			select {
+			case err = <-done:
+			default:
+				assert.Fail(c, "authorization is pending")
+			}
+		}, 5*time.Second, 10*time.Millisecond)
+		return err
+	}
+	return commandAuthorizerTest{
+		m: m, h: h, authorize: authorize, waitFor: waitFor, await: await, screen: screen,
+	}
+}
+
+func TestBuildExtensionsCommandAuthorizerAsksWhatAlwaysCovers(t *testing.T) {
+	a := newCommandAuthorizerTest(t)
+	done := a.authorize("sub", "arg")
+	a.waitFor("Choosing Always or Never lets you pick")
+	a.h.Handle(term.Event{Type: term.EventKey, Ch: 'A'})
+	a.waitFor("From now on, extension Test Extension may run the")
+	picker := a.screen()
+	assert.Contains(t, picker, "│ \U000F012E  tool *")
+	assert.Contains(t, picker, "│ └─ \U000F0132  tool sub *")
+	assert.Contains(t, picker, "│    └─ \U000F0132  tool sub arg")
+	a.h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	require.NoError(t, a.await(done))
+	assert.NotContains(t, a.screen(), "From now on")
+
+	require.NoError(t, a.await(a.authorize("sub", "other")),
+		"the picked scope covers the subcommand")
+	done = a.authorize("other")
+	a.waitFor("Choosing Always or Never lets you pick")
+	a.h.Handle(term.Event{Type: term.EventKey, Ch: 'N'})
+	require.ErrorIs(t, a.await(done), blueauth.ErrForbidden,
+		"the scope that was not picked is not covered")
+}
+
+func TestBuildExtensionsCommandAuthorizerNotifiesUnseenPrompts(t *testing.T) {
+	a := newCommandAuthorizerTest(t)
+	notes := &recordingNotifications{}
+	a.m.locked(func() {
+		w := a.m.workspaces[a.m.focus]
+		notes.inner = w.notifications
+		w.notifications = notes
+	})
+	warnings := func() []capturedNote {
+		return slices.DeleteFunc(notes.snapshot(), func(n capturedNote) bool {
+			return n.level != browserapi.LevelWarn
+		})
+	}
+
+	done := a.authorize("sub")
+	a.waitFor("Choosing Always or Never lets you pick")
+	a.h.Handle(term.Event{Type: term.EventKey, Ch: 'A'})
+	a.waitFor("From now on, extension Test Extension may run the")
+	a.h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	require.NoError(t, a.await(done))
+	assert.Empty(t, warnings(), "neither the prompt nor the picker in focus is notified")
+
+	warned := len(warnings())
+	a.h.Handle(term.Event{Type: term.EventUnfocus})
+	done = a.authorize("other")
+	a.waitFor("Choosing Always or Never lets you pick")
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		a.m.quiesce()
+		got := warnings()[warned:]
+		if assert.Len(c, got, 1) {
+			assert.Contains(c, got[0].msg, "User authorization required for")
+		}
+	}, 5*time.Second, 10*time.Millisecond, "with Rune out of focus, the prompt is notified")
+	updates := len(notes.updatesSnapshot())
+	a.h.Handle(term.Event{Type: term.EventKey, Ch: 'N'})
+	require.ErrorIs(t, a.await(done), blueauth.ErrForbidden)
+	a.m.quiesce()
+	assert.Contains(t, notes.updatesSnapshot()[updates:],
+		capturedUpdate{progress: 1, total: 1, ok: true}, "answered, its notification closes")
+}
+
 func TestWorkspaceReadyCommand(t *testing.T) {
 	t.Run("dispatches inline when nothing is pending", func(t *testing.T) {
 		dir := t.TempDir()
@@ -7439,6 +9811,8 @@ func (r *waitReadyRunner) Run(extensionID, path string, config config.Config) er
 
 func (r *waitReadyRunner) Close() error { return nil }
 
+func (r *waitReadyRunner) SignalReload() int { return 0 }
+
 func (r *waitReadyRunner) WaitReady(ctx context.Context, id string) error {
 	if r.waitErr != nil {
 		return r.waitErr
@@ -7486,6 +9860,8 @@ func (r *perIDReadyRunner) Run(extensionID, path string, config config.Config) e
 }
 
 func (r *perIDReadyRunner) Close() error { return nil }
+
+func (r *perIDReadyRunner) SignalReload() int { return 0 }
 
 func (r *perIDReadyRunner) WaitReady(ctx context.Context, id string) error {
 	ch := r.chanFor(id)
@@ -8219,13 +10595,15 @@ func inlineSchedule(fn func()) bool {
 
 // recordingOpener is a resource opener that records every call. Each call
 // returns what open, the extension's side, returns when set; otherwise it
-// returns h, or fails with err when h is nil.
+// returns h, or fails with err when h is nil. It completes with complete,
+// or with nothing when complete is nil.
 type recordingOpener struct {
-	mu     sync.Mutex
-	opened []string
-	h      browserapi.Handler
-	err    error
-	open   func(ctx context.Context, uri workspaceapi.URI) (browserapi.Handler, error)
+	mu       sync.Mutex
+	opened   []string
+	h        browserapi.Handler
+	err      error
+	open     func(ctx context.Context, uri workspaceapi.URI) (browserapi.Handler, error)
+	complete func(ctx context.Context, prefix string) (sdkiterator.Iterator[string], error)
 }
 
 func (r *recordingOpener) OpenResource(
@@ -8241,6 +10619,15 @@ func (r *recordingOpener) OpenResource(
 		return nil, r.err
 	}
 	return r.h, nil
+}
+
+func (r *recordingOpener) CompleteResource(
+	ctx context.Context, prefix string,
+) (sdkiterator.Iterator[string], error) {
+	if r.complete != nil {
+		return r.complete(ctx, prefix)
+	}
+	return sdkiterator.Empty[string](), nil
 }
 
 // register makes r the opener of the fake scheme on the focused workspace
@@ -8579,6 +10966,347 @@ func TestRestoreExtensionTabs(t *testing.T) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		assert.True(t, m.exHandler(m.focusHandler()).comp.PendingTabs().Contains(uri))
+	})
+
+	t.Run("all open tabs survive reload", func(t *testing.T) {
+		for _, tt := range []struct {
+			name    string
+			visible int
+		}{
+			{name: "one visible", visible: 1},
+			{name: "all inactive"},
+			{name: "two visible in splits", visible: 2},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				m, _ := setup(t, true)
+				uris := []workspaceapi.URI{uri}
+				for _, raw := range []string{"fake://host/second", "fake://host/third"} {
+					u, err := workspaceapi.ParseURI(raw)
+					require.NoError(t, err)
+					uris = append(uris, u)
+				}
+				names := []string{"chat", "second", "third"}
+				icons := []rune{'x', 'y', 'z'}
+				wantURIs := []string{tabURI, uris[1].String(), uris[2].String()}
+
+				func() {
+					m.mu.Lock()
+					defer m.mu.Unlock()
+					ex := m.exHandler(m.focusHandler())
+					b := ex.comp.Browser()
+					layout := b.TileLayout()
+					right, ok := b.Window(layout.Children[1].WindowID)
+					require.True(t, ok)
+					for i := 1; i < len(uris); i++ {
+						tab, err := ex.comp.Tab(uris[i], icons[i], names[i], browsertest.NewTestHandler())
+						require.NoError(t, err)
+						require.NoError(t, right.SetContent(tab))
+					}
+					switch tt.visible {
+					case 0:
+						require.NoError(t, right.SetContent(browsertest.NewTestHandler()))
+					case 2:
+						left, ok := b.Window(layout.Children[0].WindowID)
+						require.True(t, ok)
+						tab, ok := b.Tab(uri)
+						require.True(t, ok)
+						require.NoError(t, left.SetContent(tab))
+					}
+					b.SetFocus(right)
+				}()
+
+				assertTabs := func(pending bool) {
+					t.Helper()
+					m.mu.Lock()
+					defer m.mu.Unlock()
+					ex := m.exHandler(m.focusHandler())
+					b := ex.comp.Browser()
+					var gotURIs []string
+					for _, tab := range ex.comp.Tabs() {
+						if tab.URI().Scheme() == "fake" {
+							gotURIs = append(gotURIs, tab.URI().String())
+						}
+					}
+					require.Equal(t, wantURIs, gotURIs, "all tabs must retain their order")
+					for i, u := range uris {
+						tab, ok := b.Tab(u)
+						require.True(t, ok)
+						assert.Equal(t, pending, ex.comp.PendingTabs().Contains(u))
+						_, icon, _ := b.TabIcon(u)
+						_, name, _ := b.TabName(u)
+						assert.Equal(t, icons[i], icon)
+						assert.Equal(t, names[i], name)
+						win, bound := tab.Window()
+						side := -1
+						if i == 2 && tt.visible > 0 {
+							side = 1
+						} else if i == 0 && tt.visible == 2 {
+							side = 0
+						}
+						if side < 0 {
+							assert.False(t, bound, "inactive tab %s must remain in the tab bar", u)
+							continue
+						}
+						require.True(t, bound)
+						layout := b.TileLayout()
+						require.Len(t, layout.Children, 2)
+						assert.Equal(t, layout.Children[side].WindowID, win.WindowID())
+						focus, _ := win.Focus()
+						assert.Equal(t, side == 1, focus)
+					}
+				}
+
+				reload(t, m)
+				assertTabs(true)
+				reload(t, m)
+				assertTabs(true)
+
+				handlers := make(map[string]browserapi.Handler)
+				for _, u := range uris {
+					handlers[u.String()] = browsertest.NewTestHandler()
+				}
+				rec := recordingOpener{open: func(_ context.Context, u workspaceapi.URI) (browserapi.Handler, error) {
+					return handlers[u.String()], nil
+				}}
+				rec.register(t, m)
+				require.Eventually(t, func() bool {
+					m.quiesce()
+					m.mu.Lock()
+					defer m.mu.Unlock()
+					b := m.exHandler(m.focusHandler()).comp.Browser()
+					for _, u := range uris {
+						tab, ok := b.Tab(u)
+						if !ok || tab.Handler() != handlers[u.String()] {
+							return false
+						}
+					}
+					return true
+				}, 2*time.Second, 10*time.Millisecond)
+				assert.ElementsMatch(t, wantURIs, rec.snapshot())
+				assertTabs(false)
+				reload(t, m)
+				assertTabs(true)
+			})
+		}
+	})
+
+	t.Run("the programs listing a status are listed again if their tab is back", func(t *testing.T) {
+		m, ws := setup(t, true)
+		// No opener serves its scheme, so its tab is not saved.
+		gone := mustURI(t, "nowhere://host/gone")
+		m.locked(func() {
+			ex := m.exHandler(m.focusHandler())
+			_, err := ex.comp.Tab(gone, 'g', "gone", browsertest.NewTestHandler())
+			require.NoError(t, err)
+			for _, u := range []workspaceapi.URI{uri, gone} {
+				require.NoError(t, ex.comp.SetTabStatus(u, programstatus.Report{
+					State: programstatus.Done, Progress: -1, App: "agent",
+				}))
+			}
+			b := ex.comp.Browser()
+			chat, ok := b.Tab(uri)
+			require.True(t, ok)
+			chat.AckStatus()
+			require.Len(t, m.status.Items(), 2, "seen, a tab is still listed")
+		})
+
+		reload(t, m)
+		m.locked(func() {
+			items := m.status.Items()
+			require.Len(t, items, 1, "only the program whose tab came back is listed")
+			assert.Equal(t, ws, items[0].WS)
+			assert.Equal(t, uri, items[0].URI)
+			assert.Equal(t, "chat", items[0].Name)
+			assert.Equal(t, "agent", items[0].App)
+			assert.Empty(t, items[0].Status.Records, "it reported nothing since")
+		})
+
+		reload(t, m)
+		m.locked(func() {
+			require.Len(t, m.status.Items(), 1, "it is saved again with the workspace")
+			b := m.exHandler(m.focusHandler()).comp.Browser()
+			chat, ok := b.Tab(uri)
+			require.True(t, ok)
+			b.RemoveTab(chat)
+			assert.Empty(t, m.status.Items(), "closed, its tab takes it away")
+		})
+		reload(t, m)
+		m.locked(func() {
+			assert.Empty(t, m.status.Items(), "a closed tab does not come back")
+		})
+	})
+
+	// reopen closes the workspace in focus and opens it again as reload
+	// does, with edit, if any, applied to the state it saved, as a later
+	// run may find it, and restores the session only if restore. It
+	// returns the state the workspace opens with.
+	reopen := func(
+		t *testing.T, m *testWorkspaceManagerHandler, restore bool, edit func(*idehistory.State),
+	) idehistory.State {
+		t.Helper()
+		m.mu.Lock()
+		slot := m.focus
+		ws, _, err := m.closeWorkspace()
+		require.NoError(t, err)
+		state, err := m.state.LoadWorkspaceState(context.Background(), ws)
+		require.NoError(t, err)
+		if edit != nil {
+			edit(&state)
+		}
+		require.NoError(t, m.state.StoreWorkspaceState(context.Background(), ws, state))
+		require.NoError(t, m.addWorkspace(ws, restore, false, slot))
+		m.mu.Unlock()
+		m.quiesce()
+		return state
+	}
+	// reporting sets up a workspace whose fake tab is saved and reported
+	// done as the app agent.
+	reporting := func(t *testing.T) (*testWorkspaceManagerHandler, workspaceapi.URI) {
+		m, ws := setup(t, true)
+		m.locked(func() {
+			require.NoError(t, m.exHandler(m.focusHandler()).comp.SetTabStatus(uri, programstatus.Report{
+				State: programstatus.Done, Progress: -1, App: "agent",
+			}))
+		})
+		m.quiesce()
+		return m, ws
+	}
+	type listed struct{ ws, uri, app string }
+	listing := func(m *testWorkspaceManagerHandler) []listed {
+		var ret []listed
+		m.locked(func() {
+			for _, it := range m.status.Items() {
+				ret = append(ret, listed{it.WS.String(), it.URI.String(), it.App})
+			}
+		})
+		return ret
+	}
+
+	t.Run("the programs of a saved state", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			restore bool
+			edit    func(*idehistory.State)
+			wantTab bool
+			want    []string
+		}{
+			{
+				name: "a program saved with its tab is listed with it", restore: true,
+				wantTab: true, want: []string{"agent"},
+			},
+			{
+				name: "a program whose tab was not saved is not listed", restore: true,
+				edit: func(s *idehistory.State) { s.Extensions = nil },
+			},
+			{
+				name: "a tab saved without its program comes back unlisted", restore: true,
+				edit:    func(s *idehistory.State) { s.Programs = nil },
+				wantTab: true,
+			},
+			{
+				name: "a program saved where no tab was is not listed", restore: true,
+				edit: func(s *idehistory.State) {
+					s.Programs = append(s.Programs, idehistory.Program{
+						URI: mustURI(t, "fake://host/nowhere"), App: "agent",
+					})
+				},
+				wantTab: true, want: []string{"agent"},
+			},
+			{
+				name: "a program saved without a uri is not listed", restore: true,
+				edit: func(s *idehistory.State) {
+					s.Programs = append([]idehistory.Program{{App: "agent"}}, s.Programs...)
+				},
+				wantTab: true, want: []string{"agent"},
+			},
+			{
+				name: "a program saved twice is listed once, with the app saved first", restore: true,
+				edit: func(s *idehistory.State) {
+					s.Programs = []idehistory.Program{{URI: uri, App: "first"}, {URI: uri, App: "second"}}
+				},
+				wantTab: true, want: []string{"first"},
+			},
+			{
+				name: "a program saved without an app is listed without one", restore: true,
+				edit:    func(s *idehistory.State) { s.Programs = []idehistory.Program{{URI: uri}} },
+				wantTab: true, want: []string{""},
+			},
+			{
+				name: "a session that is not restored lists no program",
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				m, ws := reporting(t)
+				reopen(t, m, tt.restore, tt.edit)
+
+				_, ok := tabOf(t, m)
+				assert.Equal(t, tt.wantTab, ok, "whether the tab is back")
+				var want []listed
+				for _, app := range tt.want {
+					want = append(want, listed{ws.String(), uri.String(), app})
+				}
+				assert.Equal(t, want, listing(m))
+
+				reload(t, m)
+				assert.Equal(t, want, listing(m), "what is listed is saved again, and only that")
+			})
+		}
+	})
+
+	t.Run("the programs restored from the prompt", func(t *testing.T) {
+		tests := []struct {
+			name   string
+			idx    int
+			option string
+			want   []string
+		}{
+			{name: "answered yes", idx: 0, option: yesOpt, want: []string{"agent"}},
+			{name: "answered no", idx: 1, option: noOpt},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				m, ws := reporting(t)
+				state := reopen(t, m, false, nil)
+				require.Empty(t, listing(m))
+				m.locked(func() {
+					newOpenRestorePromptHandler(m.workspaceManagerHandler, m.exHandler(m.focusHandler()),
+						ws, state, yesOpt, noOpt).OnSelect(tt.idx, tt.option)
+				})
+				m.quiesce()
+				var want []listed
+				for _, app := range tt.want {
+					want = append(want, listed{ws.String(), uri.String(), app})
+				}
+				assert.Equal(t, want, listing(m))
+
+				reload(t, m)
+				assert.Equal(t, want, listing(m), "what is listed is saved again, and only that")
+			})
+		}
+	})
+
+	t.Run("a restored program stays listed once its extension reopens its tab", func(t *testing.T) {
+		m, ws := reporting(t)
+		reload(t, m)
+		require.Equal(t, []listed{{ws.String(), uri.String(), "agent"}}, listing(m),
+			"the placeholder of the tab is listed")
+
+		h := browsertest.NewTestHandler()
+		rec := recordingOpener{h: h}
+		rec.register(t, m)
+		require.Eventually(t, func() bool { return showsHandler(m, h) },
+			2*time.Second, 10*time.Millisecond)
+		assert.Equal(t, []listed{{ws.String(), uri.String(), "agent"}}, listing(m))
+
+		m.locked(func() {
+			require.NoError(t, m.exHandler(m.focusHandler()).comp.SetTabStatus(uri, programstatus.Report{
+				State: programstatus.Working, Progress: -1, App: "fresh",
+			}))
+		})
+		m.quiesce()
+		assert.Equal(t, []listed{{ws.String(), uri.String(), "fresh"}}, listing(m),
+			"it lists what its program reports next")
 	})
 
 	// A second reload can land while the first one's placeholder is still
@@ -8999,9 +11727,9 @@ func swapDirIDEConfig(t *testing.T, enabled bool) ideConfig {
 	require.NoError(t, err)
 
 	var cfg ideConfig
-	require.NoError(t, loadConfig(&cfg, f.Name(), browser.NopWallpaper(),
+	require.NoError(t, loadConfig(&cfg, f.Name(), nil,
 		DefaultConfig{src: "config = {}"},
-		term.RingBell, term.ScheduleNextTick))
+		sounds.Silent, term.ScheduleNextTick))
 	return cfg
 }
 
@@ -9071,7 +11799,7 @@ func TestSwapDirectory(t *testing.T) {
 
 func TestTextOptsInstallSyntaxTrees(t *testing.T) {
 	var cfg ideConfig
-	initDefaultConfig(&cfg, browser.NopWallpaper(), term.RingBell, term.ScheduleNextTick, "")
+	initDefaultConfig(&cfg, nil, sounds.Silent, term.ScheduleNextTick, "")
 	cfg.storage = storagestub.NewInMemoryService()
 	uri, err := workspaceapi.ParseURI("file:///Users/x/src/proj")
 	require.NoError(t, err)
@@ -9082,6 +11810,29 @@ func TestTextOptsInstallSyntaxTrees(t *testing.T) {
 	}
 	assert.NotNil(t, textCfg.SyntaxTree,
 		"without a syntax tree hook, file tabs lose highlights, folds and indents")
+}
+
+func TestTextOptsEnableMarkdownImages(t *testing.T) {
+	var cfg ideConfig
+	initDefaultConfig(&cfg, nil, sounds.Silent, term.ScheduleNextTick, "")
+	cfg.storage = storagestub.NewInMemoryService()
+	uri, err := workspaceapi.ParseURI("file:///Users/x/src/proj")
+	require.NoError(t, err)
+
+	textCfg := text.DefaultConfig()
+	for _, opt := range (&workspaceManagerHandler{}).textOpts(cfg, nil, uri, nil) {
+		opt(&textCfg)
+	}
+	// Images are cached in a partition of their own.
+	require.NotNil(t, textCfg.MarkdownImageStorage,
+		"without image storage, markdown view tabs show alt text")
+	ctx := context.Background()
+	require.NoError(t, textCfg.MarkdownImageStorage.Set(ctx, "image", map[string]any{"a": 1}))
+	images, err := cfg.storage.Partition("markdown_images")
+	require.NoError(t, err)
+	var doc map[string]any
+	require.NoError(t, images.Get(ctx, "image", &doc))
+	assert.ErrorIs(t, cfg.storage.Get(ctx, "image", &doc), storageapi.ErrNotFound)
 }
 
 func TestWorkspaceRootURI(t *testing.T) {
@@ -9128,7 +11879,7 @@ func newHandlerWithDataDir(
 ) *testWorkspaceManagerHandler {
 	t.Helper()
 	cc := defaultConfigWithWrap(false)
-	cc.ringBell = func() {}
+	cc.sounds = sounds.Silent
 	mu, sched, drain := buildTestSchedulerForCfg(t, &cc)
 	manager := workspace.NewManager(config.NopConfig(), sched)
 	require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme,
@@ -9464,4 +12215,1352 @@ func TestCommandBindingOptsEditorKeyBindings(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWorkspaceParserHighlightsWithConfiguredHighlights(t *testing.T) {
+	rawDir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(rawDir)
+	require.NoError(t, err)
+
+	dataDir := t.TempDir()
+	stageTreeSitterGo(t, dataDir)
+	configPath := filepath.Join(dataDir, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(`
+clipboard: memory
+editor:
+  highlights:
+    keyword:
+      fg: lime
+`), 0o666))
+
+	mu := new(sync.Mutex)
+	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
+	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
+		WithLocker(mu),
+		WithScheduleNextTick(scheduleNextTick),
+		WithPublishEvent(func(term.Event) bool { return true }),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+
+	root := i.Ready()
+	mu.Lock()
+	root.Resize(80, 24)
+	mu.Unlock()
+	drainSchedule()
+	i.WaitWorkspaces()
+
+	mu.Lock()
+	wh := i.workspaceHandler.workspaces[i.workspaceHandler.focus]
+	mu.Unlock()
+	require.NotNil(t, wh)
+
+	uri, err := workspaceapi.ParseURI("file://" + filepath.Join(dir, "main.go"))
+	require.NoError(t, err)
+	// The workspace parser is the one extensions highlight with.
+	it, err := wh.parser.Highlight(uri, "package main")
+	require.NoError(t, err)
+	locations, err := iterator.ToSlice(context.Background(), it)
+	require.NoError(t, err)
+	require.NotEmpty(t, locations)
+	assert.Equal(t, term.Coordinates{}, locations[0].From)
+	assert.Equal(t, term.Attributes{Fg: term.ColorLime}, locations[0].Attr)
+}
+
+func workingStatus() programstatus.Report {
+	return programstatus.Report{State: programstatus.Working, Progress: -1}
+}
+
+func TestWorkspaceNextPreviousCycleOpenWorkspaces(t *testing.T) {
+	m, other := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	start := m.focus
+
+	require.NoError(t, m.focusEx().dispatchCommand("workspacenext"))
+	assert.Equal(t, other, m.focus, "next focuses the other open workspace")
+	require.NoError(t, m.focusEx().dispatchCommand("workspacenext"))
+	assert.Equal(t, start, m.focus, "next wraps around, skipping empty slots")
+
+	require.NoError(t, m.focusEx().dispatchCommand("workspaceprevious"))
+	assert.Equal(t, other, m.focus, "previous wraps around, skipping empty slots")
+	require.NoError(t, m.focusEx().dispatchCommand("workspaceprevious"))
+	assert.Equal(t, start, m.focus)
+}
+
+func TestLocalServerLocatorHonorsServerBinPath(t *testing.T) {
+	h := &workspaceManagerHandler{pkgmanager: new(localPkgManager)}
+	got, err := h.localServerLocator(llamaserver.Config{ServerBinPath: "/opt/llama/llama-server"}).
+		Locate(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "/opt/llama/llama-server", got)
+}
+
+// executorRunner runs commands on the executor its workspace's
+// extensions are given, and closes it with them, as the real runner does.
+type executorRunner struct {
+	testRunner
+	schemeapi.Executor
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func (r executorRunner) Close() error {
+	r.cancel()
+	return r.Executor.Close()
+}
+
+func (r executorRunner) LookPath(ctx context.Context, name, dir string) (string, error) {
+	if err := r.ctx.Err(); err != nil {
+		return "", err
+	}
+	return r.Executor.LookPath(ctx, name, dir)
+}
+
+func TestLocalModelsOutliveTheWorkspaceBuiltLast(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(t.TempDir(), "llama-server")
+	require.NoError(t, os.WriteFile(binary, nil, 0o755))
+	cfg := defaultCfg()
+	mu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
+	manager := workspace.NewManager(config.NopConfig(), sched)
+	require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme, workspace.NewMemoryScheme))
+	require.NoError(t, manager.RegisterScheme(workspace.FileScheme, workspace.NewFileScheme))
+	uri, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	runner := FuncExtensionsRunner(func(
+		_ workspaceapi.URI, _ map[extensionapi.Permission]extension.ResourceRegistrar,
+		_, _ string, _ browser.Notifications, _, extExec schemeapi.Executor, _ extension.Grantor,
+		_ text.Editor, _ ideauthorizer.PromptOpener, _ storageapi.Service, _ func(func()) bool,
+	) (extension.Runner, error) {
+		ctx, cancel := context.WithCancel(context.Background())
+		return executorRunner{Executor: extExec, ctx: ctx, cancel: cancel}, nil
+	})
+	m := newTestWorkspaceManagerHandlerWithManagerMu(t, manager, mu, drain,
+		&uri, cfg, runner, nil, dir, nil, nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+
+	m.mu.Lock()
+	err = m.commandCloseWorkspace()
+	m.mu.Unlock()
+	require.NoError(t, err)
+	m.closeWG.Wait()
+
+	got, err := m.localExecutor.LookPath(context.Background(), binary, "")
+	require.NoError(t, err, "local models must not use a closed workspace's executor")
+	assert.Equal(t, binary, got)
+}
+
+// newHUDTestIDE opens cwd, unless empty, in an IDE that reads configPath,
+// once it is installed.
+func newHUDTestIDE(t *testing.T, cwd, configPath string, opts ...Option) (*IDE, *sync.Mutex) {
+	t.Helper()
+	dataDir := t.TempDir()
+	mu := new(sync.Mutex)
+	sched, drain := newTestScheduler(t, mu)
+	opts = append([]Option{
+		WithLocker(mu),
+		WithScheduleNextTick(sched),
+		WithPublishEvent(func(term.Event) bool { return true }),
+	}, opts...)
+	i, err := New(cwd, configPath, dataDir, pkgtrust.NewStore(),
+		newTestStorage(t, dataDir), opts...)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = i.Close() })
+	_ = i.Ready()
+	drain()
+	i.WaitWorkspaces()
+	drain()
+	return i, mu
+}
+
+func writeHUDTestPNG(t *testing.T, path string, c color.Color) {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, c)
+	var buf bytes.Buffer
+	require.NoError(t, png.Encode(&buf, img))
+	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
+}
+
+func TestLoadHUD(t *testing.T) {
+	ctx := context.Background()
+	tempDir := func(t *testing.T) string {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		return dir
+	}
+	writeConfig := func(t *testing.T, path, home, wm string) {
+		require.NoError(t, os.WriteFile(path, []byte("clipboard: memory\n"+
+			"workspace:\n  home: "+home+"\n"+
+			"browser:\n  window_manager:\n"+wm), 0o644))
+	}
+	topLeft := func(topLeft string) string {
+		return "    frame_charset:\n      topleft: \"" + topLeft + "\"\n"
+	}
+
+	t.Run("images are read again", func(t *testing.T) {
+		dir := tempDir(t)
+		imgPath := filepath.Join(dir, "tl.png")
+		uri := "file://" + imgPath
+		configPath := filepath.Join(dir, "rune.yaml")
+		writeConfig(t, configPath, dir,
+			"    frame_charset:\n      graphics:\n        topleft: "+uri+"\n")
+		writeHUDTestPNG(t, imgPath, color.White)
+		i, _ := newHUDTestIDE(t, "", configPath)
+		pixel := func(hud *HUD) color.Color {
+			require.Contains(t, hud.images, uri)
+			return color.NRGBAModel.Convert(hud.images[uri].At(0, 0))
+		}
+
+		first, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, color.NRGBAModel.Convert(color.White), pixel(first))
+		assert.Empty(t, first.configErrs)
+
+		red := color.NRGBA{R: 255, A: 255}
+		writeHUDTestPNG(t, imgPath, red)
+		overwritten, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, red, pixel(overwritten), "an image overwritten in place")
+		assert.Greater(t, overwritten.load, first.load)
+
+		require.NoError(t, os.Remove(imgPath))
+		missing, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.NotContains(t, missing.images, uri)
+	})
+
+	t.Run("status bar images are read again", func(t *testing.T) {
+		dir := tempDir(t)
+		imgPath := filepath.Join(dir, "ornament.png")
+		uri := "file://" + imgPath
+		configPath := filepath.Join(dir, "rune.yaml")
+		require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+			"workspace:\n  home: "+dir+"\n"+
+			"editor:\n  status_bar:\n    layout: '{{ .Status }}{{ .Image | src \""+uri+"\" }}'\n"),
+			0o644))
+		writeHUDTestPNG(t, imgPath, color.White)
+		i, _ := newHUDTestIDE(t, "", configPath)
+		pixel := func(hud *HUD) color.Color {
+			require.Contains(t, hud.statusBarImages, uri)
+			return color.NRGBAModel.Convert(hud.statusBarImages[uri].At(0, 0))
+		}
+
+		first, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, first.configErrs)
+		assert.Equal(t, color.NRGBAModel.Convert(color.White), pixel(first))
+		assert.NotContains(t, first.images, uri, "status bar images are cached apart")
+
+		red := color.NRGBA{R: 255, A: 255}
+		writeHUDTestPNG(t, imgPath, red)
+		overwritten, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, red, pixel(overwritten), "an image overwritten in place")
+
+		require.NoError(t, os.Remove(imgPath))
+		missing, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.NotContains(t, missing.statusBarImages, uri)
+	})
+
+	t.Run("config errors", func(t *testing.T) {
+		dir := tempDir(t)
+		configPath := filepath.Join(dir, "rune.yaml")
+		writeConfig(t, configPath, dir, topLeft("╭"))
+		i, _ := newHUDTestIDE(t, "", configPath)
+
+		writeConfig(t, configPath, dir,
+			"    frame_charset:\n      graphics:\n        topleft: ftp://example.com/tl.png\n")
+		hud, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.Contains(t, hud.configErrs, "window_manager.frame_charset")
+
+		require.NoError(t, os.WriteFile(configPath, []byte("browser: ["), 0o644))
+		hud, err = i.LoadHUD(ctx)
+		assert.Error(t, err)
+		assert.Nil(t, hud)
+	})
+
+	t.Run("a workspace config overlays the user's again", func(t *testing.T) {
+		home := tempDir(t)
+		ws := tempDir(t)
+		overlay := []byte("browser:\n  window_manager:\n    frame_attr:\n      fg: red\n")
+		require.NoError(t, os.WriteFile(filepath.Join(ws, ".iderc"), overlay, 0o644))
+		configPath := filepath.Join(home, "rune.yaml")
+		writeConfig(t, configPath, home, topLeft("╭"))
+		i, mu := newHUDTestIDE(t, ws, configPath, WithTrustedWorkspaceConfig(overlay))
+		mu.Lock()
+		w := i.workspaceHandler.workspaces[i.workspaceHandler.focus]
+		mu.Unlock()
+		require.NotNil(t, w)
+		assert.Equal(t, overlay, w.configOverlay)
+		uri := w.uri.String()
+
+		writeConfig(t, configPath, home, topLeft("╔"))
+		hud, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		base := hud.base.browser.WindowManager
+		assert.Equal(t, '╔', base.FrameCharSet.TopLeft)
+		assert.NotEqual(t, term.ColorRed, base.FrameAttr.Fg)
+		require.Contains(t, hud.workspaces, uri)
+		layered := hud.workspaces[uri].browser.WindowManager
+		assert.Equal(t, '╔', layered.FrameCharSet.TopLeft)
+		assert.Equal(t, term.ColorRed, layered.FrameAttr.Fg)
+		assert.Empty(t, hud.skip)
+
+		mu.Lock()
+		w.configOverlay = []byte("browser: [")
+		mu.Unlock()
+		hud, err = i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.NotContains(t, hud.workspaces, uri)
+		assert.Contains(t, hud.skip, uri, "an overlay that fails to decode")
+	})
+
+	t.Run("a workspace whose config is the user's", func(t *testing.T) {
+		dir := tempDir(t)
+		configPath := filepath.Join(dir, ".iderc")
+		writeConfig(t, configPath, dir, topLeft("╭"))
+		i, mu := newHUDTestIDE(t, dir, configPath)
+		mu.Lock()
+		w := i.workspaceHandler.workspaces[i.workspaceHandler.focus]
+		mu.Unlock()
+		require.NotNil(t, w)
+		assert.Nil(t, w.configOverlay, "the old contents would undo edits")
+
+		writeConfig(t, configPath, dir, topLeft("╔"))
+		hud, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, '╔', hud.base.browser.WindowManager.FrameCharSet.TopLeft)
+		assert.Empty(t, hud.workspaces)
+		assert.Empty(t, hud.skip)
+	})
+}
+
+func TestWorkspaceNotificationsTakeItsConfig(t *testing.T) {
+	const width, height = 30, 6
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	frame := filepath.Join(ws, "frame.png")
+	writeHUDTestPNG(t, frame, color.Gray{Y: 128})
+	overlay := []byte("notifications:\n  frame_charset:\n    topleft: \"╓\"\n" +
+		"    graphics:\n      topright: file://" + frame + "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(ws, ".iderc"), overlay, 0o644))
+	configPath := filepath.Join(home, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+		"workspace:\n  home: "+home+"\n  wallpaper_ascii: wallpaper\n"+
+		"notifications:\n  progress_bar: false\n"+
+		// Indexing would post notifications of its own.
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"), 0o644))
+	i, mu := newHUDTestIDE(t, ws, configPath, WithTrustedWorkspaceConfig(overlay))
+	mu.Lock()
+	defer mu.Unlock()
+	w := i.workspaceHandler.workspaces[i.workspaceHandler.focus]
+	require.NotNil(t, w)
+
+	for _, tt := range []struct {
+		name     string
+		ex       *ex
+		expected string
+	}{
+		{
+			name: "a workspace's notifications take its own config", ex: w.ex,
+			expected: `╓────────────────────────────a
+│hud                         │
+└────────────────────────────┘
+│         wallpaper          │
+│                            │
+└────────────────────────────┘`,
+		},
+		{
+			name: "the home workspace's notifications take the user's", ex: i.workspaceHandler.empty,
+			expected: `┌────────────────────────────┐
+│hud                         │
+└────────────────────────────┘
+│         wallpaper          │
+│                            │
+└────────────────────────────┘`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := tt.ex.container
+			c.Resize(width, height)
+			require.True(t, c.UpdateProgress(c.Notify(notifications.LevelInfo, "hud"), "", 1, 2))
+			awaitFrame(t, c, asciiart.NewStringWriter(width, height, asciiart.DefaultConfig()),
+				nil, tt.expected)
+		})
+	}
+}
+
+func TestTabBarGraphicsIntegration(t *testing.T) {
+	const width, height = 40, 12
+	ctx := context.Background()
+	tempDir := func() string {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		return dir
+	}
+	home, ws, ws2 := tempDir(), tempDir(), tempDir()
+	uri := func(name string, y uint8) string {
+		path := filepath.Join(home, name)
+		writeHUDTestPNG(t, path, color.Gray{Y: y})
+		return "file://" + path
+	}
+	slices := func(uri string) string {
+		return "      left: " + uri + "\n      middle: " + uri + "\n      right: " + uri + "\n"
+	}
+	focus, highlight := uri("focus.png", 255), uri("highlight.png", 128)
+	wsFocus, wsIdle := uri("ws-focus.png", 200), uri("ws-idle.png", 75)
+	wsHighlight := uri("ws-highlight.png", 160)
+	// The bar is every workspace's, so a workspace's own config leaves it
+	// alone.
+	overlay := []byte("workspace:\n  tab_images:\n    focus:\n" + slices(uri("overlay.png", 40)))
+	require.NoError(t, os.WriteFile(filepath.Join(ws, ".iderc"), overlay, 0o644))
+	main := filepath.Join(ws, "main.go")
+	require.NoError(t, os.WriteFile(main, []byte("package main\n"), 0o644))
+	configPath := filepath.Join(home, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+		"workspace:\n  home: "+home+"\n  wallpaper_ascii: wallpaper\n"+
+		"  focus_tab_highlight_char: \"\"\n"+
+		"  tab_images:\n    focus:\n"+slices(wsFocus)+"    non_focus:\n"+slices(wsIdle)+
+		"  focus_tab_highlight_graphics:\n    horizontal: "+wsHighlight+"\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"browser:\n"+
+		"  tab_images:\n    focus:\n"+slices(focus)+
+		"  focus_tab_highlight_graphics:\n    horizontal: "+highlight+"\n"), 0o644))
+	i, mu := newHUDTestIDE(t, ws, configPath, WithTrustedWorkspaceConfig(overlay),
+		WithTabBarOffset(13), WithTabBarHeight(2),
+		WithWorkspacesBarHeight(2), WithWorkspacesBarOffset(2), WithWorkspacesBarFrame(false))
+	uri2, err := workspaceapi.CurrentUserHostURI(ws2)
+	require.NoError(t, err)
+	h := i.workspaceHandler
+	mu.Lock()
+	slot := h.focus
+	require.NoError(t, h.addWorkspace(uri2, false, false, -1))
+	mu.Unlock()
+	i.WaitWorkspaces()
+	fileURI, err := workspaceapi.ParseURI("file://" + main)
+	require.NoError(t, err)
+	mu.Lock()
+	require.True(t, h.switchToWorkspace(slot))
+	require.NoError(t, i.Open(fileURI))
+	mu.Unlock()
+	root := &safeHandler{mu: mu, Component: &i.root}
+	root.Resize(width, height)
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+
+	awaitFrame(t, root, w, nil, `             aaaaaaaaa                  
+             o@main.go                  
+┌──────────────────────────────────────┐
+│package main                          │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                NORMAL│
+└──────────────────────────────────────┘
+  161  2*2                              
+  111  ***                              `)
+
+	writeHUDTestPNG(t, strings.TrimPrefix(focus, "file://"), color.Gray{Y: 40})
+	writeHUDTestPNG(t, strings.TrimPrefix(wsFocus, "file://"), color.Gray{Y: 230})
+	hud, err := i.LoadHUD(ctx)
+	require.NoError(t, err)
+	mu.Lock()
+	applied, _ := i.ApplyHUD(hud)
+	mu.Unlock()
+	require.True(t, applied)
+	require.NoError(t, w.Clear(term.Attributes{}))
+	root.Draw(w)
+	require.NoError(t, w.Flush())
+	assert.Equal(t, `             aaaaaaaaa                  
+             o_main.go                  
+┌──────────────────────────────────────┐
+│package main                          │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                NORMAL│
+└──────────────────────────────────────┘
+  191  2*2                              
+  111  ***                              `, w.String(), "the tabs draw the reloaded images at once")
+}
+
+func TestTabBarHoverIntegration(t *testing.T) {
+	const width, height = 40, 12
+	tempDir := func() string {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		return dir
+	}
+	home, ws, ws2 := tempDir(), tempDir(), tempDir()
+	uri := func(name string, y uint8) string {
+		path := filepath.Join(home, name)
+		writeHUDTestPNG(t, path, color.Gray{Y: y})
+		return "file://" + path
+	}
+	images := "  tab_images:\n"
+	for _, state := range []struct {
+		name string
+		y    uint8
+	}{{"non_focus", 75}, {"hover", 255}, {"pressed", 40}} {
+		u := uri(state.name+".png", state.y)
+		images += "    " + state.name + ":\n      left: " + u + "\n      middle: " + u +
+			"\n      right: " + u + "\n"
+	}
+	main, other := filepath.Join(ws, "main.go"), filepath.Join(ws, "other.go")
+	require.NoError(t, os.WriteFile(main, []byte("package main\n"), 0o644))
+	require.NoError(t, os.WriteFile(other, []byte("package other\n"), 0o644))
+	configPath := filepath.Join(home, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+		"sounds:\n  tab-hover: /tab-hover.wav\n  tab-click: /tab-click.wav\n"+
+		"  ws-hover: /ws-hover.wav\n  ws-click: /ws-click.wav\n"+
+		"workspace:\n  home: "+home+"\n  wallpaper_ascii: wallpaper\n"+
+		"  focus_tab_highlight_char: \"\"\n"+images+
+		"  tab_sounds:\n    hover: ws-hover\n    click: ws-click\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"browser:\n  focus_tab_highlight_char: \"\"\n"+images+
+		"  tab_sounds:\n    hover: tab-hover\n    click: tab-click\n"), 0o644))
+	var soundsMu sync.Mutex
+	var played []string
+	i, mu := newHUDTestIDE(t, ws, configPath,
+		WithSoundBackend(sounds.BackendFunc(func(s sounds.Sound) {
+			soundsMu.Lock()
+			defer soundsMu.Unlock()
+			played = append(played, s.Name)
+		})),
+		WithTabBarOffset(13), WithTabBarHeight(2),
+		WithWorkspacesBarHeight(2), WithWorkspacesBarOffset(2), WithWorkspacesBarFrame(false))
+	uri2, err := workspaceapi.CurrentUserHostURI(ws2)
+	require.NoError(t, err)
+	h := i.workspaceHandler
+	mu.Lock()
+	slot := h.focus
+	require.NoError(t, h.addWorkspace(uri2, false, false, -1))
+	mu.Unlock()
+	i.WaitWorkspaces()
+	mu.Lock()
+	require.True(t, h.switchToWorkspace(slot))
+	for _, path := range []string{main, other} {
+		fileURI, err := workspaceapi.ParseURI("file://" + path)
+		require.NoError(t, err)
+		require.NoError(t, i.Open(fileURI))
+	}
+	mu.Unlock()
+	root := &safeHandler{mu: mu, Component: &i.root, Handler: &i.root}
+	root.Resize(width, height)
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+	mouse := func(key term.Key, x, y int) {
+		root.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: x, MouseY: y})
+	}
+	heard := func() []string {
+		soundsMu.Lock()
+		defer soundsMu.Unlock()
+		return slices.Clone(played)
+	}
+	screen := func(top, editor, bottom string) string {
+		return top + `
+┌──────────────────────────────────────┐
+│` + editor + `│
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                NORMAL│
+└──────────────────────────────────────┘
+` + bottom
+	}
+	const (
+		idleFiles = `             *********  **********      
+             o*main.go  o*other.go      `
+		idleWorkspaces = `  1*1  2*2                              
+  ***  ***                              `
+	)
+
+	awaitFrame(t, root, w, nil, screen(idleFiles, "package other                         ",
+		idleWorkspaces))
+
+	mouse(0, 15, 1)
+	awaitFrame(t, root, w, nil, screen(`             @@@@@@@@@  **********      
+             o@main.go  o*other.go      `, "package other                         ",
+		idleWorkspaces))
+	assert.Equal(t, []string{"tab-hover"}, heard(), "the pointer moves onto a file tab")
+
+	mouse(term.MouseLeft, 15, 1)
+	awaitFrame(t, root, w, nil, screen(`             _________  **********      
+             o_main.go  o*other.go      `, "package other                         ",
+		idleWorkspaces))
+	mouse(term.MouseRelease, 15, 1)
+	awaitFrame(t, root, w, nil, screen(idleFiles, "package main                          ",
+		idleWorkspaces))
+	assert.Equal(t, []string{"tab-hover", "tab-click"}, heard(),
+		"the release clicks the file tab, which keeps the look of the tab in focus")
+
+	mouse(0, 8, 11)
+	awaitFrame(t, root, w, nil, screen(idleFiles, "package main                          ",
+		`  1*1  2@2                              
+  ***  @@@                              `))
+	mouse(term.MouseLeft, 8, 11)
+	awaitFrame(t, root, w, nil, screen(idleFiles, "package main                          ",
+		`  1*1  2_2                              
+  ***  ___                              `))
+	mouse(term.MouseRelease, 8, 11)
+	assert.Equal(t, []string{"tab-hover", "tab-click", "ws-hover", "ws-click"}, heard(),
+		"the workspace tabs play the workspace's sounds")
+	mu.Lock()
+	assert.NotEqual(t, slot, h.focus, "the release clicks the workspace tab")
+	mu.Unlock()
+}
+
+func TestStatusInboxGraphicsIntegration(t *testing.T) {
+	const width, height = 30, 6
+	ctx := context.Background()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	selected := filepath.Join(home, "selected.png")
+	writeHUDTestPNG(t, selected, color.Gray{Y: 200})
+	configPath := filepath.Join(home, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+		"workspace:\n  home: "+home+"\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"program_status:\n  images:\n    selected:\n      middle: file://"+selected+"\n"), 0o644))
+	i, mu := newHUDTestIDE(t, ws, configPath)
+	agent := mustURI(t, "rune-agent://model/agent")
+	mu.Lock()
+	h := i.workspaceHandler
+	focused := h.focusEx()
+	_, err = focused.comp.Tab(agent, 'x', "agent", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	require.NoError(t, focused.comp.SetTabStatus(agent, programstatus.Report{
+		State: programstatus.Blocked, Progress: -1,
+	}))
+	require.NoError(t, h.commandProgramStatus())
+	win, err := focused.comp.Focus()
+	require.NoError(t, err)
+	content, err := win.Content()
+	require.NoError(t, err)
+	inbox, ok := content.(*idestatus.View)
+	require.True(t, ok)
+	inbox.Resize(width, height)
+	mu.Unlock()
+	view := &safeHandler{mu: mu, Component: inbox}
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+
+	awaitFrame(t, view, w, nil, `                        │AAAAA
+ ▌6661666666666666666   │AAAAA
+ ▌6󰹇6agent66666666666   │AAAAA
+ ▌666blocked666666666   │AAAAA
+                        │AAAAA
+                        │AAAAA`)
+
+	writeHUDTestPNG(t, selected, color.Gray{Y: 40})
+	hud, err := i.LoadHUD(ctx)
+	require.NoError(t, err)
+	mu.Lock()
+	applied, _ := i.ApplyHUD(hud)
+	mu.Unlock()
+	require.True(t, applied)
+	require.NoError(t, w.Clear(term.Attributes{}))
+	view.Draw(w)
+	require.NoError(t, w.Flush())
+	assert.Equal(t, `                        │AAAAA
+ ▌___1_______________   │AAAAA
+ ▌_󰹇_agent___________   │AAAAA
+ ▌___blocked_________   │AAAAA
+                        │AAAAA
+                        │AAAAA`, w.String(), "the open inbox draws the reloaded image at once")
+}
+
+func TestStatusInboxDividerIntegration(t *testing.T) {
+	const width, height = 50, 12
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	bottom := filepath.Join(home, "bottom.png")
+	writeHUDTestPNG(t, bottom, color.Gray{Y: 255})
+	configPath := filepath.Join(home, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+		"workspace:\n  home: "+home+"\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"program_status:\n  divider_charset:\n"+
+		"    top: T\n    vertical_top: t\n    vertical: v\n    vertical_bottom: b\n    bottom: B\n"+
+		"    graphics:\n      bottom: file://"+bottom+"\n"), 0o644))
+	i, mu := newHUDTestIDE(t, ws, configPath)
+	agent := mustURI(t, "rune-agent://model/agent")
+	mu.Lock()
+	h := i.workspaceHandler
+	focused := h.focusEx()
+	_, err = focused.comp.Tab(agent, 'x', "agent", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	require.NoError(t, focused.comp.SetTabStatus(agent, programstatus.Report{
+		State: programstatus.Blocked, Progress: -1,
+	}))
+	require.NoError(t, h.commandProgramStatus())
+	mu.Unlock()
+	root := &safeHandler{mu: mu, Component: &i.root}
+	root.Resize(width, height)
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+
+	// The window bar takes the top join's place.
+	awaitFrame(t, root, w, nil, `┌────────────────────────────────────────────────┐
+│󰹇  agent                                        │
+├█●██████████████████████████████████████████████┤
+││                        vAAAAAAAAAAAAAAAAAAAAA││
+││ ▌   1                  vAAAAAAAAAAAAAAAAAAAAA││
+││ ▌ 󰹇 agent              vAAAAAAAAAAAAAAAAAAAAA││
+││ ▌   blocked            vAAAAAAAAAAAAAAAAAAAAA││
+││                        vAAAAAAAAAAAAAAAAAAAAA││
+││                        bAAAAAAAAAAAAAAAAAAAAA││
+│└────────────────────────@─────────────────────┘│
+│                                                │
+└────────────────────────────────────────────────┘`)
+}
+
+func TestNotificationGraphicsIntegration(t *testing.T) {
+	const width, height = 40, 8
+	interrupts := make(chan struct{}, 1)
+	newTestPublishOverride = func(term.Event) bool {
+		select {
+		case interrupts <- struct{}{}:
+		default:
+		}
+		return true
+	}
+	t.Cleanup(func() { newTestPublishOverride = nil })
+
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	uri := func(name string, y uint8) string {
+		path := filepath.Join(dir, name)
+		writeHUDTestPNG(t, path, color.Gray{Y: y})
+		return "file://" + path
+	}
+	frame, progress, reloaded := uri("frame.png", 128), uri("progress.png", 255), uri("reloaded.png", 40)
+	notificationsCfg := func(frame string) map[string]any {
+		return map[string]any{
+			"progress_bar": true,
+			"frame_charset": map[string]any{"graphics": map[string]any{
+				"topleft": frame, "topright": frame, "bottomleft": frame, "bottomright": frame,
+				"horizontaltop": frame, "horizontalbottom": frame,
+				"verticalleft": frame, "verticalright": frame,
+			}},
+			"progress_format": map[string]any{
+				"start": "{", "current": "-", "current_tip": ">", "remain": " ", "end": "}",
+				"graphics": map[string]any{"current": progress, "current_tip": progress},
+			},
+		}
+	}
+	cfg := defaultConfigWithWrap(false)
+	cfg.cfg["notifications"] = notificationsCfg(frame)
+	m := newTestWorkspaceManagerHandlerWithDir(t, cfg, dir, nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+	// The workspace reads cfg in the background, so the reload swaps in a
+	// config of its own rather than editing cfg.
+	reloadedCfg := defaultConfigWithWrap(false)
+	reloadedCfg.cfg["notifications"] = notificationsCfg(reloaded)
+	var current atomic.Pointer[ideConfig]
+	current.Store(&cfg)
+	m.reloadConfig = func() (ideConfig, error) { return *current.Load(), nil }
+	wsURI, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	require.NoError(t, m.addOrCreateWorkspace(wsURI))
+	m.quiesce()
+
+	h := newSafeHandler(m)
+	h.Resize(width, height)
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+	notify := func(msg string) {
+		m.locked(func() {
+			c := m.workspaces[m.focus].ex.container
+			// Pinned, so the progress bar neither moves nor closes.
+			require.True(t, c.UpdateProgress(c.Notify(notifications.LevelInfo, msg), "", 4, 10))
+		})
+	}
+	draw := func() string {
+		require.NoError(t, w.Clear(term.Attributes{}))
+		h.Draw(w)
+		require.NoError(t, w.Flush())
+		return w.String()
+	}
+
+	notify("hud")
+	awaitFrame(t, h, w, interrupts, `┌────────────────────────aaaaaaaaaaaaaaa
+│                        a hud         a
+├────────────────────────{@@@@@@       }
+│          workspaceWallpaper          │
+│                                      │
+├──────────────────────────────────────┤
+│1 1  2 2                              │
+└─────━━━──────────────────────────────┘`)
+
+	current.Store(&reloadedCfg)
+	hud, err := m.loadHUD(context.Background())
+	require.NoError(t, err)
+	m.locked(func() { m.applyHUD(hud) })
+	assert.Equal(t, `┌────────────────────────_______________
+│                        _ hud         _
+├────────────────────────{@@@@@@       }
+│          workspaceWallpaper          │
+│                                      │
+├──────────────────────────────────────┤
+│1 1  2 2                              │
+└─────━━━──────────────────────────────┘`, draw(),
+		"the open notification draws the reloaded images at once")
+
+	notify("new")
+	// The workspace bar's frame covers the last column of the lower one.
+	assert.Equal(t, `┌────────────────────────_______________
+│                        _ new         _
+├────────────────────────{@@@@@@       }
+│          workspaceWallp_______________
+│                        _ hud         _
+├────────────────────────{@@@@@@       ┤
+│1 1  2 2                              │
+└─────━━━──────────────────────────────┘`, draw(),
+		"a notification posted afterwards draws the reloaded images")
+}
+
+// hudTestStyle is the HUD style of a config whose window frames start with
+// topLeft and whose frame union has top junctions.
+func hudTestStyle(topLeft, top string) hudStyle {
+	return ideConfig{cfg: map[string]any{"browser": map[string]any{
+		"window_manager": map[string]any{
+			"frame_charset": map[string]any{"topleft": topLeft},
+		},
+		"frameunion_charset": map[string]any{"top": top},
+	}}, errors: map[string]error{}}.hudStyle()
+}
+
+func TestApplyHUD(t *testing.T) {
+	cfg := defaultConfigWithWrap(false)
+	var soundsMu sync.Mutex
+	var played []string
+	cfg.sounds = sounds.PlayerFunc(func(name string) {
+		soundsMu.Lock()
+		defer soundsMu.Unlock()
+		played = append(played, name)
+	})
+	m, other := newActivityTestManager(t, cfg)
+	t.Cleanup(func() { _ = m.Close() })
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	focused, skipped := m.workspaces[m.focus], m.workspaces[other]
+	topLeft := func(e *ex) rune { return e.config.FrameCharSet.TopLeft }
+	bell := func(e *ex) string { return *e.emulatorConfig.BellSound.Load() }
+	untouched := topLeft(skipped.ex)
+	untouchedBell := bell(skipped.ex)
+	// A terminal opened before the reload holds a copy of the config.
+	openTerminal := focused.ex.emulatorConfig
+
+	base, overlaid := hudTestStyle("╭", "┳"), hudTestStyle("┏", "┳")
+	base.bellSound, overlaid.bellSound = "base-bell", "overlay-bell"
+	base.commandShowManual, overlaid.commandShowManual = true, true
+	base.notifyStatus = idestatus.NotifyConfig{
+		Sounds: map[programstatus.State]string{programstatus.Working: "tick"},
+	}
+	hud := &HUD{
+		load:       2,
+		base:       base,
+		workspaces: map[string]hudStyle{focused.uri.String(): overlaid},
+		skip:       map[string]struct{}{skipped.uri.String(): {}},
+	}
+	applied, _ := m.applyHUD(hud)
+	require.True(t, applied)
+	assert.Equal(t, '╭', topLeft(m.empty), "the home workspace gets the base style")
+	assert.Equal(t, '┏', topLeft(focused.ex), "a workspace gets its overlay's style")
+	assert.Equal(t, untouched, topLeft(skipped.ex), "a skipped workspace keeps its style")
+	assert.Equal(t, '┳', m.union.Top)
+	assert.Equal(t, "base-bell", bell(m.empty))
+	assert.Equal(t, "overlay-bell", bell(focused.ex))
+	assert.Equal(t, "overlay-bell", *openTerminal.BellSound.Load(),
+		"an open terminal rings the new bell")
+	assert.Equal(t, untouchedBell, bell(skipped.ex))
+	assert.True(t, m.empty.config.CommandOverlay.ShowManual)
+	assert.True(t, focused.ex.config.CommandOverlay.ShowManual)
+	assert.False(t, skipped.ex.config.CommandOverlay.ShowManual)
+
+	chat, err := workspaceapi.ParseURI("rune-agent://model/hud")
+	require.NoError(t, err)
+	_, err = focused.comp.Tab(chat, 'x', "hud", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	require.NoError(t, focused.comp.SetTabStatus(chat,
+		programstatus.Report{State: programstatus.Working, Progress: -1}))
+	m.mu.Unlock()
+	m.quiesce()
+	m.mu.Lock()
+	soundsMu.Lock()
+	assert.Equal(t, []string{"tick"}, played, "program_status.sounds of the base config")
+	soundsMu.Unlock()
+
+	applied, _ = m.applyHUD(&HUD{load: 1, base: hudTestStyle("╔", "┯")})
+	assert.False(t, applied)
+	assert.Same(t, hud, m.hud, "an older HUD is ignored")
+	assert.Equal(t, '╭', topLeft(m.empty))
+	assert.Equal(t, '┳', m.union.Top)
+
+	skipped.configOverlay = []byte("browser: {}")
+	applied, _ = m.applyHUD(&HUD{load: 3, base: hudTestStyle("╔", "┯")})
+	assert.True(t, applied)
+	assert.Equal(t, '╔', topLeft(m.empty))
+	assert.Equal(t, '╔', topLeft(focused.ex))
+	assert.Equal(t, untouched, topLeft(skipped.ex),
+		"a workspace whose overlay the HUD did not read keeps its style")
+}
+
+// capturedServices is a registrar that keeps the services registered on it.
+type capturedServices map[string]any
+
+func (c capturedServices) RegisterService(desc *grpc.ServiceDesc, impl any) {
+	c[desc.ServiceName] = impl
+}
+
+func (c capturedServices) GetServiceInfo() map[string]grpc.ServiceInfo { return nil }
+
+// servedConfig returns the config res serves to an extension without an
+// ID.
+func servedConfig(t *testing.T, res extension.ResourceRegistrar) map[string]any {
+	t.Helper()
+	services := capturedServices{}
+	_, err := res.Register(services, new(sync.Mutex))
+	require.NoError(t, err)
+	server, ok := services[configrpc.Config_ServiceDesc.ServiceName].(configrpc.ConfigServer)
+	require.True(t, ok)
+	got, err := server.Get(context.Background(), &configrpc.GetRequest{})
+	require.NoError(t, err)
+	var cfg map[string]any
+	require.NoError(t, json.Unmarshal([]byte(got.GetData()), &cfg))
+	return cfg
+}
+
+func TestApplyHUDReloadsExtensionConfig(t *testing.T) {
+	var mu sync.Mutex
+	runners := map[string]*recordingRunner{}
+	configs := map[string]extension.ResourceRegistrar{}
+	runnerFn := func(
+		uri workspaceapi.URI,
+		res map[extensionapi.Permission]extension.ResourceRegistrar,
+		_, _ string, _ browser.Notifications,
+		_, _ schemeapi.Executor, _ extension.Grantor, _ text.Editor,
+		_ ideauthorizer.PromptOpener, _ storageapi.Service,
+		_ func(func()) bool) (extension.Runner, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		r := &recordingRunner{processes: 2}
+		runners[uri.String()] = r
+		configs[uri.String()] = res[extensionapi.PermissionConfig]
+		return r, nil
+	}
+	cfg := defaultConfigWithWrap(false)
+	dir := t.TempDir()
+	schedMu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
+	manager := workspace.NewManager(config.NopConfig(), sched)
+	require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme, workspace.NewMemoryScheme))
+	first, err := workspaceapi.ParseURI("memory://" + dir)
+	require.NoError(t, err)
+	m := newTestWorkspaceManagerHandlerWithManagerMu(t, manager, schedMu, drain,
+		&first, cfg, FuncExtensionsRunner(runnerFn), nil, dir, nil, nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+	m.quiesce()
+	overlaid, err := workspaceapi.ParseURI("memory:///overlaid")
+	require.NoError(t, err)
+	skipped, err := workspaceapi.ParseURI("memory:///skipped")
+	require.NoError(t, err)
+	for _, uri := range []workspaceapi.URI{overlaid, skipped} {
+		require.NoError(t, m.addOrCreateWorkspace(uri))
+		m.quiesce()
+	}
+
+	m.mu.Lock()
+	_, signalled := m.applyHUD(&HUD{
+		load:          1,
+		base:          hudTestStyle("╭", "┳"),
+		cfg:           map[string]any{"marker": "base"},
+		workspaces:    map[string]hudStyle{overlaid.String(): hudTestStyle("┏", "┳")},
+		workspaceCfgs: map[string]map[string]any{overlaid.String(): {"marker": "overlay"}},
+		skip:          map[string]struct{}{skipped.String(): {}},
+	})
+	m.mu.Unlock()
+	assert.Equal(t, 4, signalled, "both processes of each workspace told")
+
+	mu.Lock()
+	defer mu.Unlock()
+	tests := []struct {
+		name        string
+		uri         workspaceapi.URI
+		wantMarker  any
+		wantReloads int
+	}{
+		{"a workspace with the user's config", first, "base", 1},
+		{"a workspace with its own config", overlaid, "overlay", 1},
+		{"a skipped workspace", skipped, nil, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Contains(t, runners, tt.uri.String())
+			assert.Equal(t, tt.wantReloads, runners[tt.uri.String()].reloadCount())
+			assert.Equal(t, tt.wantMarker, servedConfig(t, configs[tt.uri.String()])["marker"])
+		})
+	}
+}
+
+func TestInstallPendingWorkspaceAppliesNewerHUD(t *testing.T) {
+	cases := []struct {
+		name string
+		// loadsBeforeBuild is how many HUD loads had started when the
+		// build read the config.
+		loadsBeforeBuild uint64
+		want             rune
+	}{
+		{
+			name: "a HUD whose load started after the build read the config",
+			want: '┏',
+		},
+		{
+			name:             "a HUD the build read the config after",
+			loadsBeforeBuild: 1,
+			want:             thandler.DefaultWindowManagerConfig().FrameCharSet.TopLeft,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestWorkspaceManagerHandlerWithDir(t, defaultConfigWithWrap(false),
+				t.TempDir(), nopShutdownShaderConfig())
+			t.Cleanup(func() { _ = m.Close() })
+			m.hudLoads.Store(tc.loadsBeforeBuild)
+			m.mu.Lock()
+			m.hud = &HUD{load: 1, base: hudTestStyle("┏", "┳")}
+			m.mu.Unlock()
+
+			uri, err := workspaceapi.ParseURI("memory:///hud")
+			require.NoError(t, err)
+			require.NoError(t, m.addOrCreateWorkspace(uri))
+			m.quiesce()
+
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			slot, ok := m.findInstalledSlot(uri)
+			require.True(t, ok)
+			assert.Equal(t, tc.want, m.workspaces[slot].ex.config.FrameCharSet.TopLeft)
+		})
+	}
+}
+
+// acpProbeOutEnv names the file TestACPAgentProbeHelper reports to. Its
+// RUNE_ prefix keeps it in the report, showing configured env reaches the
+// agent too.
+const acpProbeOutEnv = "RUNE_IDE_ACPPROBE_OUT"
+
+// acpProbeReport is what an ACP agent saw of Rune.
+type acpProbeReport struct {
+	// Env are the agent's RUNE_ variables.
+	Env map[string]string
+	// CallErr is why the agent could not call back into Rune.
+	CallErr string
+	// IsDir reports whether Rune said the agent's working directory is a
+	// directory.
+	IsDir bool
+}
+
+func TestACPAgentsCallBackIntoRune(t *testing.T) {
+	workspaceDir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	dataDir := t.TempDir()
+	out := filepath.Join(t.TempDir(), "probe.json")
+	testBinary, err := os.Executable()
+	require.NoError(t, err)
+	// JSON is YAML, and needs no quoting of the paths.
+	cfg, err := json.Marshal(map[string]any{
+		"clipboard": "memory",
+		"acp": map[string]any{"agents": map[string]any{"probe": map[string]any{
+			"command": testBinary,
+			"args":    []string{"-test.run=^TestACPAgentProbeHelper$"},
+			"env":     map[string]string{acpProbeOutEnv: out},
+		}}},
+	})
+	require.NoError(t, err)
+	configPath := filepath.Join(dataDir, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, cfg, 0o600))
+
+	mu := new(sync.Mutex)
+	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
+	runner, err := extensionv2.NewRunner(context.Background(), mu, dataDir)
+	require.NoError(t, err)
+	i, err := New(workspaceDir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
+		WithExtensionsRunner(runner),
+		WithLocker(mu),
+		WithScheduleNextTick(scheduleNextTick),
+		WithPublishEvent(nopPublishEvent),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, i.Close()) })
+	_ = i.Ready()
+	drainSchedule()
+	i.WaitWorkspaces()
+	mu.Lock()
+	acp := i.workspaceHandler.workspaces[i.workspaceHandler.focus].acpManager
+	mu.Unlock()
+	require.NotNil(t, acp)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// The probe exits without speaking ACP, so the session fails.
+	_, sessionErr := acp.NewSession(ctx, acpapi.NewSessionRequest{Agent: "probe"})
+	require.Error(t, sessionErr)
+
+	data, err := os.ReadFile(out)
+	require.NoError(t, err, "the agent did not run: %v", sessionErr)
+	var got acpProbeReport
+	require.NoError(t, json.Unmarshal(data, &got))
+	for _, name := range []string{"RUNE_SOCKET", "RUNE_TOKEN", "RUNE_CERT"} {
+		assert.NotEmpty(t, got.Env[name], name)
+	}
+	assert.Equal(t, dataDir, got.Env["RUNE_DATADIR"])
+	assert.Equal(t, dataDir, got.Env["RUNE_INSTALLDIR"])
+	assert.Equal(t, strconv.Itoa(os.Getpid()), got.Env["RUNE_PID"])
+	assert.Equal(t, out, got.Env[acpProbeOutEnv])
+	assert.Empty(t, got.CallErr)
+	assert.True(t, got.IsDir)
+}
+
+func TestACPAgentProbeHelper(t *testing.T) {
+	out := os.Getenv(acpProbeOutEnv)
+	if out == "" {
+		return
+	}
+	report := acpProbeReport{Env: make(map[string]string)}
+	for _, kv := range os.Environ() {
+		if k, v, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(k, "RUNE_") {
+			report.Env[k] = v
+		}
+	}
+	isDir, err := statWorkingDirThroughRune(report.Env)
+	report.IsDir = isDir
+	if err != nil {
+		report.CallErr = err.Error()
+	}
+	data, err := json.Marshal(report)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(out, data, 0o600))
+}
+
+// acpChatTest is an IDE whose config acpChatConfig writes, with an ACP
+// chat open in its focused window.
+type acpChatTest struct {
+	i          *IDE
+	mu         *sync.Mutex
+	configPath string
+	chat       browserapi.Handler
+}
+
+// acpChatConfig is a config whose idle agent exits at once, its chat
+// still taking input, with editor and chat merged in.
+func acpChatConfig(t *testing.T, editor, chat map[string]any) []byte {
+	t.Helper()
+	testBinary, err := os.Executable()
+	require.NoError(t, err)
+	cfg := map[string]any{
+		"clipboard": "memory",
+		"acp": map[string]any{"agents": map[string]any{"idle": map[string]any{
+			"command": testBinary,
+			"args":    []string{"-test.run=^$"},
+		}}},
+	}
+	if editor != nil {
+		cfg["editor"] = editor
+	}
+	if chat != nil {
+		cfg["extensions"] = map[string]any{"rune-agent": map[string]any{"config": chat}}
+	}
+	data, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	return data
+}
+
+func newACPChatTest(t *testing.T, cfg []byte) *acpChatTest {
+	t.Helper()
+	workspaceDir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	dataDir := t.TempDir()
+	configPath := filepath.Join(dataDir, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, cfg, 0o600))
+
+	mu := new(sync.Mutex)
+	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
+	runner, err := extensionv2.NewRunner(context.Background(), mu, dataDir)
+	require.NoError(t, err)
+	i, err := New(workspaceDir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
+		WithExtensionsRunner(runner),
+		WithLocker(mu),
+		WithScheduleNextTick(scheduleNextTick),
+		WithPublishEvent(nopPublishEvent),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, i.Close()) })
+	_ = i.Ready()
+	drainSchedule()
+	i.WaitWorkspaces()
+
+	mu.Lock()
+	defer mu.Unlock()
+	ex := i.workspaceHandler.workspaces[i.workspaceHandler.focus].ex
+	win, err := ex.Browser().Focus()
+	require.NoError(t, err)
+	handled, err := ex.comp.DispatchCommand(context.Background(), textapi.Command{
+		Name: "acp", Args: []string{"new", "idle", "chat"}, Window: win,
+	})
+	require.NoError(t, err)
+	require.True(t, handled)
+	bw, ok := ex.Browser().Window(win.WindowID())
+	require.True(t, ok)
+	content, err := bw.Content()
+	require.NoError(t, err)
+	require.IsType(t, &browser.Tab{}, content)
+	chat := content.(*browser.Tab).Handler()
+	chat.Resize(80, 24)
+	return &acpChatTest{i: i, mu: mu, configPath: configPath, chat: chat}
+}
+
+func (c *acpChatTest) typeKeys(t *testing.T, keys string) {
+	t.Helper()
+	parsed, err := term.ParseKeys(keys)
+	require.NoError(t, err)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, k := range parsed {
+		c.chat.Handle(term.Event{Type: term.EventKey, Ch: k.Ch, Mod: k.Mod, Key: k.Key})
+	}
+}
+
+// screen draws the chat without the cursor, which covers the letter it is
+// on.
+func (c *acpChatTest) screen() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	w := term.NewStringWriter(80, 24)
+	c.chat.Draw(w)
+	_ = w.Flush()
+	return w.String()
+}
+
+func TestACPChatsTakeTheRuneAgentChatConfig(t *testing.T) {
+	styled := map[string]any{
+		"status_bar":              map[string]any{"layout": "{{ .Status }}{{ .ShiftRight }}{{ .Conversation }} @@"},
+		"input_box_frame_charset": map[string]any{"topleft": "╔"},
+		"user_msg_icon":           "",
+	}
+	tests := []struct {
+		name         string
+		editor, chat map[string]any
+		keys         string
+		want, gone   []string
+	}{
+		{
+			name:   "vim edits the message",
+			editor: map[string]any{"mode": "vim"},
+			keys:   "hello<esc>x",
+			want:   []string{"hell"},
+			gone:   []string{"hello"},
+		},
+		{
+			name:   "standard edits the message",
+			editor: map[string]any{"mode": "standard"},
+			keys:   "hello<esc>x",
+			want:   []string{"hellox"},
+		},
+		{
+			name:   "vim starts in normal mode when the chat says so",
+			editor: map[string]any{"mode": "vim"},
+			chat:   map[string]any{"editor_modal_start_insert": false},
+			keys:   "ihello<esc>",
+			want:   []string{"hello"},
+			gone:   []string{"ihello"},
+		},
+		{
+			name: "the status bar and compose frame",
+			chat: styled,
+			want: []string{"chat @@", "╔"},
+		},
+		{
+			name: "the defaults",
+			gone: []string{"@@", "╔"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newACPChatTest(t, acpChatConfig(t, tt.editor, tt.chat))
+			if tt.keys != "" {
+				c.typeKeys(t, tt.keys)
+			}
+			screen := c.screen()
+			for _, want := range tt.want {
+				assert.Contains(t, screen, want)
+			}
+			for _, gone := range tt.gone {
+				assert.NotContains(t, screen, gone)
+			}
+		})
+	}
+}
+
+func TestACPChatsRestyleWhenTheConfigReloads(t *testing.T) {
+	chat := func(marker, corner string) map[string]any {
+		return map[string]any{
+			"status_bar":              map[string]any{"layout": "{{ .Status }}{{ .ShiftRight }}{{ .Conversation }} " + marker},
+			"input_box_frame_charset": map[string]any{"topleft": corner},
+		}
+	}
+	c := newACPChatTest(t, acpChatConfig(t, nil, chat("@@", "╔")))
+	require.Contains(t, c.screen(), "chat @@")
+
+	require.NoError(t, os.WriteFile(c.configPath, acpChatConfig(t, nil, chat("##", "╓")), 0o600))
+	hud, err := c.i.workspaceHandler.loadHUD(context.Background())
+	require.NoError(t, err)
+	c.mu.Lock()
+	c.i.workspaceHandler.applyHUD(hud)
+	c.mu.Unlock()
+
+	require.Eventually(t, func() bool {
+		screen := c.screen()
+		return strings.Contains(screen, "chat ##") && strings.Contains(screen, "╓")
+	}, 10*time.Second, 10*time.Millisecond, "the open chat takes the reloaded style:\n%s", c.screen())
+}
+
+// statWorkingDirThroughRune connects to Rune as runectl does, with the
+// variables Rune gives the commands it starts, and stats the working
+// directory through it.
+func statWorkingDirThroughRune(env map[string]string) (bool, error) {
+	cert, err := base64.StdEncoding.DecodeString(env["RUNE_CERT"])
+	if err != nil {
+		return false, fmt.Errorf("decode RUNE_CERT: %w", err)
+	}
+	w, err := extensionapi.NewWorkspace(extensionapi.Config{
+		Socket:      env["RUNE_SOCKET"],
+		DataDir:     env["RUNE_DATADIR"],
+		InstallDir:  env["RUNE_INSTALLDIR"],
+		Token:       &oauth2.Token{AccessToken: env["RUNE_TOKEN"]},
+		Certificate: cert,
+	}, extensionapi.Metadata{ExtensionID: "acp-probe"})
+	if err != nil {
+		return false, err
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	info, err := w.FileSystem(ctx).Stat(wd)
+	if err != nil {
+		return false, err
+	}
+	return info.IsDir(), nil
 }

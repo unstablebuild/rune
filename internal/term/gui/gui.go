@@ -20,7 +20,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"math"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,7 +37,10 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"github.com/unstablebuild/tcell/v3"
+	xdraw "golang.org/x/image/draw"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/term/gui/appicon"
 	"unstable.build/rune/internal/term/gui/drawrect"
 	"unstable.build/rune/internal/term/gui/font"
 )
@@ -44,6 +51,11 @@ var (
 	// ErrHandlerExited is returned by GUI.Run to indicate that
 	// the root tui.Handler exited.
 	ErrHandlerExited = errors.New("tui handler exited")
+
+	// ErrNoDisplay is wrapped by the error New returns when the windowing
+	// system cannot start, such as when no display server is reachable.
+	// No GUI can be created in the process after that.
+	ErrNoDisplay = errors.New("no display available")
 )
 
 const (
@@ -102,10 +114,13 @@ type GUI struct {
 		style term.CursorStyle
 		show  bool
 	}
+	cursorEffect cursorEffect
 
 	pendingEvents []term.Event
 	needsDraw     bool
 	needsRender   bool
+	hasContent    bool
+	screenshotDir string
 	width         int
 	height        int
 	lastPositionX int
@@ -117,7 +132,8 @@ type GUI struct {
 	// the event loop.
 	cellPixelSize atomic.Uint64
 
-	links linkScanner
+	pointer *pointer
+	links   linkScanner
 
 	// echoLikely arms the once-per-tick echo wait. It is learned, not
 	// configured: an interrupt pending at tick entry right after a
@@ -138,11 +154,86 @@ type GUI struct {
 	processWindowClosed func() []term.Event
 	closingHandled      bool
 	closeOnce           sync.Once
+
+	// appIcon is the icon SetAppIcon set last, which Update has yet to
+	// show while appIconPending.
+	appIcon        *AppIcon
+	appIconPending bool
+	// setAppIcon shows images, smallest first, as the window and
+	// application icon, or the default icon when there are none. It
+	// must run on the main thread.
+	setAppIcon func(images []image.Image)
+}
+
+// appIconSizes are the sides of the pictures of an AppIcon, from the
+// smallest a window title shows to the largest the macOS Dock does.
+var appIconSizes = []int{16, 32, 48, 64, 128, 256}
+
+// AppIcon is an application icon scaled to the sizes that window managers
+// and docks pick from.
+type AppIcon struct {
+	// images are square, one per appIconSizes in the same order.
+	images []image.Image
+}
+
+// NewAppIcon scales img, keeping its aspect ratio, to the center of square
+// transparent pictures of the sizes that window managers and docks show. It
+// returns nil when img is nil or empty. Scaling a large img is slow; it is
+// safe to call from any goroutine.
+func NewAppIcon(img image.Image) *AppIcon {
+	if img == nil || img.Bounds().Empty() {
+		return nil
+	}
+	n := len(appIconSizes)
+	icon := &AppIcon{images: make([]image.Image, n)}
+	largest, picture := scaleToSquare(img, img.Bounds(), appIconSizes[n-1])
+	icon.images[n-1] = largest
+	for i, side := range appIconSizes[:n-1] {
+		// Scaling the largest picture is much faster than scaling img,
+		// which can be thousands of pixels wide.
+		icon.images[i], _ = scaleToSquare(largest, picture, side)
+	}
+	return icon
+}
+
+// scaleToSquare scales the sr part of src to fit, centered, in a
+// transparent square of the given side. It returns the square and the part
+// of it that the picture covers.
+func scaleToSquare(src image.Image, sr image.Rectangle, side int) (*image.RGBA, image.Rectangle) {
+	w, h := side, side
+	if sr.Dx() > sr.Dy() {
+		h = max(1, side*sr.Dy()/sr.Dx())
+	} else {
+		w = max(1, side*sr.Dx()/sr.Dy())
+	}
+	x, y := (side-w)/2, (side-h)/2
+	dr := image.Rect(x, y, x+w, y+h)
+	// An RGBA destination takes the fast paths of the scaler.
+	dst := image.NewRGBA(image.Rect(0, 0, side, side))
+	xdraw.CatmullRom.Scale(dst, dr, src, sr, xdraw.Src, nil)
+	return dst, dr
+}
+
+// showAppIcon is the default GUI.setAppIcon. Each platform ignores the call
+// it does not support: macOS windows have no icon, and only macOS has an
+// application icon apart from that of its windows.
+func showAppIcon(images []image.Image) {
+	ebiten.SetWindowIcon(images)
+	var largest image.Image
+	if len(images) > 0 {
+		largest = images[len(images)-1]
+	}
+	appicon.Set(largest)
 }
 
 // New allocates storage for a new GUI and initializes it with the given
 // tui.Handler and options.
 func New(handler tui.Handler, options ...Option) (*GUI, error) {
+	// Any other ebiten call would initialize the windowing system too, but
+	// it panics when that fails.
+	if err := ebiten.Init(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrNoDisplay, err)
+	}
 	drawrect.Init()
 	const (
 		cellOverlapX = 0
@@ -166,11 +257,15 @@ func New(handler tui.Handler, options ...Option) (*GUI, error) {
 		startPositionY:   0,
 		defaultWidth:     defaultWidth,
 		defaultHeight:    defaultHeight,
+		setAppIcon:       showAppIcon,
 	}
 	ret.input = newInput(ret.fontManager)
 	ret.mouse = newMouse(ret.fontManager, ret.scheduleFrame)
 	ret.drag = newDragPoller(ret.mouse)
-	ret.links = newLinkScanner()
+	ret.pointer = newPointer()
+	ret.links = newLinkScanner(ret.pointer)
+	ret.cursorEffect.now = time.Now
+	ret.cursorEffect.wake = func() { debug.CapturePanicReport(ret.scheduleFrame) }
 	ret.ctx = context.Background()
 	ret.ctx, ret.cancelCtx = context.WithCancel(ret.ctx)
 
@@ -249,6 +344,7 @@ func (g *GUI) Close() error {
 		g.runAcceptedUserFuncs()
 		g.cancelCtx()
 		g.mouse.stopRepeatTimer()
+		g.cursorEffect.close()
 		if g.renderer != nil {
 			g.renderer.deallocate()
 			g.renderer = nil
@@ -290,9 +386,14 @@ func (g *GUI) buildRunGameOptions() ebiten.RunGameOptions {
 
 // Draw satisfies ebiten.Game. It renders the terminal GUI to the ebtien window.
 func (g *GUI) Draw(screen *ebiten.Image) {
-	if !g.needsRender {
+	if !g.needsRender && !g.cursorEffect.needsFrame() {
 		return
 	}
+	g.render(screen)
+	g.needsRender = false
+}
+
+func (g *GUI) render(screen *ebiten.Image) {
 	screen.Clear()
 	cells := g.writer.RawCells()
 	if g.links.armed() {
@@ -300,10 +401,59 @@ func (g *GUI) Draw(screen *ebiten.Image) {
 	}
 	g.renderer.Draw(screen, cells, g.writer.Images(), g.cursor.show,
 		g.cursor.pos, g.cursor.style)
-	g.needsRender = false
 	if g.printFPS {
 		ebitenutil.DebugPrint(screen, fmt.Sprintf("FPS: %0.2f", ebiten.ActualFPS()))
 	}
+}
+
+// Screenshot saves a PNG of the latest drawn handler content and returns its
+// path after the file is closed. It must run on the GUI event loop. It returns
+// an error if the GUI is unavailable, closed, has no drawn content since its
+// last resize, or has no configured screenshot directory.
+func (g *GUI) Screenshot() (string, error) {
+	if g == nil {
+		return "", errors.New("screenshots require GUI mode; unavailable with --tui")
+	}
+	if g.screenshotDir == "" {
+		return "", errors.New("screenshot directory is not configured")
+	}
+	if g.publish.Load()&publishClosed != 0 {
+		return "", errors.New("cannot take a screenshot: GUI is closed")
+	}
+	if !g.hasContent {
+		return "", errors.New("cannot take a screenshot: no rendered content available")
+	}
+	width := int(float64(g.width) * g.deviceScale)
+	height := int(float64(g.height) * g.deviceScale)
+	screen := ebiten.NewImage(width, height)
+	defer screen.Deallocate()
+	g.render(screen)
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	screen.ReadPixels(img.Pix)
+	return writeScreenshot(g.screenshotDir, img)
+}
+
+func writeScreenshot(dir string, img image.Image) (string, error) {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("create screenshots directory: %w", err)
+	}
+	// Consumers discover completed screenshots by their non-hidden filenames.
+	name := ".screenshot-" + time.Now().UTC().Format("20060102T150405.000000000Z") + "-*.png"
+	f, err := os.CreateTemp(dir, name)
+	if err != nil {
+		return "", fmt.Errorf("create screenshot: %w", err)
+	}
+	defer os.Remove(f.Name())
+	err = png.Encode(f, img)
+	err = errors.Join(err, f.Close())
+	if err != nil {
+		return "", fmt.Errorf("write screenshot: %w", err)
+	}
+	path := filepath.Join(dir, filepath.Base(f.Name())[1:])
+	if err := os.Rename(f.Name(), path); err != nil {
+		return "", fmt.Errorf("publish screenshot: %w", err)
+	}
+	return path, nil
 }
 
 // NeedsRender reports whether the next Draw will repaint the screen,
@@ -323,6 +473,24 @@ func (g *GUI) SetForceFullRepaint(force bool) {
 		g.renderer.forceFullRepaint = force
 	}
 	g.needsRender = true
+}
+
+// SetAppIcon shows icon, from the next Update on, as the window icon on
+// Linux and as the Dock and application switcher icon on macOS, or restores
+// the default icon when icon is nil. It must run on the GUI event loop or
+// before Run.
+func (g *GUI) SetAppIcon(icon *AppIcon) {
+	if icon == nil && g.appIcon == nil {
+		return
+	}
+	g.appIcon = icon
+	g.appIconPending = true
+}
+
+// AppIcon returns the icon SetAppIcon set last, or nil for the default
+// icon. It must run on the GUI event loop.
+func (g *GUI) AppIcon() *AppIcon {
+	return g.appIcon
 }
 
 // PublishEvent returns true only if ev's UserFunc will run exactly once.
@@ -406,6 +574,9 @@ func (g *GUI) Update() error {
 	if g.links.armed() {
 		g.links.pointAt(g.mouse.clampedCoordinates(), g.writer.RawCells())
 	}
+	// Before the idle return: a handler may have set the shape of the
+	// last mouse event after it was dispatched.
+	g.pointer.sync()
 
 	interruptPending := g.interruptPending.Swap(false)
 	for len(g.updateChan) > 0 {
@@ -423,7 +594,7 @@ func (g *GUI) Update() error {
 	// with the extension RPC goroutines that need it, and the loop holds
 	// it for the whole tick. An empty queue means no interrupt was
 	// pending either, so no draw and no echo wait can be owed.
-	if len(g.pendingEvents) == 0 && !needsDraw && g.drag.idle() {
+	if len(g.pendingEvents) == 0 && !needsDraw && g.drag.idle() && !g.appIconPending {
 		g.prevTickKey = false
 		g.iteration++
 		return nil
@@ -471,6 +642,10 @@ func (g *GUI) Update() error {
 			if g.links.handleMouse(ev, g.writer.RawCells()) {
 				continue
 			}
+			if ev.Context == nil {
+				ev.Context = context.Background()
+			}
+			ev.Context = term.ContextWithPointer(ev.Context, g.pointer.next())
 			fallthrough
 		default:
 			if ev.Type == term.EventKey {
@@ -489,6 +664,7 @@ func (g *GUI) Update() error {
 			}
 		}
 	}
+	g.pointer.sync()
 	g.prevTickKey = keyEvents == 1
 	// A lone keystroke on an echoing handler misses its own frame by
 	// microseconds: the echo arrives right after this loop. Waiting is
@@ -505,6 +681,15 @@ func (g *GUI) Update() error {
 	}
 	if needsDraw {
 		g.drawHandler(ctx)
+	}
+	// After the events, so an icon a UserFunc set shows in its own frame.
+	if g.appIconPending {
+		g.appIconPending = false
+		var images []image.Image
+		if g.appIcon != nil {
+			images = g.appIcon.images
+		}
+		g.setAppIcon(images)
 	}
 
 	// Zero the slots before truncating: term.Event contains heap pointers
@@ -750,6 +935,7 @@ func (g *GUI) drawHandler(ctx context.Context) {
 	_ = g.writer.Clear(g.defaultAttr)
 	g.handler.Draw(g.writer)
 	g.cursor.pos, g.cursor.style, g.cursor.show = g.handler.Cursor()
+	g.hasContent = true
 	g.needsDraw = false
 	g.needsRender = true
 	g.links.invalidate()
@@ -771,6 +957,7 @@ func (g *GUI) resize(width, height int, deviceScale float64) {
 	g.cellPixelSize.Store(uint64(math.Round(g.fontManager.PixelX(1)))<<32 |
 		uint64(math.Round(g.fontManager.PixelY(1))))
 	g.writer = cell.NewBufferWriter(g.ctx, cellsWidth, cellsHeight)
+	g.hasContent = false
 	if g.renderer != nil {
 		g.renderer.deallocate()
 	}
@@ -778,12 +965,64 @@ func (g *GUI) resize(width, height int, deviceScale float64) {
 		g.fontManager, g.bgOpacity, g.fgOpacity, g.enableLigatures,
 		g.cursorAttributes, g.defaultAttr)
 	g.renderer.forceFullRepaint = g.forceFullRepaint
+	g.renderer.cursorEffect = &g.cursorEffect
+	g.cursorEffect.reset()
 	g.needsDraw = true
 }
 
-// SetAltModifier sets the reserved Alt key. Safe from any goroutine.
+// SetAltModifier selects which Alt key produces layout characters. It must
+// be called before Run or on the event loop, such as from Handle or a
+// UserFunc.
 func (g *GUI) SetAltModifier(modifier AltModifier) {
 	g.input.setAltModifier(modifier)
+}
+
+// SetKeyMapping replaces the key remapping table applied to GUI input before
+// events reach the handler. The map is keyed by the term.KeyComb a physical
+// key would naturally produce, including keys such as CapsLock that produce
+// no event unless remapped, and maps it to the combination to deliver
+// instead. A nil map removes every remap. Like SetAltModifier, it must be
+// called before Run or on the event loop.
+func (g *GUI) SetKeyMapping(m map[term.KeyComb]term.KeyComb) {
+	g.input.setKeyMapping(m)
+}
+
+// SetCursorEffect plays the Kage shader src over the whole window for
+// duration every time the cursor jumps. The shader reads the window, as
+// drawn below the cursor, from imageSrc0, and the color it returns
+// replaces the pixel. The uniforms it may declare are:
+//
+//   - Time float: seconds since the cursor jumped.
+//   - Duration float: duration in seconds.
+//   - Cursor vec4: x, y, width and height in pixels of the cursor.
+//   - PreviousCursor vec4: the same, for where the cursor jumped from.
+//   - CursorColor vec4: the cursor color, premultiplied.
+//
+// A jump is a move of at least MinJumpRows rows, or of at least
+// MinJumpColumns columns along a row, which the shader may declare as
+// integer constants of at least 1. They default to 2 and 9, so typing,
+// Enter and line wraps play nothing; a shader that sets both to 1 plays
+// on every keystroke and pays for it on every frame while typing.
+// Smaller moves keep a playing effect going, with Cursor following them.
+//
+// A nil src or a non-positive duration turns the effect off. An error,
+// which also turns it off, means src did not compile, declares one of the
+// uniforms above with another type, or sets a jump constant to anything
+// but an integer literal of at least 1. Like SetKeyMapping, it must be
+// called before Run or on the event loop.
+func (g *GUI) SetCursorEffect(src []byte, duration time.Duration) error {
+	g.cursorEffect.shader = nil
+	g.cursorEffect.reset()
+	if src == nil || duration <= 0 {
+		return nil
+	}
+	shader, jump, err := compileCursorEffect(src)
+	if err != nil {
+		return err
+	}
+	g.cursorEffect.shader, g.cursorEffect.jump = shader, jump
+	g.cursorEffect.duration = duration
+	return nil
 }
 
 // CellPixelSize reports the cell pitch in device pixels, which is what

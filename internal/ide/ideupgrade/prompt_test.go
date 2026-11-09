@@ -18,47 +18,35 @@ package ideupgrade
 
 import (
 	"context"
-	"sync"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
-	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"github.com/unstablebuild/rune-go-sdk/tui"
 )
 
-// mockWindowManager is a minimal browserapi.WindowManager that drives
-// the floating prompt with a configurable input sequence and records
-// the selected option index.
-type mockWindowManager struct {
-	feed func(browserapi.Floating)
+// keyPrompter answers each prompt with the option bound to key, as a
+// user pressing it would.
+type keyPrompter struct {
+	t   *testing.T
+	key rune
 }
 
-func (m *mockWindowManager) Focus() (browserapi.Window, error) { return nil, nil }
-func (m *mockWindowManager) Split(_ browserapi.Orientation, _ browserapi.Window, _ browserapi.Handler) (browserapi.Window, error) {
-	return nil, nil
+func (p *keyPrompter) Prompt(
+	cfg browserapi.PromptConfig, h handler.PromptHandler,
+) (browserapi.Window, error) {
+	require.NoError(p.t, cfg.Validate())
+	i := slices.Index(cfg.Bindings, term.KeyComb{Ch: p.key})
+	require.GreaterOrEqual(p.t, i, 0, "no option is bound to %q", p.key)
+	h.OnSelect(i, cfg.Options[i])
+	return nil, h.OnClose()
 }
-func (m *mockWindowManager) Floating(h browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
-	if m.feed != nil {
-		m.feed(h)
-	}
-	return nil, nil
-}
-func (m *mockWindowManager) Bar(_ browserapi.BarConfig, _ tui.Handler) error { return nil }
-func (m *mockWindowManager) Tab(_ workspaceapi.URI, _ rune, _ string, _ browserapi.Handler) (browserapi.Handler, error) {
-	return nil, nil
-}
-func (m *mockWindowManager) SetWindowContent(_ browserapi.Window, _ browserapi.Handler) error {
-	return nil
-}
-func (m *mockWindowManager) CloseWindow(_ browserapi.Window) error { return nil }
 
-func (m *mockWindowManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
-
-func newPromptTestManager(t *testing.T, feed func(browserapi.Floating)) *Manager {
+func newPromptTestManager(t *testing.T, key rune) *Manager {
 	t.Helper()
 	storage := storagestub.NewInMemoryService()
 	mgr, err := newWithPlatformOps(Config{
@@ -66,7 +54,7 @@ func newPromptTestManager(t *testing.T, feed func(browserapi.Floating)) *Manager
 		Arch:           "darwin-arm64",
 		ManifestURL:    "https://example.invalid",
 		Storage:        storage,
-		WindowManager:  &mockWindowManager{feed: feed},
+		Prompter:       &keyPrompter{t: t, key: key},
 		ScheduleNextTick: func(fn func()) bool {
 			fn()
 			return true
@@ -77,46 +65,23 @@ func newPromptTestManager(t *testing.T, feed func(browserapi.Floating)) *Manager
 	return mgr
 }
 
-// resizeAndType drives a floating prompt by resizing it then sending
-// a sequence of key events.
-func resizeAndType(h browserapi.Floating, events ...term.Event) {
-	h.Resize(80, 20)
-	for _, ev := range events {
-		h.Handle(ev)
-	}
-}
-
 func TestPromptSkipPersistsSkippedVersion(t *testing.T) {
-	var wg sync.WaitGroup
-	wg.Add(1)
-	mgr := newPromptTestManager(t, func(h browserapi.Floating) {
-		defer wg.Done()
-		// 's' is bound to "Skip This Version".
-		resizeAndType(h, term.Event{Type: term.EventKey, Ch: 's'})
-	})
+	mgr := newPromptTestManager(t, 's')
 
 	mgr.showPrompt(context.Background(), Manifest{
 		Version: "v9.9.9", URL: "u", SHA256: "s",
 	})
-	wg.Wait()
 
 	st := mgr.loadState(context.Background())
 	require.Contains(t, st.SkippedVersions, "v9.9.9")
 }
 
 func TestPromptRemindLaterSetsRemindAfter(t *testing.T) {
-	var wg sync.WaitGroup
-	wg.Add(1)
-	mgr := newPromptTestManager(t, func(h browserapi.Floating) {
-		defer wg.Done()
-		// 'l' is bound to "Remind Me Later".
-		resizeAndType(h, term.Event{Type: term.EventKey, Ch: 'l'})
-	})
+	mgr := newPromptTestManager(t, 'l')
 
 	mgr.showPrompt(context.Background(), Manifest{
 		Version: "v9.9.9", URL: "u", SHA256: "s",
 	})
-	wg.Wait()
 
 	st := mgr.loadState(context.Background())
 	require.False(t, st.RemindAfter.IsZero(), "remind_after should be set")
@@ -124,7 +89,7 @@ func TestPromptRemindLaterSetsRemindAfter(t *testing.T) {
 	require.NotContains(t, st.SkippedVersions, "v9.9.9")
 }
 
-func TestPromptShowFallsBackToNotificationWithoutWM(t *testing.T) {
+func TestPromptShowFallsBackToNotificationWithoutPrompter(t *testing.T) {
 	storage := storagestub.NewInMemoryService()
 	notifs := &recordingNotifications{}
 	mgr, err := newWithPlatformOps(Config{
@@ -182,9 +147,7 @@ func TestPromptChoiceBlocksUntilAnswered(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			mgr := newPromptTestManager(t, func(h browserapi.Floating) {
-				resizeAndType(h, term.Event{Type: term.EventKey, Ch: tc.key})
-			})
+			mgr := newPromptTestManager(t, tc.key)
 			got, err := mgr.PromptChoice(context.Background(), manifest)
 			require.NoError(t, err)
 			require.Equal(t, tc.want, got)
@@ -193,7 +156,7 @@ func TestPromptChoiceBlocksUntilAnswered(t *testing.T) {
 	}
 }
 
-func TestPromptChoiceWithoutWindowManager(t *testing.T) {
+func TestPromptChoiceWithoutPrompter(t *testing.T) {
 	mgr, err := newWithPlatformOps(Config{
 		CurrentVersion:   "v1",
 		ManifestURL:      "https://example.invalid",

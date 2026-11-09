@@ -19,6 +19,7 @@ package ide
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -27,7 +28,9 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/term/vte/vtereservoir"
 	"unstable.build/rune/internal/text/texttest"
@@ -231,6 +234,10 @@ func TestAsyncVTE(t *testing.T) {
 			return tv, nil
 		})
 
+		require.NoError(t, b.ex.tm.SetTabStatus(tv.URI(), programstatus.Report{
+			State: programstatus.Blocked,
+		}))
+		b.flushScheduled()
 		require.NoError(t, av.Close())
 		require.NoError(t, av.Close(), "Close must be idempotent")
 
@@ -241,6 +248,12 @@ func TestAsyncVTE(t *testing.T) {
 		assert.True(t, tv.calledClose,
 			"abandoned VTE must be released on completion")
 		assert.Nil(t, av.real, "nothing may be installed after Close")
+		assert.Empty(t, b.ex.tabAliases.pending)
+		require.NoError(t, b.ex.tm.SetTabStatus(tv.URI(), programstatus.Report{
+			State: programstatus.Blocked,
+		}))
+		b.flushScheduled()
+		assert.Empty(t, b.ex.tabAliases.pending)
 	})
 
 	t.Run("factory error renders and notifies", func(t *testing.T) {
@@ -299,6 +312,48 @@ func TestAsyncVTE(t *testing.T) {
 	})
 }
 
+func TestAsyncVTEPointerLeaves(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	for _, tc := range []struct {
+		name    string
+		factory func() (vtereservoir.VTE, error)
+	}{
+		{name: "loading", factory: func() (vtereservoir.VTE, error) {
+			<-release
+			return nil, errors.New("abandoned")
+		}},
+		{name: "failed", factory: func() (vtereservoir.VTE, error) {
+			return nil, errors.New("stalled transport")
+		}},
+		{name: "running", factory: func() (vtereservoir.VTE, error) {
+			return &replayVTE{testVte: newTestVte()}, nil
+		}},
+		{name: "exited with an error", factory: func() (vtereservoir.VTE, error) {
+			return &exitingVTE{
+				testVte: newTestVte(), exitErr: errors.New("exit status 2"),
+				screen: terminalScreen{rows: []string{"$ make", "Error 2", ""}, cursorRow: 2},
+			}, nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := newExForTesting(t, texttest.NopEditor())
+			t.Cleanup(func() { _ = b.Close() })
+			av := newAsyncVTE(b.ex, tc.factory)
+			if tc.name != "loading" {
+				b.waitAsyncVTELoads()
+				b.flushScheduled()
+			}
+			unlock := b.lock()
+			defer unlock()
+			handlertest.RunPointerLeaves(t, av, 80, 24)
+			handlertest.RunPointerLeaves(t, av, 2, 2)
+		})
+	}
+}
+
 func TestNewEmulatorHandlerAlwaysAsync(t *testing.T) {
 	t.Run("remote workspace wraps terminals in asyncVTE", func(t *testing.T) {
 		ws := testRemoteWorkspace{
@@ -341,8 +396,10 @@ func TestNewEmulatorHandlerAlwaysAsync(t *testing.T) {
 // recordingTabManager records SetTabName calls keyed by the URI they
 // finally resolved to.
 type recordingTabManager struct {
-	names map[string]string
-	exits []string
+	names    map[string]string
+	exits    []string
+	statuses map[string]programstatus.State
+	ends     []string
 }
 
 func (r *recordingTabManager) Tab(
@@ -363,7 +420,20 @@ func (r *recordingTabManager) OnTabExit(uri workspaceapi.URI) bool {
 	return true
 }
 
-func (r *recordingTabManager) SetTabActivity(workspaceapi.URI, bool) error { return nil }
+func (r *recordingTabManager) SetTabStatus(
+	uri workspaceapi.URI, report programstatus.Report,
+) error {
+	if r.statuses == nil {
+		r.statuses = make(map[string]programstatus.State)
+	}
+	r.statuses[uri.String()] = report.State
+	return nil
+}
+
+func (r *recordingTabManager) EndTabStatus(uri workspaceapi.URI) error {
+	r.ends = append(r.ends, uri.String())
+	return nil
+}
 
 func TestTabNameAliaser(t *testing.T) {
 	mustURI := func(s string) workspaceapi.URI {
@@ -424,6 +494,88 @@ func TestTabNameAliaser(t *testing.T) {
 		assert.Equal(t, []string{wrapperURI.String()}, rec.exits)
 	})
 
+	t.Run("status calls resolve aliases on the event loop", func(t *testing.T) {
+		rec := &recordingTabManager{names: map[string]string{}}
+		loop := newQueuedScheduler()
+		a := newTabNameAliaser(rec, loop.ScheduleNextTick)
+
+		working := programstatus.Report{State: programstatus.Working, Progress: -1}
+		require.NoError(t, a.SetTabStatus(ptyURI, working))
+		require.NoError(t, a.EndTabStatus(ptyURI))
+		assert.Empty(t, rec.statuses, "the tab manager is only touched on the event loop")
+		assert.Empty(t, rec.ends)
+		a.addAlias(ptyURI, wrapperURI)
+		a.addAlias(wrapperURI, sessionURI)
+		loop.Flush(nil)
+		assert.Equal(t, map[string]programstatus.State{
+			sessionURI.String(): programstatus.Working,
+		}, rec.statuses)
+		assert.Equal(t, []string{sessionURI.String()}, rec.ends)
+	})
+
+	t.Run("early status migrates before prompt cleanup", func(t *testing.T) {
+		a, rec := newAliaser()
+		require.NoError(t, a.SetTabStatus(ptyURI, programstatus.Report{
+			State: programstatus.Blocked, Progress: -1,
+		}))
+		a.addAlias(wrapperURI, sessionURI)
+		a.addAlias(ptyURI, wrapperURI)
+		assert.Equal(t, programstatus.Clear, rec.statuses[ptyURI.String()])
+		assert.Equal(t, programstatus.Blocked, rec.statuses[sessionURI.String()])
+		require.NoError(t, a.EndTabStatus(ptyURI))
+		assert.Equal(t, []string{sessionURI.String()}, rec.ends)
+	})
+
+	t.Run("migration preserves clear end and update order", func(t *testing.T) {
+		a, _ := newAliaser()
+		for _, r := range []programstatus.Report{
+			{ID: "z", State: programstatus.Done, App: "original"},
+			{ID: "a", State: programstatus.Done},
+			{ID: "z", State: programstatus.Done},
+			{ID: "prompt/child", State: programstatus.Blocked},
+			{ID: "prompt", State: programstatus.Clear},
+			{ID: "work", State: programstatus.Working},
+		} {
+			require.NoError(t, a.SetTabStatus(ptyURI, r))
+		}
+		require.NoError(t, a.EndTabStatus(ptyURI))
+		a.addAlias(ptyURI, wrapperURI)
+		a.addAlias(wrapperURI, sessionURI)
+		assert.Equal(t, []programstatus.Report{
+			{ID: "a", State: programstatus.Done},
+			{ID: "z", State: programstatus.Done},
+		}, a.pending[sessionURI.String()])
+		require.NoError(t, a.SetTabStatus(ptyURI, programstatus.Report{State: programstatus.Clear}))
+		assert.Empty(t, a.pending)
+	})
+
+	t.Run("closed terminals reject queued status and may reuse identity", func(t *testing.T) {
+		rec := &recordingTabManager{names: map[string]string{}}
+		loop := newQueuedScheduler()
+		a := newTabNameAliaser(rec, loop.ScheduleNextTick)
+		require.NoError(t, a.SetTabStatus(ptyURI, programstatus.Report{State: programstatus.Blocked}))
+		a.discardStatus(ptyURI)
+		loop.Flush(nil)
+		assert.Equal(t, programstatus.Clear, rec.statuses[ptyURI.String()])
+		assert.Empty(t, a.pending)
+		a.addAlias(ptyURI, wrapperURI)
+		require.NoError(t, a.SetTabStatus(ptyURI, programstatus.Report{State: programstatus.Working}))
+		loop.Flush(nil)
+		assert.Equal(t, programstatus.Working, rec.statuses[wrapperURI.String()])
+	})
+
+	t.Run("unclaimed reservoir records stay bounded", func(t *testing.T) {
+		a, _ := newAliaser()
+		for i := 0; i <= programstatus.MaxRecords; i++ {
+			require.NoError(t, a.SetTabStatus(ptyURI, programstatus.Report{
+				ID: fmt.Sprint(i), State: programstatus.Done,
+			}))
+		}
+		a.addAlias(ptyURI, wrapperURI)
+		require.Len(t, a.pending[wrapperURI.String()], programstatus.MaxRecords)
+		assert.Equal(t, "1", a.pending[wrapperURI.String()][0].ID)
+	})
+
 	t.Run("SetTabName resolves on the event loop", func(t *testing.T) {
 		rec := &recordingTabManager{names: map[string]string{}}
 		loop := newQueuedScheduler()
@@ -446,6 +598,54 @@ func TestAsyncVTETabNameAliasing(t *testing.T) {
 		return uri
 	}
 
+	t.Run("workspace sources survive delayed migration and cleanup", func(t *testing.T) {
+		for _, closeBeforeReplay := range []bool{false, true} {
+			t.Run(fmt.Sprintf("closeBeforeReplay=%t", closeBeforeReplay), func(t *testing.T) {
+				m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+				t.Cleanup(func() { require.NoError(t, m.Close()) })
+				pty := mustURI("file:///dev/ttys042")
+				m.locked(func() {
+					w := m.workspaces[slot]
+					require.NoError(t, w.ex.tm.SetTabStatus(pty, programstatus.Report{
+						State: programstatus.Blocked, Progress: -1,
+					}))
+				})
+				m.quiesce()
+				var tabURI workspaceapi.URI
+				m.locked(func() {
+					w := m.workspaces[slot]
+					sum, ok := m.status.Status(w.uri, pty)
+					require.True(t, ok)
+					assert.Equal(t, programstatus.Blocked, sum.State)
+					av := &asyncVTE{e: w.ex, uri: mustURI("terminal://loading/9000"), animStopped: true}
+					tabURI = av.URI()
+					tab, err := w.ex.tm.Tab(tabURI, 'x', "terminal", av)
+					require.NoError(t, err)
+					tv := newTestVte()
+					tv.uri = pty
+					av.complete(tv, nil)
+					if closeBeforeReplay {
+						require.NoError(t, tab.Close())
+					} else {
+						require.NoError(t, w.ex.tm.EndTabStatus(pty))
+					}
+				})
+				m.quiesce()
+				m.locked(func() {
+					w := m.workspaces[slot]
+					_, ok := m.status.Status(w.uri, pty)
+					assert.False(t, ok, "migration must remove the detached PTY source")
+					// The tab is still open, so it stays listed, holding nothing.
+					sum, _ := m.status.Status(w.uri, tabURI)
+					assert.Empty(t, sum.Records, "delayed replay must not outlive cleanup")
+					sum, _ = m.workspaceStatus(slot)
+					assert.Empty(t, sum.Records)
+					assert.Empty(t, w.ex.tabAliases.pending)
+				})
+			})
+		}
+	})
+
 	t.Run("real vte title updates reach the wrapper-keyed tab", func(t *testing.T) {
 		b := newExForTesting(t, texttest.NopEditor())
 		defer b.Close()
@@ -461,9 +661,20 @@ func TestAsyncVTETabNameAliasing(t *testing.T) {
 		tab, err := b.comp.Tab(av.URI(), 'x', av.Title(), av)
 		require.NoError(t, err)
 
+		require.NoError(t, b.ex.tm.SetTabStatus(tv.uri, programstatus.Report{
+			State: programstatus.Blocked, Progress: -1,
+		}))
+		b.flushScheduled()
 		close(release)
 		b.waitAsyncVTELoads()
 		b.flushScheduled()
+		early, ok := b.comp.Browser().TabStatus(av.URI())
+		require.True(t, ok)
+		assert.Equal(t, programstatus.Blocked, early.State)
+		require.NoError(t, b.ex.tm.EndTabStatus(tv.uri))
+		b.flushScheduled()
+		early, _ = b.comp.Browser().TabStatus(av.URI())
+		assert.Empty(t, early.Records)
 
 		name, _, ok := b.comp.Browser().TabName(av.URI())
 		require.True(t, ok)
@@ -477,6 +688,15 @@ func TestAsyncVTETabNameAliasing(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, "make test", name,
 			"dynamic pty-URI updates must reach the wrapper-keyed tab")
+
+		working := programstatus.Report{State: programstatus.Working, Progress: 40}
+		require.NoError(t, b.ex.tm.SetTabStatus(tv.uri, working))
+		b.flushScheduled()
+		status, ok := b.comp.Browser().TabStatus(av.URI())
+		require.True(t, ok)
+		assert.Equal(t, programstatus.Working, status.State,
+			"pty-URI status reports must reach the wrapper-keyed tab")
+		assert.Equal(t, 40, status.Progress)
 
 		require.NoError(t, tab.Close())
 		assert.Empty(t, b.ex.tabAliases.alias,
@@ -544,10 +764,10 @@ func TestAsyncVTETabNameAliasing(t *testing.T) {
 		b.flushScheduled()
 
 		parsed := make(chan struct{})
-		go func() {
+		go debug.CapturePanicReport(func() {
 			defer close(parsed)
 			_ = b.ex.tm.SetTabName(tv.uri, "make test", term.Attributes{})
-		}()
+		})
 		// The event loop keeps drawing the tab bar meanwhile.
 		handlertest.DrawHandler(b, 40, 10)
 		<-parsed

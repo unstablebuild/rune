@@ -17,6 +17,12 @@
 package dialoguetui
 
 import (
+	"context"
+	"fmt"
+	"image"
+	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -25,8 +31,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/term/graphemecluster"
+	"unstable.build/rune/internal/component/imageuri/imageuritest"
+	"unstable.build/rune/internal/handler/handlerrpc/handlerrpctest"
 )
 
 const testStatusBarLayout = `{{ .Spinner }} {{ .Status }}` +
@@ -591,4 +600,187 @@ func TestStatusBarOffsetsWholeRowVertically(t *testing.T) {
 			rec.cells[term.Coordinates{X: x}].Attrs&term.AttrVerticalRenderOffset,
 			"cell %d is not shifted down with the rest of the bar", x)
 	}
+}
+
+func TestStatusBarImagePlacement(t *testing.T) {
+	// placed is what the bar decides about a placement.
+	type placed struct {
+		Pos                  term.Coordinates
+		Width, Height        int
+		VerticalRenderOffset bool
+	}
+	const rows = 5
+	tests := []struct {
+		name string
+		// layout is formatted with the URI of a picture.
+		layout   string
+		width    int
+		expected []placed
+	}{
+		{
+			name:   "is centered on its first reserved cell",
+			layout: `{{ .Model }}  {{ .Image | src %q | width 4 }}`,
+			width:  20,
+			// anchor x = len("opus") + len("  ")
+			expected: []placed{{Pos: term.Coordinates{X: 4, Y: 4}, Width: 4, Height: 1}},
+		},
+		{
+			name:     "is laid out right of the pivot",
+			layout:   `{{ .Model }}{{ .ShiftRight }}{{ .Image | src %q | width 4 }}{{ .Effort }}`,
+			width:    20,
+			expected: []placed{{Pos: term.Coordinates{X: 10, Y: 4}, Width: 4, Height: 1}},
+		},
+		{
+			name:     "follows the elements before it",
+			layout:   `{{ .MaxTokens }} {{ .Image | src %q }}{{ .Model }}`,
+			width:    9,
+			expected: []placed{{Pos: term.Coordinates{X: 2, Y: 4}, Width: 2, Height: 1}},
+		},
+		{
+			name:     "takes the cells of the elements the bar drops",
+			layout:   `{{ .MaxTokens }} {{ .Image | src %q }}{{ .Model }}`,
+			width:    8,
+			expected: []placed{{Pos: term.Coordinates{X: -1, Y: 4}, Width: 2, Height: 1}},
+		},
+		{
+			name:     "extends over the rows above the bar",
+			layout:   `{{ .Image | src %q | width 4 | height 3 | x_offset 2 | y_offset -1 }}`,
+			width:    20,
+			expected: []placed{{Pos: term.Coordinates{X: 0, Y: 2}, Width: 4, Height: 3}},
+		},
+		{
+			name: "images are stacked by z_index and then by layout",
+			layout: `{{ .Image | src %q | z_index 1 }}{{ .Image | src %[1]q }}` +
+				`{{ .Image | src %[1]q | z_index -1 }}`,
+			width: 20,
+			expected: []placed{
+				{Pos: term.Coordinates{X: 3, Y: 4}, Width: 2, Height: 1},
+				{Pos: term.Coordinates{X: 1, Y: 4}, Width: 2, Height: 1},
+				{Pos: term.Coordinates{X: -1, Y: 4}, Width: 2, Height: 1},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			irq := make(interrupts, 1)
+			bar := newImageStatusBar(t, tt.layout, irq)
+			bar.Resize(tt.width, 1)
+
+			images := drawLoadedImages(t, bar, rows, len(tt.expected), irq)
+			got := make([]placed, len(images))
+			for i, img := range images {
+				got[i] = placed{Pos: img.Pos, Width: img.Width, Height: img.Height}
+				assert.True(t, img.VerticalRenderOffset, "image %d is not shifted with the bar", i)
+			}
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func TestStatusBarImageReservesCells(t *testing.T) {
+	bar := newImageStatusBar(t,
+		`{{ .Model }}  [{{ .Image | src %q | width 4 | reserve 3 }}]{{ .ShiftRight }}{{ .Effort }}`,
+		make(interrupts, 1))
+	assert.Equal(t, "opus  [   ]    high", render(t, bar, 19))
+}
+
+func TestStatusBarImageLiteralsInheritForeground(t *testing.T) {
+	bar := newImageStatusBar(t, `{{ .Model }}  x{{ .Image | src %q }}`, make(interrupts, 1))
+	bar.Resize(10, 1)
+	rec := newCellRecorder()
+	bar.Draw(rec)
+	cell := rec.cells[term.Coordinates{X: 6}]
+	require.Equal(t, 'x', cell.Ch)
+	assert.Equal(t, term.ColorSilver, cell.Fg)
+}
+
+func TestStatusBarImagesAreHiddenWithoutRows(t *testing.T) {
+	bar := newImageStatusBar(t, `{{ .Image | src %q }}`, make(interrupts, 1))
+	bar.Resize(10, 1)
+	rec := &handlerrpctest.ImageRecorder{}
+	bar.drawImages(rec, 0)
+	assert.Empty(t, rec.Images)
+	assert.Zero(t, rec.Cells)
+}
+
+func TestStatusBarPreloadedImageDrawsFromTheFirstFrame(t *testing.T) {
+	const uri = "file:///nowhere/preloaded.png"
+	parsed, err := ParseStatusBarLayout(fmt.Sprintf(`{{ .Image | src %q | width 2 }}`, uri))
+	require.NoError(t, err)
+	// No storage or interrupter: the bar cannot download anything.
+	bar := NewStatusBar(StatusBarConfig{
+		Enabled: true,
+		Layout:  parsed,
+		Images:  map[string]image.Image{uri: image.NewRGBA(image.Rect(0, 0, 4, 2))},
+	}, nil)
+	t.Cleanup(func() { assert.NoError(t, bar.Close()) })
+	bar.Resize(10, 1)
+
+	rec := &handlerrpctest.ImageRecorder{}
+	bar.drawImages(rec, 1)
+	require.Len(t, rec.Images, 1)
+	assert.Equal(t, 2, rec.Images[0].Width)
+}
+
+// newImageStatusBar returns a bar reporting model opus, effort high and
+// a max of 8k tokens, whose layout is formatted with the URI of a
+// picture, and which repaints through irq.
+func newImageStatusBar(t *testing.T, layout string, irq interrupts) *StatusBar {
+	t.Helper()
+	parsed, err := ParseStatusBarLayout(fmt.Sprintf(layout, samplePictureURI(t)))
+	require.NoError(t, err)
+	bar := NewStatusBar(StatusBarConfig{
+		Enabled:         true,
+		Layout:          parsed,
+		ForegroundColor: term.ColorSilver,
+		Storage:         storagestub.NewInMemoryService(),
+	}, irq)
+	t.Cleanup(func() { assert.NoError(t, bar.Close()) })
+	bar.SetState(func(s *StatusBarState) {
+		s.Model, s.Effort, s.MaxTokens = "opus", "high", 8000
+	})
+	return bar
+}
+
+func samplePictureURI(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "sample.png")
+	require.NoError(t, os.WriteFile(path, imageuritest.SamplePNG, 0o600))
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+}
+
+// drawLoadedImages draws the bar's images over rows rows until n of them
+// have loaded, and returns what that draw placed.
+func drawLoadedImages(
+	t *testing.T, bar *StatusBar, rows, n int, irq interrupts,
+) []term.Image {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	for {
+		rec := &handlerrpctest.ImageRecorder{}
+		bar.drawImages(rec, rows)
+		if len(rec.Images) == n {
+			images := make([]term.Image, n)
+			for i, img := range rec.Images {
+				images[i] = img.Image
+			}
+			return images
+		}
+		select {
+		case <-irq:
+		case <-timeout:
+			t.Fatalf("timed out waiting for %d images to load, %d did", n, len(rec.Images))
+		}
+	}
+}
+
+// interrupts coalesces pending interrupts like the host event loop.
+type interrupts chan struct{}
+
+func (i interrupts) Interrupt(context.Context) error {
+	select {
+	case i <- struct{}{}:
+	default:
+	}
+	return nil
 }

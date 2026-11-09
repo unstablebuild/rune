@@ -35,6 +35,15 @@ const withAltModifier = `gui:
   alt_modifier: "[[.AltModifier]]"
 `
 
+const withCapsLockEscape = `gui:
+  default_theme: romero
+  # Remap physical keys.[[if .CapsLockEscape]]
+  key_mapping:
+    "<capslock>": "<esc>"  # CapsLock acts as Escape[[else]]
+  # key_mapping:
+  #   "<capslock>": "<esc>"[[end]]
+`
+
 func TestRender(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -101,6 +110,34 @@ func TestRender(t *testing.T) {
 			name:    "a hard-coded alt modifier must match",
 			body:    "gui:\n  alt_modifier: left\n",
 			wantErr: `gui.alt_modifier is "left", want ""`,
+		},
+		{
+			name: "caps lock as escape",
+			body: withCapsLockEscape,
+			data: Data{CapsLockEscape: true},
+			want: "gui:\n  default_theme: romero\n  # Remap physical keys.\n" +
+				"  key_mapping:\n" +
+				"    \"<capslock>\": \"<esc>\"  # CapsLock acts as Escape\n" +
+				footerFor("false"),
+		},
+		{
+			name: "caps lock left alone",
+			body: withCapsLockEscape,
+			want: "gui:\n  default_theme: romero\n  # Remap physical keys.\n" +
+				"  # key_mapping:\n" +
+				"  #   \"<capslock>\": \"<esc>\"\n" +
+				footerFor("false"),
+		},
+		{
+			name:    "no field cannot carry caps lock as escape",
+			body:    "gui:\n  default_theme: romero\n",
+			data:    Data{CapsLockEscape: true},
+			wantErr: "gui.key_mapping does not map <capslock> to <esc>",
+		},
+		{
+			name:    "a hard-coded caps lock mapping must be chosen",
+			body:    "gui:\n  key_mapping:\n    \"<capslock>\": \"<esc>\"\n",
+			wantErr: "gui.key_mapping maps <capslock> to <esc>",
 		},
 		{
 			name:    "a body overriding telemetry",

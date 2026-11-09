@@ -306,6 +306,44 @@ func TestIsPlainArgv(t *testing.T) {
 	}
 }
 
+func TestPlainFields(t *testing.T) {
+	cases := []struct {
+		name   string
+		line   string
+		want   []string
+		wantOK bool
+	}{
+		{"single word", "htop", []string{"htop"}, true},
+		{"words", "git log --oneline -n 5", []string{"git", "log", "--oneline", "-n", "5"}, true},
+		{"extra whitespace", "echo \t hi ", []string{"echo", "hi"}, true},
+		{"unicode", "echo λ", []string{"echo", "λ"}, true},
+
+		{"empty", "", nil, false},
+		{"pipe", "a | b", nil, false},
+		{"semicolon", "a; b", nil, false},
+		{"background", "a &", nil, false},
+		{"redirect", "a > f", nil, false},
+		{"single quotes", "echo 'a b'", nil, false},
+		{"double quotes", `echo "hi"`, nil, false},
+		{"backslash", `echo a\ b`, nil, false},
+		{"param expansion", "echo $X", nil, false},
+		{"command substitution", "echo $(date)", nil, false},
+		{"glob", "ls *.go", nil, false},
+		{"tilde", "ls ~/x", nil, false},
+		{"assignment", "FOO=bar env", nil, false},
+		{"negated", "! true", nil, false},
+		{"unterminated quote", `echo "hi`, nil, false},
+		{"non-utf8", "echo \xff", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := cmdenv.PlainFields(tc.line)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestBuildPluginArgvDoesNotMutateInput(t *testing.T) {
 	in := []string{"echo", "hi"}
 	out := cmdenv.BuildPluginArgv(in)

@@ -76,6 +76,9 @@ type Prompt struct {
 	commandsBackup []Manual
 	userScrolling  bool
 	bracketedPaste bool
+	// afterCR records that the previous key event was a CR, so the LF
+	// of a CRLF pair is dropped instead of opening a second line.
+	afterCR bool
 
 	// editSession drives the prompt's modal edit mode (toggled via
 	// Config.EditModeKey). When active, all input events are routed
@@ -251,6 +254,9 @@ func (h *Prompt) SeparatorY() (int, bool) {
 
 // Draw satisfies tui.Handler
 func (h *Prompt) Draw(w term.Writer) {
+	// The input wraps to as many rows as it needs, which a parent may
+	// not have given the prompt: truncate instead of drawing past it.
+	w = &component.VirtualWriter{Writer: w, Width: h.width, Height: h.height}
 	if h.config.ShowManual && h.manualComponent != nil {
 		manHeight, separatorHeight, listHeight := h.calculateSplitHeights(h.width, h.height)
 		if separatorHeight != 0 {
@@ -461,6 +467,7 @@ func (h *Prompt) dispatchCommand() (
 		}
 		// trim empty args (i.e. client added more spaces than required between args)
 		h.commandAndArgs = h.trimmedCommandAndArgs(h.commandAndArgs[0], h.commandAndArgs[1:]...)
+		man, _ := h.getManualForCommand(h.commandAndArgs[0])
 		// A trailing separator marks an argument the completer left in
 		// progress, so it is not part of the value. History keeps the
 		// canonical form, which is what makes an entry recorded before
@@ -469,19 +476,28 @@ func (h *Prompt) dispatchCommand() (
 		historyArgs := make([]string, len(h.commandAndArgs))
 		historyArgs[0] = h.commandAndArgs[0]
 		for i, a := range h.commandAndArgs[1:] {
-			historyArgs[i+1] = ShellQuote(
-				TrimPartialCandidateSuffix(UnquoteToken(a)))
+			if man.RawArgs {
+				historyArgs[i+1] = a
+			} else {
+				historyArgs[i+1] = ShellQuote(
+					TrimPartialCandidateSuffix(UnquoteToken(a)))
+			}
 		}
 		commandAndArgsString = strings.Join(historyArgs, " ")
 
 		h.log(log.TraceLevel, "dispatching command and args %#v", h.commandAndArgs)
 		// Strip shell-style quoting/escaping from each argument before
 		// handing them to the dispatcher so subscribers receive the
-		// unescaped literal value (e.g. ~/Unstable\ Build → ~/Unstable Build).
+		// unescaped literal value (e.g. ~/Unstable\ Build → ~/Unstable Build),
+		// unless the command parses the typed line itself.
 		// The command itself is dispatched verbatim.
 		dispatchArgs := make([]string, len(h.commandAndArgs)-1)
 		for i, a := range h.commandAndArgs[1:] {
-			dispatchArgs[i] = UnquoteToken(a)
+			if man.RawArgs {
+				dispatchArgs[i] = a
+			} else {
+				dispatchArgs[i] = UnquoteToken(a)
+			}
 		}
 		h.dispatcher.Dispatch(h.commandAndArgs[0], dispatchArgs...)
 	} else {
@@ -546,6 +562,17 @@ func (h *Prompt) handle(ev term.Event, sync bool) (quit, handled bool) {
 		h.enterEditMode()
 		return false, true
 	}
+	// Line breaks stay in the input so a pasted script reaches the
+	// shell intact, but CRLF and CR become LF: the shell would read a
+	// stray CR as part of a word.
+	if ev.Ch == '\n' && h.afterCR {
+		h.afterCR = false
+		return false, true
+	}
+	h.afterCR = ev.Ch == '\r'
+	if h.afterCR {
+		ev.Ch = '\n'
+	}
 	switch h.mode {
 	case modeCommandPromptCommand:
 		return h.handleCommand(ev, sync)
@@ -563,7 +590,7 @@ func (h *Prompt) handleCommon(ev *term.Event, sync bool) (quit, handled bool) {
 	}
 
 	if (key == h.config.HistoryCycleKey && h.config.HistoryCycleKey.Ch == 0) ||
-		(key == h.config.HistoryCycleKey && h.buf.Columns(0) == 0) ||
+		(key == h.config.HistoryCycleKey && h.buf.String() == "") ||
 		(key == h.config.HistoryCycleKey && h.prevCommandCycle) {
 		h.handleLastCommand()
 		h.prevCommandCycle = true
@@ -668,30 +695,42 @@ func (h *Prompt) handleCommon(ev *term.Event, sync bool) (quit, handled bool) {
 	return
 }
 
-// deleteCellBack removes the last cell of the prompt buffer, keeping
-// the fuzzy-match token buffer in sync and unwinding one level of
-// argument completion when that token buffer drains. It reports
+// deleteCellBack removes the last character of the prompt buffer,
+// keeping the fuzzy-match token buffer in sync and unwinding one level
+// of argument completion when that token buffer drains. It reports
 // whether there was anything left to remove.
 func (h *Prompt) deleteCellBack(sync bool) bool {
-	cols := h.buf.Columns(0)
-	if cols != 0 {
-		h.buf.DeleteCell(term.Coordinates{X: cols - 1})
-	}
+	deleted := deleteLastCell(&h.buf)
 	if h.mode == modeCommandPromptCommand {
-		if cols == 0 {
+		if !deleted {
 			return false
 		}
 		h.list.Buffer().Replace(h.buf.String())
 		return true
 	}
-	if buf := h.list.Buffer(); buf.Size() != 0 {
-		buf.DeleteCell(term.Coordinates{X: buf.Columns(0) - 1})
+	if deleteLastCell(h.list.Buffer()) {
 		return true
 	}
 	if !h.decArgsCompleteMode(sync) {
 		h.setCommandMode()
 	}
 	return true
+}
+
+// deleteLastCell removes the final cell of buf or, when its last row
+// is empty, the line break that opened that row. It reports false
+// when buf holds nothing to remove.
+func deleteLastCell(buf *cell.Buffer) bool {
+	y := buf.Rows() - 1
+	if y < 0 {
+		return false
+	}
+	if x := buf.Columns(y); x != 0 {
+		_, _, ok := buf.DeleteCell(term.Coordinates{X: x - 1, Y: y})
+		return ok
+	}
+	_, ok := buf.ConflateRow(y - 1)
+	return ok
 }
 
 // isWordRune classifies a rune for the prompt's shell-style word
@@ -703,14 +742,19 @@ func isWordRune(r rune) bool {
 }
 
 // lastCellRune returns the leading rune of the prompt buffer's final
-// cell. Word boundaries are classified per cell rather than per rune
-// so wide characters and combining marks are never split.
+// cell, or '\n' when the input ends in a line break. Word boundaries
+// are classified per cell rather than per rune so wide characters and
+// combining marks are never split.
 func (h *Prompt) lastCellRune() (rune, bool) {
-	cols := h.buf.Columns(0)
-	if cols == 0 {
+	y := h.buf.Rows() - 1
+	if y < 0 {
 		return 0, false
 	}
-	c, ok := h.buf.Cell(term.Coordinates{X: cols - 1})
+	x := h.buf.Columns(y)
+	if x == 0 {
+		return '\n', y > 0
+	}
+	c, ok := h.buf.Cell(term.Coordinates{X: x - 1, Y: y})
 	if !ok {
 		return 0, false
 	}
@@ -891,7 +935,8 @@ func (h *Prompt) completionArgs() []string {
 // typing without first having to reposition.
 func (h *Prompt) enterEditMode() {
 	h.cancelPreview()
-	h.editSession.Begin(&h.buf, term.Coordinates{X: h.buf.Columns(0)})
+	y := max(0, h.buf.Rows()-1)
+	h.editSession.Begin(&h.buf, term.Coordinates{X: h.buf.Columns(y), Y: y})
 	h.log(log.TraceLevel, "entering command prompt edit mode")
 }
 

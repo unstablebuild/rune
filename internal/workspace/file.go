@@ -144,7 +144,9 @@ func newFileRecover(
 	return ret, err
 }
 
-func (f *file) initSwapFile(orig workspaceapi.File, origPerms os.FileMode) (workspaceapi.File, error) {
+func (f *file) initSwapFile(
+	orig workspaceapi.File, origPerms os.FileMode,
+) (_ workspaceapi.File, err error) {
 	swap, osErr := f.scheme.OpenFile(f.swapFileName, os.O_RDWR|os.O_CREATE|os.O_EXCL, origPerms)
 	if osErr != nil {
 		if os.IsExist(osErr) {
@@ -152,6 +154,12 @@ func (f *file) initSwapFile(orig workspaceapi.File, origPerms os.FileMode) (work
 		}
 		return nil, osErr
 	}
+	defer func() {
+		if err != nil {
+			_ = swap.Close()
+			_ = f.scheme.Remove(f.swapFileName)
+		}
+	}()
 
 	if orig == nil {
 		f.swapHash = sha256.Sum256(nil)
@@ -160,29 +168,24 @@ func (f *file) initSwapFile(orig workspaceapi.File, origPerms os.FileMode) (work
 
 	content, err := io.ReadAll(orig)
 	if err != nil {
-		_ = f.scheme.Remove(f.swapFileName)
 		return nil, err
 	}
 
 	// not necessary for good scheme implementations, but we should
 	// not trust that flags are interpreted correctly
 	if err := swap.Truncate(0); err != nil {
-		_ = f.scheme.Remove(f.swapFileName)
 		return nil, err
 	}
 
 	if _, err := swap.Write(content); err != nil {
-		_ = f.scheme.Remove(f.swapFileName)
 		return nil, err
 	}
 
 	if err := swap.Sync(); err != nil {
-		_ = f.scheme.Remove(f.swapFileName)
 		return nil, err
 	}
 
 	if _, err := orig.Seek(0, 0); err != nil {
-		_ = f.scheme.Remove(f.swapFileName)
 		return nil, err
 	}
 
@@ -218,6 +221,7 @@ func (f *file) openFile(filePath string, flag int) (
 
 	fileInfo, verr := validateFileType(file)
 	if verr != nil {
+		_ = file.Close()
 		return nil, nil, verr
 	}
 
@@ -248,6 +252,9 @@ func (f *file) initFiles(filePath, swapDir string, readOnly bool) error {
 	if !readOnly {
 		err := f.initSwap(swapDir, filePath, file, fileInfo)
 		if err != nil {
+			if file != nil {
+				_ = file.Close()
+			}
 			return err
 		}
 	}
@@ -288,6 +295,7 @@ func (f *file) initSwap(
 	// store swapInfo so we can check update times at Flush
 	swapInfo, err := f.scheme.Stat(f.swapFileName)
 	if err != nil {
+		_ = swap.Close()
 		_ = f.scheme.Remove(f.swapFileName)
 		return err
 	}
@@ -351,6 +359,9 @@ func (f *file) initRecover(filePath, swapFilePath string, buf *cell.Buffer, forc
 	}
 	swap, swapFileInfo, osErr := f.openFile(swapFilePath, os.O_RDWR)
 	if osErr != nil {
+		if orig != nil {
+			_ = orig.Close()
+		}
 		return osErr
 	}
 

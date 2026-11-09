@@ -61,6 +61,16 @@ type shadedBar struct {
 	width, height int
 }
 
+// configure makes s draw root, shaded with the effect cfg names. The
+// effect must not be running.
+func (s *shadedBar) configure(root tui.Component, cfg StatusBarConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.root = root
+	s.name, s.fps, s.loop = cfg.Shader, cfg.ShaderFPS, cfg.ShaderLoop
+	s.defAttr = term.Attributes{Fg: cfg.ForegroundColor, Bg: cfg.BackgroundColor}
+}
+
 // Draw satisfies tui.Component.
 func (s *shadedBar) Draw(w term.Writer) {
 	s.mu.Lock()
@@ -102,7 +112,7 @@ func (s *shadedBar) setRunning(running bool, interrupter term.Interrupter) bool 
 		if loop <= 0 {
 			loop = DefaultStatusBarShaderLoop
 		}
-		sh, ok := shaderloop.New(s.name, s.defAttr, fps, loop)
+		sh, ok := shaderloop.New(s.name, s.defAttr, shaderloop.Params{}, loop)
 		if !ok {
 			s.mu.Unlock()
 			return false

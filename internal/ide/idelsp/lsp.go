@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/debug"
@@ -149,19 +150,20 @@ func (m *Manager) Initialize(ctx context.Context, params semanticapi.InitializeP
 		return
 	}
 	cfg := langConfig{id: id, command: argv[0], args: argv[1:], env: env}
-	if len(alternates) == 0 {
-		var srv *langServer
-		srv, err = m.initializeServer(ctx, cfg, key, params)
-		if err != nil {
-			err = fmt.Errorf("initialize server: %w", err)
-			return
-		}
-		return srv.initResult(), nil
-	}
-	var srv server
-	srv, err = m.initializeMultiServer(ctx, cfg, key, alternates, params)
+	spec := initSpec{cfg: cfg, alternates: alternates, params: params}
+	m.mu.Lock()
+	m.specs[key] = spec
+	m.dropStatuses(key)
+	m.mu.Unlock()
+	srv, err := m.bringUp(ctx, key, spec)
 	if err != nil {
-		err = fmt.Errorf("initialize multi server: %w", err)
+		m.notifyOnce(browserapi.LevelError,
+			"The %s language server failed to start: %v", id, err)
+		if len(alternates) == 0 {
+			err = fmt.Errorf("initialize server: %w", err)
+		} else {
+			err = fmt.Errorf("initialize multi server: %w", err)
+		}
 		return
 	}
 	return srv.initResult(), nil

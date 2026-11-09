@@ -24,26 +24,103 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/component/asciiart"
+	"unstable.build/rune/internal/component/braille"
+	"unstable.build/rune/internal/ide"
 )
 
-func makeWallpaper() browser.Wallpaper {
+// makeRuneLogo returns the Rune logo of the GUI, drawn for the live GUI
+// theme themeName reports and the font cellPixelSize reports, with its
+// intro.
+func makeRuneLogo(
+	themeName func() string, cellPixelSize func() (width, height int),
+) ide.Logo {
+	return ide.Logo{
+		Wallpaper:      makeThemedWallpaper(themeName, cellPixelSize),
+		Shader:         makeInitShader(defaultIntroParams(), logoDots(themeName, cellPixelSize)),
+		ShaderFPS:      initShaderFPS,
+		ShaderDuration: initShaderDuration,
+	}
+}
+
+// makeUnstableBuildLogo returns the Unstable Build logo of the terminal,
+// which has no intro.
+func makeUnstableBuildLogo() ide.Logo {
+	return ide.Logo{
+		Wallpaper: makeUnstableBuildWallpaper(func() string { return logoThemeDefault }),
+	}
+}
+
+// newLogoSpan builds the centered art used to render a logo as a
+// wallpaper, drawn in style, or as picture where the screen draws images
+// when picture is not nil (see [braille.Component.WithPicture]). The
+// wallpapers draw it with blocks or its picture, and the intro with dots
+// on the same layout so it can turn one into the other.
+//
+// The padding around the logo is filled with blank braille, which tells
+// the intro where the wallpaper is (see [shader.BrailleSwap]).
+//
+// cellPixelSize keeps the logo's proportions on the font in use; see
+// [braille.NewComponent].
+func newLogoSpan(
+	img image.Image, picture func() image.Image,
+	cellPixelSize func() (width, height int), style braille.Style,
+) tui.Component {
+	art := braille.NewComponent(img, cellPixelSize, style)
+	if picture != nil {
+		art.WithPicture(picture)
+	}
+	span := component.NewSpan(art, component.SpanConfig{
+		PadHorizontalPerc: 0.52,
+		PadVerticalPerc:   0.52,
+		ContentAlignment:  component.AlignmentCentered,
+	})
+	return component.NewBackground(span, term.NewCell(braille.Blank, 1, term.Attributes{}))
+}
+
+// logoDots draws the logo wallpaper that makeThemedWallpaper builds from
+// themeName and cellPixelSize with dots instead of blocks, for the intro.
+func logoDots(themeName func() string, cellPixelSize func() (width, height int)) tui.Component {
+	return &themedWallpaper{themeName: themeName, newLogo: func(theme string) tui.Component {
+		return newLogoSpan(logoForTheme(theme), nil, cellPixelSize, braille.Dots)
+	}}
+}
+
+// makeThemedWallpaper builds a wallpaper whose logo art follows the live GUI
+// theme reported by themeName. When themeName is nil or returns an empty or
+// unknown theme, the default logo is used. cellPixelSize is passed on to
+// [newLogoSpan], and the logo is drawn as a picture where the screen draws
+// images.
+func makeThemedWallpaper(
+	themeName func() string, cellPixelSize func() (width, height int),
+) browser.Wallpaper {
 	return browser.Wallpaper{
 		NewComponent: func() tui.Component {
-			return newLogoSpan(logo)
+			return &themedWallpaper{themeName: themeName, newLogo: func(theme string) tui.Component {
+				return newLogoSpan(logoForTheme(theme), logoPictureForTheme(theme), cellPixelSize, braille.Blocks)
+			}}
 		},
 	}
 }
 
-// newLogoSpan builds the centered ascii-art span used to render a logo as a
-// wallpaper. It is shared by the single-logo and themed wallpapers.
-func newLogoSpan(img image.Image) tui.Component {
+// makeUnstableBuildWallpaper is makeThemedWallpaper for the Unstable Build
+// logo, which is drawn as ascii art.
+func makeUnstableBuildWallpaper(themeName func() string) browser.Wallpaper {
+	return browser.Wallpaper{
+		NewComponent: func() tui.Component {
+			return &themedWallpaper{themeName: themeName, newLogo: func(theme string) tui.Component {
+				return newUnstableBuildSpan(unstableBuildLogoForTheme(theme))
+			}}
+		},
+	}
+}
+
+// newUnstableBuildSpan builds the centered ascii art that renders img as a
+// wallpaper, leaving its darkest cells blank.
+func newUnstableBuildSpan(img image.Image) tui.Component {
 	cfg := asciiart.DefaultConfig()
 	cfg.Color = true
 	cfg.MaintainAspectRatio = true
 	cfg.DensityCharacters = "\u2009▓▓▓▓▓▓▓▓▓"
-	// Uncomment below when debugging glslshader.Burning with the
-	// DebugWallpaperBounds flag.
-	// cfg.DensityCharacters = "x▓▓▓▓▓▓▓▓▓"
 	art := asciiart.NewComponent(img, cfg)
 	return component.NewSpan(art, component.SpanConfig{
 		PadHorizontalPerc: 0.4,
@@ -52,21 +129,11 @@ func newLogoSpan(img image.Image) tui.Component {
 	})
 }
 
-// makeThemedWallpaper builds a wallpaper whose logo art follows the live GUI
-// theme reported by themeName. When themeName is nil or returns an empty or
-// unknown theme, the default logo is used.
-func makeThemedWallpaper(themeName func() string) browser.Wallpaper {
-	return browser.Wallpaper{
-		NewComponent: func() tui.Component {
-			return &themedWallpaper{themeName: themeName}
-		},
-	}
-}
-
-// themedWallpaper renders the logo for the current GUI theme, rebuilding its
-// child span only when the resolved theme changes.
+// themedWallpaper renders the logo newLogo builds for the current GUI
+// theme, rebuilding it only when the resolved theme changes.
 type themedWallpaper struct {
 	themeName func() string
+	newLogo   func(theme string) tui.Component
 	current   string
 	child     tui.Component
 	width     int
@@ -75,10 +142,14 @@ type themedWallpaper struct {
 }
 
 func (w *themedWallpaper) resolveTheme() string {
-	if w.themeName == nil {
+	return resolveLogoTheme(w.themeName)
+}
+
+func resolveLogoTheme(themeName func() string) string {
+	if themeName == nil {
 		return logoThemeDefault
 	}
-	if name := w.themeName(); name != "" {
+	if name := themeName(); name != "" {
 		return name
 	}
 	return logoThemeDefault
@@ -95,7 +166,7 @@ func (w *themedWallpaper) Draw(writer term.Writer) {
 	theme := w.resolveTheme()
 	if w.child == nil || !w.drawn || theme != w.current {
 		w.current = theme
-		w.child = newLogoSpan(logoForTheme(theme))
+		w.child = w.newLogo(theme)
 		w.child.Resize(w.width, w.height)
 		w.drawn = true
 	}

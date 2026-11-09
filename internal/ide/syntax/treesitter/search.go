@@ -19,6 +19,8 @@ package treesitter
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -37,6 +39,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/idelsp/languages"
@@ -75,6 +78,24 @@ type Parser struct {
 	// hidden directories) from the workspace source-code walks. It is built
 	// once per parser and shared with specCache.
 	filter *queryFilter
+	// highlights overrides the built-in highlight attributes, as
+	// syntax.Config.CaptureNamesAttributes does for editor buffers. It is
+	// held by pointer because a map field would make Parser uncomparable,
+	// and comparing syntaxapi.Parser values holding one would panic.
+	highlights *highlightAttributes
+}
+
+type highlightAttributes struct {
+	byCaptureName map[string]term.Attributes
+}
+
+// WithCaptureNamesAttributes returns a copy of p whose Highlight resolves
+// capture names against attrs before the built-in defaults, so content
+// highlighted on behalf of extensions matches the editor's colors. The
+// copy shares p's caches. attrs must not be modified afterwards.
+func (p Parser) WithCaptureNamesAttributes(attrs map[string]term.Attributes) Parser {
+	p.highlights = &highlightAttributes{byCaptureName: attrs}
+	return p
 }
 
 // queryFilter lazily builds and caches the walkdir.Filter applied to the
@@ -284,7 +305,11 @@ func (p Parser) Highlight(file workspaceapi.URI, content string) (
 		}
 		defer tree.Close()
 
-		locations := getHighlights(counts, data, tree, parser.query, nil)
+		var attrs map[string]term.Attributes
+		if p.highlights != nil {
+			attrs = p.highlights.byCaptureName
+		}
+		locations := getHighlights(counts, data, tree, parser.query, attrs)
 		for _, location := range locations {
 			select {
 			case results <- location:
@@ -477,6 +502,48 @@ func (p Parser) ListReferencedSymbols(
 	})
 
 	return it, nil
+}
+
+// GrammarFingerprint identifies the grammar and locals query installed
+// for langID: two fingerprints are equal exactly when both files are
+// byte-identical, wherever they are installed. It fails when the
+// language package or either file is not installed.
+func (p Parser) GrammarFingerprint(ctx context.Context, langID string) (string, error) {
+	it, err := p.pkg.LibDir(ctx, langID)
+	if err != nil {
+		return "", errNotInstalled
+	}
+	files, err := iterator.ToSlice(ctx, it)
+	_ = it.Close()
+	if err != nil {
+		return "", fmt.Errorf("list files: %w", err)
+	}
+	paths := make(map[string]string, 2)
+	for _, path := range files {
+		switch name := filepath.Base(path); name {
+		case ParserFilename, LocalsFilename:
+			paths[name] = path
+		}
+	}
+	h := sha256.New()
+	for _, name := range []string{ParserFilename, LocalsFilename} {
+		path, ok := paths[name]
+		if !ok {
+			return "", errNotInstalled
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return "", fmt.Errorf("open %s: %w", name, err)
+		}
+		_, _ = io.WriteString(h, name)
+		_, _ = h.Write([]byte{0})
+		_, err = io.Copy(h, f)
+		_ = f.Close()
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", name, err)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil)[:16]), nil
 }
 
 // qualifierContext builds a fresh per-call qualifier context over the

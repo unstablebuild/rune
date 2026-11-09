@@ -17,6 +17,7 @@
 package helix
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -61,6 +62,15 @@ func TestMouse(t *testing.T) {
 		_, handled := hx.Handle(term.Event{Type: term.EventMouse,
 			Key: term.MouseWheelDown})
 		assert.True(t, handled)
+	})
+
+	t.Run("the pointer is a text cursor", func(t *testing.T) {
+		hx, _, _ := newHelix(t, "one", term.Coordinates{})
+		p := new(term.Pointer)
+		hx.Handle(term.Event{Type: term.EventMouse, MouseX: 1,
+			Context: term.ContextWithPointer(context.Background(), p)})
+		shape, _ := p.Shape()
+		assert.Equal(t, term.PointerText, shape)
 	})
 }
 

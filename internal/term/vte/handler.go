@@ -311,8 +311,17 @@ func (e *Handler) Draw(w term.Writer) {
 func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 	exit = e.exit.Load()
 	if exit {
+		// A parent reports the pointer leaving with a motion outside the
+		// screen; that is not the user acting on the dead terminal, so it
+		// must not close it.
+		if e.isPointerLeave(ev) {
+			return false, false
+		}
 		e.log(log.DebugLevel, "Handle: exit")
 		return
+	}
+	if ev.Type == term.EventMouse {
+		e.setPointerShape(ev)
 	}
 	if e.handleSearch(ev) {
 		return false, true
@@ -358,7 +367,8 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 	}
 
 	enc := e.comp.keyboard.encoding()
-	if ev.Mod&^term.ModCtrlShift != 0 && !e.copyPassesThrough(ev, enc) {
+	if (ev.Mod&^term.ModCtrlShift != 0 && !e.copyPassesThrough(ev, enc)) ||
+		(ev.Type == term.EventKey && Whitelisted(ev.KeyComb())) {
 		return
 	}
 
@@ -378,7 +388,7 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 		return
 	}
 
-	_, err := e.comp.pty.Master.Write(raw)
+	err := e.comp.WriteToPty(raw)
 	if err != nil {
 		e.log(log.ErrorLevel, "write to pty: %s", err)
 		e.notify(browserapi.LevelError, "write to pty: %v", err)
@@ -400,6 +410,11 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 	return
 }
 
+func (e *Handler) isPointerLeave(ev term.Event) bool {
+	return ev.Type == term.EventMouse && ev.Key == 0 &&
+		(ev.MouseX < 0 || ev.MouseY < 0 || ev.MouseX >= e.width || ev.MouseY >= e.height)
+}
+
 // copyPassesThrough reports whether ev is cmd+c with nothing selected to
 // copy, which then goes to a program that enabled the kitty keyboard
 // protocol so that it can copy a selection of its own, such as the page
@@ -412,6 +427,21 @@ func (e *Handler) copyPassesThrough(ev term.Event, enc keyEncoding) bool {
 	}
 	_, selected := e.comp.Selection()
 	return !selected
+}
+
+// whitelist holds keys no terminal spec assigns bytes to, on which
+// terminals disagree, so Handle leaves them unhandled instead of writing
+// them to the program.
+var whitelist = map[term.KeyComb]bool{
+	// conveniently used key binding for navigation
+	{Ch: '`', Mod: term.ModCtrl}: true,
+}
+
+// Whitelisted reports whether Handle leaves k unhandled for the caller,
+// although k holds no modifier but ctrl and shift, which otherwise always
+// go to the program.
+func Whitelisted(k term.KeyComb) bool {
+	return whitelist[k]
 }
 
 // OnFocusChange allows clients to report whether this vte.Handler is on focus or not.
@@ -638,6 +668,9 @@ func (e *Handler) enterViMode(cursor term.Coordinates) {
 
 func (e *Handler) exitViMode() {
 	e.viMode = false
+	if !e.searchViewing() {
+		e.vi.deactivate()
+	}
 }
 
 // searchViewing reports whether the scrollback search results are on
@@ -749,4 +782,20 @@ func (e *Handler) searchOverlayContains(x, y int) bool {
 	pos := e.searchOverlay.Position()
 	x, y = x-pos.X, y-pos.Y
 	return x >= 0 && y >= 0 && x < e.searchOverlay.Width() && y < e.searchOverlay.Height()
+}
+
+// setPointerShape gives the pointer of the mouse event ev to the program
+// when ev reaches it, and otherwise shows the text cursor of the
+// scrollback selection or of the search box.
+func (e *Handler) setPointerShape(ev term.Event) {
+	p, _ := term.PointerFromContext(ev.Context)
+	if e.viMode || e.searchViewing() ||
+		e.searchOpen() && e.searchOverlayContains(ev.MouseX, ev.MouseY) {
+		e.comp.pointTo(nil)
+		if p != nil {
+			p.SetShape(term.PointerText)
+		}
+		return
+	}
+	e.comp.pointTo(p)
 }

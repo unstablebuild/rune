@@ -17,6 +17,8 @@
 package shader
 
 import (
+	"image"
+	"image/color"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -372,6 +374,114 @@ func TestTransitionCrossFade(t *testing.T) {
 				[][]int{tcase.shader1Frames, tcase.shader2Frames},
 				[]int{tcase.shader1Total, tcase.shader2Total},
 			)
+		})
+	}
+}
+
+func TestTransitionCrossFadeShadesImagesWithTheShaderInFront(t *testing.T) {
+	replacing := func(id term.ImageID) *imageShader {
+		return &imageShader{images: func(images []term.Image) []term.Image {
+			return append(images[:0], term.Image{ID: id})
+		}}
+	}
+	transition := TransitionCrossFade(
+		TransitionCrossFadeParams{ChangeAtPerc: 0.5, OverlapPerc: 0.4},
+		term.Attributes{}, replacing(1), replacing(2),
+	).(ImageShader)
+
+	// While they fade into each other, they draw different pictures,
+	// which are painted onto their cells rather than drawn.
+	for frame, want := range []term.ImageID{1, 1, 1, 0, 0, 0, 0, 2, 2, 2} {
+		got := transition.ShadeImages(frame, 10, makeCellMatrix(3, 2), []term.Image{{ID: 9}})
+		if want == 0 {
+			assert.Empty(t, got, "frame %d", frame)
+			continue
+		}
+		assert.Equal(t, []term.Image{{ID: want}}, got, "frame %d", frame)
+	}
+}
+
+func TestTransitionCrossFadeDrawsThePicturesBothShadersDraw(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	src.SetRGBA(0, 0, color.RGBA{R: 200, G: 100, A: 255})
+	picture := term.Image{Src: src, ID: term.NewImageID(), Width: 1, Height: 1}
+	gray := term.NewRGBColor(40, 40, 40)
+	transition := TransitionCrossFade(
+		TransitionCrossFadeParams{ChangeAtPerc: 0.5, OverlapPerc: 0.4},
+		term.Attributes{}, Nop(), Nop(),
+	).(ImageShader)
+
+	for frame := range 10 {
+		cells := [][]term.Cell{{term.NewCell('x', 1, term.Attributes{Bg: gray})}}
+		got := transition.ShadeImages(frame, 10, cells, []term.Image{picture})
+		assert.Equal(t, []term.Image{picture}, got, "frame %d", frame)
+		assert.Equal(t, gray, cells[0][0].Bg, "frame %d", frame)
+	}
+}
+
+func TestTransitionCrossFadeFadesThePicturesOneShaderDrawsAlone(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	src.SetRGBA(0, 0, color.RGBA{R: 200, G: 100, A: 255})
+	picture := term.Image{Src: src, ID: term.NewImageID(), Width: 1, Height: 1}
+	gray := term.NewRGBColor(40, 40, 40)
+	for _, tt := range []struct {
+		name             string
+		shader1, shader2 Shader
+		drawn            func(frame int) bool
+	}{
+		{"fading in", Nop(), halveBg{}, func(frame int) bool { return frame < 3 }},
+		{"fading out", halveBg{}, Nop(), func(frame int) bool { return frame > 6 }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			transition := TransitionCrossFade(
+				TransitionCrossFadeParams{ChangeAtPerc: 0.5, OverlapPerc: 0.4},
+				term.Attributes{}, tt.shader1, tt.shader2,
+			).(ImageShader)
+			for frame := range 10 {
+				cells := [][]term.Cell{{term.NewCell('x', 1, term.Attributes{Bg: gray})}}
+				got := transition.ShadeImages(frame, 10, cells, []term.Image{picture})
+				if tt.drawn(frame) {
+					assert.Equal(t, []term.Image{picture}, got, "frame %d", frame)
+					assert.Equal(t, gray, cells[0][0].Bg, "frame %d", frame)
+					continue
+				}
+				assert.Empty(t, got, "frame %d", frame)
+				r, g, b := cells[0][0].Bg.RGB()
+				assert.True(t, r >= 100 && r <= 200 && g >= 50 && g <= 100 && b == 0,
+					"frame %d: the picture, halved or not, rather than %d, %d, %d", frame, r, g, b)
+			}
+		})
+	}
+}
+
+func TestTransitionCrossFadeFadesThePicturesTheShadersDrawDifferently(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	src.SetRGBA(0, 0, color.RGBA{R: 200, G: 100, A: 255})
+	picture := term.Image{Src: src, ID: term.NewImageID(), Width: 2, Height: 1}
+	painted := term.NewRGBColor(200, 100, 0)
+	gray := term.Attributes{Bg: term.NewRGBColor(40, 40, 40)}
+	// halveBg{from: 1} leaves the picture showing over the first cell.
+	for _, tt := range []struct {
+		name             string
+		shader1, shader2 Shader
+	}{
+		{"fading in", Nop(), halveBg{from: 1}},
+		{"fading out", halveBg{from: 1}, Nop()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			transition := TransitionCrossFade(
+				TransitionCrossFadeParams{ChangeAtPerc: 0.5, OverlapPerc: 0.4},
+				term.Attributes{}, tt.shader1, tt.shader2,
+			).(ImageShader)
+			for frame := 3; frame < 7; frame++ {
+				cells := [][]term.Cell{{term.NewCell('x', 1, gray), term.NewCell('x', 1, gray)}}
+				got := transition.ShadeImages(frame, 10, cells, []term.Image{picture})
+				assert.Empty(t, got, "frame %d: a picture drawn over the fade hides it", frame)
+				assert.Equal(t, painted, cells[0][0].Bg, "frame %d", frame)
+				r, g, b := cells[0][1].Bg.RGB()
+				assert.True(t, r >= 100 && r <= 200 && g >= 50 && g <= 100 && b == 0,
+					"frame %d: the picture, halved or not, rather than %d, %d, %d", frame, r, g, b)
+			}
 		})
 	}
 }

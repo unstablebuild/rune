@@ -222,7 +222,7 @@ func showSymbolPicker(
 		pickerEntries[i] = locationpicker.Entry{URI: uri, Range: e.rng, Display: e.display}
 	}
 	picker := locationpicker.New(
-		pickerEntries, wm, fs, scheduleNextTick, parser,
+		pickerEntries, fs, scheduleNextTick, parser,
 		locationpicker.DefaultConfig(), nil,
 	)
 	picker.SetOnSelect(func(idx int) {
@@ -230,14 +230,10 @@ func showSymbolPicker(
 			onPick(matches[idx], done)
 		})
 	})
-	win, err := wm.Floating(picker, browserapi.FloatingConfig{
+	_, err := wm.Floating(picker, browserapi.FloatingConfig{
 		Alignment: component.AlignmentCentered,
 	})
-	if err != nil {
-		return err
-	}
-	picker.SetWindow(win)
-	return nil
+	return err
 }
 
 func completeReferencedSymbol(
