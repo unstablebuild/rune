@@ -35,6 +35,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -9435,16 +9436,18 @@ func TestPasteFromClipboardImage(t *testing.T) {
 	ctrlV := term.Event{Type: term.EventKey, Ch: 'v', Mod: term.ModCtrl, Raw: []byte{0x16}}
 
 	tests := []struct {
-		name     string
-		text     string
-		hasImage bool
-		terminal bool
-		want     []term.Event
+		name       string
+		text       string
+		hasImage   bool
+		terminal   bool
+		prompt     bool
+		want       []term.Event
+		wantNotice bool
 	}{
 		{name: "terminal with image and no text forwards ctrl-v",
 			hasImage: true, terminal: true, want: []term.Event{ctrlV}},
-		{name: "terminal with no text and no image forwards nothing",
-			terminal: true},
+		{name: "terminal with no text and no image notifies",
+			terminal: true, wantNotice: true},
 		{name: "terminal with text and image pastes the text",
 			text: "a", hasImage: true, terminal: true,
 			want: []term.Event{
@@ -9452,13 +9455,16 @@ func TestPasteFromClipboardImage(t *testing.T) {
 				{Type: term.EventKey, Ch: 'a', Raw: []byte("a")},
 				{Type: term.EventPasteEnd},
 			}},
-		{name: "editor with image and no text forwards nothing",
-			hasImage: true},
+		{name: "terminal under the prompt with image does not forward",
+			hasImage: true, terminal: true, prompt: true, wantNotice: true},
+		{name: "editor with image and no text notifies",
+			hasImage: true, wantNotice: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			b := newExForTesting(t, texttest.NopEditor())
+			b := newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
 			defer b.Close()
+			b.Resize(80, 20)
 			clip := clipboard.NewInMemory()
 			require.NoError(t, clip.Copy(clipboard.DefaultRegisterID,
 				clipboard.Data{Text: tc.text}))
@@ -9475,13 +9481,23 @@ func TestPasteFromClipboardImage(t *testing.T) {
 				session, ok = tab.Handler().(*testVte)
 				require.True(t, ok)
 			}
+			if tc.prompt {
+				b.ex.Handle(term.Event{Type: term.EventKey, Ch: testCommandKey.Ch,
+					Mod: testCommandKey.Mod})
+				require.True(t, b.ex.promptFocused())
+			}
 
 			require.NoError(t, b.ex.pasteFromClipboard(bgctx))
 
-			if session == nil {
-				return
+			if session != nil {
+				assert.Equal(t, tc.want, session.handledEvents())
 			}
-			assert.Equal(t, tc.want, session.handledEvents())
+			w := newCoveringImageWriter(80, 20)
+			b.ex.container.Draw(w)
+			require.NoError(t, w.Flush())
+			// the notification wraps inside its frame
+			words := regexp.MustCompile(`[^a-z]+`).ReplaceAllString(w.String(), " ")
+			assert.Equal(t, tc.wantNotice, strings.Contains(words, "nothing to paste"))
 		})
 	}
 }

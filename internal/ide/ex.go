@@ -1853,7 +1853,7 @@ func (e *ex) pasteFromClipboard(_ context.Context, args ...string) error {
 		// Programs such as Claude Code read an image from the system
 		// clipboard themselves when they receive ctrl-v, which is how
 		// they get a screenshot that the text-only register cannot hold.
-		if _, ok := e.terminalInFocus(); ok && e.clipImage.HasImage() {
+		if _, ok := e.terminalInFocus(); ok && !e.promptFocused() && e.clipImage.HasImage() {
 			handler.Handle(term.Event{
 				Type: term.EventKey,
 				Ch:   'v',
@@ -3565,10 +3565,16 @@ func (e *ex) stopTerminal() {
 }
 
 func (e *ex) focusHandler() tui.Handler {
-	if e.cmd != nil && !e.isPromptDispatch {
+	if e.promptFocused() {
 		return &e.cmdV
 	}
 	return e.comp.Browser()
+}
+
+// promptFocused reports whether the command prompt takes the input, as opposed to
+// the window under it, which is what a command run from the prompt acts on.
+func (e *ex) promptFocused() bool {
+	return e.cmd != nil && !e.isPromptDispatch
 }
 
 type pluginAdapter struct {

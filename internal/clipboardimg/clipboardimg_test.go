@@ -19,6 +19,8 @@
 package clipboardimg
 
 import (
+	"image"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,29 +29,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The test replaces the contents of the user's clipboard, so it only runs on
-// request.
 func TestSystemHasImage(t *testing.T) {
+	// It replaces the contents of the user's clipboard, so it only runs on request.
 	if os.Getenv("RUNE_E2E_OVERWRITE_CLIPBOARD") == "" {
 		t.Skip("set RUNE_E2E_OVERWRITE_CLIPBOARD=1 to let the test overwrite the clipboard")
 	}
-	png := filepath.Join(t.TempDir(), "pixel.png")
-	require.NoError(t, exec.Command("sips", "-s", "format", "png",
-		"/System/Library/CoreServices/DefaultDesktop.heic", "--out", png).Run())
+	pngPath := filepath.Join(t.TempDir(), "pixel.png")
+	f, err := os.Create(pngPath)
+	require.NoError(t, err)
+	require.NoError(t, png.Encode(f, image.NewRGBA(image.Rect(0, 0, 1, 1))))
+	require.NoError(t, f.Close())
 
 	tests := []struct {
-		name string
-		set  []string
-		want bool
+		name   string
+		script string
+		want   bool
 	}{
-		{name: "image", want: true, set: []string{"osascript", "-e",
-			`set the clipboard to (read (POSIX file "` + png + `") as «class PNGf»)`}},
-		{name: "text", want: false, set: []string{"osascript", "-e",
-			`set the clipboard to "hello"`}},
+		{name: "image", want: true,
+			script: `set the clipboard to (read (POSIX file "` + pngPath + `") as «class PNGf»)`},
+		{name: "text", want: false, script: `set the clipboard to "hello"`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NoError(t, exec.Command(tc.set[0], tc.set[1:]...).Run())
+			require.NoError(t, exec.Command("osascript", "-e", tc.script).Run())
 			require.Equal(t, tc.want, System{}.HasImage())
 		})
 	}
