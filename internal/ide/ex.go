@@ -54,6 +54,7 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/clipboardimg"
 	tcomponent "unstable.build/rune/internal/component"
 	fileexplorercomp "unstable.build/rune/internal/component/fileexplorer"
 	"unstable.build/rune/internal/component/markdown"
@@ -131,6 +132,7 @@ type ex struct {
 	config         text.Config
 	comp           text.Component
 	clip           clipboard.Register
+	clipImage      clipboardimg.Detector
 	ed             text.Editor
 	editorObserver *commandRegisterObserver
 	// rawArgsCommands holds the subscribed commands whose args the
@@ -592,6 +594,7 @@ func (e *ex) doInit(
 	e.pluginWaitTimeout = 60 * time.Second
 	e.stepWaitTimeout = e.pluginWaitTimeout + 30*time.Second
 	e.clip = clip
+	e.clipImage = clipboardimg.System{}
 	e.workspace = m
 	e.storage = storage
 	notiCfg := n.cfg
@@ -1847,6 +1850,18 @@ func (e *ex) pasteFromClipboard(_ context.Context, args ...string) error {
 		return fmt.Errorf("clipboard paste: %w", err)
 	}
 	if len(data.Text) == 0 {
+		// Programs such as Claude Code read an image from the system
+		// clipboard themselves when they receive ctrl-v, which is how
+		// they get a screenshot that the text-only register cannot hold.
+		if _, ok := e.terminalInFocus(); ok && e.clipImage.HasImage() {
+			handler.Handle(term.Event{
+				Type: term.EventKey,
+				Ch:   'v',
+				Mod:  term.ModCtrl,
+				Raw:  []byte{0x16},
+			})
+			return nil
+		}
 		_, _ = e.Browser().Notify(browserapi.LevelInfo, "nothing to paste")
 		return nil
 	}

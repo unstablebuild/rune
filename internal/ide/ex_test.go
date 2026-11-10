@@ -9427,6 +9427,65 @@ func newExForTestingFileWorkspace(
 	return e, fileScheme, tempDir
 }
 
+type fakeImageDetector bool
+
+func (f fakeImageDetector) HasImage() bool { return bool(f) }
+
+func TestPasteFromClipboardImage(t *testing.T) {
+	ctrlV := term.Event{Type: term.EventKey, Ch: 'v', Mod: term.ModCtrl, Raw: []byte{0x16}}
+
+	tests := []struct {
+		name     string
+		text     string
+		hasImage bool
+		terminal bool
+		want     []term.Event
+	}{
+		{name: "terminal with image and no text forwards ctrl-v",
+			hasImage: true, terminal: true, want: []term.Event{ctrlV}},
+		{name: "terminal with no text and no image forwards nothing",
+			terminal: true},
+		{name: "terminal with text and image pastes the text",
+			text: "a", hasImage: true, terminal: true,
+			want: []term.Event{
+				{Type: term.EventPasteStart},
+				{Type: term.EventKey, Ch: 'a', Raw: []byte("a")},
+				{Type: term.EventPasteEnd},
+			}},
+		{name: "editor with image and no text forwards nothing",
+			hasImage: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newExForTesting(t, texttest.NopEditor())
+			defer b.Close()
+			clip := clipboard.NewInMemory()
+			require.NoError(t, clip.Copy(clipboard.DefaultRegisterID,
+				clipboard.Data{Text: tc.text}))
+			b.ex.clip = clip
+			b.ex.clipImage = fakeImageDetector(tc.hasImage)
+
+			var session *testVte
+			if tc.terminal {
+				require.NoError(t, b.ex.terminalnewtab(bgctx, "terminal output"))
+				content, err := b.ex.invokeWindow().Content()
+				require.NoError(t, err)
+				tab, ok := content.(*browser.Tab)
+				require.True(t, ok)
+				session, ok = tab.Handler().(*testVte)
+				require.True(t, ok)
+			}
+
+			require.NoError(t, b.ex.pasteFromClipboard(bgctx))
+
+			if session == nil {
+				return
+			}
+			assert.Equal(t, tc.want, session.handledEvents())
+		})
+	}
+}
+
 func TestCopyToClipboard(t *testing.T) {
 	clip := clipboard.NewInMemory()
 	testCopyToClipboard(t, clip, func(ed text.Editor, opts ...text.Option) (
@@ -9573,6 +9632,9 @@ type testVte struct {
 	isComplete bool
 	uri        workspaceapi.URI
 	title      string
+
+	handledMu sync.Mutex
+	handled   []term.Event
 }
 
 func newTestVte() *testVte {
@@ -9587,7 +9649,16 @@ func newTestVteWithConfig(initialCmd []string) *testVte {
 }
 
 func (t *testVte) Handle(ev term.Event) (bool, bool) {
+	t.handledMu.Lock()
+	defer t.handledMu.Unlock()
+	t.handled = append(t.handled, ev)
 	return false, false
+}
+
+func (t *testVte) handledEvents() []term.Event {
+	t.handledMu.Lock()
+	defer t.handledMu.Unlock()
+	return slices.Clone(t.handled)
 }
 
 func (t *testVte) SeekUp() bool {
