@@ -42,6 +42,38 @@ func TestRendererDeallocateReleasesGraphicsStorage(t *testing.T) {
 	assert.NotPanics(t, r.deallocate)
 }
 
+func TestRendererCursorColorsOnMatchingBackground(t *testing.T) {
+	red := color.RGBA{R: 202, G: 124, B: 94, A: 255}
+	black := color.RGBA{A: 255}
+	redCell := term.NewColor(202, 124, 94)
+	creamCell := term.NewColor(255, 255, 234)
+	r := renderer{
+		cursorForeground: black,
+		cursorBackground: red,
+		bgColor:          color.RGBA{R: 255, G: 255, B: 234, A: 255},
+		fgOpacity:        1, bgOpacity: 1,
+	}
+
+	for _, tt := range []struct {
+		name           string
+		cell           term.Cell
+		wantFG, wantBG color.RGBA
+	}{
+		{"Pike error background", term.Cell{Bg: redCell}, red, black},
+		{"ordinary background", term.Cell{}, black, red},
+		{"reversed matching background",
+			term.Cell{Fg: redCell, Attrs: term.AttrReverse}, red, black},
+		{"reversed different background",
+			term.Cell{Fg: creamCell, Bg: redCell, Attrs: term.AttrReverse}, black, red},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fg, bg := r.cursorColors(tt.cell)
+			assert.Equal(t, tt.wantFG, fg, "text inside the block cursor")
+			assert.Equal(t, tt.wantBG, bg, "cursor fill")
+		})
+	}
+}
+
 func BenchmarkRenderLigaturesHD(b *testing.B) {
 	benchmarkRenderLigatures(b, 1920, 1080)
 }

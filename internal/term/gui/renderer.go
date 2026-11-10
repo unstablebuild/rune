@@ -724,23 +724,24 @@ func (r *renderer) renderCursor(
 	pos term.Coordinates, style term.CursorStyle,
 ) {
 	cell := r.getCell(cells, pos)
+	fg, bg := r.cursorColors(cell)
 
 	// empty rect without focus
 	if !ebiten.IsFocused() {
 		b := r.cursorBounds(cell, pos, term.CursorStyleDefault)
 		r.bufVertices, r.bufIndices = drawrect.DrawRect(
 			&r.bufPath, r.bufVertices, r.bufIndices,
-			screen, b[0], b[1], b[2], b[3], r.cursorBackground)
+			screen, b[0], b[1], b[2], b[3], bg)
 		r.bufVertices, r.bufIndices = drawrect.DrawRect(
 			&r.bufPath, r.bufVertices, r.bufIndices,
-			screen, b[0]+1, b[1]+1, b[2]-2, b[3]-2, r.cursorForeground)
+			screen, b[0]+1, b[1]+1, b[2]-2, b[3]-2, fg)
 		return
 	}
 
 	b := r.cursorBounds(cell, pos, style)
 	r.bufVertices, r.bufIndices = drawrect.DrawRect(
 		&r.bufPath, r.bufVertices, r.bufIndices,
-		screen, b[0], b[1], b[2], b[3], r.cursorBackground)
+		screen, b[0], b[1], b[2], b[3], bg)
 	switch style {
 	case term.CursorStyleBlinkingBar, term.CursorStyleSteadyBar,
 		term.CursorStyleBlinkingUnderline, term.CursorStyleSteadyUnderline:
@@ -762,8 +763,22 @@ func (r *renderer) renderCursor(
 	}
 	r.drawer.DrawGlyph(screen, cell.Ch, useFace, r.fontManager.PixelX(pos.X),
 		r.fontManager.PixelY(pos.Y)+r.font.OffsetY,
-		glyphColor(r.cursorForeground, false), false)
+		glyphColor(fg, false), false)
 	r.drawer.Flush(screen)
+}
+
+func (r *renderer) cursorColors(cell term.Cell) (fg, bg color.RGBA) {
+	fg, bg = r.cursorForeground, r.cursorBackground
+	cellBG := tcellToColor(cell.Bg, r.bgColor, r.bgOpacity)
+	if cell.Attrs&term.AttrReverse != 0 {
+		cellBG = tcellToColor(cell.Fg, r.fgColor, r.fgOpacity)
+	}
+	if bg != cellBG {
+		return fg, bg
+	}
+
+	// Swapping also keeps the glyph readable inside a block cursor.
+	return bg, fg
 }
 
 // cursorBounds returns the x, y, width and height in pixels of the shape
