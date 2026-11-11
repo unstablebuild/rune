@@ -818,31 +818,24 @@ func (t *Component) Selection() (data string, ok bool) {
 	if !ok {
 		return
 	}
-	data = cell.RowsToString(cells)
-	data = visibleSelectionText(data)
+	data = selectionText(cells)
 	return data, ok
 }
 
-// visibleSelectionText turns unused (NUL) cells inside a selected line
-// into spaces so gaps left by cursor moves copy as they appear, and
-// drops NULs that only pad the end of a line.
-func visibleSelectionText(data string) string {
-	if !strings.ContainsRune(data, 0) {
-		return data
-	}
+// selectionText renders selected rows like cell.RowsToString, but
+// handles unused (NUL) cells one row at a time: NULs that pad the end of
+// a row are dropped, while NULs inside a row (gaps left by cursor moves)
+// copy as the spaces the pane shows. Trimming per row, before rows are
+// joined, also drops the padding cell a soft wrap leaves when a wide
+// glyph does not fit at the right margin.
+func selectionText(rows [][]term.Cell) string {
 	var b strings.Builder
-	b.Grow(len(data))
-	start := 0
-	for i := 0; i <= len(data); i++ {
-		if i == len(data) || data[i] == '\n' {
-			line := strings.TrimRight(data[start:i], "\x00")
-			line = strings.ReplaceAll(line, "\x00", " ")
-			b.WriteString(line)
-			if i < len(data) {
-				b.WriteByte('\n')
-			}
-			start = i + 1
+	for i, row := range rows {
+		if i != 0 && (len(row) == 0 || !cell.IsRowWrapped(rows[i-1])) {
+			b.WriteByte('\n')
 		}
+		text := strings.TrimRight(cell.RowsToString(rows[i:i+1]), "\x00")
+		b.WriteString(strings.ReplaceAll(text, "\x00", " "))
 	}
 	return b.String()
 }
