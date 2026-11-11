@@ -76,7 +76,12 @@ func goplsInitializeParams(
 	// Merge user-supplied gopls settings over Rune's defaults. User keys
 	// win at the top level; codelenses and hints maps are merged key by
 	// key so a single key can flip one lens/hint without clearing the rest.
+	// langID and command are Rune routing fields that gopls ignores and
+	// must not be clobbered by user config.
 	for k, v := range userSettings {
+		if k == "langID" || k == "command" {
+			continue
+		}
 		if k == "codelenses" || k == "hints" {
 			if defaultMap, ok := initOptions[k].(map[string]any); ok {
 				if userMap, ok := v.(map[string]any); ok {

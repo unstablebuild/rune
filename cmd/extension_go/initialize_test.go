@@ -89,7 +89,7 @@ func TestGoplsInitializeParamsUserSettings(t *testing.T) {
 		var initOpts map[string]any
 		require.NoError(t, json.Unmarshal(params.InitializeOptions, &initOpts))
 		assert.Equal(t, true, initOpts["semanticTokens"])
-		assert.Equal(t, true, initOpts["langID"])
+		assert.Equal(t, "go", initOpts["langID"])
 	})
 
 	t.Run("user top-level key overrides default", func(t *testing.T) {
@@ -150,7 +150,20 @@ func TestGoplsInitializeParamsUserSettings(t *testing.T) {
 		var initOpts map[string]any
 		require.NoError(t, json.Unmarshal(params.InitializeOptions, &initOpts))
 		assert.Equal(t, true, initOpts["semanticTokens"])
-		assert.Equal(t, true, initOpts["langID"])
+		assert.Equal(t, "go", initOpts["langID"])
+	})
+
+	t.Run("langID and command routing fields are not clobbered", func(t *testing.T) {
+		params, err := goplsInitializeParams("file:///tmp/repo", goplsDebugOptions{}, "", map[string]any{
+			"langID": "rust",
+			"command": "not-a-gopls-command",
+		})
+		require.NoError(t, err)
+
+		var initOpts map[string]any
+		require.NoError(t, json.Unmarshal(params.InitializeOptions, &initOpts))
+		assert.Equal(t, "go", initOpts["langID"])
+		assert.NotEqual(t, "not-a-gopls-command", initOpts["command"])
 	})
 }
 
