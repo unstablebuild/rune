@@ -31,30 +31,25 @@ import (
 // wrapped in `sh -c <quoted line>` so that the shell interprets pipes,
 // redirections, command substitutions, globs, and the like.
 //
+// Args are shell text rather than literal argv: an arg containing
+// whitespace splits into several words. An empty arg is the exception
+// and is always kept as an empty parameter, spelled `""`.
+//
 // An empty args slice is returned unchanged; callers are expected to
 // guard against the empty case before invoking the executor.
 func BuildPluginArgv(args []string) []string {
 	if IsPlainArgv(args) {
 		return args
 	}
-	// A naive space-join silently drops an empty-string element: joined
-	// into bare whitespace, it leaves no token for the shell that later
-	// parses the line (sh -c's own argument splitting) to recover, so
-	// the argument vanishes instead of becoming an empty positional
-	// parameter. Represent it as an explicit empty-string literal so it
-	// survives that re-parse. A lone empty arg (len(args) == 1) is left
-	// alone, since Join trivially returns it with no adjacent token to
-	// be swallowed by, matching the "single empty arg" case already
-	// pinned by TestBuildPluginArgv.
-	parts := args
-	if len(args) > 1 {
-		parts = make([]string, len(args))
-		for i, a := range args {
-			if a == "" {
-				a = `""`
-			}
-			parts[i] = a
+	parts := make([]string, len(args))
+	for i, a := range args {
+		if a == "" {
+			// Join renders an empty arg as bare whitespace, which sh
+			// -c's word splitting drops. Spell it `""` so it survives
+			// as a positional parameter.
+			a = `""`
 		}
+		parts[i] = a
 	}
 	line := strings.Join(parts, " ")
 	return []string{"sh", "-c", Quote(line)}
