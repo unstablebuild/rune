@@ -47,6 +47,6 @@ func (c stitchingClipboard) Paste(registerID string) (clipboard.Data, error) {
 }
 
 func (c stitchingClipboard) Copy(registerID string, data clipboard.Data) error {
-	data.Text = strings.ReplaceAll(data.Text, "\x00", "")
+	data.Text = visibleSelectionText(data.Text)
 	return c.root.Copy(registerID, data)
 }

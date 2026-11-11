@@ -976,6 +976,55 @@ func TestComponentSelectionUnwrapsSoftWrappedLines(t *testing.T) {
 	}
 }
 
+func TestComponentSelectionKeepsSpacesFromCursorMoves(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		desc  string
+		input string
+		endX  int
+		want  string
+	}{
+		{
+			desc:  "one cell forward",
+			input: "foo\033[Cbar",
+			endX:  6,
+			want:  "foo bar",
+		},
+		{
+			desc:  "three cells forward",
+			input: "foo\033[3Cbar",
+			endX:  8,
+			want:  "foo   bar",
+		},
+		{
+			desc:  "cursor address into the same row",
+			input: "foo\033[1;6Hbar",
+			endX:  7,
+			want:  "foo  bar",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+
+			comp, err := NewComponent(&testExecutor{}, &testExecutor{},
+				&mockTabManager{}, DefaultConfig())
+			require.NoError(t, err)
+			require.NoError(t, comp.Resize(20, 3))
+
+			comp.parser.AdvanceBytes([]byte(tc.input))
+
+			comp.Select(term.Coordinates{})
+			comp.SelectEnd(term.Coordinates{X: tc.endX})
+			got, ok := comp.Selection()
+			require.True(t, ok)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestComponentWidenWhileScrolledUpKeepsContentVisible(t *testing.T) {
 	t.Parallel()
 

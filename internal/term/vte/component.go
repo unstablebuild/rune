@@ -819,8 +819,32 @@ func (t *Component) Selection() (data string, ok bool) {
 		return
 	}
 	data = cell.RowsToString(cells)
-	data = strings.ReplaceAll(data, "\x00", "")
+	data = visibleSelectionText(data)
 	return data, ok
+}
+
+// visibleSelectionText turns unused (NUL) cells inside a selected line
+// into spaces so gaps left by cursor moves copy as they appear, and
+// drops NULs that only pad the end of a line.
+func visibleSelectionText(data string) string {
+	if !strings.ContainsRune(data, 0) {
+		return data
+	}
+	var b strings.Builder
+	b.Grow(len(data))
+	start := 0
+	for i := 0; i <= len(data); i++ {
+		if i == len(data) || data[i] == '\n' {
+			line := strings.TrimRight(data[start:i], "\x00")
+			line = strings.ReplaceAll(line, "\x00", " ")
+			b.WriteString(line)
+			if i < len(data) {
+				b.WriteByte('\n')
+			}
+			start = i + 1
+		}
+	}
+	return b.String()
 }
 
 // OnFocusChange allows clients to report whether this vte.Component is on focus or not.
