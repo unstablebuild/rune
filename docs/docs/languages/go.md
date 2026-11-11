@@ -116,6 +116,46 @@ add the full JSON-RPC trace when protocol messages are needed.
 Setting `debug.logfile` tells gopls to write its logs to that file instead of
 stderr, so those logs do not appear in `process stdio`.
 
+### gopls server settings
+
+gopls v0.23 and later opt many behaviors into initialization settings that
+Rune forwards to the server. You can supply any gopls setting under
+`extensions.go.config.gopls` in your `config.yaml`:
+
+```yaml tab
+extensions:
+  go:
+    config:
+      gopls:
+        fileWatcher: true
+        vulncheck: "imports"
+        codelenses:
+          gc_details: false
+          tidy: true
+        hints:
+          parameterNames: false
+```
+
+User keys win over Rune's built-in defaults. The `codelenses` and `hints`
+maps are merged key by key, so setting `gc_details: false` disables just that
+lens without clearing every other lens Rune enables by default.
+
+Settings you are likely to adjust:
+
+| Setting | What it does |
+|---------|--------------|
+| `fileWatcher` | When `true`, gopls watches the filesystem for file changes instead of polling. |
+| `vulncheck` | Vulnerability analysis mode: `"off"`, `"imports"`, or `"callchain"`. |
+| `codelenses.<name>` | Per-code-lens toggle (e.g. `gc_details`, `tidy`, `test`, `vendor`). |
+| `hints.<name>` | Per-inlay-hint toggle (e.g. `parameterNames`, `constantValues`, `rangeVariableTypes`). |
+
+See the [gopls settings reference](https://github.com/golang/tools/blob/master/gopls/doc/settings.md)
+for the full list of supported settings and their defaults.
+
+Rune's defaults enable all codelenses and hints listed in
+`goplsInitializeParams`. If you only want to change one lens or hint, set
+just that key under `codelenses` or `hints`; the rest keep Rune's defaults.
+
 ### Interesting queries
 
 Some `lsp` queries are more powerful than they first appear. The
