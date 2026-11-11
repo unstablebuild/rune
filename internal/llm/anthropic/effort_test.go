@@ -37,6 +37,7 @@ func TestDefaultEffortFor(t *testing.T) {
 		{ClaudeSonnet5, "high"},
 		{ClaudeFable5, "high"},
 		{ClaudeFable5Dot1, "high"},
+		{ClaudeFable5Dot2, "high"},
 		{ClaudeOpus4Dot8, "high"},
 		{ClaudeOpus4Dot7, "high"},
 		{ClaudeOpus4Dot6, "high"},
