@@ -127,8 +127,8 @@ extensions:
   go:
     config:
       gopls:
-        fileWatcher: true
-        vulncheck: "imports"
+        fileWatcher: "poll"
+        vulncheck: "Imports"
         codelenses:
           gc_details: false
           tidy: true
@@ -144,8 +144,8 @@ Settings you are likely to adjust:
 
 | Setting | What it does |
 |---------|--------------|
-| `fileWatcher` | When `true`, gopls watches the filesystem for file changes instead of polling. |
-| `vulncheck` | Vulnerability analysis mode: `"off"`, `"imports"`, or `"callchain"`. |
+| `fileWatcher` | Filesystem watcher mode: `"off"`, `"poll"`, or `"fsnotify"`. `"poll"` scans periodically; `"fsnotify"` uses OS file watchers. |
+| `vulncheck` | Vulnerability analysis mode: `"Prompt"` (default), `"Imports"`, or `"Off"`. |
 | `codelenses.<name>` | Per-code-lens toggle (e.g. `gc_details`, `tidy`, `test`, `vendor`). |
 | `hints.<name>` | Per-inlay-hint toggle (e.g. `parameterNames`, `constantValues`, `rangeVariableTypes`). |
 
@@ -155,6 +155,45 @@ for the full list of supported settings and their defaults.
 Rune's defaults enable all codelenses and hints listed in
 `goplsInitializeParams`. If you only want to change one lens or hint, set
 just that key under `codelenses` or `hints`; the rest keep Rune's defaults.
+
+#### Analyzers
+
+The `analyses` map lets you enable or disable individual gopls analyzers by
+name. Unknown analyzer names are silently ignored by gopls, so the name must
+match exactly.
+
+| Analyzer | Notes |
+|----------|-------|
+| `fieldalignment` | Reports structs whose fields could be reordered to use less memory. **The real analyzer name is `fieldalignment`**, not `fieldassignment` (as some release notes say). Off by default. |
+| `atomictypes` | Suggests `sync/atomic` types instead of manual locking. On by default in v0.22+. |
+| `embedlit` | Drops redundant embedded-struct literals under Go 1.27. On by default in v0.22+. |
+| `scannererr` | Flags missing `Err()` after a `bufio.Scanner` loop. On by default in v0.22+. |
+| `writestring` | Flags `WriteString(a+b)`. On by default in v0.22+. |
+| `sqlrowserr` | Flags missing `Err()` after a `sql.Rows` loop. New in v0.23. |
+
+Renamed analyzers: the `waitgroup` modernizer is now `waitgroupgo` (`waitgroup` remains the misuse checker), and the `errorsastype` shadowing analyzer is now `errorsastypeshadow` (`errorsastype` remains the modernizer).
+
+Example:
+
+```yaml
+extensions:
+  go:
+    config:
+      gopls:
+        analyses:
+          fieldalignment: true
+```
+
+#### Experimental settings
+
+| Setting | Values | Notes |
+|---------|--------|-------|
+| `renameMovesSubpackages` | `true`/`false` | Renaming a package also moves its subdirectories. Off by default. |
+| `fileWatcher` | `"off"`, `"poll"`, `"fsnotify"` | Watches the filesystem for changes instead of polling. `"poll"` scans every 1-2s; `"fsnotify"` uses OS watchers and can exhaust file descriptors on macOS. |
+
+See the [gopls settings reference](https://github.com/golang/tools/blob/master/gopls/doc/settings.md)
+and [analyzers reference](https://github.com/golang/tools/blob/master/gopls/doc/analyzers.md)
+for the full list.
 
 ### Interesting queries
 
@@ -277,6 +316,29 @@ All of these act on the cursor or the current selection.
 | `go vulncheck` | Run govulncheck for known vulnerabilities reachable by the code. |
 | `go generate` | Run `go generate` for the `//go:generate` directive nearest the cursor. |
 | `go regenerate-cgo` | Re-run cgo to regenerate Go declarations after editing C code. |
+
+### Vulnerability checks
+
+gopls v0.22+ shows a vulnerability prompt when a `go.mod` or `go.work` is
+created or saved with changed require/exclude/replace directives:
+
+> "Dependencies changed in ... Run govulncheck to check for vulnerabilities?"
+
+You can answer **Yes**, **No**, **Always**, or **Never**. After a scan that
+finds issues, a second prompt offers **Upgrade All** (runs `go get`, then
+`go mod tidy`) or **Ignore**.
+
+Always/Never is persisted in `gopls/vulncheck/settings.json` under your user
+config directory:
+
+- macOS: `~/Library/Application Support/gopls/vulncheck/settings.json`
+- Linux: `$XDG_CONFIG_HOME` or `~/.config/gopls/vulncheck/settings.json`
+- Overridable with `GOPLS_CONFIG_DIR`; delete the file to reset.
+
+To opt out of the prompt entirely, set `vulncheck` to `"Imports"` or `"Off"`
+as an initialization option under `extensions.go.config.gopls` (see gopls server
+settings above). `go vulncheck` (the command) runs govulncheck on demand and is
+separate from the automatic prompt.
 
 ## Key bindings
 
