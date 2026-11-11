@@ -45,7 +45,7 @@ type goplsDebugOptions struct {
 }
 
 func goplsInitializeParams(
-	rootURI string, dbg goplsDebugOptions, binPath string,
+	rootURI string, dbg goplsDebugOptions, binPath string, userSettings map[string]any,
 ) (semanticapi.InitializeParams, error) {
 	command := goplsCommand(dbg, binPath)
 	initOptions := map[string]any{
@@ -71,6 +71,28 @@ func goplsInitializeParams(
 			"parameterNames":         true,
 			"rangeVariableTypes":     true,
 		},
+	}
+
+	// Merge user-supplied gopls settings over Rune's defaults. User keys
+	// win at the top level; codelenses and hints maps are merged key by
+	// key so a single key can flip one lens/hint without clearing the rest.
+	for k, v := range userSettings {
+		if k == "codelenses" || k == "hints" {
+			if defaultMap, ok := initOptions[k].(map[string]any); ok {
+				if userMap, ok := v.(map[string]any); ok {
+					merged := make(map[string]any, len(defaultMap))
+					for dk, dv := range defaultMap {
+						merged[dk] = dv
+					}
+					for uk, uv := range userMap {
+						merged[uk] = uv
+					}
+					initOptions[k] = merged
+					continue
+				}
+			}
+		}
+		initOptions[k] = v
 	}
 
 	initOptionsData, err := json.Marshal(initOptions)

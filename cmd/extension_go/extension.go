@@ -173,8 +173,9 @@ func initializeGoRoot(
 	root langext.Root,
 ) error {
 	dbg := readGoplsDebugOptions(cfg)
+	userSettings := readGoplsSettings(cfg)
 	goplsBin := resolveGoplsForRoot(ctx, fs, exec, tools, cfg, notify, scheme)
-	params, err := goplsInitializeParams(root.URI, dbg, goplsBin)
+	params, err := goplsInitializeParams(root.URI, dbg, goplsBin, userSettings)
 	if err != nil {
 		return fmt.Errorf("build init params: %w", err)
 	}
@@ -270,4 +271,19 @@ func readGoplsLspPath(cfg config.Config, notify browserapi.Notifications) (strin
 		return "", false
 	}
 	return v, v != ""
+}
+
+// readGoplsSettings reads user-supplied gopls settings from
+// extensions.go.config.gopls and returns them as a map. A nil map is
+// returned when the key is absent so callers can always pass it through
+// to goplsInitializeParams without extra nil checks.
+func readGoplsSettings(cfg config.Config) map[string]any {
+	if cfg == nil {
+		return nil
+	}
+	raw, err := cfg.GetMap("gopls")
+	if err != nil {
+		return nil
+	}
+	return raw
 }
