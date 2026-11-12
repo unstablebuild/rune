@@ -174,6 +174,9 @@ func TestKeenableSearchErrors(t *testing.T) {
 func TestKeenableSearchHonorsContext(t *testing.T) {
 	started := make(chan struct{})
 	k := keenableServer(t, "", func(_ http.ResponseWriter, r *http.Request) {
+		// The server notices a dropped connection, and cancels the
+		// request's context, only once the body has been read.
+		_, _ = io.Copy(io.Discard, r.Body)
 		close(started)
 		<-r.Context().Done()
 	})
