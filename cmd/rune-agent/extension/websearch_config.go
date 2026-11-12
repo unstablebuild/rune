@@ -19,6 +19,7 @@ package extension
 import (
 	"errors"
 	"log/slog"
+	"strings"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
@@ -47,7 +48,7 @@ func webSearchTool(
 		}
 		return nil
 	}
-	switch provider {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "":
 		return nil
 	case "keenable":

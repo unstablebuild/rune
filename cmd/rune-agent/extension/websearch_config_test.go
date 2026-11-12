@@ -37,6 +37,7 @@ func TestWebSearchToolIsOffUnlessAProviderIsNamed(t *testing.T) {
 		{"no web_search block", map[string]any{}},
 		{"no provider", map[string]any{"web_search": map[string]any{}}},
 		{"empty provider", map[string]any{"web_search": map[string]any{"provider": ""}}},
+		{"blank provider", map[string]any{"web_search": map[string]any{"provider": "  "}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -48,17 +49,23 @@ func TestWebSearchToolIsOffUnlessAProviderIsNamed(t *testing.T) {
 }
 
 func TestWebSearchToolKeenable(t *testing.T) {
-	var asked []string
-	getenv := func(name string) string {
-		asked = append(asked, name)
-		return ""
+	for _, provider := range []string{"keenable", "Keenable", " KEENABLE "} {
+		t.Run(provider, func(t *testing.T) {
+			var asked []string
+			getenv := func(name string) string {
+				asked = append(asked, name)
+				return ""
+			}
+			noti := &capturingNotifications{}
+			tool := webSearchTool(config.MapConfig(map[string]any{
+				"web_search": map[string]any{"provider": provider},
+			}), noti, getenv)
+			require.NotNil(t, tool)
+			assert.Equal(t, "web_search", tool.Definition().Function.Name)
+			assert.Equal(t, []string{"KEENABLE_API_KEY"}, asked)
+			assert.Empty(t, noti.captured())
+		})
 	}
-	tool := webSearchTool(config.MapConfig(map[string]any{
-		"web_search": map[string]any{"provider": "keenable"},
-	}), &capturingNotifications{}, getenv)
-	require.NotNil(t, tool)
-	assert.Equal(t, "web_search", tool.Definition().Function.Name)
-	assert.Equal(t, []string{"KEENABLE_API_KEY"}, asked)
 }
 
 func TestWebSearchToolWarnsAboutUnknownProviders(t *testing.T) {

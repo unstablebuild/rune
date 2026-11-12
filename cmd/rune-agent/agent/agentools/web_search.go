@@ -35,6 +35,8 @@ const (
 	// webSearchMaxSnippetBytes caps each result's excerpt. Providers
 	// return up to a few kilobytes of page text per hit, and the agent
 	// can open the page with web_browser when the excerpt falls short.
+	// Providers that can cut snippets server-side are asked for the same
+	// length.
 	webSearchMaxSnippetBytes = 1500
 )
 
@@ -141,7 +143,7 @@ func (t *WebSearch) NeedsDeterministicOrder() bool { return false }
 func (t *WebSearch) Execute(ctx context.Context, arguments string) agent.ToolResult {
 	var args webSearchArgs
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return webSearchError(fmt.Sprintf("invalid arguments: %v", err))
+		return webBrowserError(fmt.Sprintf("invalid arguments: %v", err))
 	}
 	q := WebSearchQuery{
 		Query:      strings.TrimSpace(args.Query),
@@ -149,7 +151,7 @@ func (t *WebSearch) Execute(ctx context.Context, arguments string) agent.ToolRes
 		Site:       strings.TrimSpace(args.Site),
 	}
 	if q.Query == "" {
-		return webSearchError("query is required")
+		return webBrowserError("query is required")
 	}
 	switch {
 	case q.MaxResults <= 0:
@@ -162,7 +164,7 @@ func (t *WebSearch) Execute(ctx context.Context, arguments string) agent.ToolRes
 	defer cancel()
 	results, err := t.provider.Search(ctx, q)
 	if err != nil {
-		return webSearchError(fmt.Sprintf("%s search: %v", t.provider.Name(), err))
+		return webBrowserError(fmt.Sprintf("%s search: %v", t.provider.Name(), err))
 	}
 	if len(results) > q.MaxResults {
 		results = results[:q.MaxResults]
@@ -179,7 +181,7 @@ func formatWebSearchResults(results []WebSearchResult) string {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		fmt.Fprintf(&b, "%d. %s\n   %s\n", i+1, flattenWhitespace(r.Title), r.URL)
+		fmt.Fprintf(&b, "%d. %s\n   %s\n", i+1, flattenWhitespace(r.Title), flattenWhitespace(r.URL))
 		if snippet := flattenWhitespace(r.Snippet); snippet != "" {
 			fmt.Fprintf(&b, "   %s\n", agent.TruncateLine(snippet, webSearchMaxSnippetBytes))
 		}
@@ -189,8 +191,4 @@ func formatWebSearchResults(results []WebSearchResult) string {
 
 func flattenWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
-}
-
-func webSearchError(msg string) agent.ToolResult {
-	return agent.ToolResult{Content: "error: " + msg, IsError: true}
 }

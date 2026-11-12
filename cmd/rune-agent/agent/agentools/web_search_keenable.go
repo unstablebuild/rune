@@ -32,8 +32,14 @@ const (
 	// keenableAppTitle names the calling app. Keenable rejects requests
 	// that carry neither an API key nor this header.
 	keenableAppTitle = "Rune"
+	// keenableSnippetMaxLength asks Keenable to cut each snippet to the
+	// length the tool keeps, so the server trims the text and the response
+	// stays small. Keenable accepts 180 to 10000 and counts characters, so
+	// the tool still trims non-ASCII text that runs past the byte cap.
+	keenableSnippetMaxLength = webSearchMaxSnippetBytes
 	// keenableMaxResponseBytes bounds the response body read into
-	// memory: 20 results of a few kilobytes each fit with room to spare.
+	// memory: 20 results with trimmed snippets take a few tens of
+	// kilobytes.
 	keenableMaxResponseBytes = 1 << 20
 )
 
@@ -59,9 +65,10 @@ func NewKeenableSearch(apiKey string) *KeenableSearch {
 }
 
 type keenableSearchRequest struct {
-	Query      string `json:"query"`
-	MaxResults int    `json:"max_results,omitempty"`
-	Site       string `json:"site,omitempty"`
+	Query            string `json:"query"`
+	MaxResults       int    `json:"max_results,omitempty"`
+	Site             string `json:"site,omitempty"`
+	SnippetMaxLength int    `json:"snippet_max_length"`
 }
 
 type keenableSearchResponse struct {
@@ -84,7 +91,12 @@ func (k *KeenableSearch) Name() string { return "Keenable" }
 
 // Search satisfies WebSearchProvider.
 func (k *KeenableSearch) Search(ctx context.Context, q WebSearchQuery) ([]WebSearchResult, error) {
-	body, err := json.Marshal(keenableSearchRequest(q))
+	body, err := json.Marshal(keenableSearchRequest{
+		Query:            q.Query,
+		MaxResults:       q.MaxResults,
+		Site:             q.Site,
+		SnippetMaxLength: keenableSnippetMaxLength,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -108,12 +120,16 @@ func (k *KeenableSearch) Search(ctx context.Context, q WebSearchQuery) ([]WebSea
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, keenableMaxResponseBytes))
+	// Read one byte past the limit to tell a full response from a cut one.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, keenableMaxResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, k.statusError(resp.StatusCode, data)
+	}
+	if len(data) > keenableMaxResponseBytes {
+		return nil, fmt.Errorf("response is larger than %d bytes", keenableMaxResponseBytes)
 	}
 
 	var parsed keenableSearchResponse
