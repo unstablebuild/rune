@@ -1993,3 +1993,81 @@ func BenchmarkRowScannerScanWrapped(b *testing.B) {
 		})
 	}
 }
+
+func TestSplitPosition(t *testing.T) {
+	suite := []struct {
+		description string
+		path        string
+		wantPath    string
+		wantLine    int
+		wantCol     int
+		wantOK      bool
+	}{
+		{description: "no position", path: "/x/y.go", wantPath: "/x/y.go"},
+		{description: "a line", path: "/x/y.go:7",
+			wantPath: "/x/y.go", wantLine: 7, wantCol: 1, wantOK: true},
+		{description: "a line and a column", path: "/x/y.go:7:2",
+			wantPath: "/x/y.go", wantLine: 7, wantCol: 2, wantOK: true},
+		{description: "a column of zero is not a position",
+			path: "/x/y.go:7:0", wantPath: "/x/y.go:7:0"},
+		{description: "a line of zero is not a position",
+			path: "/x/y.go:0", wantPath: "/x/y.go:0"},
+		{description: "a drive letter is not a position", path: "C:/x/a.go:3:4",
+			wantPath: "C:/x/a.go", wantLine: 3, wantCol: 4, wantOK: true},
+		{description: "a colon in the name is kept", path: "/a:b.go:1",
+			wantPath: "/a:b.go", wantLine: 1, wantCol: 1, wantOK: true},
+		{description: "a third number is not a position",
+			path: "/x/y.go:7:2:4", wantPath: "/x/y.go:7:2:4"},
+		{description: "a fourth number is not a position",
+			path: "/x.go:1:2:3:4", wantPath: "/x.go:1:2:3:4"},
+		{description: "an empty column is not a position",
+			path: "/x/y.go:1:", wantPath: "/x/y.go:1:"},
+		{description: "an empty line is not a position",
+			path: "/x/y.go::3", wantPath: "/x/y.go::3"},
+	}
+
+	for _, tc := range suite {
+		t.Run(tc.description, func(t *testing.T) {
+			path, line, col, ok := splitPosition(tc.path)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.wantPath, path)
+			assert.Equal(t, tc.wantLine, line)
+			assert.Equal(t, tc.wantCol, col)
+		})
+	}
+}
+
+func TestSchemeLinkPositions(t *testing.T) {
+	suite := []struct {
+		description string
+		text        string
+		wantPath    string
+		wantLine    int
+		wantCol     int
+	}{
+		{description: "a file url with no position", text: "file:///x/y.go",
+			wantPath: "/x/y.go"},
+		{description: "a file url with a line", text: "file:///x/y.go:7",
+			wantPath: "/x/y.go", wantLine: 7, wantCol: 1},
+		{description: "a file url with a line and a column",
+			text: "file:///x/y.go:7:2", wantPath: "/x/y.go", wantLine: 7, wantCol: 2},
+		{description: "a fragment names a line and a column",
+			text: "file:///x/y.go#42:5", wantPath: "/x/y.go", wantLine: 42, wantCol: 5},
+		{description: "a fragment names a line", text: "file:///x/y.go#42",
+			wantPath: "/x/y.go", wantLine: 42, wantCol: 1},
+		{description: "an ambiguous suffix stays in the path",
+			text: "file:///x/y.go:7:2:4", wantPath: "/x/y.go:7:2:4"},
+		{description: "a non-file url carries no position",
+			text: "https://example.com/#42"},
+	}
+
+	for _, tc := range suite {
+		t.Run(tc.description, func(t *testing.T) {
+			link, ok := schemeLink(tc.text)
+			require.True(t, ok)
+			assert.Equal(t, tc.wantPath, link.Path)
+			assert.Equal(t, tc.wantLine, link.Line)
+			assert.Equal(t, tc.wantCol, link.Col)
+		})
+	}
+}
