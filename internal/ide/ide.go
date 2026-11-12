@@ -380,6 +380,20 @@ func (i *IDE) Open(file workspaceapi.URI) error {
 	return i.workspaceHandler.openURI(file, true /* focus */)
 }
 
+// OpenAt opens the given file at the given 1-based line and column
+// (column defaults to 1 when 0), in the currently active workspace. A
+// line of zero opens the file and leaves the cursor where it is.
+func (i *IDE) OpenAt(uri workspaceapi.URI, line, col int) error {
+	return i.workspaceHandler.openURIAt(uri, line, col, true /* focus */)
+}
+
+// OpenPathAt opens the file at the given path, resolved against the
+// focused workspace, at the given 1-based line and column. A path that
+// names no file is reported as an error.
+func (i *IDE) OpenPathAt(path string, line, col int) error {
+	return i.workspaceHandler.openPathAt(path, line, col, true /* focus */)
+}
+
 // DispatchCommand runs cmd in the focused workspace, as if it had been
 // typed in the command prompt. Commands that exit the IDE cannot be run
 // this way: the exit signal is only observable on the handler event
@@ -730,7 +744,13 @@ func (i *IDE) init(
 	intro := i.ideConfig.intro()
 	screensaver := i.ideConfig.screensaver()
 	i.playIntro = i.ideConfig.animationsIntro()
-	i.workspaceHandler.logNonFatalErrs(i.workspaceHandler.focusBrowser(),
+	// The workspace builds in the background and lands on the event
+	// loop, which takes the locker to install it. Reading the focused
+	// browser here has to take it too, or the two race.
+	i.locker.Lock()
+	initialBrowser := i.workspaceHandler.focusBrowser()
+	i.locker.Unlock()
+	i.workspaceHandler.logNonFatalErrs(initialBrowser,
 		configErr, i.ideConfig.errors)
 
 	shutdownShaderCfg := nopShutdownShaderConfig()

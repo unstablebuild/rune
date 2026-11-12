@@ -72,6 +72,7 @@ import (
 	"unstable.build/rune/internal/ide/keymeta"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/ide/vctrl"
+	"unstable.build/rune/internal/linecol"
 	tterm "unstable.build/rune/internal/term"
 	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
@@ -1381,15 +1382,65 @@ func shellInertURL(u *url.URL) string {
 }
 
 // onLinkClick is the link handler of rendered markdown: it opens http(s)
-// links with openURL and leaves every other link to the markdown handler.
+// links with openURL and file links in the editor. A file link may carry a
+// fragment in the form #line or #line:col to open the file at that position.
 func (e *ex) onLinkClick(link *url.URL) bool {
-	if link.Scheme != "http" && link.Scheme != "https" {
-		return false
+	switch link.Scheme {
+	case "http", "https":
+		if err := e.openURL(link); err != nil {
+			_, _ = e.notifications.Notify(browserapi.LevelError, "open %s: %v", link, err)
+		}
+		return true
+	case "file":
+		return e.openFileLink(link)
 	}
-	if err := e.openURL(link); err != nil {
+	return false
+}
+
+// openFileLink opens the file referenced by a file: URL. When the URL's
+// fragment is #line or #line:col, the editor cursor is placed at that
+// position (1-based line and column).
+func (e *ex) openFileLink(link *url.URL) bool {
+	noFragment := *link
+	noFragment.Fragment = ""
+	uri, err := workspaceapi.ParseURI(noFragment.String())
+	if err != nil {
+		uri, err = e.workspace.URI(link.Path)
+		if err != nil {
+			_, _ = e.notifications.Notify(browserapi.LevelError, "open %s: %v", link, err)
+			return true
+		}
+	}
+
+	line, col := 0, 0
+	if fragment := link.Fragment; fragment != "" {
+		if l, c, _, ok := linecol.Parse(fragment); ok {
+			line, col = l, c
+		}
+	}
+	if err := e.openFileAt(uri, line, col); err != nil {
 		_, _ = e.notifications.Notify(browserapi.LevelError, "open %s: %v", link, err)
 	}
 	return true
+}
+
+// openFileAt opens a file in the editor and places the cursor at the
+// given 1-based line and column. A line of zero opens the file and
+// leaves the cursor where it is.
+func (e *ex) openFileAt(uri workspaceapi.URI, line, col int) error {
+	tab, err := e.editFileURI(uri, e.invokeWindow(), false)
+	if err != nil {
+		return err
+	}
+	if line <= 0 {
+		return nil
+	}
+	ed, ok := tab.Handler().(text.Handler)
+	if !ok {
+		return nil
+	}
+	ed.SetCursorAtScroll(linecol.Coord(line, col))
+	return nil
 }
 
 // dispatchLeaf expands a non-alias command's args and dispatches it.

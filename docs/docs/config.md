@@ -513,6 +513,12 @@ available:
   Clicking a link with another scheme with `<meta>` held in the GUI opens it
   in the system browser.
 
+  Holding `<meta>` and clicking a `path:line:column` reference in the
+  rendered frame, the way a compiler error or a stack trace writes it, opens
+  that file in the editor with the cursor on that line and column. A
+  relative path resolves against the workspace root. A `file://` link
+  carries its position the same way, after its path.
+
   ```yaml tab
   meta_open_url: "browser $URL" # or "clipboard", or "! open $URL"
   ```

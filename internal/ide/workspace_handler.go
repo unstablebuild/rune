@@ -5262,6 +5262,33 @@ func (h *workspaceManagerHandler) openURI(file workspaceapi.URI, focus bool) err
 	return err
 }
 
+// openURIAt opens file at the given 1-based line and column (column
+// defaults to 1 when 0). A line of zero opens the file and leaves the
+// cursor where it is.
+func (h *workspaceManagerHandler) openURIAt(uri workspaceapi.URI, line, col int, focus bool) error {
+	ex := h.exHandler(h.focusHandler())
+	if !focus {
+		_, err := ex.comp.Open(uri)
+		return err
+	}
+	return ex.openFileAt(uri, line, col)
+}
+
+// openPathAt resolves a path against the focused workspace and opens it
+// at the given 1-based line and column. A path that names no file is
+// reported as an error.
+func (h *workspaceManagerHandler) openPathAt(path string, line, col int, focus bool) error {
+	ex := h.exHandler(h.focusHandler())
+	uri, err := ex.workspace.URI(path)
+	if err != nil {
+		return err
+	}
+	if _, err := ex.workspace.Stat(path); err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	return h.openURIAt(uri, line, col, focus)
+}
+
 func (h *workspaceManagerHandler) openFile(file string, focus bool) error {
 	ex := h.exHandler(h.focusHandler())
 	uri, err := ex.workspace.URI(file)

@@ -121,28 +121,28 @@ func TestRowScannerScanRow(t *testing.T) {
 			description: "bare https url",
 			row:         cellRow("https://example.com"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 19, url: "https://example.com"},
+				{y: 3, x0: 0, x1: 19, kind: linkScheme, text: "https://example.com"},
 			},
 		},
 		{
 			description: "trailing sentence punctuation is not part of the url",
 			row:         cellRow("see https://example.com."),
 			expected: []linkSpan{
-				{y: 3, x0: 4, x1: 23, url: "https://example.com"},
+				{y: 3, x0: 4, x1: 23, kind: linkScheme, text: "https://example.com"},
 			},
 		},
 		{
 			description: "repeated trailing punctuation is trimmed",
 			row:         cellRow("really? https://example.com?!"),
 			expected: []linkSpan{
-				{y: 3, x0: 8, x1: 27, url: "https://example.com"},
+				{y: 3, x0: 8, x1: 27, kind: linkScheme, text: "https://example.com"},
 			},
 		},
 		{
 			description: "unbalanced closing paren is trimmed",
 			row:         cellRow("(see https://example.com/a)"),
 			expected: []linkSpan{
-				{y: 3, x0: 5, x1: 26, url: "https://example.com/a"},
+				{y: 3, x0: 5, x1: 26, kind: linkScheme, text: "https://example.com/a"},
 			},
 		},
 		{
@@ -151,7 +151,7 @@ func TestRowScannerScanRow(t *testing.T) {
 			expected: []linkSpan{
 				{
 					y: 3, x0: 0, x1: 43,
-					url: "https://en.wikipedia.org/wiki/Go_(language)",
+					kind: linkScheme, text: "https://en.wikipedia.org/wiki/Go_(language)",
 				},
 			},
 		},
@@ -159,22 +159,112 @@ func TestRowScannerScanRow(t *testing.T) {
 			description: "unbalanced closing bracket is trimmed",
 			row:         cellRow("[https://example.com/a]"),
 			expected: []linkSpan{
-				{y: 3, x0: 1, x1: 22, url: "https://example.com/a"},
+				{y: 3, x0: 1, x1: 22, kind: linkScheme, text: "https://example.com/a"},
 			},
 		},
 		{
 			description: "http scheme",
 			row:         cellRow("http://localhost:8080/x"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 23, url: "http://localhost:8080/x"},
+				{y: 3, x0: 0, x1: 23, kind: linkScheme, text: "http://localhost:8080/x"},
 			},
 		},
 		{
 			description: "file scheme",
 			row:         cellRow("file:///tmp/notes.md"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 20, url: "file:///tmp/notes.md"},
+				{y: 3, x0: 0, x1: 20, kind: linkScheme, text: "file:///tmp/notes.md"},
 			},
+		},
+		{
+			description: "a file url carries a position",
+			row:         cellRow("file:///x/y.go:7:2"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 18, kind: linkScheme, text: "file:///x/y.go:7:2"},
+			},
+		},
+		{
+			description: "a file url carries a line",
+			row:         cellRow("file:///x/y.go:7"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 16, kind: linkScheme, text: "file:///x/y.go:7"},
+			},
+		},
+		{
+			description: "a url with a port is one link",
+			row:         cellRow("https://example.com:443"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 23, kind: linkScheme, text: "https://example.com:443"},
+			},
+		},
+		{
+			description: "a compiler error names a file and a position",
+			row:         cellRow("internal/x/y.go:76:7: undefined: foo"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 20, kind: linkPath, link: Link{
+					Path: "internal/x/y.go", Line: 76, Col: 7,
+				}},
+			},
+		},
+		{
+			description: "a test failure names a file and a line",
+			row:         cellRow("    foo_test.go:42: expected 1"),
+			expected: []linkSpan{
+				{y: 3, x0: 4, x1: 18, kind: linkPath, link: Link{
+					Path: "foo_test.go", Line: 42, Col: 1,
+				}},
+			},
+		},
+		{
+			description: "a sentence period is not part of the position",
+			row:         cellRow("see x.go:76."),
+			expected: []linkSpan{
+				{y: 3, x0: 4, x1: 11, kind: linkPath, link: Link{
+					Path: "x.go", Line: 76, Col: 1,
+				}},
+			},
+		},
+		{
+			description: "a parenthesised reference keeps the parenthesis out",
+			row:         cellRow("(internal/x/y.go:76)"),
+			expected: []linkSpan{
+				{y: 3, x0: 1, x1: 19, kind: linkPath, link: Link{
+					Path: "internal/x/y.go", Line: 76, Col: 1,
+				}},
+			},
+		},
+		{
+			description: "a quoted reference keeps the quotes out",
+			row:         cellRow(`"a/b.go:12:3"`),
+			expected: []linkSpan{
+				{y: 3, x0: 1, x1: 12, kind: linkPath, link: Link{
+					Path: "a/b.go", Line: 12, Col: 3,
+				}},
+			},
+		},
+		{
+			description: "an address with a port is not a path",
+			row:         cellRow("listening on 127.0.0.1:8080"),
+		},
+		{
+			description: "a version is not a path",
+			row:         cellRow("go1.22:1"),
+		},
+		{
+			description: "a ratio is not a path",
+			row:         cellRow("ratio 1.5:1"),
+		},
+		{
+			description: "a word with a colon is not a path",
+			row:         cellRow("foo:1"),
+		},
+		{
+			description: "a note is not a path",
+			row:         cellRow("note:1"),
+		},
+		{
+			description: "a time is not a path",
+			row:         cellRow("12:30"),
 		},
 		{
 			description: "scheme with no host is not a link",
@@ -186,37 +276,37 @@ func TestRowScannerScanRow(t *testing.T) {
 				term.Cell{}),
 				cellRow("https://b.com")...),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 13, url: "https://a.com"},
-				{y: 3, x0: 14, x1: 27, url: "https://b.com"},
+				{y: 3, x0: 0, x1: 13, kind: linkScheme, text: "https://a.com"},
+				{y: 3, x0: 14, x1: 27, kind: linkScheme, text: "https://b.com"},
 			},
 		},
 		{
 			description: "adjacent urls separated by a space",
 			row:         cellRow("https://a.com https://b.com"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 13, url: "https://a.com"},
-				{y: 3, x0: 14, x1: 27, url: "https://b.com"},
+				{y: 3, x0: 0, x1: 13, kind: linkScheme, text: "https://a.com"},
+				{y: 3, x0: 14, x1: 27, kind: linkScheme, text: "https://b.com"},
 			},
 		},
 		{
 			description: "wide characters shift cell coordinates",
 			row:         cellRow("日本 https://example.com"),
 			expected: []linkSpan{
-				{y: 3, x0: 5, x1: 24, url: "https://example.com"},
+				{y: 3, x0: 5, x1: 24, kind: linkScheme, text: "https://example.com"},
 			},
 		},
 		{
 			description: "a trailing wide character stays in the url",
 			row:         cellRow("https://example.com日"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 20, url: "https://example.com日"},
+				{y: 3, x0: 0, x1: 20, kind: linkScheme, text: "https://example.com日"},
 			},
 		},
 		{
 			description: "angle brackets delimit the url",
 			row:         cellRow("<https://example.com>"),
 			expected: []linkSpan{
-				{y: 3, x0: 1, x1: 20, url: "https://example.com"},
+				{y: 3, x0: 1, x1: 20, kind: linkScheme, text: "https://example.com"},
 			},
 		},
 		{
@@ -225,7 +315,7 @@ func TestRowScannerScanRow(t *testing.T) {
 			expected: []linkSpan{
 				{
 					y: 3, x0: 0, x1: 28,
-					url: "https://example.com/http://x",
+					kind: linkScheme, text: "https://example.com/http://x",
 				},
 			},
 		},
@@ -233,7 +323,7 @@ func TestRowScannerScanRow(t *testing.T) {
 			description: "a false start does not hide the scheme behind it",
 			row:         cellRow("hhttps://a.com"),
 			expected: []linkSpan{
-				{y: 3, x0: 1, x1: 14, url: "https://a.com"},
+				{y: 3, x0: 1, x1: 14, kind: linkScheme, text: "https://a.com"},
 			},
 		},
 		{
@@ -292,7 +382,7 @@ func TestRowScannerScanRow(t *testing.T) {
 			description: "a host of exactly one cell",
 			row:         cellRow("https://a"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 9, url: "https://a"},
+				{y: 3, x0: 0, x1: 9, kind: linkScheme, text: "https://a"},
 			},
 		},
 		{
@@ -311,14 +401,14 @@ func TestRowScannerScanRow(t *testing.T) {
 			description: "a scheme glued to the preceding word",
 			row:         cellRow("xhttps://a.com"),
 			expected: []linkSpan{
-				{y: 3, x0: 1, x1: 14, url: "https://a.com"},
+				{y: 3, x0: 1, x1: 14, kind: linkScheme, text: "https://a.com"},
 			},
 		},
 		{
 			description: "a second scheme inside the first url is not split off",
 			row:         cellRow("https://a.comhttp://b"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 21, url: "https://a.comhttp://b"},
+				{y: 3, x0: 0, x1: 21, kind: linkScheme, text: "https://a.comhttp://b"},
 			},
 		},
 
@@ -335,35 +425,35 @@ func TestRowScannerScanRow(t *testing.T) {
 			description: "every trailing punctuation mark is trimmed",
 			row:         cellRow("https://a.com...!?,;:"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 13, url: "https://a.com"},
+				{y: 3, x0: 0, x1: 13, kind: linkScheme, text: "https://a.com"},
 			},
 		},
 		{
 			description: "repeated unbalanced brackets are all trimmed",
 			row:         cellRow("https://a.com]]]"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 13, url: "https://a.com"},
+				{y: 3, x0: 0, x1: 13, kind: linkScheme, text: "https://a.com"},
 			},
 		},
 		{
 			description: "an unbalanced brace is trimmed",
 			row:         cellRow("https://a.com}"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 13, url: "https://a.com"},
+				{y: 3, x0: 0, x1: 13, kind: linkScheme, text: "https://a.com"},
 			},
 		},
 		{
 			description: "balanced braces are kept",
 			row:         cellRow("https://a.com/{x}"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 17, url: "https://a.com/{x}"},
+				{y: 3, x0: 0, x1: 17, kind: linkScheme, text: "https://a.com/{x}"},
 			},
 		},
 		{
 			description: "nested balanced brackets are kept",
 			row:         cellRow("https://a.com/(x[y])"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 20, url: "https://a.com/(x[y])"},
+				{y: 3, x0: 0, x1: 20, kind: linkScheme, text: "https://a.com/(x[y])"},
 			},
 		},
 
@@ -372,28 +462,28 @@ func TestRowScannerScanRow(t *testing.T) {
 			description: "a tab ends the url",
 			row:         cellRow("https://a.com\tmore"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 13, url: "https://a.com"},
+				{y: 3, x0: 0, x1: 13, kind: linkScheme, text: "https://a.com"},
 			},
 		},
 		{
 			description: "a control character ends the url",
 			row:         append(cellRow("https://a.com"), runeRow(0x01, 'x')...),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 13, url: "https://a.com"},
+				{y: 3, x0: 0, x1: 13, kind: linkScheme, text: "https://a.com"},
 			},
 		},
 		{
 			description: "delete ends the url",
 			row:         append(cellRow("https://a.com"), runeRow(0x7f, 'x')...),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 13, url: "https://a.com"},
+				{y: 3, x0: 0, x1: 13, kind: linkScheme, text: "https://a.com"},
 			},
 		},
 		{
 			description: "every prose delimiter ends the url",
 			row:         cellRow(`https://a.com"'` + "`" + `<>\|^`),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 13, url: "https://a.com"},
+				{y: 3, x0: 0, x1: 13, kind: linkScheme, text: "https://a.com"},
 			},
 		},
 
@@ -402,15 +492,15 @@ func TestRowScannerScanRow(t *testing.T) {
 			description: "a markdown link ends at its closing paren",
 			row:         cellRow("[docs](https://rune.build/docs)"),
 			expected: []linkSpan{
-				{y: 3, x0: 7, x1: 30, url: "https://rune.build/docs"},
+				{y: 3, x0: 7, x1: 30, kind: linkScheme, text: "https://rune.build/docs"},
 			},
 		},
 		{
 			description: "a markdown link whose text is its url",
 			row:         cellRow("[https://a.com](https://a.com)"),
 			expected: []linkSpan{
-				{y: 3, x0: 1, x1: 14, url: "https://a.com"},
-				{y: 3, x0: 16, x1: 29, url: "https://a.com"},
+				{y: 3, x0: 1, x1: 14, kind: linkScheme, text: "https://a.com"},
+				{y: 3, x0: 16, x1: 29, kind: linkScheme, text: "https://a.com"},
 			},
 		},
 		{
@@ -420,24 +510,24 @@ func TestRowScannerScanRow(t *testing.T) {
 			expected: []linkSpan{
 				{
 					y: 3, x0: 12, x1: 62,
-					url: "https://img.shields.io/discord/1068976834382925865",
+					kind: linkScheme, text: "https://img.shields.io/discord/1068976834382925865",
 				},
-				{y: 3, x0: 65, x1: 94, url: "https://discord.gg/ZjZadyC7PK"},
+				{y: 3, x0: 65, x1: 94, kind: linkScheme, text: "https://discord.gg/ZjZadyC7PK"},
 			},
 		},
 		{
 			description: "adjacent markdown links",
 			row:         cellRow("[a](https://a.com)[b](https://b.com)"),
 			expected: []linkSpan{
-				{y: 3, x0: 4, x1: 17, url: "https://a.com"},
-				{y: 3, x0: 22, x1: 35, url: "https://b.com"},
+				{y: 3, x0: 4, x1: 17, kind: linkScheme, text: "https://a.com"},
+				{y: 3, x0: 22, x1: 35, kind: linkScheme, text: "https://b.com"},
 			},
 		},
 		{
 			description: "a reference-style markdown link",
 			row:         cellRow("[https://a.com][1]"),
 			expected: []linkSpan{
-				{y: 3, x0: 1, x1: 14, url: "https://a.com"},
+				{y: 3, x0: 1, x1: 14, kind: linkScheme, text: "https://a.com"},
 			},
 		},
 		{
@@ -446,7 +536,7 @@ func TestRowScannerScanRow(t *testing.T) {
 			expected: []linkSpan{
 				{
 					y: 3, x0: 5, x1: 48,
-					url: "https://en.wikipedia.org/wiki/Go_(language)",
+					kind: linkScheme, text: "https://en.wikipedia.org/wiki/Go_(language)",
 				},
 			},
 		},
@@ -454,14 +544,14 @@ func TestRowScannerScanRow(t *testing.T) {
 			description: "a markdown link to a url with nested brackets",
 			row:         cellRow("[x](https://a.com/(x[y]))"),
 			expected: []linkSpan{
-				{y: 3, x0: 4, x1: 24, url: "https://a.com/(x[y])"},
+				{y: 3, x0: 4, x1: 24, kind: linkScheme, text: "https://a.com/(x[y])"},
 			},
 		},
 		{
 			description: "a markdown link ending a sentence",
 			row:         cellRow("see [a](https://a.com)."),
 			expected: []linkSpan{
-				{y: 3, x0: 8, x1: 21, url: "https://a.com"},
+				{y: 3, x0: 8, x1: 21, kind: linkScheme, text: "https://a.com"},
 			},
 		},
 
@@ -470,7 +560,7 @@ func TestRowScannerScanRow(t *testing.T) {
 			description: "a narrow non-ascii host is kept whole",
 			row:         cellRow("https://café.fr"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 15, url: "https://café.fr"},
+				{y: 3, x0: 0, x1: 15, kind: linkScheme, text: "https://café.fr"},
 			},
 		},
 		{
@@ -480,14 +570,14 @@ func TestRowScannerScanRow(t *testing.T) {
 			description: "a wide rune truncates the url at its continuation half",
 			row:         cellRow("https://例え.jp"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 9, url: "https://例"},
+				{y: 3, x0: 0, x1: 9, kind: linkScheme, text: "https://例"},
 			},
 		},
 		{
 			description: "an emoji ends the url but stays in it",
 			row:         cellRow("https://a.com/😀"),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 15, url: "https://a.com/😀"},
+				{y: 3, x0: 0, x1: 15, kind: linkScheme, text: "https://a.com/😀"},
 			},
 		},
 		{
@@ -500,7 +590,7 @@ func TestRowScannerScanRow(t *testing.T) {
 				cellRow(".fr"),
 			),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 15, url: "https://cafe\u0301.fr"},
+				{y: 3, x0: 0, x1: 15, kind: linkScheme, text: "https://cafe\u0301.fr"},
 			},
 		},
 		{
@@ -510,7 +600,7 @@ func TestRowScannerScanRow(t *testing.T) {
 				clusterCell(2, '👨', zeroWidthJoiner, '👧', zeroWidthJoiner, '👦'),
 			),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 15, url: "https://a.com/👨\u200d👧\u200d👦"},
+				{y: 3, x0: 0, x1: 15, kind: linkScheme, text: "https://a.com/👨\u200d👧\u200d👦"},
 			},
 		},
 		{
@@ -520,7 +610,7 @@ func TestRowScannerScanRow(t *testing.T) {
 				clusterCell(2, regionalJ, regionalP),
 			),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 15, url: "https://a.com/🇯🇵"},
+				{y: 3, x0: 0, x1: 15, kind: linkScheme, text: "https://a.com/🇯🇵"},
 			},
 		},
 		{
@@ -530,7 +620,7 @@ func TestRowScannerScanRow(t *testing.T) {
 				clusterCell(2, '👍', skinToneModifier),
 			),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 15, url: "https://a.com/👍\U0001F3FD"},
+				{y: 3, x0: 0, x1: 15, kind: linkScheme, text: "https://a.com/👍\U0001F3FD"},
 			},
 		},
 		{
@@ -540,7 +630,7 @@ func TestRowScannerScanRow(t *testing.T) {
 				clusterCell(2, '❤', variationSelect),
 			),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 15, url: "https://a.com/❤\ufe0f"},
+				{y: 3, x0: 0, x1: 15, kind: linkScheme, text: "https://a.com/❤\ufe0f"},
 			},
 		},
 		{
@@ -549,7 +639,7 @@ func TestRowScannerScanRow(t *testing.T) {
 				Ch: 'b', Width: 1, Extra: &term.CellExtra{Combining: []rune{}},
 			}),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 10, url: "https://ab"},
+				{y: 3, x0: 0, x1: 10, kind: linkScheme, text: "https://ab"},
 			},
 		},
 		{
@@ -560,7 +650,7 @@ func TestRowScannerScanRow(t *testing.T) {
 				cellRow("b"),
 			),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 9, url: "https://a"},
+				{y: 3, x0: 0, x1: 9, kind: linkScheme, text: "https://a"},
 			},
 		},
 		{
@@ -573,7 +663,7 @@ func TestRowScannerScanRow(t *testing.T) {
 				cellRow("/x"),
 			),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 15, url: "https://a.com/👨\u200d👧"},
+				{y: 3, x0: 0, x1: 15, kind: linkScheme, text: "https://a.com/👨\u200d👧"},
 			},
 		},
 
@@ -582,21 +672,21 @@ func TestRowScannerScanRow(t *testing.T) {
 			description: "a surrogate half is replaced, not fatal",
 			row:         append(cellRow("https://a"), runeRow(0xD800)...),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 10, url: "https://a\uFFFD"},
+				{y: 3, x0: 0, x1: 10, kind: linkScheme, text: "https://a\uFFFD"},
 			},
 		},
 		{
 			description: "a rune past the unicode range is replaced, not fatal",
 			row:         append(cellRow("https://a"), runeRow(utf8.MaxRune+1)...),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 10, url: "https://a\uFFFD"},
+				{y: 3, x0: 0, x1: 10, kind: linkScheme, text: "https://a\uFFFD"},
 			},
 		},
 		{
 			description: "a negative rune is replaced, not fatal",
 			row:         append(cellRow("https://a"), runeRow(-1)...),
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 10, url: "https://a\uFFFD"},
+				{y: 3, x0: 0, x1: 10, kind: linkScheme, text: "https://a\uFFFD"},
 			},
 		},
 		{
@@ -607,7 +697,7 @@ func TestRowScannerScanRow(t *testing.T) {
 				{Ch: '/'}, {Ch: 'a', Width: 255},
 			},
 			expected: []linkSpan{
-				{y: 3, x0: 0, x1: 9, url: "https://a"},
+				{y: 3, x0: 0, x1: 9, kind: linkScheme, text: "https://a"},
 			},
 		},
 	}
@@ -636,7 +726,7 @@ func TestRowScannerReusesScratchWithoutLeaking(t *testing.T) {
 			continue
 		}
 		require.Len(t, got, 1)
-		assert.Equal(t, text, got[0].url)
+		assert.Equal(t, text, got[0].text)
 	}
 }
 
@@ -644,7 +734,7 @@ func TestRowScannerScanRowHandlesAPathologicallyLongURL(t *testing.T) {
 	text := "https://a.example/" + strings.Repeat("x", 8192)
 	got := new(rowScanner).scanRow(0, cellRow(text), nil)
 	require.Len(t, got, 1)
-	assert.Equal(t, text, got[0].url)
+	assert.Equal(t, text, got[0].text)
 	assert.Equal(t, len(text), got[0].x1)
 }
 
@@ -657,7 +747,7 @@ func TestRowScannerScanRowHandlesManyURLsInOneRow(t *testing.T) {
 	got := new(rowScanner).scanRow(0, cellRow(text.String()), nil)
 	require.Len(t, got, count)
 	for i, span := range got {
-		assert.Equal(t, "https://a.co", span.url)
+		assert.Equal(t, "https://a.co", span.text)
 		assert.Equal(t, i*13, span.x0)
 		assert.Equal(t, i*13+12, span.x1)
 	}
@@ -764,8 +854,8 @@ func TestRowScannerJoinsWrappedURLWithGraphemeCluster(t *testing.T) {
 
 	got := new(rowScanner).scan(markWrapped([][]term.Cell{first, second}, 0), nil)
 	assert.Equal(t, []linkSpan{
-		{y: 0, x0: 0, x1: 21, url: whole},
-		{y: 1, x0: 0, x1: 2, url: whole},
+		{y: 0, x0: 0, x1: 21, kind: linkScheme, text: whole},
+		{y: 1, x0: 0, x1: 2, kind: linkScheme, text: whole},
 	}, got)
 }
 
@@ -822,7 +912,11 @@ func FuzzRowScannerScan(f *testing.F) {
 			require.GreaterOrEqual(t, span.x0, 0)
 			require.Greater(t, span.x1, span.x0)
 			require.LessOrEqual(t, span.x1, len(cells[span.y]))
-			require.NotEmpty(t, span.url)
+			if span.kind == linkScheme {
+				require.NotEmpty(t, span.text)
+			} else {
+				require.NotEmpty(t, span.link.Path)
+			}
 		}
 	})
 }
@@ -846,8 +940,8 @@ func TestRowScannerScanAllRows(t *testing.T) {
 	}
 	got := s.scan(cells, nil)
 	assert.Equal(t, []linkSpan{
-		{y: 1, x0: 6, x1: 25, url: "https://example.com"},
-		{y: 2, x0: 0, x1: 13, url: "file:///tmp/a"},
+		{y: 1, x0: 6, x1: 25, kind: linkScheme, text: "https://example.com"},
+		{y: 2, x0: 0, x1: 13, kind: linkScheme, text: "file:///tmp/a"},
 	}, got)
 }
 
@@ -867,8 +961,8 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 			},
 			wrapped: []int{0},
 			expected: []linkSpan{
-				{y: 0, x0: 4, x1: 27, url: "https://rune.build?aaaabbbb=cc"},
-				{y: 1, x0: 0, x1: 7, url: "https://rune.build?aaaabbbb=cc"},
+				{y: 0, x0: 4, x1: 27, kind: linkScheme, text: "https://rune.build?aaaabbbb=cc"},
+				{y: 1, x0: 0, x1: 7, kind: linkScheme, text: "https://rune.build?aaaabbbb=cc"},
 			},
 		},
 		{
@@ -882,15 +976,15 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 			expected: []linkSpan{
 				{
 					y: 0, x0: 0, x1: 25,
-					url: "https://rune.build?aaaaaabbbbbbbbbbbbbbbbbbbbbbbbbcc",
+					kind: linkScheme, text: "https://rune.build?aaaaaabbbbbbbbbbbbbbbbbbbbbbbbbcc",
 				},
 				{
 					y: 1, x0: 0, x1: 25,
-					url: "https://rune.build?aaaaaabbbbbbbbbbbbbbbbbbbbbbbbbcc",
+					kind: linkScheme, text: "https://rune.build?aaaaaabbbbbbbbbbbbbbbbbbbbbbbbbcc",
 				},
 				{
 					y: 2, x0: 0, x1: 2,
-					url: "https://rune.build?aaaaaabbbbbbbbbbbbbbbbbbbbbbbbbcc",
+					kind: linkScheme, text: "https://rune.build?aaaaaabbbbbbbbbbbbbbbbbbbbbbbbbcc",
 				},
 			},
 		},
@@ -902,8 +996,8 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 			},
 			wrapped: []int{0},
 			expected: []linkSpan{
-				{y: 0, x0: 4, x1: 27, url: "https://rune.build?aaaabbbb"},
-				{y: 1, x0: 0, x1: 4, url: "https://rune.build?aaaabbbb"},
+				{y: 0, x0: 4, x1: 27, kind: linkScheme, text: "https://rune.build?aaaabbbb"},
+				{y: 1, x0: 0, x1: 4, kind: linkScheme, text: "https://rune.build?aaaabbbb"},
 			},
 		},
 		{
@@ -913,7 +1007,7 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 				"bbbb",
 			},
 			expected: []linkSpan{
-				{y: 0, x0: 4, x1: 24, url: "https://rune.build/a"},
+				{y: 0, x0: 4, x1: 24, kind: linkScheme, text: "https://rune.build/a"},
 			},
 		},
 		{
@@ -924,7 +1018,7 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 			},
 			wrapped: []int{0},
 			expected: []linkSpan{
-				{y: 0, x0: 4, x1: 27, url: "https://rune.build?aaaa"},
+				{y: 0, x0: 4, x1: 27, kind: linkScheme, text: "https://rune.build?aaaa"},
 			},
 		},
 		{
@@ -935,7 +1029,7 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 			},
 			wrapped: []int{0},
 			expected: []linkSpan{
-				{y: 0, x0: 4, x1: 27, url: "https://rune.build?aaaa"},
+				{y: 0, x0: 4, x1: 27, kind: linkScheme, text: "https://rune.build?aaaa"},
 			},
 		},
 		{
@@ -945,7 +1039,7 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 			},
 			wrapped: []int{0},
 			expected: []linkSpan{
-				{y: 0, x0: 4, x1: 27, url: "https://rune.build?aaaa"},
+				{y: 0, x0: 4, x1: 27, kind: linkScheme, text: "https://rune.build?aaaa"},
 			},
 		},
 		{
@@ -958,7 +1052,7 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 			},
 			wrapped: []int{0},
 			expected: []linkSpan{
-				{y: 0, x0: 4, x1: 27, url: "https://rune.build?aaaa"},
+				{y: 0, x0: 4, x1: 27, kind: linkScheme, text: "https://rune.build?aaaa"},
 			},
 		},
 		{
@@ -969,8 +1063,8 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 			},
 			wrapped: []int{0},
 			expected: []linkSpan{
-				{y: 0, x0: 0, x1: 21, url: "https://rune.build?aabb"},
-				{y: 1, x0: 0, x1: 2, url: "https://rune.build?aabb"},
+				{y: 0, x0: 0, x1: 21, kind: linkScheme, text: "https://rune.build?aabb"},
+				{y: 1, x0: 0, x1: 2, kind: linkScheme, text: "https://rune.build?aabb"},
 			},
 		},
 		{
@@ -983,11 +1077,11 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 			expected: []linkSpan{
 				{
 					y: 0, x0: 5, x1: 39,
-					url: "https://en.wikipedia.org/wiki/Go_(language)",
+					kind: linkScheme, text: "https://en.wikipedia.org/wiki/Go_(language)",
 				},
 				{
 					y: 1, x0: 0, x1: 9,
-					url: "https://en.wikipedia.org/wiki/Go_(language)",
+					kind: linkScheme, text: "https://en.wikipedia.org/wiki/Go_(language)",
 				},
 			},
 		},
@@ -999,9 +1093,33 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 			},
 			wrapped: []int{0},
 			expected: []linkSpan{
-				{y: 0, x0: 7, x1: 30, url: "https://rune.build?aaaabbbb"},
-				{y: 1, x0: 0, x1: 4, url: "https://rune.build?aaaabbbb"},
+				{y: 0, x0: 7, x1: 30, kind: linkScheme, text: "https://rune.build?aaaabbbb"},
+				{y: 1, x0: 0, x1: 4, kind: linkScheme, text: "https://rune.build?aaaabbbb"},
 			},
+		},
+		{
+			description: "a position continued on the next row",
+			rows: []string{
+				"see internal/x/y.go:7",
+				"6:7 more",
+			},
+			wrapped: []int{0},
+			expected: []linkSpan{
+				{y: 0, x0: 4, x1: 21, kind: linkPath, link: Link{
+					Path: "internal/x/y.go", Line: 76, Col: 7,
+				}},
+				{y: 1, x0: 0, x1: 3, kind: linkPath, link: Link{
+					Path: "internal/x/y.go", Line: 76, Col: 7,
+				}},
+			},
+		},
+		{
+			description: "a reference whose path wrapped is not a link",
+			rows: []string{
+				"see internal/x/y.go",
+				":12:3 more",
+			},
+			wrapped: []int{0},
 		},
 	}
 
@@ -1015,10 +1133,10 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 }
 
 // linkTestGUI installs a handler drawing rows and returns the GUI plus the
-// URLs its link observer received.
-func linkTestGUI(t *testing.T, rows ...string) (*GUI, *mockInputManager, *[]*url.URL) {
+// links its link observer received.
+func linkTestGUI(t *testing.T, rows ...string) (*GUI, *mockInputManager, *[]Link) {
 	t.Helper()
-	var opened []*url.URL
+	var opened []Link
 	mock := mockHandler{
 		assertDraw: func(w term.Writer) {
 			for y, row := range rows {
@@ -1028,8 +1146,8 @@ func linkTestGUI(t *testing.T, rows ...string) (*GUI, *mockInputManager, *[]*url
 		assertEvent: func(term.Event) (bool, bool) { return false, true },
 	}
 	g, input := newTestGUI(t, &mock)
-	require.NoError(t, WithLinkObserver(func(u *url.URL) {
-		opened = append(opened, u)
+	require.NoError(t, WithLinkObserver(func(l Link) {
+		opened = append(opened, l)
 	})(g))
 	g.drawHandler(g.ctx)
 	return g, input, &opened
@@ -1082,7 +1200,30 @@ func linkGrid(rows ...string) [][]term.Cell {
 	return grid
 }
 
-func heldScanner(observer func(*url.URL)) *linkScanner {
+// urlLink returns the Link of a scheme link, for the expectations of
+// the scanner tests.
+func urlLink(raw string) Link {
+	u, err := url.Parse(raw)
+	if err != nil {
+		panic(err)
+	}
+	link := Link{URL: u}
+	if u.Scheme == "file" {
+		link.Path = u.Path
+	}
+	return link
+}
+
+// fileURL returns the URL of a file link.
+func fileURL(path string) *url.URL {
+	u, err := url.Parse("file://" + path)
+	if err != nil {
+		panic(err)
+	}
+	return u
+}
+
+func heldScanner(observer func(Link)) *linkScanner {
 	p, _ := recordingPointer()
 	l := newLinkScanner(p)
 	if observer != nil {
@@ -1141,14 +1282,16 @@ func TestLinkScannerOverlayReusesScratchAcrossFrames(t *testing.T) {
 }
 
 func TestLinkScannerHandleMouse(t *testing.T) {
-	cells := linkGrid("see https://example.com and file:///tmp/a")
+	pathCells := linkGrid("see internal/x/y.go:76:7 here")
+	fileCells := linkGrid("see file:///x/y.go:7:2 here")
 
 	suite := []struct {
 		description string
+		cells       [][]term.Cell
 		meta        bool
 		events      []term.Event
 		consumed    []bool
-		opened      []string
+		opened      []Link
 	}{
 		{
 			description: "meta click inside a span opens the link",
@@ -1158,7 +1301,7 @@ func TestLinkScannerHandleMouse(t *testing.T) {
 				{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 6},
 			},
 			consumed: []bool{true, true},
-			opened:   []string{"https://example.com"},
+			opened:   []Link{urlLink("https://example.com")},
 		},
 		{
 			description: "meta click on a file url opens the file",
@@ -1167,7 +1310,32 @@ func TestLinkScannerHandleMouse(t *testing.T) {
 				{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 30},
 			},
 			consumed: []bool{true},
-			opened:   []string{"file:///tmp/a"},
+			opened:   []Link{urlLink("file:///tmp/a")},
+		},
+		{
+			description: "meta click on a bare path opens the file at its position",
+			cells:       pathCells,
+			meta:        true,
+			events: []term.Event{
+				{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 6},
+			},
+			consumed: []bool{true},
+			opened: []Link{{
+				Path: "internal/x/y.go", Line: 76, Col: 7,
+			}},
+		},
+		{
+			description: "meta click on a file url opens the file at its position",
+			cells:       fileCells,
+			meta:        true,
+			events: []term.Event{
+				{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 6},
+			},
+			consumed: []bool{true},
+			opened: []Link{{
+				URL:  fileURL("/x/y.go"),
+				Path: "/x/y.go", Line: 7, Col: 2,
+			}},
 		},
 		{
 			description: "meta click outside every span is forwarded",
@@ -1195,7 +1363,9 @@ func TestLinkScannerHandleMouse(t *testing.T) {
 				{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 8},
 			},
 			consumed: []bool{true, true, true, true},
-			opened:   []string{"https://example.com", "https://example.com"},
+			opened: []Link{
+				urlLink("https://example.com"), urlLink("https://example.com"),
+			},
 		},
 		{
 			description: "right click on a span is forwarded",
@@ -1209,9 +1379,13 @@ func TestLinkScannerHandleMouse(t *testing.T) {
 
 	for _, tc := range suite {
 		t.Run(tc.description, func(t *testing.T) {
-			var opened []string
-			l := heldScanner(func(u *url.URL) {
-				opened = append(opened, u.String())
+			cells := tc.cells
+			if cells == nil {
+				cells = linkGrid("see https://example.com and file:///tmp/a")
+			}
+			var opened []Link
+			l := heldScanner(func(l Link) {
+				opened = append(opened, l)
 			})
 			l.setMeta(tc.meta)
 
@@ -1233,8 +1407,8 @@ func TestLinkScannerHandleMouseWithDefaultObserver(t *testing.T) {
 }
 
 func TestLinkScannerHandleMouseOnUnparseableURL(t *testing.T) {
-	var opened []*url.URL
-	l := heldScanner(func(u *url.URL) { opened = append(opened, u) })
+	var opened []Link
+	l := heldScanner(func(l Link) { opened = append(opened, l) })
 	cells := linkGrid("https://a.com/%zz")
 
 	assert.True(t, l.handleMouse(
@@ -1259,10 +1433,10 @@ func TestLinkScannerClickOnWrappedURLOpensWholeAddress(t *testing.T) {
 		{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 6, MouseY: 0},
 		{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 2, MouseY: 1},
 	} {
-		var opened []string
-		l := heldScanner(func(u *url.URL) { opened = append(opened, u.String()) })
+		var opened []Link
+		l := heldScanner(func(l Link) { opened = append(opened, l) })
 		require.True(t, l.handleMouse(ev, cells))
-		assert.Equal(t, []string{whole}, opened)
+		assert.Equal(t, []Link{urlLink(whole)}, opened)
 	}
 }
 
@@ -1297,7 +1471,7 @@ func TestLinkScannerScanCachesUntilInvalidated(t *testing.T) {
 	require.Len(t, l.spans, 1)
 
 	l.scan(linkGrid("https://b.com https://c.com"))
-	assert.Equal(t, "https://a.com", l.spans[0].url, "cached spans are reused")
+	assert.Equal(t, "https://a.com", l.spans[0].text, "cached spans are reused")
 
 	l.invalidate()
 	l.scan(linkGrid("https://b.com https://c.com"))
@@ -1381,9 +1555,9 @@ func TestGUIMetaClickOpensLinkAndIsNotForwarded(t *testing.T) {
 		},
 	}
 	g, input := newTestGUI(t, &mock)
-	var opened []*url.URL
-	require.NoError(t, WithLinkObserver(func(u *url.URL) {
-		opened = append(opened, u)
+	var opened []Link
+	require.NoError(t, WithLinkObserver(func(l Link) {
+		opened = append(opened, l)
 	})(g))
 	g.drawHandler(g.ctx)
 
@@ -1397,7 +1571,7 @@ func TestGUIMetaClickOpensLinkAndIsNotForwarded(t *testing.T) {
 	require.NoError(t, g.Update())
 
 	require.Len(t, opened, 1)
-	assert.Equal(t, "https://example.com", opened[0].String())
+	assert.Equal(t, urlLink("https://example.com"), opened[0])
 	assert.Empty(t, handled, "the whole gesture is consumed")
 }
 
@@ -1413,9 +1587,9 @@ func TestGUIClickWithoutMetaIsForwarded(t *testing.T) {
 		},
 	}
 	g, _ := newTestGUI(t, &mock)
-	var opened []*url.URL
-	require.NoError(t, WithLinkObserver(func(u *url.URL) {
-		opened = append(opened, u)
+	var opened []Link
+	require.NoError(t, WithLinkObserver(func(l Link) {
+		opened = append(opened, l)
 	})(g))
 	g.drawHandler(g.ctx)
 
@@ -1509,6 +1683,41 @@ func BenchmarkRowScannerScan(b *testing.B) {
 	}
 }
 
+// benchCompilerGrid builds a frame of compiler output, where every row
+// names a file and a position the way a build error does.
+func benchCompilerGrid(rows, cols int) [][]term.Cell {
+	grid := make([][]term.Cell, rows)
+	for y := range grid {
+		text := fmt.Sprintf(
+			"internal/pkg/file%d.go:%d:%d: undefined: something went wrong here", y, y+1, y+2)
+		row := cellRow(text)
+		if len(row) > cols {
+			row = row[:cols]
+		}
+		for len(row) < cols {
+			row = append(row, term.Cell{})
+		}
+		grid[y] = row
+	}
+	return grid
+}
+
+// BenchmarkRowScannerScanCompilerOutput measures the scan over a frame
+// of compiler output, where every row names a file and a position.
+func BenchmarkRowScannerScanCompilerOutput(b *testing.B) {
+	for _, frame := range benchFrames {
+		cells := benchCompilerGrid(frame.rows, frame.cols)
+		b.Run(frame.name, func(b *testing.B) {
+			var s rowScanner
+			var spans []linkSpan
+			b.ReportAllocs()
+			for b.Loop() {
+				spans = s.scan(cells, spans[:0])
+			}
+		})
+	}
+}
+
 func BenchmarkLinkScannerOverlay(b *testing.B) {
 	for _, frame := range benchFrames {
 		cells := benchGrid(frame.rows, frame.cols, 10)
@@ -1542,7 +1751,7 @@ func BenchmarkLinkScannerHandleMouse(b *testing.B) {
 	miss := term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 2, MouseY: 51}
 
 	b.Run("hit", func(b *testing.B) {
-		l := heldScanner(func(*url.URL) {})
+		l := heldScanner(func(Link) {})
 		l.overlay(cells)
 		b.ReportAllocs()
 		for b.Loop() {
@@ -1552,7 +1761,7 @@ func BenchmarkLinkScannerHandleMouse(b *testing.B) {
 	})
 
 	b.Run("miss", func(b *testing.B) {
-		l := heldScanner(func(*url.URL) {})
+		l := heldScanner(func(Link) {})
 		l.overlay(cells)
 		b.ReportAllocs()
 		for b.Loop() {
@@ -1583,8 +1792,8 @@ func TestRowScannerJoinsWrappedURLInsideAPane(t *testing.T) {
 
 	got := new(rowScanner).scan(cells, nil)
 	assert.Equal(t, []linkSpan{
-		{y: 0, x0: left, x1: left + paneWidth, url: whole},
-		{y: 1, x0: left, x1: left + 7, url: whole},
+		{y: 0, x0: left, x1: left + paneWidth, kind: linkScheme, text: whole},
+		{y: 1, x0: left, x1: left + 7, kind: linkScheme, text: whole},
 	}, got)
 }
 
@@ -1595,7 +1804,7 @@ func TestRowScannerJoinsWrappedURLWithShortContinuationRow(t *testing.T) {
 
 	got := new(rowScanner).scan(cells, nil)
 	assert.Equal(t, []linkSpan{
-		{y: 0, x0: left, x1: left + 21, url: "https://rune.build?aa"},
+		{y: 0, x0: left, x1: left + 21, kind: linkScheme, text: "https://rune.build?aa"},
 	}, got)
 }
 
@@ -1605,8 +1814,8 @@ func TestRowScannerJoinsWrappedURLWithLaterCandidateOnTheSameRow(t *testing.T) {
 
 	got := new(rowScanner).scan(cells, nil)
 	assert.Equal(t, []linkSpan{
-		{y: 0, x0: 0, x1: 21, url: "https://rune.build/aabb"},
-		{y: 1, x0: 0, x1: 2, url: "https://rune.build/aabb"},
+		{y: 0, x0: 0, x1: 21, kind: linkScheme, text: "https://rune.build/aabb"},
+		{y: 1, x0: 0, x1: 2, kind: linkScheme, text: "https://rune.build/aabb"},
 	}, got)
 }
 
@@ -1619,8 +1828,8 @@ func TestRowScannerJoinsWrappedURLBreakingOnPunctuation(t *testing.T) {
 	whole := "https://rune-prod.us.auth0.com/api/v2/"
 	got := new(rowScanner).scan(cells, nil)
 	assert.Equal(t, []linkSpan{
-		{y: 0, x0: 11, x1: len(head), url: whole},
-		{y: 1, x0: 0, x1: 17, url: whole},
+		{y: 0, x0: 11, x1: len(head), kind: linkScheme, text: whole},
+		{y: 1, x0: 0, x1: 17, kind: linkScheme, text: whole},
 	}, got)
 }
 
@@ -1634,9 +1843,9 @@ func TestRowScannerJoinsWrappedURLBreakingOnPunctuationRepeatedly(t *testing.T) 
 	whole := "https://rune.build/a,b.c(d)e,f.g/h?i=j,k.l.m/n"
 	got := new(rowScanner).scan(cells, nil)
 	assert.Equal(t, []linkSpan{
-		{y: 0, x0: 0, x1: 21, url: whole},
-		{y: 1, x0: 0, x1: 20, url: whole},
-		{y: 2, x0: 0, x1: 5, url: whole},
+		{y: 0, x0: 0, x1: 21, kind: linkScheme, text: whole},
+		{y: 1, x0: 0, x1: 20, kind: linkScheme, text: whole},
+		{y: 2, x0: 0, x1: 5, kind: linkScheme, text: whole},
 	}, got)
 }
 
@@ -1646,8 +1855,8 @@ func TestRowScannerTrimsWrappedURLOnlyAtItsEnd(t *testing.T) {
 	whole := "https://rune.build/a.b/c"
 	got := new(rowScanner).scan(cells, nil)
 	assert.Equal(t, []linkSpan{
-		{y: 0, x0: 0, x1: 21, url: whole},
-		{y: 1, x0: 0, x1: 3, url: whole},
+		{y: 0, x0: 0, x1: 21, kind: linkScheme, text: whole},
+		{y: 1, x0: 0, x1: 3, kind: linkScheme, text: whole},
 	}, got)
 }
 
@@ -1657,8 +1866,8 @@ func TestRowScannerJoinsWrappedURLWithHostOnTheContinuation(t *testing.T) {
 	whole := "https://rune.build/a"
 	got := new(rowScanner).scan(cells, nil)
 	assert.Equal(t, []linkSpan{
-		{y: 0, x0: 0, x1: 8, url: whole},
-		{y: 1, x0: 0, x1: 12, url: whole},
+		{y: 0, x0: 0, x1: 8, kind: linkScheme, text: whole},
+		{y: 1, x0: 0, x1: 12, kind: linkScheme, text: whole},
 	}, got)
 }
 
@@ -1682,8 +1891,8 @@ func TestRowScannerJoinsWrappedURLInsideAFramedPane(t *testing.T) {
 	whole := "https://rune.build/aabb"
 	got := new(rowScanner).scan(cells, nil)
 	assert.Equal(t, []linkSpan{
-		{y: 0, x0: left, x1: left + paneWidth, url: whole},
-		{y: 1, x0: left, x1: left + 2, url: whole},
+		{y: 0, x0: left, x1: left + paneWidth, kind: linkScheme, text: whole},
+		{y: 1, x0: left, x1: left + 2, kind: linkScheme, text: whole},
 	}, got)
 }
 
@@ -1693,7 +1902,19 @@ func TestRowScannerStopsAtTheChromeBesideAPane(t *testing.T) {
 
 	got := new(rowScanner).scan(cells, nil)
 	assert.Equal(t, []linkSpan{
-		{y: 0, x0: left, x1: left + paneWidth, url: "https://rune.build/aa"},
+		{y: 0, x0: left, x1: left + paneWidth, kind: linkScheme, text: "https://rune.build/aa"},
+	}, got)
+}
+
+func TestRowScannerKeepsTheChromeOutOfABarePath(t *testing.T) {
+	const width, left, paneWidth = 30, 2, 21
+	cells := framed(width, left, paneWidth, "ab.go:12")
+
+	got := new(rowScanner).scan(cells, nil)
+	assert.Equal(t, []linkSpan{
+		{y: 0, x0: left, x1: left + 8, kind: linkPath, link: Link{
+			Path: "ab.go", Line: 12, Col: 1,
+		}},
 	}, got)
 }
 
@@ -1706,8 +1927,8 @@ func TestRowScannerStopsAtTheMarkerBesideAnotherPane(t *testing.T) {
 	whole := "https://rune.build/aabb"
 	got := new(rowScanner).scan(cells, nil)
 	assert.Equal(t, []linkSpan{
-		{y: 0, x0: 0, x1: paneWidth, url: whole},
-		{y: 1, x0: 0, x1: 2, url: whole},
+		{y: 0, x0: 0, x1: paneWidth, kind: linkScheme, text: whole},
+		{y: 1, x0: 0, x1: 2, kind: linkScheme, text: whole},
 	}, got)
 }
 
@@ -1727,10 +1948,10 @@ func TestRowScannerJoinsWrappedURLAcrossFourRows(t *testing.T) {
 	whole := strings.Join(rows, "")
 	got := new(rowScanner).scan(cells, nil)
 	assert.Equal(t, []linkSpan{
-		{y: 0, x0: 0, x1: margin + 1, url: whole},
-		{y: 1, x0: 0, x1: margin + 1, url: whole},
-		{y: 2, x0: 0, x1: margin + 1, url: whole},
-		{y: 3, x0: 0, x1: len(rows[3]), url: whole},
+		{y: 0, x0: 0, x1: margin + 1, kind: linkScheme, text: whole},
+		{y: 1, x0: 0, x1: margin + 1, kind: linkScheme, text: whole},
+		{y: 2, x0: 0, x1: margin + 1, kind: linkScheme, text: whole},
+		{y: 3, x0: 0, x1: len(rows[3]), kind: linkScheme, text: whole},
 	}, got)
 }
 
