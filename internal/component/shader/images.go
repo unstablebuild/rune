@@ -191,6 +191,10 @@ func paintPicture(cells [][]term.Cell, img term.Image, screen image.Rectangle, s
 	}
 	x0, y0, x1, y1 := rasterArea(img, crop)
 	scaleX, scaleY := float64(crop.Dx())/(x1-x0), float64(crop.Dy())/(y1-y0)
+	tile := img.Fit == term.ImageFitTile
+	if tile {
+		scaleX, scaleY = 1, 1
+	}
 	cols := sampleCount(sampleCell.Width * scaleX)
 	rows := sampleCount(sampleCell.Height * scaleY)
 	samples := float64(cols * rows)
@@ -206,13 +210,13 @@ func paintPicture(cells [][]term.Cell, img term.Image, screen image.Rectangle, s
 				if py < y0 || py >= y1 {
 					continue
 				}
-				sy := crop.Min.Y + min(int((py-y0)*scaleY), crop.Dy()-1)
+				sy := crop.Min.Y + texel(py-y0, scaleY, crop.Dy(), tile)
 				for i := range cols {
 					px := (float64(x) + (float64(i)+0.5)/float64(cols)) * sampleCell.Width
 					if px < x0 || px >= x1 {
 						continue
 					}
-					sx := crop.Min.X + min(int((px-x0)*scaleX), crop.Dx()-1)
+					sx := crop.Min.X + texel(px-x0, scaleX, crop.Dx(), tile)
 					pr, pg, pb, pa := premultipliedAt(img.Src, sx, sy)
 					r, g, b, a = r+pr, g+pg, b+pb, a+pa
 				}
@@ -223,8 +227,8 @@ func paintPicture(cells [][]term.Cell, img term.Image, screen image.Rectangle, s
 	}
 }
 
-// rasterArea returns the pixels img's raster spans on cells the size of
-// sampleCell, as its left, top, right and bottom edges.
+// rasterArea returns the pixels img's raster, or its tiles, span on
+// cells the size of sampleCell, as its left, top, right and bottom edges.
 func rasterArea(img term.Image, crop image.Rectangle) (x0, y0, x1, y1 float64) {
 	b := img.Bounds()
 	x0, y0 = float64(b.Min.X)*sampleCell.Width, float64(b.Min.Y)*sampleCell.Height
@@ -238,6 +242,16 @@ func rasterArea(img term.Image, crop image.Rectangle) (x0, y0, x1, y1 float64) {
 	d := img.Offset.Add(img.RasterOffset)
 	x0, y0 = x0+float64(d.X), y0+float64(d.Y)
 	return x0, y0, x0 + w, y0 + h
+}
+
+// texel returns which of a crop side's n texels the raster shows d pixels
+// past its edge, at scale texels a pixel, repeating them when tile is set.
+func texel(d, scale float64, n int, tile bool) int {
+	i := int(d * scale)
+	if tile {
+		return i % n
+	}
+	return min(i, n-1)
 }
 
 func sampleCount(pixels float64) int {
