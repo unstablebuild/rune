@@ -20,8 +20,8 @@ reads them when it starts, so restart it after changing them.
 
 ## Cell shaders
 
-Run `:shaderrun <name> [<duration>] [<fps>]` to play any of them over the
-screen, such as `:shaderrun thunderstorm 10s`. They play for 1s at 30 frames per
+Run `shaderrun <name> [<duration>] [<fps>]` to play any of them over the
+screen, such as `shaderrun thunderstorm 10s`. They play for 1s at 30 frames per
 second unless you say otherwise.
 
 ### Reveals
@@ -78,7 +78,7 @@ they suit [opening a workspace](#when-a-workspace-opens).
 | `radarFrame` | A radar sweep circles the frames of windows. |
 | `nop` | Draws nothing. |
 
-With the built-in logo as your [wallpaper](./wallpaper.md), `:shaderrun intro`
+With the built-in logo as your [wallpaper](./wallpaper.md), `shaderrun intro`
 also plays its intro.
 
 ## Where Rune plays them

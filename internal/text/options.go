@@ -33,12 +33,14 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/component/shader/shaderloop"
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/idelsp/languages"
 	"unstable.build/rune/internal/ide/syntax"
+	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/text/cmdenv"
 )
@@ -693,6 +695,40 @@ func WithFocusTabHighlightAttr(attr term.Attributes) Option {
 func WithFocusTabHighlightChar(r rune) Option {
 	return func(cfg *Config) {
 		cfg.FocusTabHighlightChar = r
+	}
+}
+
+// WithTabImages returns an Option that names the images drawn under the
+// tabs, as browser.Config.TabImages does.
+func WithTabImages(images browser.PromptImages) Option {
+	return func(cfg *Config) {
+		cfg.TabImages = images
+	}
+}
+
+// WithFocusTabHighlightGraphics returns an Option that names the images
+// drawn over the highlight on top of the focused tab, as
+// browser.Config.FocusTabHighlightGraphics does.
+func WithFocusTabHighlightGraphics(g tcomponent.LineGraphics) Option {
+	return func(cfg *Config) {
+		cfg.FocusTabHighlightGraphics = g
+	}
+}
+
+// WithHoverTabAttr returns an Option that configures the attributes of
+// the tab under the pointer, as browser.Config.HoverTabAttr does.
+func WithHoverTabAttr(attr term.Attributes) Option {
+	return func(cfg *Config) {
+		cfg.HoverTabAttr = attr
+	}
+}
+
+// WithTabSounds returns an Option that names the sounds the tabs play
+// through player, as browser.Config.TabSounds does.
+func WithTabSounds(names handler.TabSounds, player sounds.Player) Option {
+	return func(cfg *Config) {
+		cfg.TabSounds = names
+		cfg.SoundPlayer = player
 	}
 }
 

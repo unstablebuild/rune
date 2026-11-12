@@ -19,7 +19,9 @@ diagnostics, and uses Rune's language servers.
 
 This guide is about pointing the harness you already use at Rune's
 capabilities. None of it is required to run Claude Code in Rune; it just
-makes the two fit together.
+makes the two fit together. The last section goes the other way:
+[using Claude Code skills and subagents in Rune
+Agent](#use-claude-code-skills-in-rune-agent).
 
 ## See Claude's status automatically
 
@@ -466,3 +468,86 @@ signature.
 Prefer these over manual find-and-replace, ad hoc formatting commands, or full
 build commands when a focused language-server result is enough.
 ```
+
+## Use Claude Code skills in Rune Agent
+
+Rune Agent reads skills in the same `SKILL.md` format as Claude Code, the
+[Agent Skills](https://agentskills.io/specification) format, so most Claude
+Code skills work in Rune Agent unchanged. Put a skill in one of Rune's
+[skill directories](./skills.md#skill-directories), such as
+`~/.agents/skills`, or add Claude Code's directory with
+`agent skills add-dir`.
+
+A few differences apply to every skill:
+
+- **`name` and `description` are required.** Claude Code falls back to the
+  directory name and the first line of the body. Rune skips a skill
+  without them.
+- **Claude Code's own fields are ignored**, such as `context`, `agent`,
+  `argument-hint`, `hooks` and `disable-model-invocation`. In particular,
+  Rune Agent may load a skill that sets `disable-model-invocation: true`
+  on its own.
+- **`allowed-tools` and `disallowed-tools` do nothing in an ordinary
+  skill.** In Claude Code they pre-approve and remove tools while the
+  skill is active. Rune Agent ignores them, so the skill loads whatever
+  they hold, and its commands go through Rune's command permission prompt
+  as usual.
+
+### Sub-agents
+
+Claude Code runs a skill with `context: fork` in a subagent of the type
+its `agent` field names, and gives it the skill's body as its task. Rune
+Agent ignores `context`, so it loads such a skill into the conversation
+like any other.
+
+A Rune [sub-agent](./sub-agents.md) is a skill with `type: agent`. Its body
+is the sub-agent's system prompt, and its task comes from whoever runs it:
+the text after `/<name>`, or the prompt the agent writes. That makes it
+the counterpart of a Claude Code subagent file in `.claude/agents/`. To
+port one:
+
+1. Move it to `<skill directory>/<name>/SKILL.md`.
+2. Add `type: agent`.
+3. Rename `tools` to `allowed-tools` and `disallowedTools` to
+   `disallowed-tools`, and port their entries as described below.
+4. Set `model` to a model that `agent models` lists, or remove it to use
+   the model of the conversation that spawns the sub-agent.
+
+### Tool rules
+
+In a sub-agent, `allowed-tools` limits the sub-agent to the tools it
+allows and approves nothing, like the `tools` field of a Claude Code
+subagent. Adding `type: agent` to a Claude Code skill therefore turns its
+`allowed-tools` from approvals into limits, so check every entry.
+
+| Claude Code entry | In Rune Agent |
+| --- | --- |
+| `Read`, `Grep`, `Glob`, `Edit` | Rune Agent's own tool names, which `agent tools` lists, such as `read_file`, `search_content` and `find_files`. An entry that names no tool allows nothing. |
+| `Bash`, `Skill`, `Agent` | The same. These names are case-insensitive. |
+| `Bash(git add *)`, `Bash(git add:*)` | The same. |
+| `Bash(*)` | `bash` |
+| `Bash(ls*)`, `Bash(* --version)` | Not accepted: write the program's name in full, as in `bash(ls *)`. |
+| `Bash(${CLAUDE_SKILL_DIR}/scripts/render.sh *)` | `bash($render-chart)`, with the skill's name, which allows the programs in its `scripts/` directory. See [Skills as tools](./sub-agents.md#skills-as-tools). |
+| `Skill(deploy *)` | `skill(deploy)`. Rune patterns match skill names, as in `skill(deploy-*)`. |
+| `Agent(worker, researcher)`, `Task(worker)` | One entry per type: `agent(worker) agent(researcher)`. Claude Code ignores such a list in a subagent file; Rune Agent enforces it. |
+| `mcp__github__*` | `github_*` |
+| `Read(./.env)`, `WebFetch(domain:example.com)` | Not accepted: only `bash`, `skill` and `agent` take a pattern. |
+
+Rune does not load a sub-agent with an entry it does not accept, and
+logs a warning that names the entry.
+
+Claude Code matches the text of a command, while Rune checks every program
+a command runs, as [How commands are
+checked](./sub-agents.md#how-commands-are-checked) describes. Two more
+differences follow:
+
+- **A `*` in the middle of a pattern matches a single argument.** In
+  Claude Code it matches any text. `bash(git log * main)` matches
+  `git log -5 main` but not `git log --oneline -5 main`. An allowed
+  pattern is therefore stricter in Rune and a disallowed one looser:
+  `bash(git push * --force)` does not reject
+  `git push origin main --force`. Disallow a command with a trailing `*`
+  instead, as in `bash(git push *)`.
+- **A disallowed pattern keeps the shell.** In a Claude Code subagent,
+  `disallowedTools: Bash(git push *)` removes the shell. In Rune Agent, it
+  only rejects matching commands. Write `bash` to remove the shell.

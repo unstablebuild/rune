@@ -44,6 +44,7 @@ type cursorLocation struct {
 type cursorEditor interface {
 	Editor(workspaceapi.URI) (textapi.Handler, error)
 	CellView(textapi.Handler) textapi.CellView
+	SetCursor(textapi.Handler, term.Coordinates) error
 }
 
 // recordCursor mirrors a cursor event. Chat tabs are not text
@@ -61,16 +62,18 @@ func (h *aiEditorHandler) recordFocusedChat(id string) {
 	h.lastChatID.Store(&id)
 }
 
-func (h *aiEditorHandler) focusedChatTx() (chan<- dialoguetui.MessageEvent, error) {
+// focusedChat returns the view last focused of the chat that last had
+// focus.
+func (h *aiEditorHandler) focusedChat() (chatSender, error) {
 	id, _ := h.lastChatID.Load().(*string)
 	if id == nil || *id == "" {
 		return nil, fmt.Errorf("no agent chat is open")
 	}
-	v, ok := h.openChatTx.Load(*id)
+	v, ok := h.focusedViews.Load(*id)
 	if !ok {
 		return nil, fmt.Errorf("agent chat %s is no longer open", *id)
 	}
-	return v.(chan<- dialoguetui.MessageEvent), nil
+	return v.(chatSender), nil
 }
 
 // handleChatAddSymbol attaches the symbol under the caret to the chat
@@ -81,13 +84,13 @@ func (h *aiEditorHandler) handleChatAddSymbol(cmd textapi.Command) error {
 		return fmt.Errorf("%s takes at most one symbol", cmd.Name)
 	}
 	if len(cmd.Args) == 1 {
-		tx, err := h.focusedChatTx()
+		chat, err := h.focusedChat()
 		if err != nil {
 			return err
 		}
 		a := dialoguetui.NewSymbolAttachment(cmd.Args[0])
 		go debug.CapturePanicReport(func() {
-			h.sendSymbolAttachment(tx, a)
+			sendSymbolAttachment(chat, a)
 		})
 		return nil
 	}
@@ -99,7 +102,7 @@ func (h *aiEditorHandler) handleChatAddSymbol(cmd textapi.Command) error {
 	if err != nil {
 		return err
 	}
-	tx, err := h.focusedChatTx()
+	chat, err := h.focusedChat()
 	if err != nil {
 		return err
 	}
@@ -109,21 +112,16 @@ func (h *aiEditorHandler) handleChatAddSymbol(cmd textapi.Command) error {
 			_, _ = h.n.Notify(browserapi.LevelError, "%s: %v", cmd.Name, err)
 			return
 		}
-		h.sendSymbolAttachment(tx, a)
+		sendSymbolAttachment(chat, a)
 	})
 	return nil
 }
 
-func (h *aiEditorHandler) sendSymbolAttachment(
-	tx chan<- dialoguetui.MessageEvent, a dialoguetui.Attachment,
-) {
-	select {
-	case tx <- dialoguetui.MessageEvent{
+func sendSymbolAttachment(chat chatSender, a dialoguetui.Attachment) {
+	chat.send(dialoguetui.MessageEvent{
 		Type:       dialoguetui.MessageEventAttachment,
 		Attachment: a,
-	}:
-	case <-h.ctx.Done():
-	}
+	})
 }
 
 func (h *aiEditorHandler) resolveSymbolAttachment(

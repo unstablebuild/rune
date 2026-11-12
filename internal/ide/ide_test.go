@@ -2571,7 +2571,7 @@ func TestWorkspaceSearchIndexing(t *testing.T) {
 			}
 
 			require.NoError(t, idx.Wait(ctx))
-			it, err := router.SemanticSearch(ctx, wh.uri, searchapi.SemanticRequest{Query: "invoice sales tax"})
+			it, _, err := router.SemanticSearch(ctx, wh.uri, searchapi.SemanticRequest{Query: "invoice sales tax"})
 			require.NoError(t, err)
 			hits, err := sdkiterator.ToSlice(ctx, it)
 			require.NoError(t, err)
@@ -3035,6 +3035,8 @@ func (r testRunner) Run(extensionID, path string, config config.Config) error {
 func (r testRunner) Close() error {
 	return nil
 }
+
+func (r testRunner) SignalReload() int { return 0 }
 
 func (r testRunner) WaitReady(ctx context.Context, id string) error {
 	return nil
@@ -4129,13 +4131,13 @@ func TestCommandPromptKeyBindingHintsIntegration(t *testing.T) {
 │ ▐                                    │
 │ !                                    │
 │ !!                                   │
+│ acp                                  │
 │ addBlaBla                            │
 │ cheatsheet                           │
 │ clipboardcopy                        │
 │ clipboardpaste                       │
 │ console                              │
 │ cursorhistory                        │
-│ debugger                             │
 └──────────────────────────────────────┘`},
 		{InputSequence: "windowconverttab", Expected: `┌──────────────────────────────────────┐
 │                                      │

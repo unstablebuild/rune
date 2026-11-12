@@ -19,6 +19,8 @@ package extension
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path"
 	"slices"
@@ -62,8 +64,14 @@ type recordingWindowManager struct {
 
 	statusMu  sync.Mutex
 	statusURI workspaceapi.URI
-	statuses  []browserapi.TabStatus
+	reports   []tabReport
 	statusErr error
+}
+
+// tabReport is a status report and the URI it was made at.
+type tabReport struct {
+	uri    workspaceapi.URI
+	status browserapi.TabStatus
 }
 
 func (m *recordingWindowManager) Focus() (browserapi.Window, error) { return nil, nil }
@@ -97,20 +105,119 @@ func (m *recordingWindowManager) SetTabStatus(uri workspaceapi.URI, status brows
 	m.statusMu.Lock()
 	defer m.statusMu.Unlock()
 	m.statusURI = uri
-	m.statuses = append(m.statuses, status)
+	m.reports = append(m.reports, tabReport{uri: uri, status: status})
 	return m.statusErr
 }
 
 func (m *recordingWindowManager) tabStatuses() []browserapi.TabStatus {
 	m.statusMu.Lock()
 	defer m.statusMu.Unlock()
-	return slices.Clone(m.statuses)
+	statuses := make([]browserapi.TabStatus, len(m.reports))
+	for i, r := range m.reports {
+		statuses[i] = r.status
+	}
+	return statuses
+}
+
+// tabReports returns the reports made at uri.
+func (m *recordingWindowManager) tabReports(uri workspaceapi.URI) []browserapi.TabStatus {
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+	var statuses []browserapi.TabStatus
+	for _, r := range m.reports {
+		if sameURI(r.uri, uri) {
+			statuses = append(statuses, r.status)
+		}
+	}
+	return statuses
 }
 
 func (m *recordingWindowManager) reset() {
 	m.statusMu.Lock()
 	defer m.statusMu.Unlock()
-	m.statuses = nil
+	m.reports = nil
+}
+
+// channelSender is a chatSender that takes every event, on itself.
+type channelSender chan dialoguetui.MessageEvent
+
+func (c channelSender) send(ev dialoguetui.MessageEvent) bool {
+	c <- ev
+	return true
+}
+
+// recordingOpener is a browserapi.ResourceOpener that records the
+// resources it opens.
+type recordingOpener struct {
+	mu     sync.Mutex
+	opened []workspaceapi.URI
+}
+
+func (o *recordingOpener) Open(uri workspaceapi.URI) (browserapi.Handler, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.opened = append(o.opened, uri)
+	return nil, nil
+}
+
+func (o *recordingOpener) Show(workspaceapi.URI) error { return nil }
+
+func (o *recordingOpener) openedURIs() []workspaceapi.URI {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Clone(o.opened)
+}
+
+// newChatTestHandler returns a handler whose chats svc answers and
+// store keeps, and the window manager it opens their tabs with.
+func newChatTestHandler(
+	t *testing.T, svc llmapi.Service, store dialoguemanager.Store,
+) (*aiEditorHandler, *recordingWindowManager) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	wm := &recordingWindowManager{}
+	fs := nopFileSystem{}
+	return &aiEditorHandler{
+		ctx:            ctx,
+		llmSvc:         svc,
+		defaultModel:   "test-model",
+		dialogueStore:  store,
+		wm:             wm,
+		n:              stubNotifications{},
+		o:              &recordingOpener{},
+		p:              term.NopInterrupter(),
+		config:         configedit.NopConfig(),
+		skillRegistry:  skills.NewRegistry(fs, dirURI(""), nil, nil),
+		toolRegistry:   agent.NewRegistry(),
+		agentsConfig:   agent.NewConfig([]agent.Definition{{ID: "default", AllowAny: true}}),
+		cwd:            dirURI(""),
+		fs:             fs,
+		memoryDataPath: t.TempDir(),
+	}, wm
+}
+
+// openBareChat opens a view of a session of the chat id that runs no
+// agent, for tests of what its views show. It must not be given
+// commands, which no adapter handles.
+func openBareChat(t *testing.T, h *aiEditorHandler, id string) (*chatSession, *chat) {
+	t.Helper()
+	if h.ctx == nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		h.ctx = ctx
+	}
+	if h.fs == nil {
+		h.fs = nopFileSystem{}
+	}
+	uri, err := getModelUri(id, "test-model")
+	require.NoError(t, err)
+	s := newChatSession(h, id, uri)
+	h.openChats.Store(id, s)
+	c, err := s.attach(workspaceapi.URI{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, c.content.Close()) })
+	return s, c
 }
 
 // stubNotifications is a no-op browserapi.Notifications. wrapDialogueHandler
@@ -637,6 +744,96 @@ type nopSpawner struct{}
 
 func (nopSpawner) Run(context.Context, agent.RunRequest) (agent.RunHandle, error) {
 	return agent.RunHandle{}, nil
+}
+
+// agentRouter is an llmapi.Service that answers every agent of a chat,
+// the chat's own and the sub-agents it runs, from that agent's script.
+// It tells them apart by a marker in their system prompt, so that tests
+// do not depend on the order in which concurrent agents call the model.
+// A request whose system prompt holds no marker, or more than one, fails.
+type agentRouter struct {
+	// Service only serves the model catalog.
+	*llmtest.Service
+	agents map[string]*llmtest.Service
+}
+
+// newAgentRouter returns a router for the agents whose system prompts
+// hold markers, none of which has a script yet.
+func newAgentRouter(models []llmapi.ModelEntry, markers ...string) *agentRouter {
+	r := &agentRouter{Service: llmtest.New(models), agents: make(map[string]*llmtest.Service)}
+	for _, marker := range markers {
+		r.agents[marker] = llmtest.New(models)
+	}
+	return r
+}
+
+func (r *agentRouter) CreateCompletion(
+	ctx context.Context, model llmapi.ModelEntry, req llmapi.Request,
+) (iterator.Iterator[llmapi.Event], error) {
+	var system string
+	if len(req.Messages) > 0 && req.Messages[0].Role == llmapi.RoleSystem {
+		system = req.Messages[0].Content
+	}
+	var matches []string
+	for marker := range r.agents {
+		if strings.Contains(system, marker) {
+			matches = append(matches, marker)
+		}
+	}
+	if len(matches) != 1 {
+		return nil, fmt.Errorf("agentRouter: system prompt %q matches scripts %q", system, matches)
+	}
+	return r.agents[matches[0]].CreateCompletion(ctx, model, req)
+}
+
+// script appends responses to the script of the agent whose system
+// prompt holds marker.
+func (r *agentRouter) script(marker string, responses ...llmtest.Response) {
+	r.agents[marker].Enqueue(responses...)
+}
+
+// requests returns the requests of the agent whose system prompt holds
+// marker.
+func (r *agentRouter) requests(marker string) []llmtest.Request {
+	return r.agents[marker].Requests()
+}
+
+// recordingExec is a workspaceapi.Executor that runs nothing: it records
+// the command lines it is asked to run and answers each with "ran" and
+// the line, so that tests can tell which commands a tool let through
+// without spawning processes.
+type recordingExec struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (e *recordingExec) Start(_ context.Context, cmd workspaceapi.Cmd) (workspaceapi.Pid, error) {
+	line := strings.Join(append([]string{cmd.Path}, cmd.Args...), " ")
+	e.mu.Lock()
+	e.lines = append(e.lines, line)
+	e.mu.Unlock()
+	if cmd.Stdout != nil {
+		_, _ = fmt.Fprintf(cmd.Stdout, "ran %s", line)
+	}
+	if cmd.Watcher != nil {
+		go debug.CapturePanicReport(func() { cmd.Watcher.WatchProcess() <- nil })
+	}
+	return 1, nil
+}
+
+func (e *recordingExec) Signal(workspaceapi.Pid, syscall.Signal) error { return nil }
+
+func (e *recordingExec) LookPath(context.Context, string, string) (string, error) {
+	return "", errors.ErrUnsupported
+}
+
+func (e *recordingExec) Close() error { return nil }
+
+// ran returns the command lines e was asked to run, in order.
+func (e *recordingExec) ran() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.lines)
 }
 
 // stopReasonE2EHandler wires the real floating chat handler through the

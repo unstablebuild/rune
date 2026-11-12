@@ -1,13 +1,13 @@
 ---
 name: rune-hud
 description: >
-  Edit Rune's configuration and generate sprites to refine its UI:
+  Update Rune's configuration and generate sprites to refine its UI:
   window frames, scroll bars, floating window bars, command prompts, editor
-  and agent status-bar layouts, the quick menu, prompt buttons, wallpaper and
-  sounds. Discover the configuration, edit it, run runectl screenshot and
-  inspect the result yourself. This is configuration and asset editing, not
-  Rune source development. Use when the user wants to create, restyle or
-  iterate on Rune's appearance or sounds.
+  and agent status-bar layouts, the quick menu, prompt buttons, wallpaper, the
+  app icon and sounds. Discover the configuration, edit it, run runectl
+  screenshot and inspect the result yourself. This is configuration and asset
+  editing, not Rune source development. Use when the user wants to create,
+  restyle or iterate on Rune's appearance or sounds.
 ---
 
 # Rune HUD images and sounds
@@ -15,13 +15,7 @@ description: >
 Own the edit-and-verify loop. Read the user's configuration and existing assets,
 make the requested changes, run `runectl screenshot`, inspect the PNG and fix
 what looks wrong. Do not ask the user to measure cells, run diagnostic commands
-or provide screenshots you can capture yourself. The configuration and
-status-bar layout reference is included in this file; no other document or
-Rune source checkout is needed.
-
-Use the user's brief and existing theme to make design decisions. If a detail
-is unspecified, choose a consistent default and proceed. Do not stop for
-approval between surfaces or revisions unless the user asked for checkpoints.
+or provide screenshots you can capture yourself.
 
 ## Scope: configuration and assets only
 - Edit the user's active configuration, theme assets, manifest and backups.
@@ -51,19 +45,45 @@ these keys to every open workspace:
 
 - `browser.window_manager`: `frame_attr`, `focus_frame_attr`, `frame_charset`,
   `focus_frame_charset`, `scroll_bar_attr`, `scroll_bar_charset`,
-  `scroll_bar_char`, `scroll_bar_hover_char`, `window_bar_charset`, `close_icon`
-  and `close_icon_attr`;
+  `scroll_bar_char`, `scroll_bar_hover_char`, `window_bar`, `window_bar_charset`,
+  `close_icon` and `close_icon_attr`;
 - `browser.frameunion_charset`;
+- `browser`: `focus_tab_attr`, `non_focus_tab_attr`, `focus_tab_icon_attr`,
+  `non_focus_tab_icon_attr`, `focus_tab_highlight_attr`, `hover_tab_attr`,
+  `focus_tab_highlight_char`, `tab_images`, `focus_tab_highlight_graphics` and
+  `tab_sounds`;
 - `browser.prompt`: `text_attr`, `highlight_attr`, `hover_attr`,
   `clicked_attr`, `background_attr` and `images`;
-- `command.frame_charset` and `command.separator_charset`;
+- `command.frame_charset`, `command.separator_charset` and
+  `command.show_manual`;
+- `editor.status_bar`: `layout`, `background_attr` and `foreground_error_attr`;
+- `extensions.rune-agent.config.status_bar`, every key, and
+  `extensions.rune-agent.config.input_box_frame_charset`;
+- `gui`: `quick_menu`, `quick_menu_sounds`, `themes`, `default_theme`,
+  `sound_volume` and `app_icon`;
+- `notifications`: `attr`, `background_attr`, `frame_charset`, `padding`,
+  `progress_bar` and `progress_format`;
+- `program_status`, every key;
+- `terminal.bell`;
 - `workspace`: `wallpaper_image`, `wallpaper_image_ascii`, `wallpaper_ascii`,
-  `wallpaper`, `wallpaper_attr`, `wallpaper_background_attr` and
-  `wallpaper_density_characters`;
+  `wallpaper`, `wallpaper_attr`, `wallpaper_background_attr`,
+  `wallpaper_density_characters`, `focus_tab_highlight_char`, `tab_images`,
+  `focus_tab_highlight_graphics` and `tab_sounds`;
 - `sounds`.
 
+The capture cannot show `gui.app_icon`: the desktop draws the icon outside
+Rune's output. Inspect the icon file itself, downscaled to 16, 32 and 256 px
+(`magick icon.png -resize 16x16 icon-16.png`), then tell the user where to
+look: the Dock and the Command-Tab switcher on macOS, the taskbar or window
+title on Linux.
+
 Rune also reads again every image these keys name, including a file you
-overwrote at the same path. Existing prompts retain their style until reopened.
+overwrote at the same path. Existing prompts retain their style until reopened;
+open notifications and an open program status inbox take the new style at once.
+`gui.default_theme` and `gui.sound_volume` apply only when they differ from the
+values Rune read last, so a theme or volume the user picked since stays. The
+agent redraws its own status bar and compose box a moment after Rune reloads;
+if a capture still shows the old ones, capture again.
 Do not assume every configuration key is live-reloaded: the exceptions are
 listed under Apply and verify. Inspect the surfaces visible in the capture;
 do not claim to have verified a prompt or state that was not shown.
@@ -109,6 +129,7 @@ hud/<theme>/
   wallpaper.png
   sources/<name>.png, <name>.prompt.txt
   sounds/<cue>.wav
+  v<N>/icon.png
   v<N>/frame/{normal,focused,prompt}/<slot>.png
   v<N>/scroll/{top,middle,bottom,hover-top,hover-middle,hover-bottom}.png
   v<N>/window-bar/{left,middle,right}.png
@@ -121,21 +142,18 @@ Use lowercase kebab-case file names, with no spaces, `?`, `#` or `%`: they
 would need percent-encoding in a `file://` URI.
 
 ## Rules that apply to every image
-1. **Use absolute URIs**, except for the wallpaper. Image values are
-   `file:///absolute/path.png` or `https://...`, with no `~` and no `$VARS`.
-   `workspace.wallpaper_image` is the exception: it takes a plain path, which
-   may use `~` and environment variables.
+1. **Use absolute URIs**, except for the wallpaper and the app icon. Image
+   values are `file:///absolute/path.png` or `https://...`, with no `~` and no
+   `$VARS`, except `$RUNE_DATADIR` in a `file://` URI, as in
+   `file://$RUNE_DATADIR/hud/<theme>/v1/frame/normal/topleft.png`.
+   `workspace.wallpaper_image` and `gui.app_icon` are the exceptions: they
+   take a plain path, which may use `~` and environment variables.
 2. **Overwrite an image in place only if a key under Checking your work names
    it.** Rune caches images by URI for 24 hours by default, but
    `runectl screenshot` reads those images again, so you can overwrite them
    while you iterate. Save each version you ship in a new `v<N>` directory
    and keep the previous one for rollback.
-   - Images named by other keys, such as `editor.status_bar.layout`,
-     `extensions.rune-agent.config.status_bar.layout` and
-     `gui.quick_menu[i].sprite`, are not read again: give each iteration a
-     new URI, in a new `v<N>` directory or with `?v=<N>` appended. The cache
-     key is the whole URI, while the file read ignores the query.
-   - The wallpaper is not cached: overwrite it in place.
+   - The wallpaper and the app icon are not cached: overwrite them in place.
 3. **Formats:** PNG with alpha is preferred. JPEG, GIF and WebP also load, except
    for the wallpaper, which must be a PNG. Each side is at most 8192 px.
 4. **Images are drawn as they are.** Attrs, dimming, b&w and the theme do not
@@ -158,9 +176,8 @@ would need percent-encoding in a `file://` URI.
      or display settings change.
 
 ## Design rules
-A HUD reads as one object only when every surface follows one system. Clean
-geometric frames and icons work. Figures assembled from vector shapes look
-childish, and ornament repeated on every small surface turns into clutter.
+A HUD reads as one object only when every surface follows one set of cohesive guiding
+principles.
 
 1. **Start from one reference surface.** For a new theme, establish the window
    frame first and verify it in a screenshot. For a targeted request, start
@@ -187,6 +204,8 @@ childish, and ornament repeated on every small surface turns into clutter.
    - Scroll bar: a plain thumb in the frame's material.
    - Quick menu: one icon per button, all in the same style, line weight and
      plate.
+   - App icon: one bold emblem on the theme's background, readable at 16 px,
+     with no text.
 5. **Minimum size.** A figure needs about 3 rows to read.
    Below that, use a silhouette or a simple icon, or leave it out. Judge at
    true device size, never enlarged.
@@ -202,6 +221,22 @@ childish, and ornament repeated on every small surface turns into clutter.
 8. **Tiling.** Edge and middle slices repeat once per cell. Keep them flat
    along the tiling direction. Test by repeating the slice 12×, then inspect
    the joins in Rune's screenshot.
+9. **Balanced padding.** Centre a tab, inbox entry or button plate on its
+   label, with the same visible padding above, below, left and right. A dark
+   base or shadow counts against the bottom padding. Judge it in a zoomed crop
+   of the live screenshot, not in the source art. If a plate gets clipped, fix
+   the clipping without shrinking the padding.
+10. **One family of controls.** Prompt buttons, quick menu buttons, file tabs,
+    workspace tabs and inbox entries are one set: give them the same rim
+    thickness, base depth, corner radius, padding and gaps. Take the control
+    the user approved as the reference, record its measurements in the
+    manifest, and compare the others with it side by side in a crop.
+11. **One selection cue.** When the focused or selected image already sets a
+    tab or entry apart, don't add a highlight or marker on top of it. For file
+    and workspace tabs, set `focus_tab_highlight_char: ""` and remove
+    `focus_tab_highlight_graphics` (its images draw even when the character is
+    empty). For the inbox, set `program_status.marker: " "` and remove
+    `marker_graphics`. Add a cue only when the user asks for one.
 
 ## Colour continuity
 Match background fills to the active theme. Transparent image pixels reveal
@@ -222,7 +257,7 @@ text or other images. Use that intentionally for status-bar ornaments.
 - Opaque fills in frames, bars and buttons follow the same rule.
 - If the art can't be matched, the alternative is a custom theme whose
   `background` is the art's colour (`gui.themes.<name>`, then
-  `gui.default_theme`, then a restart). Ask first: it changes every window.
+  `gui.default_theme`). Ask first: it changes every window.
 
 ## Painted art
 Figures (creatures, skulls, statues, scenes) are high-fidelity painted raster
@@ -267,34 +302,21 @@ bevels, buttons, the scroll bar and icons.
   `magick in.png -filter Lanczos -resize WxH! -unsharp 0x0.6+0.6+0 out.png`.
   Start with `height 3` and `alt ""`. Add `overflow` only when the image must
   cross the editor or chat component's outer bounds.
-- Wallpaper: sample a corner and confirm the background matches. Then
-  feather the edges to transparent:
-
-  ```sh
-  W=$(magick identify -format %w in.png); H=$(magick identify -format %h in.png); F=$((W/12))
-  magick in.png \( -size ${W}x${H} xc:black -fill white \
-    -draw "rectangle $F,$F $((W-F-1)),$((H-F-1))" -blur 0x$((F/3)) -level 2%,98% \) \
-    -alpha off -compose CopyOpacity -composite wallpaper.png
-  ```
-
-- Check the wallpaper's edges. All four must print 0:
-
-  ```sh
-  bg='#080808'
-  magick wallpaper.png -background "$bg" -flatten flat.png
-  for g in North South East West; do
-    case $g in North|South) c=100%x2+0+0;; *) c=2x100%+0+0;; esac
-    magick flat.png -gravity $g -crop $c +repage \( +clone -fill "$bg" -colorize 100 \) \
-      -compose difference -composite -format "$g %[fx:round(maxima*255)]\n" info:
-  done
-  ```
+- Wallpaper: sample a corner and confirm the background matches.
 
 ## Surfaces
 Abbreviations:
 - **L**: the scroll bar outset `left`.
 - **T, B, S, I, H**: the window bar outsets `top`, `bottom`, `sides`, `inward`
   and `horizontal_top`. Prompt buttons use T, B and S too, from their own outset.
-  Command separator junctions use only T, B and I from their own outset.
+  Command separator junctions use only T, B and I from their own outset. File
+  tabs use only S, from theirs. Program status inbox entries use T, B and S,
+  from theirs.
+- **DL, DR**: the inbox divider outsets `left` and `right`. Its junctions use
+  them and I, from their own outset.
+- **R**: the rows of the tab bar, 2 in the GUI.
+- **N**: the rows of a program status inbox entry, 2 to 4: the workspace name
+  and the progress bar each add a row only when the entry has one.
 - **Tiles →** / **tiles ↓**: one copy is drawn per cell, so the image must tile
   seamlessly in that direction.
 
@@ -306,6 +328,10 @@ Abbreviations:
 | Command prompt frame | `command.frame_charset.graphics` | same 8 | 1 × 1 | fill |
 | Command separator | `command.separator_charset.graphics` | `left`, `right` | (1+I) × (T+1+B) | fill |
 | | | `horizontal` (tiles →) | 1 × 1 | fill |
+| Notification frame | `notifications.frame_charset.graphics` | same 8 | 1 × 1 | fill |
+| Notification progress bar | `notifications.progress_format.graphics` | `start`, `current_tip`, `end` | 1 × 1 | fill |
+| | | `current` `remain` (tiles →) | 1 × 1 | fill |
+| Agent compose box frame | `extensions.rune-agent.config.input_box_frame_charset.graphics` | same 8 | 1 × 1 | fill |
 | Scroll bar | `browser.window_manager.scroll_bar_charset.graphics` | `top_char`, `middle_char` (tiles ↓), `bottom_char`, and the `hover_` version of each | (1+L) × 1 | fill |
 | Floating window bar | `browser.window_manager.window_bar_charset.graphics` | `left` | (S+1+I) × (T+1+B) | fill |
 | | | `right` | (I+1+S) × (T+1+B) | fill |
@@ -313,10 +339,30 @@ Abbreviations:
 | Prompt buttons | `browser.prompt.images.<idle\|selected\|hover\|pressed>` | `left` | (S+1) × (T+1+B) | fill |
 | | | `middle` (tiles →) | 1 × (T+1+B) | fill |
 | | | `right` | (1+S) × (T+1+B) | fill |
+| File tab | `browser.tab_images.<focus\|non_focus\|hover\|pressed>` | `left` | (S+1) × R | fill |
+| | | `middle` (tiles →) | 1 × R | fill |
+| | | `right` | (1+S) × R | fill |
+| File tab highlight | `browser.focus_tab_highlight_graphics` | `left`, `right` | 1 × 1 | fill |
+| | | `horizontal` (tiles →) | 1 × 1 | fill |
+| Workspace tab | `workspace.tab_images.<focus\|non_focus\|hover\|pressed>` | `left` | (S+1) × R | fill |
+| | | `middle` (tiles →) | 1 × R | fill |
+| | | `right` | (1+S) × R | fill |
+| Workspace tab highlight | `workspace.focus_tab_highlight_graphics` | `left`, `right` | 1 × 1 | fill |
+| | | `horizontal` (tiles →) | 1 × 1 | fill |
+| Inbox entry | `program_status.images.<idle\|selected\|hover>` | `left` | (S+1) × (T+N+B) | fill |
+| | | `middle` (tiles →) | 1 × (T+N+B) | fill |
+| | | `right` | (1+S) × (T+N+B) | fill |
+| Inbox marker | `program_status.marker_graphics` | `top`, `bottom` | 1 × 1 | fill |
+| | | `vertical` (tiles ↓) | 1 × 1 | fill |
+| Inbox divider | `program_status.divider_charset.graphics` | `top`, `bottom` | (DL+1+DR) × (1+I) | fill |
+| | | `vertical` (tiles ↓) | 1 × 1 | fill |
+| Inbox progress bar | `program_status.progress_bar_graphics` | `left`, `right` | 1 × 1 | fill |
+| | | `filled`, `empty` (tiles →) | 1 × 1 | fill |
 | Editor status bar | `editor.status_bar.layout` | `.Image` elements | `width` × `height` | contain, or `fit "fill"` |
 | Agent status bar | `extensions.rune-agent.config.status_bar.layout` | `.Image` elements | `width` × `height` | contain, or `fit "fill"` |
 | Quick menu | `gui.quick_menu[i].sprite` | `idle` `hover` `pressed` | square, each side as wide as 4 text columns | contain |
 | Wallpaper | `workspace.wallpaper_image` | a path, or `{path, width, height, fit}` | `width`/`height` in cells or `N%`, default 60% | `contain` (default), `cover` or `fill` |
+| App icon | `gui.app_icon` | a path | none: a square image, 256 px or larger | `contain`, centered on a transparent square |
 
 ### Requirements
 - Frame and scroll bar images are drawn only while
@@ -326,13 +372,42 @@ Abbreviations:
   command with manual content and enough prompt space to display it.
 - Window bar images are drawn only while `browser.window_manager.window_bar`
   is true.
+- While `notifications.progress_bar` is true the progress bar is the
+  notification's bottom row: the frame's `bottomleft`, `horizontalbottom` and
+  `bottomright` images are not drawn, and `progress_format.graphics` draws there
+  instead, `start` and `end` at the corners, `current` up to `current_tip`, then
+  `remain`. Images are not tinted by notification level; use `overlay` and leave
+  the progress characters' channel transparent to keep the level colours.
 - Quick menu sprites move the bar from the native macOS bar to one Rune draws,
   on every platform. Set `sprite` on every button or on none; `symbol` isn't
   needed with one. Keep each button's `title` (its tooltip) and `command`.
 - Prompt button images draw under the buttons of the prompts Rune opens through
-  its standard prompt, such as the close-dirty-tabs prompt. Prompts built
-  elsewhere, and the search box's buttons, keep their colours for now. Confirm
-  on screen which prompts show them.
+  its standard prompt, such as the close-dirty-tabs prompt, and under the
+  search box's buttons. Prompts built elsewhere keep their colours. Confirm on
+  screen which prompts show them.
+- File tab `focus` images are for every tab shown in a window, the tabs in
+  `focus_tab_attr`, and fall back to `non_focus`. Tabs have no hover state.
+- The workspace tab bar shows only while more than one workspace is open. Its
+  `focus` images are for the workspace in focus. Its colours come from
+  `browser.focus_tab_attr`, `browser.non_focus_tab_attr` and
+  `browser.focus_tab_highlight_attr`. Every workspace shares it, so only the
+  user's config styles it, never a workspace's own.
+- The program status inbox is `:programstatus`. Every workspace shares it, so
+  only the user's config styles it. Inspect its images only when a capture
+  shows it open with programs listed.
+- Inbox divider images require `browser.window_manager.frame`: the divider
+  joins the inbox window's frame. With `browser.window_manager.window_bar` on,
+  the bar takes the frame's top row, so `top` isn't drawn.
+- Inbox entry images stand in for the backgrounds of
+  `program_status.selected_attr` and `program_status.hover_attr`: an entry
+  keeps their other colours, and gets the background back while its images
+  don't draw.
+- The app icon is the window icon on Linux, but GNOME and KDE Plasma show the
+  icon of Rune's launcher instead; the user can set the `Icon=` line of
+  `~/.local/share/applications/rune.desktop` (copied from
+  `/usr/share/applications/` for the Debian package) to the image's absolute
+  path. On macOS it replaces the Dock and Command-Tab icon while Rune runs;
+  Finder and the Dock tile of a Rune that is not running keep the bundled icon.
 
 ### Where the anchor cell sits in each image
 Line up rails and seams across slices at these positions.
@@ -369,7 +444,17 @@ Line up rails and seams across slices at these positions.
 - The close icon and title are drawn over the bar row.
 - The end images are drawn last. Their outsets cover window content and are
   clipped to the window area. They don't change what the pointer can grab.
+- Because they draw last, the `left` image's inward cells cover the close
+  icon. Keep I at 0, or leave those cells transparent. Colour the icon from
+  the palette with `close_icon_attr`, and check it in a capture with a
+  floating window open.
 - Focused and unfocused windows share these images.
+
+**Agent compose box frame:**
+- Centre each rail in its cell: halfway across the cell's width at the sides,
+  halfway down its height at the top and bottom. Turn the corners on those
+  same centre lines. The text then has equal padding inside the box and out.
+  Unlike window frames, don't put the rail on the cell's outer edge.
 
 **Prompt buttons:**
 - In `left`, the label's first cell is at column S, row T.
@@ -380,9 +465,75 @@ Line up rails and seams across slices at these positions.
   `browser.prompt.{text,highlight,hover,clicked}_attr` by state, and its
   background is dropped. Keep row T calm so the label stays readable, and tune
   those attrs' `fg` if it isn't.
+- In the search box, the label keeps the foreground of
+  `editor.standard.search.button_attr` or `button_hover_attr`, over the
+  background of the search box's `attr`.
 - Prompts reserve room for the outsets, so a larger T+B makes prompts taller.
+  The search box reserves room only for S, and cuts T and B off at its edges.
 - Buttons are max(1, 2S) cells apart. With S ≥ 1, neighbouring buttons' outset
   columns touch with no gap, so keep the art off the outer edge of the outset.
+
+**File tabs:**
+- In `left`, the name's first cell is at column S; in `right`, its last cell is
+  at column 0.
+- Rune draws the name on row 1 lifted half a cell, so it sits in the middle of
+  the R rows. Keep that band calm so the name stays readable.
+- Tabs are as many cells apart as `browser.tab_name_separator` is wide; keep 2S
+  within that, or neighbouring outsets overlap.
+- The bar leaves S blank cells before the first tab and at least S after the
+  last, so every tab's outset shows.
+- The highlight covers row 0 of the focused window's tab only, cell by cell,
+  over the tab images and under the name's lifted half. A highlight one cell
+  wide uses `left`.
+- A tab activates when the button is released over it, as a quick menu button
+  does. `hover` and `pressed` apply only to tabs not in focus: a tab in focus
+  keeps `focus` under the pointer. Draw the states on the same canvas, so
+  nothing jumps between them.
+- `browser.hover_tab_attr` is layered over the name and icon of the tab under
+  the pointer, under any colour the tab has of its own, such as
+  `dirty_tab_attr`. Its `bg` fills the blanks of the name too.
+
+**Workspace tabs:**
+- The same as file tabs, upside down: Rune draws the name on row 0 lowered half
+  a cell, and the highlight covers the last row, under the workspace in focus.
+- Tabs are as many cells apart as `browser.tab_name_separator` is wide.
+- The bar takes `browser.hover_tab_attr`, but its own `workspace.tab_images`
+  and `workspace.tab_sounds`.
+
+**Program status inbox:**
+- An entry spans from its marker column to the right edge of the selection.
+  In `left`, the marker column is at column S, row T; in `right`, the entry's
+  last cell is at column 0, row T. The entry's N rows follow row T.
+- N changes from entry to entry, so the images stretch vertically. Keep the
+  corner radius small, so the corners still look right when stretched from 2
+  to 4 rows, and check entries of different heights.
+- The entry's text is drawn over the images; keep the band under it calm.
+- Entries are 1 row apart, and the list has 1 cell of padding above and on its
+  left: keep T+B and S within 1, or neighbouring outsets overlap.
+- The marker covers the selected entry's marker column, row by row, over the
+  entry images. A marker one cell tall uses `top`.
+- Progress bar images cover the bar's cells, one per cell, over the entry
+  images; the percentage label stays as text to the bar's right.
+
+**Inbox divider:**
+- In `top`, the anchor is column DL, row 0, in the frame's top row; the rule
+  runs down from it through rows 1 to I. In `bottom`, the anchor is column DL,
+  row I, in the frame's bottom row; the rule comes down into it.
+- Join the rule at the same pixel X as the `vertical` tile's rail, and the
+  frame at the same pixel Y as the `horizontaltop` or `horizontalbottom`
+  tile's rail. Author the complete three-way junction: a successful image
+  replaces the frame's edge sprite at its anchor.
+- `vertical` repeats once per cell between the frame's top and bottom rows,
+  where the rule splits the entries from the preview. It is always 1×1,
+  regardless of junction outsets.
+- Junctions draw last. Their outsets cover the entries, the preview and the
+  frame, clipped to the window, and reserve no layout space.
+- Colour the rule like the unfocused window frame (`frame_attr` and the
+  `frame_charset` images), so it blends in whether or not the inbox has
+  focus.
+- The joins don't draw when the inbox is tiled, and `top` doesn't draw under
+  a window bar. Make the `vertical` rule read on its own. Leave `top` and
+  `bottom` empty unless the user wants joins where they will show.
 
 **Status bar `.Image`:**
 - The image is `width` × `height` cells, centred on its anchor: the first
@@ -393,7 +544,8 @@ Line up rails and seams across slices at these positions.
   `overflow`. `overflow` permits drawing outside that component's bounds.
 
 **Quick menu:**
-- Buttons are square and contain-fitted, stacked half a cell apart from row 3.
+- Buttons can be square or any other shape that fits the design aesthetics and
+contain-fitted, stacked half a cell.
 - Draw all three states on the same canvas, so nothing jumps between states.
 - Put any padding inside the art.
 
@@ -405,31 +557,56 @@ browser:
     window_bar_charset: {graphics: {outset: {top: 4, bottom: 2, sides: 1, inward: 3, horizontal_top: 1}}}
   prompt:
     images: {outset: {top: 1, bottom: 1, sides: 1}}
+  tab_images: {outset: {sides: 1}}
+workspace:
+  tab_images: {outset: {sides: 1}}
 command:
   separator_charset: {graphics: {outset: {top: 1, bottom: 1, inward: 1}}}
+program_status:
+  images: {outset: {top: 1, bottom: 1, sides: 1}}
+  divider_charset: {graphics: {outset: {left: 1, right: 1, inward: 1}}}
 ```
-Outsets are whole cells, 0 or more. Separator outsets default to zero and have
-no `sides` or `horizontal_top` field.
+Outsets are whole cells, 0 or more. Separator and divider outsets default to
+zero and have no `sides` or `horizontal_top` field.
 
 ### `mode`
 Every `graphics` table takes a `mode`:
 - `replace` (the default) hides the character under each image.
 - `overlay` keeps it, showing through the image's transparent pixels in its own
-  colour.
+  colour, which dimming and the command prompt's focus shader still change.
+  Leave the character's path through the image transparent to let them show;
+  see Channel glyphs.
 - For the window bar, `replace` sits the icon and title on the frame's
   background, and `overlay` keeps the bar's colours behind them.
 - A separator's omitted mode inherits the effective command frame mode rather
   than independently defaulting to `replace`. A successful junction image in
   `replace` hides its glyph; `overlay` keeps the separator glyph, not the side
   sprite.
+- For the file and workspace tab highlights, `replace` hides
+  `focus_tab_highlight_char`, so the tab image shows through the highlight's
+  transparent pixels; `overlay` draws the character over both. The highlight
+  images draw even when `focus_tab_highlight_char` is `""`.
+- For the inbox marker and progress bar, `replace` hides
+  `program_status.marker` and `program_status.progress_bar`, so the entry
+  images show through their transparent pixels; `overlay` keeps the characters
+  in their colours.
+- The inbox divider's omitted mode inherits the window frame's mode. `overlay`
+  keeps its glyphs: the junctions in the frame's colours, the rule in
+  `program_status.divider_attr`.
 
-`browser.prompt.images` takes no `mode`.
+`browser.prompt.images`, the `tab_images` tables and `program_status.images`
+take no `mode`.
 
 ### Fallbacks
+- **Tabs:** `focus` falls back to `non_focus`, not to `hover`. `pressed` falls
+  back to `hover`, and `hover` to `non_focus`.
 - **Scroll bar:** a missing `top_char` or `bottom_char` uses the middle image,
   and a missing `hover_` image uses the plain one.
 - **Command prompt frame:** slots `command.frame_charset.graphics` leaves out
   keep the normal window frame's images, forming the effective command frame.
+- **Agent compose box frame:** slots `input_box_frame_charset` leaves out keep
+  the default `┌─┐│└┘` runes and draw no image; they don't inherit the window
+  frame. `input_box_frame_attr` colours the runes, which `overlay` images show.
 - **Command separator:** omitted `graphics.horizontal` inherits that effective
   frame's `graphics.horizontalbottom`. Explicit `horizontal: ""` clears only
   the image, keeping the glyph rule. Missing, cleared, loading or failed
@@ -442,6 +619,23 @@ Every `graphics` table takes a `mode`:
 - **Prompt buttons:** `idle` is required whenever any other state is set.
   `selected` (the button the keyboard is on) and `pressed` fall back to `hover`,
   and `hover` to `idle`.
+- **Prompt buttons, tabs and inbox entries:** a missing `left` or `right`
+  leaves its cells without an image; it doesn't fall back to `middle`.
+- **File and workspace tab highlights:** a missing `left` or `right` uses
+  `horizontal`.
+- **Inbox entries:** `selected` falls back to `hover`, and `hover` to `idle`.
+  No state is required: with only `selected`, the other entries keep their
+  colours.
+- **Inbox marker:** a missing `top` or `bottom` uses `vertical`.
+- **Inbox divider:** omitted `graphics.vertical` inherits the window frame's
+  `graphics.verticalleft`, and the omitted `vertical` glyph its
+  `verticalleft` glyph; `vertical_top` and `vertical_bottom` inherit
+  `vertical`. Explicit `vertical: ""` clears only the image. Missing, loading
+  or failed junction images use the frame's `horizontaltop` or
+  `horizontalbottom` image if available, otherwise the `top` or `bottom`
+  glyph; terminal rendering always uses glyphs.
+- **Inbox progress bar:** a missing `left` or `right` uses the `filled` or
+  `empty` image of the cell it stands in.
 
 ### Minimal command separator config
 These absolute URIs are placeholders, not existing assets. Replace them with
@@ -466,16 +660,29 @@ when a distinct middle tile is needed.
 
 ### Keys that look like they take images but don't
 Never write images to these:
-- `notifications.frame_charset.graphics` and
-  `extensions.rune-agent.config.input_box_frame_charset.graphics`: accepted, but
-  never drawn.
 - `.Image` in `terminal.plugin.bar_layout` or `editor.<mode>.message_bar.layout`:
   a config error.
 - `browser.frameunion_charset` and `browser.window_manager.close_icon`:
   characters only.
 
-Characters `\U00100008`–`\U00100011` are glyphs Rune's GUI font draws itself.
-Keep them under `overlay` images: they show through the transparent pixels.
+### Channel glyphs
+Rune's GUI font draws `\U00100008`–`\U00100011` itself, as a channel for
+`overlay` frame images to frame. Set them as a frame charset's characters, use
+`mode: overlay`, and leave the channel transparent in the art: the glyph then
+shows through in the frame's colour, dims with the window, and carries the
+command prompt's focus shader glow inside the images.
+- `\U00100008`–`\U0010000F` are, in order, `topleft`, `topright`,
+  `bottomleft`, `bottomright`, `horizontaltop`, `horizontalbottom`,
+  `verticalleft` and `verticalright`. Corners turn from one groove into the
+  other.
+- Draw the rail flush with the cell's outer edge, half the cell's width thick
+  at a side and a quarter of its height at the top or bottom. Leave its groove
+  transparent: from 1/8 to 3/8 of the cell's width in from a side edge, or
+  from 1/16 to 3/16 of its height in from the top or bottom edge.
+- `\U00100010` and `\U00100011` branch the left and right channels into a
+  bottom one. Set them as `command.separator_charset` `left` and `right`, with
+  `\U0010000D` as the command frame's `horizontalbottom`, which the separator
+  inherits, to run the channel along the separator too.
 
 Animations (`animations.*`: the cursor, command prompt, tabs and screensaver)
 are shaders, not images. They're out of scope for this skill.
@@ -495,14 +702,9 @@ presentation.
 | Editor | `editor.status_bar.layout` | `background_attr.bg`, `foreground_error_attr.fg` under `editor.status_bar` |
 | Agent | `extensions.rune-agent.config.status_bar.layout` | `enabled`, `background_attr`, `status`, and the gauge settings below, under `extensions.rune-agent.config.status_bar` |
 
-These layouts are not currently reapplied by `runectl screenshot`. Changes
-require `:workspacereload` in the affected workspace, which also restarts its
-extensions. Do not reload the workspace hosting your conversation without
-warning the user. Once activated, take and inspect screenshots yourself.
-
-Images in these layouts are cached by URI. Give revised images a new URI, such
-as a versioned filename or `file:///absolute/path/ornament.png?v=2`, and update
-the layout before reloading. A screenshot alone does not purge these caches.
+`runectl screenshot` applies both bars' keys to the open editors and chats and
+to those opened later, and reads their images again, so you can overwrite an
+image at the same path while you iterate.
 
 Merge the examples into the existing configuration; do not replace unrelated
 keys or remove the user's useful fields. In Starlark, the equivalent paths are
@@ -784,7 +986,7 @@ Only `src` is required. All image directives apply only to `.Image`.
 
 | Directive | Argument and default | Limits / meaning |
 |---|---|---|
-| `src` | Quoted absolute `file:///`, `https://` or `http://` URI | No `~` or environment-variable expansion. |
+| `src` | Quoted absolute `file:///`, `https://` or `http://` URI | No `~` or environment-variable expansion, except `$RUNE_DATADIR` in a `file://` URI. |
 | `width` | Integer columns, default `2`, or quoted `"N%"` | 1–4096 cells or 1–100% of bar width. |
 | `height` | Integer rows, default `1` | 1–4096. |
 | `reserve` | Integer columns | Layout space consumed; defaults to numeric width, or **0 for percentage width**. Range 0–4096. |
@@ -872,17 +1074,16 @@ field and preserve its other fields rather than replacing the entire layout.
 
 ### Screenshot checks
 
-- Verify the edit is active before interpreting a screenshot. A new layout
-  still awaiting workspace reload cannot be checked by capturing repeatedly.
+- Verify the edit is active before interpreting a screenshot: a config that
+  does not parse installs no new layout, and a notification says why.
 - Inspect status text, optional fields and the transparent opening separately.
   Check whether padding belongs to the intended field before changing colours.
 - Test available idle and active states: a task description can be wider than
   a phase label. Do not claim to have checked states that were not visible.
 - Check narrow widths when possible. Large image reservations can displace
   text, and `max_cut` can hide an image when its element is clipped.
-- A missing image may be a bad URI, stale cached bytes or clipped placement.
-  Use a new URI for revised status-bar images, inspect notifications and the
-  configured `log_path`, and confirm the required reload happened.
+- A missing image may be a bad URI or clipped placement. Inspect
+  notifications and the configured `log_path`.
 - When the result differs from the brief, adjust the layout or asset and
   inspect another screenshot. No manual cell measurement is required.
 
@@ -906,6 +1107,8 @@ field and preserve its other fields rather than replacing the entire layout.
   - `program_status.sounds` with `blocked`, `error`, `done` and `working`;
   - `gui.quick_menu_sounds` with `hover` and `click`, which play only with
     sprites.
+  - `browser.tab_sounds` and `workspace.tab_sounds` with `hover`, when the
+    pointer moves onto a tab not in focus, and `click`, when a tab is clicked.
   - Any command: make it a `command.aliases` entry whose steps end with
     `guisound <name>`, then bind the alias, or use it as a quick menu `command`.
 - **No hooks** exist for prompt buttons, window bars, the scroll bar or status
@@ -928,6 +1131,8 @@ sounds:
 terminal: {bell: uisfx-glass-blocked}
 program_status: {sounds: {blocked: warning, error: error, done: success}}
 gui: {quick_menu_sounds: {hover: hud-ember-hover, click: hud-ember-click}}
+browser: {tab_sounds: {hover: hud-ember-hover, click: hud-ember-click}}
+workspace: {tab_sounds: {hover: hud-ember-hover, click: hud-ember-click}}
 ```
 
 ## Apply and verify
@@ -939,10 +1144,10 @@ workspace automatically: that can interrupt the conversation and running work.
 | Change | Takes effect |
 |---|---|
 | A key listed under Checking your work, or an image it names, even overwritten at the same path | `runectl screenshot`, in every open workspace |
-| Any other `browser.*` or `command.*` key, `editor.status_bar`, `extensions.*`, `terminal.bell` | `:workspacereload` in the focused workspace |
-| `gui.*` (quick menu, quick menu sounds, `sound_volume`), `program_status.*`, `animations.*` | Restart Rune. `:guiwindownew` opens a fresh process to preview them |
+| Any other `browser.*`, `command.*` or `extensions.*` key | `workspacereload` in the focused workspace |
+| Any other `gui.*` key, `animations.*` | Restart Rune. `:guiwindownew` opens a fresh process to preview them |
 | A sound file overwritten at the same path | The next time it plays |
-| The wallpaper file overwritten at the same path | `runectl screenshot` or `:workspacereload` |
+| The wallpaper file overwritten at the same path | `runectl screenshot` or `workspacereload` |
 | Any other image overwritten at the same URI | Never: give it a new URI |
 
 If a requested change needs a workspace reload or restart, prepare it and state
@@ -957,6 +1162,7 @@ unavailable. Do not claim unactivated changes have been verified.
 - An invalid URI rejects its whole `graphics` table. Correct the URI instead
   of assuming the previous images will remain.
 - An unreadable wallpaper is a config error.
+- An unreadable app icon shows a notification and restores the default icon.
 - Other missing or unreadable images use their slot fallback; separator
   junctions try the vertical side image before the rune, as described above.
   Load failures log a warning to the file named by `log_path`.
@@ -976,11 +1182,14 @@ unavailable. Do not claim unactivated changes have been verified.
 7. Run `runectl screenshot` again and open the returned PNG. Check readability,
    clipping, rail continuity, background matching, transparent areas and whether
    ornaments obscure text. 
-8. Fix any config errors shown in the capture or in the logs at $RUNE_DATADIR/debug.log.
+8. Fix any config errors shown in the captured screenshot or in the logs at
+$RUNE_DATADIR/debug.log.
 9. Adjust the assets, spacing, dimensions, offsets or colours and repeat steps
-   6–8 until the rendered result meets the brief. A successful file write or
-   screenshot command alone is not verification: inspect the image.
+   5–8 until the rendered result meets the brief. A successful file write or
+   screenshot command alone is not verification: inspect the resulting image.
 10. Update the manifest and report the final screenshot path, changed keys and
    rollback location. Note any state you could not inspect or change that still
-   needs activation. Do not end with routine measurement or screenshot chores
-   for the user.
+   needs activation.
+11. Ask the user if the new UI is to their liking.
+   rollback location. Note any state you could not inspect or change that still
+   needs activation.

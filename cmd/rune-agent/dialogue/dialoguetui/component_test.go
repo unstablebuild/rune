@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"os"
 	"strings"
@@ -36,6 +37,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"unstable.build/rune/internal/component/asciiart"
 	"unstable.build/rune/internal/component/markdown"
 )
 
@@ -937,6 +939,40 @@ func TestComponentResetWhileStreaming(t *testing.T) {
 		comp.Reset()
 		comp.AddReceiveMessageChunk("1234")
 	})
+}
+
+func TestComponentApplyEvent(t *testing.T) {
+	tests := []struct {
+		name    string
+		ev      MessageEvent
+		applied bool
+		shown   string
+	}{
+		{name: "text", ev: MessageEvent{Type: MessageEventText, Text: "streamed"}, applied: true, shown: "streamed"},
+		{name: "warning", ev: MessageEvent{Type: MessageEventWarning, Text: "careful"}, applied: true, shown: "careful"},
+		{name: "user message", ev: MessageEvent{Type: MessageEventUserMessage, Text: "asked"}, applied: true, shown: "asked"},
+		{name: "prompt", ev: MessageEvent{Type: MessageEventPrompt, PromptTitle: "pick"}},
+		{name: "prompt dismiss", ev: MessageEvent{Type: MessageEventPromptDismiss}},
+		{name: "busy", ev: MessageEvent{Type: MessageEventBusy, Busy: true}},
+		{name: "command", ev: MessageEvent{Type: MessageEventCommand, CommandName: "clear"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := NewComponent(ComponentConfig{})
+			comp.Resize(30, 10)
+
+			assert.Equal(t, tt.applied, comp.ApplyEvent(tt.ev))
+
+			w := term.NewStringWriter(30, 10)
+			comp.Draw(w)
+			require.NoError(t, w.Flush())
+			if tt.shown != "" {
+				assert.Contains(t, w.String(), tt.shown)
+			} else {
+				assert.False(t, comp.HasActivePrompt(), "a prompt is the handler's to show")
+			}
+		})
+	}
 }
 
 func TestComponentToolCall(t *testing.T) {
@@ -3112,6 +3148,85 @@ func TestComponentToolCallOrderings(t *testing.T) {
 		comptest.TestComponent(t, comp, w, tests)
 	})
 
+	t.Run("children and completion after text detached the turn", func(t *testing.T) {
+		comp := NewComponent(ComponentConfig{})
+		comp.Resize(W, H)
+		w := mkW()
+		tests := []comptest.TestCase{
+			{
+				Action: func() {
+					comp.AddToolCall("p1", "agent", "{}", "task")
+					comp.AddReceiveMessageChunk("waiting")
+					comp.AddChildToolCall("p1", "c1", "read", "{}", "f")
+					comp.CompleteChildToolCall("p1", "c1", "read", "{}", "f", "ok", false)
+					comp.CompleteToolCall("p1", "agent", "{}", "task", "done", false)
+				},
+				Expected: "✓ agent task                   \n" +
+					"done                           \n" +
+					"✓ read f                       \n" +
+					"ok                             \n" +
+					"waiting                        \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"  ┌───────────────────────┐    \n" +
+					"  │                       │    \n" +
+					"  └───────────────────────┘    \n" +
+					"                               ",
+			},
+		}
+		comptest.TestComponent(t, comp, w, tests)
+	})
+
+	t.Run("result of a nested sub-agent", func(t *testing.T) {
+		comp := NewComponent(ComponentConfig{StartCollapsed: true})
+		comp.Resize(W, H)
+		w := mkW()
+		tests := []comptest.TestCase{
+			{
+				Action: func() {
+					comp.AddToolCall("p1", "skill", "{}", "research")
+					comp.AddChildToolCall("p1", "c1", "agent", "{}", "scout")
+					comp.AddChildResult("c1", "found", false)
+					comp.CompleteChildToolCall("p1", "c1", "agent", "{}", "scout", "found", false)
+					comp.AddChildResult("p1", "done", false)
+					comp.CompleteToolCall("p1", "skill", "{}", "research", "done", false)
+				},
+				Expected: "└─ ✓ skill research            \n" +
+					"   ├─ ✓ agent scout            \n" +
+					"   │  └─ 󰆈  found              \n" +
+					"   └─ 󰆈  done                  \n" +
+					"Press <ctrl-o> to expand       \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"  ┌───────────────────────┐    \n" +
+					"  │                       │    \n" +
+					"  └───────────────────────┘    \n" +
+					"                               ",
+			},
+		}
+		comptest.TestComponent(t, comp, w, tests)
+	})
+
 	t.Run("child tool call error", func(t *testing.T) {
 		comp := NewComponent(ComponentConfig{})
 		comp.Resize(W, H)
@@ -4775,4 +4890,200 @@ func TestComponentScrollToPinnedMessage(t *testing.T) {
 			strings.TrimRight(rows[2], " "), strings.TrimRight(rows[3], " "),
 		})
 	assert.False(t, comp.PinnedMessageAt(term.Coordinates{X: 0, Y: 0}))
+}
+
+func TestComponentSetStatusBarConfig(t *testing.T) {
+	const width, height = 40, 12
+	modelOnly, err := ParseStatusBarLayout(`{{ .Model }}`)
+	require.NoError(t, err)
+	withEffort, err := ParseStatusBarLayout(`{{ .Model }} {{ .Effort }}`)
+	require.NoError(t, err)
+	start := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	enabled := func(layout []StatusBarComponent, shader string) StatusBarConfig {
+		return StatusBarConfig{Enabled: true, Layout: layout, Shader: shader}
+	}
+	tests := []struct {
+		name string
+		from StatusBarConfig
+		// whileSet changes the state between the two configs.
+		whileSet     func(*StatusBarState)
+		to           StatusBarConfig
+		wantBar      int
+		wantEffect   bool
+		wantModel    string
+		wantRendered string
+	}{
+		{
+			name: "a new layout", from: enabled(modelOnly, ""), to: enabled(withEffort, ""),
+			wantBar: 1, wantModel: "opus", wantRendered: "opus high",
+		},
+		{
+			name: "turning the bar off", from: enabled(modelOnly, ""), to: StatusBarConfig{},
+			wantBar: 0,
+		},
+		{
+			name: "turning the bar back on", from: StatusBarConfig{},
+			whileSet: func(s *StatusBarState) { s.Model = "sonnet" },
+			to:       enabled(modelOnly, ""), wantBar: 1, wantModel: "sonnet", wantRendered: "sonnet",
+		},
+		{
+			name: "an effect during a turn", from: enabled(modelOnly, ""), to: enabled(modelOnly, "pulse"),
+			wantBar: 1, wantEffect: true, wantModel: "opus", wantRendered: "opus",
+		},
+		{
+			name: "an effect removed during a turn", from: enabled(modelOnly, "pulse"), to: enabled(modelOnly, ""),
+			wantBar: 1, wantModel: "opus", wantRendered: "opus",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := NewComponent(ComponentConfig{StatusBar: tt.from})
+			h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp, make(interrupts, 1))
+			t.Cleanup(func() {
+				close(tx)
+				assert.NoError(t, comp.Close())
+			})
+			h.Resize(width, height)
+			comp.SetStatusBarState(func(s *StatusBarState) {
+				s.Active, s.TurnStart, s.Model, s.Effort = true, start, "opus", "high"
+			})
+			if tt.whileSet != nil {
+				comp.SetStatusBarState(tt.whileSet)
+			}
+
+			comp.SetStatusBarConfig(tt.to)
+			assert.Equal(t, tt.wantBar, comp.barHeight())
+			boxH := comp.boxHeight(comp.boxWidth(width))
+			assert.Equal(t, height-tt.wantBar, comp.InputPosition().Y+boxH,
+				"the compose box sits right above the bar")
+			if tt.wantBar == 0 {
+				assert.Zero(t, comp.StatusBarState())
+				return
+			}
+			state := comp.StatusBarState()
+			assert.Equal(t, tt.wantModel, state.Model)
+			assert.True(t, state.Active)
+			assert.Equal(t, start, state.TurnStart, "the turn keeps its elapsed time")
+			assert.Equal(t, tt.wantEffect, comp.shadedBar.shader != nil)
+			assert.Equal(t, tt.wantRendered, strings.TrimSpace(render(t, comp.statusBar, width)))
+		})
+	}
+}
+
+func TestComponentInputBoxFrameGraphics(t *testing.T) {
+	const width, height = 24, 4
+	// Nothing is on disk at uri, so only a reloaded image can draw.
+	const uri = "file:///nonexistent/frame.png"
+	cs := component.FrameCharSetDefault()
+	cs.TopLeft = '╓'
+	cs.Graphics = component.FrameCharSetGraphics{TopLeft: uri, Overlay: true}
+	// The asciiart writer draws the gray 128 pixel as 'a'.
+	gray := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	gray.Set(0, 0, color.Gray{Y: 128})
+
+	tests := []struct {
+		name      string
+		noStorage bool
+		expected  string
+	}{
+		{
+			name: "a reloaded image draws over the frame",
+			expected: "                        \n" +
+				"  a──────────────────┐  \n" +
+				"  │                  │  \n" +
+				"  └──────────────────┘  ",
+		},
+		{
+			name:      "without storage the frame shows its runes alone",
+			noStorage: true,
+			expected: "                        \n" +
+				"  ╓──────────────────┐  \n" +
+				"  │                  │  \n" +
+				"  └──────────────────┘  ",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := ComponentConfig{InputBox: InputBoxConfig{
+				GraphicsStorage: storagestub.NewInMemoryService(),
+			}}
+			if tt.noStorage {
+				cfg.InputBox.GraphicsStorage = nil
+			}
+			comp := NewComponent(cfg)
+			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
+			h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp, term.NopInterrupter())
+			defer close(tx)
+			h.Resize(width, height)
+
+			comp.SetInputBoxFrameCharSet(cs, nil)
+			h.Draw(term.NewStringWriter(width, height))
+			comp.SetInputBoxFrameCharSet(cs, map[string]image.Image{uri: gray})
+			w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+			h.Draw(w)
+			require.NoError(t, w.Flush())
+			assert.Equal(t, tt.expected, w.String())
+		})
+	}
+}
+
+func TestComponentSetInputBoxColors(t *testing.T) {
+	const width, height = 24, 6
+	tests := []struct {
+		name           string
+		opened         ComponentConfig
+		frame, content term.Attributes
+		bg             term.Color
+		wantFrame      term.Attributes
+		wantInputBg    term.Color
+	}{
+		{
+			name:        "a new input background",
+			opened:      ComponentConfig{InputBackgroundColor: term.ColorGray},
+			frame:       term.Attributes{Fg: term.ColorAqua},
+			content:     term.Attributes{Fg: term.ColorOlive},
+			bg:          term.ColorRed,
+			wantFrame:   term.Attributes{Fg: term.ColorAqua, Bg: term.ColorRed},
+			wantInputBg: term.ColorRed,
+		},
+		{
+			name:        "an input background where there was none",
+			frame:       term.Attributes{Fg: term.ColorAqua, Bg: term.ColorNavy},
+			bg:          term.ColorBlue,
+			wantFrame:   term.Attributes{Fg: term.ColorAqua, Bg: term.ColorBlue},
+			wantInputBg: term.ColorBlue,
+		},
+		{
+			name: "no input background leaves the frame's",
+			opened: ComponentConfig{
+				InputBackgroundColor: term.ColorGray,
+				InputBox:             InputBoxConfig{FrameAttr: term.Attributes{Fg: term.ColorAqua}},
+			},
+			frame:       term.Attributes{Bg: term.ColorNavy},
+			wantFrame:   term.Attributes{Bg: term.ColorNavy},
+			wantInputBg: term.ColorDefault,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := NewComponent(tt.opened)
+			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
+			h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp, term.NopInterrupter())
+			defer close(tx)
+			h.Resize(width, height)
+			typeText(h, "hi")
+
+			comp.SetInputBoxColors(tt.frame, tt.content, tt.bg)
+			w := term.NewStringWriter(width, height)
+			h.Draw(w)
+			pos := comp.InputPosition()
+			corner := w.Cells()[pos.Y*width+pos.X]
+			require.Equal(t, '┌', corner.Ch)
+			assert.Equal(t, tt.wantFrame, corner.Attributes(), "the frame")
+			typed := w.Cells()[(pos.Y+1)*width+pos.X+1]
+			require.Equal(t, 'h', typed.Ch)
+			assert.Equal(t, tt.wantInputBg, typed.Bg, "the input")
+			assert.Equal(t, tt.content, comp.cfg.InputBox.ContentAttr, "the feedback inputboxes")
+		})
+	}
 }

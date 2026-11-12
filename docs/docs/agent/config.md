@@ -32,6 +32,7 @@ extensions:
 | `agents_file` | string | `AGENTS.md` | Name of the [project instructions](./intro.md#project-instructions) file to discover. The agent walks up from the workspace root looking for files with this name and injects their contents into the system prompt. Set it empty to disable discovery. |
 | `attribution.commit` | string | `Co-Authored-By: Rune Agent ({{provider}}/{{model}}) <agent@rune.build>` | Attribution text Rune Agent is instructed to append to commits it creates. `{{provider}}` and `{{model}}` expand to the resolved model. Set it to an empty string to disable commit attribution. |
 | `skills` | list | the four directories below | Ordered list of [skill directories](./skills.md#skill-directories) to search. Overrides the default set when present. |
+| `mcpServers` | map | none | [MCP servers](./mcp.md) to connect in every workspace, in the same format as `.mcp.json`. A workspace server with the same name takes precedence. |
 | `max_line_bytes` | integer | `500` | Truncation limit, in bytes, for a single line of `read_file` output. |
 | `max_tool_output_bytes` | integer | `40000` | Truncation limit, in bytes, for a single tool's output before it is trimmed in the transcript. |
 | `auto_compact_ratio` | float | `0.85` | Fraction of the model's context window that must be filled before the agent automatically compacts the conversation. |
@@ -311,7 +312,8 @@ extensions:
 
 ## Appearance
 
-These keys style the chat tab and its composer. Each attribute value takes
+These keys style the chat tab and its composer, and the chats of
+[ACP agents](../learn/acp.md) too. Each attribute value takes
 an optional `fg` (foreground color), `bg` (background color), and `flags`
 (such as `dim`, `italic`, or `bold`).
 
@@ -322,10 +324,11 @@ an optional `fg` (foreground color), `bg` (background color), and `flags`
 | `user_msg_background_attr` | The background behind your messages. |
 | `user_msg_icon` | The character marking each of your messages, left of its first line. Defaults to a Nerd Font right arrow; set it to an empty string to hide it. |
 | `assistant_msg_attr` | The agent's messages in the transcript. |
+| `transcript_horizontal_padding` | The columns left beside the transcript, split evenly on either side. A negative value sets the transcript's width instead: the default, `-90`, keeps it 90 columns wide and centered, and it fills a narrower tab. `0` fills the tab. A change applies after `workspacereload`. |
 | `input_box_attr` | The composer's text content. |
 | `input_box_placeholder_attr` | The composer's placeholder text. |
 | `input_box_frame_attr` | The composer's border. |
-| `input_box_frame_charset` | The character set used to draw the composer's border. |
+| `input_box_frame_charset` | The character set used to draw the composer's border. Slots it leaves out keep the default border's. Its `graphics` table names images the GUI draws over the border, as window frame charsets do, and `themereload` or `runectl screenshot` applies it to open chats. |
 | `input_background_color` | The composer's background color. |
 | `completion_matched_text_attr` | The matched substring in `#` context completion results. |
 | `completion_focus_element_attr` | The selected row in the `#` context completion list. |

@@ -1018,6 +1018,8 @@ func TestComponentShow(t *testing.T) {
 		{name: "file opens in a tab", show: "file:///tmp/show.go", wantTab: "file:///tmp/show.go"},
 		{name: "ssh opens in a tab", show: "ssh://host/show.go", wantTab: "ssh://host/show.go"},
 		{name: "runenet opens in a tab", show: "rune://host/show.go", wantTab: "rune://host/show.go"},
+		{name: "tailscale opens in a tab", show: "tailscale://host/show.go",
+			wantTab: "tailscale://host/show.go"},
 		{
 			name:       "https goes to the URL opener",
 			show:       "https://example.com/a?b=c#d",
@@ -2463,7 +2465,7 @@ func TestComponentCommands(t *testing.T) {
 		// text.Component no longer enumerates aliases in Commands();
 		// alias listing is the responsibility of ide/idecmd.
 		assert.Empty(t, c.Commands())
-		mans := idecmd.NewExpander(c.CommandAliases(), nil).Aliases()
+		mans := idecmd.NewExpander(c.CommandAliases(), nil, nil).Aliases()
 		require.Len(t, mans, 1)
 		expectedMan := command.Manual{Name: "blah", AliasOf: []string{"myCmd"}}
 		assert.Equal(t, expectedMan, mans[0])

@@ -25,6 +25,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -1690,16 +1691,30 @@ func TestComponentRestoreFromSnapshotDrivesSetPtySize(t *testing.T) {
 
 func TestComponentBellSound(t *testing.T) {
 	t.Parallel()
+	ding, none := "ding", ""
+	bellSound := func(name string) *atomic.Pointer[string] {
+		ret := new(atomic.Pointer[string])
+		ret.Store(&name)
+		return ret
+	}
 	tests := []struct {
 		desc      string
-		bellSound string
-		want      []string
+		bellSound *atomic.Pointer[string]
+		// set, when not nil, is stored after the terminal is created.
+		set  *string
+		want []string
 	}{
-		{desc: "default bell plays a warning", bellSound: sounds.Warning,
+		{desc: "default bell plays a warning", bellSound: DefaultConfig().BellSound,
 			want: []string{sounds.Warning}},
-		{desc: "bell plays a registered sound", bellSound: "ding",
+		{desc: "bell plays a registered sound", bellSound: bellSound("ding"),
 			want: []string{"ding"}},
-		{desc: "empty bell sound plays nothing", bellSound: ""},
+		{desc: "empty bell sound plays nothing", bellSound: bellSound("")},
+		{desc: "unset bell sound plays nothing", bellSound: new(atomic.Pointer[string])},
+		{desc: "no bell sound plays nothing"},
+		{desc: "a sound set once the terminal runs plays", bellSound: bellSound(sounds.Warning),
+			set: &ding, want: []string{"ding"}},
+		{desc: "a sound silenced once the terminal runs plays nothing",
+			bellSound: bellSound(sounds.Warning), set: &none},
 	}
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
@@ -1713,6 +1728,9 @@ func TestComponentBellSound(t *testing.T) {
 			exe := &recordingExecutor{}
 			comp, err := NewComponent(exe, exe, &mockTabManager{}, cfg)
 			require.NoError(t, err)
+			if test.set != nil {
+				test.bellSound.Store(test.set)
+			}
 
 			comp.parserHandler.Bell()
 			assert.Equal(t, test.want, played)

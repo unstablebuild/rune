@@ -21,7 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 
@@ -29,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/term/shellplan"
 )
 
 func dirURI(dir string) workspaceapi.URI {
@@ -135,7 +135,8 @@ alpha body`)
 		explore, ok := r.Get("explore")
 		require.True(t, ok)
 
-		assert.NotContains(t, strings.Fields(explore.AllowedTools), "skill")
+		assert.False(t, explore.Tools.AllowsTool("skill"))
+		assert.False(t, explore.Tools.AllowsTool("agent"))
 		assert.Contains(t, explore.Body, "invoke the explore skill")
 	})
 
@@ -272,6 +273,89 @@ a`)
 	assert.Contains(t, names, "plan")
 	assert.Contains(t, names, "rune-hud")
 	assert.True(t, slices.IsSorted(names), "list must be sorted")
+}
+
+func TestRegistryAgentPolicy(t *testing.T) {
+	project, home := t.TempDir(), t.TempDir()
+	agent := func(name, fields string) {
+		writeSkill(t, project, name, "---\nname: "+name+"\ndescription: d\ntype: agent\n"+fields+"---\nbody")
+	}
+	prompt := func(dir, name string) {
+		writeSkill(t, dir, name, "---\nname: "+name+"\ndescription: d\n---\nbody")
+	}
+	agent("triage", `allowed-tools: [read_file, "skill(acme-*)", "bash(git log *)", "bash($acme-notes)"]`+"\n")
+	agent("own", "allowed-tools: bash($own)\n")
+	agent("globbed", "allowed-tools: bash($acme-*)\n")
+	agent("every", "allowed-tools: bash($*)\n")
+	agent("unrestricted", `allowed-tools: [bash, "bash($acme-notes)"]`+"\n")
+	agent("deny-only", `disallowed-tools: ["bash(rm *)"]`+"\n")
+	agent("missing", "allowed-tools: bash($nope)\n")
+	agent("shadowed", "allowed-tools: bash($dup)\n")
+	agent("builtin", "allowed-tools: bash($explore)\n")
+	agent("upper", "allowed-tools: bash($Acme-notes)\n")
+	agent("no-shell", "allowed-tools: [read_file, \"skill(acme-*)\"]\n")
+	prompt(project, "acme-notes")
+	prompt(project, "acme-other")
+	prompt(project, "dup")
+	prompt(home, "acme-home")
+	prompt(home, "dup")
+	r := NewRegistry(osFileSystem{}, dirURI(""), []string{project, home}, nil)
+
+	script := func(dir, skill string) string { return filepath.Join(dir, skill, "scripts", "run") + " x" }
+	cases := []struct {
+		agent string
+		cmd   string
+		want  bool
+	}{
+		{agent: "triage", cmd: "git log", want: true},
+		{agent: "triage", cmd: script(project, "acme-notes"), want: true},
+		{agent: "triage", cmd: script(project, "acme-other"), want: false},
+		{agent: "triage", cmd: script(project, "triage"), want: false},
+		{agent: "triage", cmd: filepath.Join(project, "acme-notes", "run"), want: false},
+		{agent: "triage", cmd: filepath.Join(project, "acme-notes", "scripts"), want: false},
+		{agent: "triage", cmd: script(project, "acme-notes") + " | rm x", want: false},
+		{agent: "own", cmd: script(project, "own"), want: true},
+		{agent: "own", cmd: script(project, "acme-notes"), want: false},
+		{agent: "own", cmd: "git log", want: false},
+		{agent: "globbed", cmd: script(project, "acme-notes"), want: true},
+		{agent: "globbed", cmd: script(project, "acme-other"), want: true},
+		{agent: "globbed", cmd: script(home, "acme-home"), want: true},
+		{agent: "globbed", cmd: script(project, "own"), want: false},
+		{agent: "every", cmd: script(project, "own"), want: true},
+		{agent: "every", cmd: script(home, "acme-home"), want: true},
+		{agent: "every", cmd: script(project, "dup"), want: true},
+		{agent: "every", cmd: script(home, "dup"), want: false},
+		{agent: "shadowed", cmd: script(project, "dup"), want: true},
+		{agent: "shadowed", cmd: script(home, "dup"), want: false},
+		{agent: "unrestricted", cmd: "git push > out", want: true},
+		{agent: "deny-only", cmd: "git push", want: true},
+		{agent: "deny-only", cmd: script(home, "acme-home"), want: true},
+		{agent: "deny-only", cmd: "rm x", want: false},
+		{agent: "missing", cmd: script(project, "acme-notes"), want: false},
+		{agent: "builtin", cmd: "git log", want: false},
+		{agent: "upper", cmd: script(project, "acme-notes"), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.agent+" runs "+tc.cmd, func(t *testing.T) {
+			s, ok := r.Get(tc.agent)
+			require.True(t, ok)
+			plan := shellplan.Command("bash", []string{"-c", tc.cmd}, nil, nil)
+			err := r.AgentPolicy(s).CheckCommand(plan)
+			if tc.want {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+			}
+		})
+	}
+
+	noShell, ok := r.Get("no-shell")
+	require.True(t, ok)
+	assert.False(t, r.AgentPolicy(noShell).AllowsTool("bash"), "allowing skills does not allow the shell")
+
+	explore, ok := r.Get("explore")
+	require.True(t, ok)
+	assert.Equal(t, explore.Tools, r.AgentPolicy(explore))
 }
 
 func TestRegistryAddDir(t *testing.T) {

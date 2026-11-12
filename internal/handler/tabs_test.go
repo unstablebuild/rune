@@ -25,6 +25,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	rhandlertest "unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/sounds"
 )
 
 func TestTabsOnClick(t *testing.T) {
@@ -49,6 +50,7 @@ func TestTabsOnClick(t *testing.T) {
 
 	t.Run("dispatches click event on tab with tab index", func(t *testing.T) {
 		h := NewTabs()
+		h.Resize(30, 2)
 		var called int
 		h.OnClick = func(tabIdx int) bool {
 			called++
@@ -59,6 +61,7 @@ func TestTabsOnClick(t *testing.T) {
 		assert.Equal(t, 0, h.Add(0, "Burning"))
 		assert.Equal(t, 1, h.Add(0, "Man"))
 		assert.Equal(t, 2, h.Add('x', "2024"))
+		handlertest.DrawHandler(h, 30, 2)
 
 		_, handled := h.Handle(term.Event{
 			Type:   term.EventMouse,
@@ -66,7 +69,14 @@ func TestTabsOnClick(t *testing.T) {
 			MouseX: 10,
 		})
 		assert.True(t, handled)
+		assert.Zero(t, called, "a press is no click")
 
+		_, handled = h.Handle(term.Event{
+			Type:   term.EventMouse,
+			Key:    term.MouseRelease,
+			MouseX: 10,
+		})
+		assert.True(t, handled)
 		assert.Equal(t, 1, called)
 	})
 
@@ -428,19 +438,57 @@ func TestTabsIconPressHandled(t *testing.T) {
 
 func TestTabsPointerShape(t *testing.T) {
 	// Icons sit at A:0, B:9 and C:17 on row 1, as in TestTabsOnIconClick.
+	mouse := func(key term.Key, x, y int) term.Event {
+		return term.Event{Type: term.EventMouse, Key: key, MouseX: x, MouseY: y}
+	}
 	for _, tc := range []struct {
 		name        string
 		noIconClick bool
-		key         term.Key
-		x           int
-		want        term.PointerShape
-		set         bool
+		// steps lead to the event whose pointer shape is checked.
+		steps []term.Event
+		ev    term.Event
+		want  term.PointerShape
+		set   bool
 	}{
-		{name: "hover over an icon", x: 9, want: term.PointerLink, set: true},
-		{name: "press on an icon", key: term.MouseLeft, x: 17, want: term.PointerLink, set: true},
-		{name: "hover over a name", x: 11},
-		{name: "hover past the tabs", x: 28},
-		{name: "hover over an icon that does not close", noIconClick: true, x: 9},
+		{name: "hover over an icon", ev: mouse(0, 9, 1), want: term.PointerLink, set: true},
+		{
+			name: "press on an icon", ev: mouse(term.MouseLeft, 17, 1),
+			want: term.PointerLink, set: true,
+		},
+		{name: "hover over a name", ev: mouse(0, 11, 1), want: term.PointerLink, set: true},
+		{
+			name: "hover over the highlight row", ev: mouse(0, 11, 0),
+			want: term.PointerLink, set: true,
+		},
+		{
+			name: "hover over the tab in focus", ev: mouse(0, 2, 1),
+			want: term.PointerLink, set: true,
+		},
+		{name: "hover past the tabs", ev: mouse(0, 28, 1)},
+		{name: "a leave below the bar", ev: mouse(0, 11, 2)},
+		{
+			name: "hover over an icon that does not close", noIconClick: true,
+			ev: mouse(0, 9, 1), want: term.PointerLink, set: true,
+		},
+		{
+			name: "press on a name", ev: mouse(term.MouseLeft, 11, 1),
+			want: term.PointerLink, set: true,
+		},
+		{
+			name:  "a press dragged onto another tab",
+			steps: []term.Event{mouse(term.MouseLeft, 11, 1)},
+			ev:    mouse(term.MouseLeft, 19, 1),
+		},
+		{
+			name:  "a press dragged back onto its tab",
+			steps: []term.Event{mouse(term.MouseLeft, 11, 1), mouse(term.MouseLeft, 19, 1)},
+			ev:    mouse(term.MouseLeft, 12, 1), want: term.PointerLink, set: true,
+		},
+		{
+			name:  "a press past the tabs dragged onto one",
+			steps: []term.Event{mouse(term.MouseLeft, 28, 1)},
+			ev:    mouse(term.MouseLeft, 11, 1),
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := NewTabs()
@@ -453,17 +501,208 @@ func TestTabsPointerShape(t *testing.T) {
 				h.OnIconClick = func(int) {}
 			}
 			handlertest.DrawHandler(h, 30, 2)
+			for _, ev := range tc.steps {
+				h.Handle(ev)
+				handlertest.DrawHandler(h, 30, 2)
+			}
 
 			p := new(term.Pointer)
-			h.Handle(term.Event{
-				Type: term.EventMouse, Key: tc.key, MouseX: tc.x, MouseY: 1,
-				Context: term.ContextWithPointer(context.Background(), p),
-			})
+			ev := tc.ev
+			ev.Context = term.ContextWithPointer(context.Background(), p)
+			h.Handle(ev)
 			shape, set := p.Shape()
 			assert.Equal(t, tc.set, set)
 			assert.Equal(t, tc.want, shape)
 		})
 	}
+}
+
+func TestTabsClickSounds(t *testing.T) {
+	const width, height = 30, 2
+	// Tabs sit at A:0-6, B:9-14 and C:17-23, each separator part of the
+	// tab before it, with A in focus.
+	mouse := func(key term.Key, x, y int) func(*Tabs) {
+		return func(h *Tabs) {
+			h.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: x, MouseY: y})
+		}
+	}
+	press := func(x int) func(*Tabs) { return mouse(term.MouseLeft, x, 1) }
+	release := func(x int) func(*Tabs) { return mouse(term.MouseRelease, x, 1) }
+	hover := func(x int) func(*Tabs) { return mouse(0, x, 1) }
+	for _, tc := range []struct {
+		name       string
+		iconClick  bool
+		steps      []func(*Tabs)
+		wantClicks []int
+		wantIcons  []int
+		wantSounds []string
+	}{
+		{
+			name:       "a click on a tab not in focus",
+			steps:      []func(*Tabs){hover(11), press(11), release(11)},
+			wantClicks: []int{1},
+			wantSounds: []string{"hover", "click"},
+		},
+		{
+			name:       "a click on the tab in focus",
+			steps:      []func(*Tabs){hover(2), press(2), release(2)},
+			wantClicks: []int{0},
+			wantSounds: []string{"click"},
+		},
+		{
+			name:       "a press is no click",
+			steps:      []func(*Tabs){hover(11), press(11)},
+			wantSounds: []string{"hover"},
+		},
+		{
+			name:       "a press dragged onto another tab",
+			steps:      []func(*Tabs){hover(11), press(11), press(19), release(19)},
+			wantSounds: []string{"hover", "hover"},
+		},
+		{
+			name: "a press dragged off its tab and back",
+			steps: []func(*Tabs){
+				hover(11), press(11), press(19), press(12), release(12),
+			},
+			wantClicks: []int{1},
+			wantSounds: []string{"hover", "click"},
+		},
+		{
+			name: "a release below the bar",
+			steps: []func(*Tabs){
+				hover(11), press(11), mouse(term.MouseLeft, 11, 4), mouse(term.MouseRelease, 11, 4),
+			},
+			wantSounds: []string{"hover"},
+		},
+		{
+			// The release went elsewhere, and the motion that followed
+			// shows the button is up.
+			name:       "a missed release, then a motion",
+			steps:      []func(*Tabs){press(11), hover(11), release(11)},
+			wantSounds: []string{"hover"},
+		},
+		{
+			name: "the wheel ends a press",
+			steps: []func(*Tabs){
+				hover(11), press(11), mouse(term.MouseWheelDown, 11, 1), release(11),
+			},
+			wantSounds: []string{"hover"},
+		},
+		{
+			name: "a modified press is no click",
+			steps: []func(*Tabs){
+				hover(11), func(h *Tabs) {
+					h.Handle(term.Event{
+						Type: term.EventMouse, Key: term.MouseLeft, Mod: term.ModCtrl, MouseX: 11, MouseY: 1,
+					})
+				}, release(11),
+			},
+			wantSounds: []string{"hover"},
+		},
+		{
+			name:       "moving across a tab plays its sound once",
+			steps:      []func(*Tabs){hover(9), hover(11), hover(14), hover(15)},
+			wantSounds: []string{"hover"},
+		},
+		{
+			name:       "moving from tab to tab",
+			steps:      []func(*Tabs){hover(11), hover(19)},
+			wantSounds: []string{"hover", "hover"},
+		},
+		{
+			name:  "the tab in focus and past the tabs are silent",
+			steps: []func(*Tabs){hover(2), hover(27)},
+		},
+		{
+			name:       "leaving the bar and coming back",
+			steps:      []func(*Tabs){hover(11), mouse(0, 11, height), hover(11)},
+			wantSounds: []string{"hover", "hover"},
+		},
+		{
+			name:       "a click on an icon",
+			iconClick:  true,
+			steps:      []func(*Tabs){press(9), release(9)},
+			wantIcons:  []int{1},
+			wantSounds: []string{"click"},
+		},
+		{
+			name: "a bar rebuilt after a click keeps the pointer on the clicked tab",
+			steps: []func(*Tabs){
+				hover(11), press(11), release(11), func(h *Tabs) {
+					h.RemoveAll()
+					for i, name := range []string{"alpha", "beta", "gamma"} {
+						h.Add('A'+rune(i), name)
+					}
+					h.SetFocus(1)
+				}, hover(12),
+			},
+			wantClicks: []int{1},
+			wantSounds: []string{"hover", "click"},
+		},
+		{
+			name: "the clicked tab is silent until the pointer comes back to it",
+			steps: []func(*Tabs){
+				hover(11), press(11), release(11), func(h *Tabs) {
+					h.ResetFocus()
+					h.SetFocus(0)
+				}, hover(12), hover(19), hover(12),
+			},
+			wantClicks: []int{1},
+			wantSounds: []string{"hover", "click", "hover", "hover"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewTabs()
+			h.SetBorder(false)
+			h.Resize(width, height)
+			for i, name := range []string{"alpha", "beta", "gamma"} {
+				h.Add('A'+rune(i), name)
+			}
+			var clicks, icons []int
+			var played []string
+			h.OnClick = func(idx int) bool {
+				clicks = append(clicks, idx)
+				return true
+			}
+			if tc.iconClick {
+				h.OnIconClick = func(idx int) { icons = append(icons, idx) }
+			}
+			h.Player = sounds.PlayerFunc(func(name string) { played = append(played, name) })
+			h.Sounds = TabSounds{Hover: "hover", Click: "click"}
+
+			handlertest.DrawHandler(h, width, height)
+			for _, step := range tc.steps {
+				step(h)
+				handlertest.DrawHandler(h, width, height)
+			}
+			assert.Equal(t, tc.wantClicks, clicks, "clicks")
+			assert.Equal(t, tc.wantIcons, icons, "icon clicks")
+			assert.Equal(t, tc.wantSounds, played, "sounds")
+		})
+	}
+}
+
+func TestTabsWithoutSounds(t *testing.T) {
+	h := NewTabs()
+	h.SetBorder(false)
+	h.Resize(30, 2)
+	h.Add('A', "alpha")
+	h.Add('B', "beta")
+	var played []string
+	h.Player = sounds.PlayerFunc(func(name string) { played = append(played, name) })
+	handlertest.DrawHandler(h, 30, 2)
+	for _, key := range []term.Key{0, term.MouseLeft, term.MouseRelease} {
+		h.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: 11, MouseY: 1})
+	}
+	assert.Empty(t, played, "\"\" plays none")
+
+	h.Player = nil
+	h.Sounds = TabSounds{Hover: "hover", Click: "click"}
+	assert.NotPanics(t, func() {
+		for _, key := range []term.Key{0, term.MouseLeft, term.MouseRelease} {
+			h.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: 2, MouseY: 1})
+		}
+	}, "a nil Player plays none")
 }
 
 // newPointerTabs returns Tabs with more tabs than fit any test width,

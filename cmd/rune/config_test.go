@@ -17,6 +17,9 @@
 package main
 
 import (
+	"bytes"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"testing"
@@ -502,6 +505,58 @@ func TestGetGUISoundVolume(t *testing.T) {
 					Return("", nil)
 			}
 			assert.Equal(t, tc.want, getGUISoundVolume(b, config.MapConfig(tc.cfg)))
+		})
+	}
+}
+
+func TestGetGUIAppIcon(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RUNE_TEST_ICON_DIR", dir)
+	writePNG := func(name string, w, h int) string {
+		path := filepath.Join(dir, name)
+		var buf bytes.Buffer
+		require.NoError(t, png.Encode(&buf, image.NewNRGBA(image.Rect(0, 0, w, h))))
+		require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
+		return path
+	}
+	iconPath := writePNG("icon.png", 64, 32)
+	largePath := writePNG("large.png", maxAppIconSize+1, 1)
+	textPath := filepath.Join(dir, "icon.txt")
+	require.NoError(t, os.WriteFile(textPath, []byte("not an image"), 0o644))
+
+	cases := []struct {
+		name       string
+		cfg        map[string]any
+		wantIcon   bool
+		wantNotify bool
+	}{
+		{name: "absent", cfg: map[string]any{}},
+		{name: "empty", cfg: map[string]any{"app_icon": ""}},
+		{name: "png", cfg: map[string]any{"app_icon": iconPath}, wantIcon: true},
+		{
+			name:     "variables expanded",
+			cfg:      map[string]any{"app_icon": "$RUNE_TEST_ICON_DIR/icon.png"},
+			wantIcon: true,
+		},
+		{
+			name:       "missing file",
+			cfg:        map[string]any{"app_icon": filepath.Join(dir, "missing.png")},
+			wantNotify: true,
+		},
+		{name: "not an image", cfg: map[string]any{"app_icon": textPath}, wantNotify: true},
+		{name: "too large", cfg: map[string]any{"app_icon": largePath}, wantNotify: true},
+		{name: "wrong type", cfg: map[string]any{"app_icon": 42}, wantNotify: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			b := browsertest.NewMockBrowser(ctrl)
+			if tc.wantNotify {
+				b.EXPECT().Notify(browserapi.LevelError, gomock.Any(), gomock.Any()).
+					Return("", nil).Times(1)
+			}
+			icon := getGUIAppIcon(b, config.MapConfig(tc.cfg))
+			assert.Equal(t, tc.wantIcon, icon != nil)
 		})
 	}
 }

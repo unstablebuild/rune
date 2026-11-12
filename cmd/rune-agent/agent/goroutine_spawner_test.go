@@ -30,6 +30,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 )
 
 // nopFileSystem and osFileSystem are defined in agent_test.go (same package).
@@ -319,49 +320,161 @@ func TestGoroutineSpawner_RunWithCleanup(t *testing.T) {
 		"dialogue should be deleted after cleanup")
 }
 
-func TestGoroutineSpawner_RunWithAllowedTools(t *testing.T) {
-	cfg := NewConfig([]Definition{
-		{
-			ID:       "agent",
-			Name:     "Agent",
-			Model:    "m",
-			AllowAny: true,
-		},
-	})
-
-	svc := &mockService{
-		responses: []mockResponse{
-			toolCallResponse("read_file", `{"path":"a.go"}`, "tc1"),
-			stopResponse("done reading"),
-		},
+func TestGoroutineSpawner_RunWithTools(t *testing.T) {
+	mustPolicy := func(allowed, denied []string) toolpolicy.Policy {
+		p, err := toolpolicy.Parse(allowed, denied)
+		require.NoError(t, err)
+		return p
 	}
-	readTool := &mockTool{name: "read_file", result: ToolResult{Content: "contents"}}
-	bashTool := &mockTool{name: "bash", result: ToolResult{Content: "cmd"}}
+	readOnly := mustPolicy([]string{"read_file", "agent"}, nil)
+	noAgents := mustPolicy(nil, []string{"agent(*)"})
+	tests := []struct {
+		name string
+		// parent is the policy of the agent whose tool spawns the child.
+		parent toolpolicy.Policy
+		tools  toolpolicy.Policy
+		want   toolpolicy.Policy
+	}{
+		{name: "the request restricts the child", tools: readOnly, want: readOnly},
+		{name: "the child of a restricted parent keeps its restrictions", parent: readOnly,
+			want: readOnly},
+		{name: "both restrict the child", parent: readOnly, tools: noAgents,
+			want: toolpolicy.Intersect(readOnly, noAgents)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := NewConfig([]Definition{{ID: "agent", Name: "Agent", Model: "m", AllowAny: true}})
+			svc := &mockService{
+				responses: []mockResponse{
+					toolCallResponse("read_file", `{"path":"a.go"}`, "tc1"),
+					toolCallResponse("bash", `{"command":"rm -rf x"}`, "tc2"),
+					stopResponse("done reading"),
+				},
+			}
+			var seen toolpolicy.Policy
+			readTool := &mockTool{name: "read_file", executeFn: func(ctx context.Context, _ string) ToolResult {
+				seen = ToolPolicyFromContext(ctx)
+				return ToolResult{Content: "contents"}
+			}}
+			bashTool := &mockTool{name: "bash", result: ToolResult{Content: "cmd"}}
+			spawner := NewGoroutineSpawner(
+				newMockStore(),
+				func(string) (llmapi.Service, llmapi.ModelEntry, error) {
+					return svc, llmapi.ModelEntry{Name: "test"}, nil
+				},
+				cfg,
+				skills.NewRegistry(nopFileSystem{}, dirURI(""), nil, nil),
+				NoMemory(), "",
+				"session", "agent", workspaceapi.URI{},
+				noopPrompter{},
+			)
+			spawner.SetRegistry(NewRegistry(readTool, bashTool))
 
+			handle, err := spawner.Run(WithToolPolicy(context.Background(), tc.parent), RunRequest{
+				AgentID:      "agent",
+				Message:      "read a file",
+				Tools:        tc.tools,
+				SystemPrompt: "You are a reader.",
+			})
+			require.NoError(t, err)
+			assert.Equal(t, "done reading", consumeReply(t, handle))
+			assert.Equal(t, int32(1), readTool.execCount.Load())
+			assert.Equal(t, int32(0), bashTool.execCount.Load())
+			assert.Equal(t, tc.want, seen, "the child's tools spawn grandchildren with its policy")
+			for _, tool := range svc.requests[0].Tools {
+				assert.NotEqual(t, "bash", tool.Function.Name)
+			}
+		})
+	}
+}
+
+func TestGoroutineSpawner_RunAgentSkillWithItsPolicy(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(dir+"/acme-triage", 0o755))
+	require.NoError(t, os.WriteFile(dir+"/acme-triage/SKILL.md", []byte(`---
+name: acme-triage
+description: Triage
+type: agent
+allowed-tools: [read_file, "bash(git log *)"]
+---
+You triage.`), 0o644))
+	skillRegistry := skills.NewRegistry(osFileSystem{}, dirURI(""), []string{dir}, nil)
+	skill, ok := skillRegistry.Get("acme-triage")
+	require.True(t, ok)
+
+	// An agent with the skill's name must not stand in for the skill,
+	// which would run it without the skill's restrictions.
+	shadow := NewConfig([]Definition{{ID: "acme-triage", SystemPrompt: "You do anything.", AllowAny: true}})
+	tests := []struct {
+		name string
+		cfg  *Cfg
+		req  RunRequest
+	}{
+		{name: "agent ID naming the skill", cfg: NewConfig(nil), req: RunRequest{AgentID: "Acme-Triage"}},
+		{name: "skill", cfg: NewConfig(nil), req: RunRequest{Skill: "acme-triage"}},
+		{name: "skill named like an agent", cfg: shadow, req: RunRequest{Skill: "acme-triage"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mockService{responses: []mockResponse{
+				toolCallResponse("read_file", `{"path":"a.go"}`, "tc1"),
+				stopResponse("done"),
+			}}
+			var seen toolpolicy.Policy
+			readTool := &mockTool{name: "read_file", executeFn: func(ctx context.Context, _ string) ToolResult {
+				seen = ToolPolicyFromContext(ctx)
+				return ToolResult{Content: "contents"}
+			}}
+			store := newMockStore()
+			spawner := NewGoroutineSpawner(
+				store,
+				func(string) (llmapi.Service, llmapi.ModelEntry, error) {
+					return svc, llmapi.ModelEntry{Name: "test"}, nil
+				},
+				tc.cfg, skillRegistry, NoMemory(), "",
+				"session", "agent", workspaceapi.URI{},
+				noopPrompter{},
+			)
+			spawner.SetRegistry(NewRegistry(readTool, &mockTool{name: "skill"}, &mockTool{name: "bash"}))
+
+			req := tc.req
+			req.Message = "go"
+			handle, err := spawner.Run(context.Background(), req)
+			require.NoError(t, err)
+			assert.Equal(t, "done", consumeReply(t, handle))
+			assert.True(t, strings.HasPrefix(handle.DialogueID, "sub-agent-acme-triage-"), handle.DialogueID)
+			assert.Equal(t, skillRegistry.AgentPolicy(skill), seen)
+			var names []string
+			for _, tool := range svc.requests[0].Tools {
+				names = append(names, tool.Function.Name)
+			}
+			assert.Equal(t, []string{"bash", "read_file"}, names)
+			assert.Equal(t, "You triage.", svc.requests[0].Messages[0].Content)
+		})
+	}
+}
+
+func TestGoroutineSpawner_RunMissingSkill(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(dir+"/notes", 0o755))
+	require.NoError(t, os.WriteFile(dir+"/notes/SKILL.md", []byte("---\nname: notes\ndescription: Notes\n---\nTake notes."), 0o644))
+	skillRegistry := skills.NewRegistry(osFileSystem{}, dirURI(""), []string{dir}, nil)
 	spawner := NewGoroutineSpawner(
 		newMockStore(),
 		func(string) (llmapi.Service, llmapi.ModelEntry, error) {
-			return svc, llmapi.ModelEntry{Name: "test"}, nil
+			t.Fatal("no sub-agent may start")
+			return nil, llmapi.ModelEntry{}, nil
 		},
-		cfg,
-		skills.NewRegistry(nopFileSystem{}, dirURI(""), nil, nil),
-		NoMemory(), "",
-		"session", "agent", workspaceapi.URI{},
+		NewConfig([]Definition{{ID: "default", AllowAny: true}}), skillRegistry, NoMemory(), "",
+		"session", "default", workspaceapi.URI{},
 		noopPrompter{},
 	)
-	spawner.SetRegistry(NewRegistry(readTool, bashTool))
-
-	handle, err := spawner.Run(context.Background(), RunRequest{
-		AgentID:      "agent",
-		Message:      "read a file",
-		AllowedTools: []string{"read_file"},
-		SystemPrompt: "You are a reader.",
-	})
-	require.NoError(t, err)
-	reply := consumeReply(t, handle)
-	assert.Equal(t, "done reading", reply)
-	assert.Equal(t, int32(1), readTool.execCount.Load())
-	assert.Equal(t, int32(0), bashTool.execCount.Load())
+	for _, name := range []string{"default", "notes", "missing"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := spawner.Run(context.Background(), RunRequest{Skill: name, Message: "go"})
+			assert.EqualError(t, err, fmt.Sprintf("no agent skill named %q exists", name))
+		})
+	}
 }
 
 func TestGoroutineSpawner_Run_streams_events(t *testing.T) {

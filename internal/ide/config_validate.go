@@ -68,8 +68,9 @@ func validateConfigOn(cfg map[string]any, goos string) (err error) {
 
 // validateSounds drops invalid `sounds` entries, resets a terminal.bell
 // that names no known sound to the default and drops invalid
-// program_status.sounds and gui.quick_menu_sounds entries, so a typo
-// costs one sound rather than the whole config.
+// program_status.sounds, gui.quick_menu_sounds, browser.tab_sounds and
+// workspace.tab_sounds entries, so a typo costs one sound rather than
+// the whole config.
 func validateSounds(cfg map[string]any) error {
 	var errs []error
 	entries := make(map[string]string)
@@ -108,7 +109,9 @@ func validateSounds(cfg map[string]any) error {
 		errs = append(errs, err)
 	}
 	errs = append(errs, validateProgramStatusSounds(cfg, known)...)
-	errs = append(errs, validateQuickMenuSounds(cfg, known)...)
+	errs = append(errs, validateEventSounds(cfg, keyGUI, keyQuickMenuSounds, known)...)
+	errs = append(errs, validateEventSounds(cfg, "browser", keyTabSounds, known)...)
+	errs = append(errs, validateEventSounds(cfg, "workspace", keyTabSounds, known)...)
 	return errors.Join(errs...)
 }
 
@@ -174,21 +177,24 @@ func validateProgramStatusSounds(cfg map[string]any, known func(string) bool) []
 	return errs
 }
 
-// validateQuickMenuSounds drops the gui.quick_menu_sounds entries that
-// name no event or no known sound, for that event to play none.
-func validateQuickMenuSounds(cfg map[string]any, known func(string) bool) []error {
-	const key = keyGUI + "." + keyQuickMenuSounds
-	guiCfg, ok := cfg[keyGUI].(map[string]any)
+// validateEventSounds drops the entries of the section.field map of
+// hover and click sounds that name no event or no known sound, for that
+// event to play none.
+func validateEventSounds(
+	cfg map[string]any, section, field string, known func(string) bool,
+) []error {
+	key := section + "." + field
+	sectionCfg, ok := cfg[section].(map[string]any)
 	if !ok {
 		return nil
 	}
-	raw, ok := guiCfg[keyQuickMenuSounds]
+	raw, ok := sectionCfg[field]
 	if !ok {
 		return nil
 	}
 	entries, ok := raw.(map[string]any)
 	if !ok {
-		delete(guiCfg, keyQuickMenuSounds)
+		delete(sectionCfg, field)
 		return []error{fmt.Errorf("'%s' must map %s and %s to sound names",
 			key, keyQuickMenuHover, keyQuickMenuClick)}
 	}

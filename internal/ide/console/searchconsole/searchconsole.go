@@ -81,7 +81,7 @@ var errNoSearchIndex = errors.New(
 // satisfies it.
 type SemanticSearcher interface {
 	SemanticSearch(ctx context.Context, req searchapi.SemanticRequest) (
-		iterator.Iterator[searchapi.SemanticResult], error)
+		iterator.Iterator[searchapi.SemanticResult], searchapi.SemanticStatus, error)
 }
 
 // Config configures a Handler. Every field is required.
@@ -171,7 +171,7 @@ func (h *Handler) Help(
 }
 
 func (h *Handler) query(ctx context.Context, q string) (iterator.Iterator[component.Responsive], error) {
-	it, err := h.searcher.SemanticSearch(ctx,
+	it, _, err := h.searcher.SemanticSearch(ctx,
 		searchapi.SemanticRequest{Query: q, Limit: searchLimit, Meaning: true})
 	if errors.Is(err, llmsearch.ErrNoIndex) {
 		return nil, errNoSearchIndex

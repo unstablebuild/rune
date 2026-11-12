@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -85,6 +86,14 @@ type Config struct {
 	Ignore vctrl.Matcher
 }
 
+// FileSystem is the file system the explorer shows and edits. Rename
+// must move a directory together with everything inside it, including
+// entries the explorer never loaded or hides.
+type FileSystem interface {
+	workspaceapi.FileSystem
+	Rename(oldpath, newpath string) error
+}
+
 // Component renders a file tree into a shared *cell.Buffer. It
 // implements component.Floating and supports expand/collapse plus
 // change detection over user edits performed directly on the shared
@@ -104,7 +113,7 @@ type Config struct {
 // The Component subscribes to the buffer so it can keep rowIDs
 // aligned when the user inserts or deletes rows via the editor.
 type Component struct {
-	fs       workspaceapi.FileSystem
+	fs       FileSystem
 	buf      *cell.Buffer
 	root     workspaceapi.URI
 	cfg      Config
@@ -145,7 +154,7 @@ var _ cell.Subscriber = (*Component)(nil)
 // identity.
 func New(
 	buf *cell.Buffer,
-	fs workspaceapi.FileSystem,
+	fs FileSystem,
 	root workspaceapi.URI,
 	cfg Config,
 ) (*Component, error) {
@@ -420,12 +429,34 @@ func (c *Component) CollapseAll() {
 
 // DryFlush reparses the buffer into a view tree and computes the
 // ChangeSet needed to bring the filesystem from the base tree to the
-// view tree. It does not mutate the filesystem or the buffer.
+// view tree. Without conflicts, its Operations are in the order Flush
+// applies them. It does not mutate the filesystem or the buffer.
 func (c *Component) DryFlush() *ChangeSet {
-	view := c.parseViewTree()
-	cs := computeChangeSet(c.baseTree, view)
-	c.appendNameConflicts(cs, view)
+	cs, _, _ := c.plan()
 	return cs
+}
+
+// plan computes the ChangeSet for the current buffer, the view tree it
+// was computed from and, when there are no conflicts, the steps that
+// apply it.
+func (c *Component) plan() (*ChangeSet, *node, []step) {
+	view := c.parseViewTree()
+	cs, changes := computeChangeSet(c.baseTree, view)
+	c.appendNameConflicts(cs, view)
+	cs.Operations = make([]Operation, len(changes))
+	for i, ch := range changes {
+		cs.Operations[i] = ch.Operation
+	}
+	if cs.HasConflicts() {
+		return cs, view, nil
+	}
+	ordered, steps, err := schedule(c.baseTree, view, changes)
+	if err != nil {
+		cs.Conflicts = append(cs.Conflicts, Conflict{Message: err.Error()})
+		return cs, view, nil
+	}
+	cs.Operations = ordered
+	return cs, view, steps
 }
 
 // appendNameConflicts records a conflict for every view entry whose
@@ -523,18 +554,15 @@ func (c *Component) ExpandDirectories(uris []workspaceapi.URI) {
 // On conflict (or on operation error), the buffer is not mutated and
 // the partial ChangeSet plus a non-nil error is returned.
 func (c *Component) Flush() (*ChangeSet, error) {
-	view := c.parseViewTree()
-	cs := computeChangeSet(c.baseTree, view)
-	c.appendNameConflicts(cs, view)
+	cs, view, steps := c.plan()
 	if cs.HasConflicts() {
 		return cs, fmt.Errorf(
 			"file explorer: %d conflicting change(s)",
 			len(cs.Conflicts),
 		)
 	}
-	ordered := OrderOperations(cs.Operations)
-	for _, op := range ordered {
-		if err := c.applyOperation(op); err != nil {
+	for _, s := range steps {
+		if err := c.apply(s); err != nil {
 			return cs, err
 		}
 	}
@@ -658,53 +686,60 @@ func (c *Component) expandAtDepth(n *node, depth int) {
 	}
 }
 
-// applyOperation executes a single operation on the filesystem.
-func (c *Component) applyOperation(op Operation) error {
-	switch op.Type {
+func (c *Component) apply(s step) error {
+	switch s.op {
 	case OpCreate:
-		f, err := c.fs.OpenFile(
-			op.NewURI.Path(),
-			os.O_CREATE|os.O_WRONLY,
-			0644,
-		)
+		f, err := c.fs.OpenFile(s.to, os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return err
 		}
 		return f.Close()
 
 	case OpMkdir:
-		return c.fs.MkdirAll(op.NewURI.Path(), 0755)
+		return c.fs.MkdirAll(s.to, 0755)
 
 	case OpDelete:
-		return c.fs.Remove(op.URI.Path())
+		return c.removeAll(s.from)
 
 	case OpRename, OpMove:
-		// Copy content to new location, delete old
-		info, err := c.fs.Stat(op.URI.Path())
-		if err != nil {
-			return err
+		if s.scratch {
+			if _, err := c.fs.Stat(s.to); err == nil {
+				return fmt.Errorf("file explorer: %s already exists", s.to)
+			}
 		}
-		if info.IsDir() {
-			// For directories, just create at new location
-			// (children will be handled by subsequent operations)
-			return c.fs.MkdirAll(op.NewURI.Path(), 0755)
-		}
-		if err := c.copyFile(op.URI.Path(), op.NewURI.Path()); err != nil {
-			return err
-		}
-		return c.fs.Remove(op.URI.Path())
+		return c.fs.Rename(s.from, s.to)
 
 	case OpCopy:
-		info, err := c.fs.Stat(op.URI.Path())
+		info, err := c.fs.Stat(s.from)
 		if err != nil {
 			return err
 		}
 		if info.IsDir() {
-			return c.fs.MkdirAll(op.NewURI.Path(), 0755)
+			return c.fs.MkdirAll(s.to, 0755)
 		}
-		return c.copyFile(op.URI.Path(), op.NewURI.Path())
+		return c.copyFile(s.from, s.to)
 	}
 	return nil
+}
+
+// removeAll deletes path and, if it is a directory, everything inside
+// it. Remove is tried first so a symbolic link is unlinked instead of
+// being followed into its target.
+func (c *Component) removeAll(path string) error {
+	err := c.fs.Remove(path)
+	if err == nil {
+		return nil
+	}
+	entries, readErr := c.fs.ReadDir(path)
+	if readErr != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := c.removeAll(filepath.Join(path, e.Name())); err != nil {
+			return err
+		}
+	}
+	return c.fs.Remove(path)
 }
 
 func (c *Component) copyFile(srcPath, dstPath string) (err error) {

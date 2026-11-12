@@ -31,6 +31,7 @@ import (
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/shader/shaderloop"
 	"unstable.build/rune/internal/handler"
+	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/programstatus"
 )
 
@@ -273,6 +274,21 @@ type Config struct {
 	NonFocusTabIconAttr   term.Attributes
 	FocusTabHighlightAttr term.Attributes
 	FocusTabHighlightChar rune
+	// HoverTabAttr is layered over the label of a tab not in focus while
+	// the pointer is on it, under the tab's own attributes.
+	HoverTabAttr term.Attributes
+	// TabImages names the images that writers that can draw images show
+	// under each tab, across the rows of the tab bar, in the states
+	// tcomponent.Tabs.SetGraphics tells.
+	TabImages PromptImages
+	// FocusTabHighlightGraphics names the images drawn over the cells of
+	// the focus-frame highlight, below the text of the labels, also when
+	// FocusTabHighlightChar is zero.
+	FocusTabHighlightGraphics tcomponent.LineGraphics
+	// TabSounds names the sounds the tab bar plays through SoundPlayer,
+	// which plays none when nil.
+	TabSounds   handler.TabSounds
+	SoundPlayer sounds.Player
 	// TabOverrideIcon, when non-zero, forces every tab icon
 	// rendered by this Component to this rune, regardless of the
 	// icon passed to NewTab by callers.
@@ -349,6 +365,22 @@ type Style struct {
 	FrameUnionCharSet component.FrameUnionCharSet
 	Prompt            PromptConfig
 	Wallpaper         Wallpaper
+	Tabs              TabStyle
+}
+
+// TabStyle is how the tab bar of a Component looks, as the Config
+// fields of the same names define it.
+type TabStyle struct {
+	FocusTabAttr          term.Attributes
+	NonFocusTabAttr       term.Attributes
+	FocusTabIconAttr      term.Attributes
+	NonFocusTabIconAttr   term.Attributes
+	FocusTabHighlightAttr term.Attributes
+	FocusTabHighlightChar rune
+	HoverTabAttr          term.Attributes
+	Images                PromptImages
+	HighlightGraphics     tcomponent.LineGraphics
+	Sounds                handler.TabSounds
 }
 
 // Restyled returns c with the style of s. The rest of c, including the
@@ -363,6 +395,16 @@ func (c Config) Restyled(s Style) Config {
 	c.PromptConfig.BackgroundAttr = s.Prompt.BackgroundAttr
 	c.PromptConfig.Images = s.Prompt.Images
 	c.Wallpaper = s.Wallpaper
+	c.FocusTabAttr = s.Tabs.FocusTabAttr
+	c.NonFocusTabAttr = s.Tabs.NonFocusTabAttr
+	c.FocusTabIconAttr = s.Tabs.FocusTabIconAttr
+	c.NonFocusTabIconAttr = s.Tabs.NonFocusTabIconAttr
+	c.FocusTabHighlightAttr = s.Tabs.FocusTabHighlightAttr
+	c.FocusTabHighlightChar = s.Tabs.FocusTabHighlightChar
+	c.HoverTabAttr = s.Tabs.HoverTabAttr
+	c.TabImages = s.Tabs.Images
+	c.FocusTabHighlightGraphics = s.Tabs.HighlightGraphics
+	c.TabSounds = s.Tabs.Sounds
 	return c
 }
 

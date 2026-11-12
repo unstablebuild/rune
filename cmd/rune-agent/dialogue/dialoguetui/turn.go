@@ -495,13 +495,12 @@ func (t *Turn) AddToolCallImage(id, imagePath, caption string) {
 	tn.listNode.SetValue(entry)
 }
 
-// AddChildToolCall adds a tool call nested under a parent
-// tool call. If the parent doesn't exist, it's added as a
-// top-level tool call.
+// AddChildToolCall adds a tool call nested under a parent tool call at
+// any depth. If the parent doesn't exist, it's added as a top-level tool
+// call.
 func (t *Turn) AddChildToolCall(parentID, id, name, args, summary string) {
-	parent, ok := t.tools[parentID]
-	if !ok {
-		// Parent not found — add as top-level.
+	parent, ancestors := t.findTool(parentID)
+	if parent == nil {
 		t.AddToolCall(id, name, args, summary)
 		return
 	}
@@ -512,7 +511,9 @@ func (t *Turn) AddChildToolCall(parentID, id, name, args, summary string) {
 
 	parent.childTurn.AddToolCall(id, name, args, summary)
 
-	// Insert child entry after the parent's last inserted node.
+	// Expanded mode draws the whole tree as this turn's flat list, so the
+	// entry goes after the parent's last descendant, and becomes the last
+	// descendant of every ancestor whose subtree ended there.
 	insertAfter := parent.listNode
 	if parent.lastChildNode != nil {
 		insertAfter = parent.lastChildNode
@@ -521,6 +522,11 @@ func (t *Turn) AddChildToolCall(parentID, id, name, args, summary string) {
 	entry, hdr := toolCallEntry(t.cfg, runningPrefix, term.Attributes{}, name, args, summary)
 	*childNode = t.list.InsertAfter(entry, *insertAfter)
 	parent.lastChildNode = childNode
+	for _, ancestor := range ancestors {
+		if ancestor.lastChildNode == insertAfter {
+			ancestor.lastChildNode = childNode
+		}
+	}
 
 	// Keep a reference so CompleteChildToolCall can update it.
 	parent.childTurn.tools[id].listNode = childNode
@@ -528,10 +534,10 @@ func (t *Turn) AddChildToolCall(parentID, id, name, args, summary string) {
 }
 
 // CompleteChildToolCall completes a tool call nested under a
-// parent tool call.
+// parent tool call at any depth.
 func (t *Turn) CompleteChildToolCall(parentID, id, name, args, summary, output string, isError bool) {
-	parent, ok := t.tools[parentID]
-	if !ok {
+	parent, _ := t.findTool(parentID)
+	if parent == nil {
 		t.CompleteToolCall(id, name, args, summary, output, isError)
 		return
 	}
@@ -542,13 +548,13 @@ func (t *Turn) CompleteChildToolCall(parentID, id, name, args, summary, output s
 }
 
 // AddChildResult registers a sub-agent result leaf node under a parent
-// tool call for collapsed-mode rendering. In collapsed mode the node is
+// tool call at any depth for collapsed-mode rendering. In collapsed mode the node is
 // shown with a dedicated icon (󰆈 success / 󰅽 error). In expanded mode
 // the parent tool call already displays the full output, so no extra
 // list entry is inserted.
 func (t *Turn) AddChildResult(parentID, output string, isError bool) {
-	parent, ok := t.tools[parentID]
-	if !ok {
+	parent, _ := t.findTool(parentID)
+	if parent == nil {
 		return
 	}
 
@@ -574,6 +580,26 @@ func (t *Turn) AddChildResult(parentID, output string, isError bool) {
 	}
 	parent.childTurn.tools[resultID] = tn
 	parent.childTurn.toolOrder = append(parent.childTurn.toolOrder, resultID)
+}
+
+// findTool returns the tool call with the given ID at any depth and the
+// tool calls it is nested under, innermost first, or nil if there is none.
+// Sub-agents may reuse the IDs of other conversations, so a top-level
+// call wins over a nested one and an earlier call over a later one.
+func (t *Turn) findTool(id string) (tn *toolNode, ancestors []*toolNode) {
+	if tn, ok := t.tools[id]; ok {
+		return tn, nil
+	}
+	for _, parentID := range t.toolOrder {
+		parent := t.tools[parentID]
+		if parent.childTurn == nil {
+			continue
+		}
+		if tn, ancestors := parent.childTurn.findTool(id); tn != nil {
+			return tn, append(ancestors, parent)
+		}
+	}
+	return nil, nil
 }
 
 // SetToolStartTime sets the start time for a tool call, used for live

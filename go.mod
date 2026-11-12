@@ -1,6 +1,6 @@
 module unstable.build/rune
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown v1.6.0
@@ -14,6 +14,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.57.0
 	github.com/aws/smithy-go v1.27.6
 	github.com/cespare/xxhash/v2 v2.3.0
+	github.com/coder/acp-go-sdk v0.13.5
 	github.com/disintegration/imaging v1.6.2
 	github.com/dustinkirkland/golang-petname v0.0.0-20260215035315-f0c533e9ce9b
 	github.com/ebitengine/oto/v3 v3.5.1
@@ -32,7 +33,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/hajimehoshi/ebiten/v2 v2.7.4
 	github.com/junegunn/fzf v0.73.1
-	github.com/modelcontextprotocol/go-sdk v1.4.1
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/openai/openai-go/v2 v2.7.1
 	github.com/pion/mediadevices v0.10.0
 	github.com/pion/webrtc/v4 v4.2.20
@@ -51,7 +52,7 @@ require (
 	github.com/unstablebuild/blue v1.85.2
 	github.com/unstablebuild/notify v0.10.4
 	github.com/unstablebuild/pty v1.3.1
-	github.com/unstablebuild/rune-go-sdk v0.22.0
+	github.com/unstablebuild/rune-go-sdk v0.25.1
 	github.com/unstablebuild/tcell/v3 v3.6.5
 	github.com/yuin/goldmark v1.7.17
 	github.com/zalando/go-keyring v0.2.8
@@ -59,7 +60,7 @@ require (
 	go.uber.org/goleak v1.3.0
 	go.uber.org/mock v0.4.0
 	go.uber.org/multierr v1.11.0
-	golang.org/x/crypto v0.58.0
+	golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2
 	golang.org/x/image v0.45.0
 	golang.org/x/mod v0.41.0
 	golang.org/x/oauth2 v0.36.0
@@ -140,7 +141,7 @@ require (
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/go-tpm v0.9.4 // indirect
-	github.com/google/jsonschema-go v0.4.2 // indirect
+	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/nftables v0.2.1-0.20240414091927-5e242ec57806 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.15 // indirect
@@ -163,7 +164,7 @@ require (
 	github.com/jsimonetti/rtnetlink v1.4.1 // indirect
 	github.com/junegunn/go-shellwords v0.0.0-20250127100254-2aa3b3277741 // indirect
 	github.com/kevinburke/ssh_config v1.4.0 // indirect
-	github.com/klauspost/compress v1.19.1 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/kortschak/wol v0.0.0-20200729010619-da482cc4850a // indirect
 	github.com/kr/fs v0.1.0 // indirect

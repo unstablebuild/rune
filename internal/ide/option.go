@@ -679,6 +679,8 @@ func (n nopExtensionsRunner) WaitReady(ctx context.Context, id string) error {
 	return nil
 }
 
+func (n nopExtensionsRunner) SignalReload() int { return 0 }
+
 // terminalSounds rings the host terminal's bell, which is the only
 // sound a terminal can make. It publishes the bell rather than ringing
 // it directly because Play may be called off the event loop.

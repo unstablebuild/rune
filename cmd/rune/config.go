@@ -20,13 +20,20 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"  // register the gif decoder
+	_ "image/jpeg" // register the jpeg decoder
+	_ "image/png"  // register the png decoder
+	"io"
 	"os"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/tcell/v3"
+	_ "golang.org/x/image/webp" // register the webp decoder
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/term/gui"
@@ -428,6 +435,69 @@ func getGUITransparentWindow(browser browser.Browser, cfg config.Config) (ret bo
 	}
 	ret = transparent
 	return
+}
+
+// maxAppIconSize bounds each side of the image of 'gui.app_icon'. It is
+// checked from the header, so that a small file cannot make us decode an
+// enormous raster.
+const maxAppIconSize = 8192
+
+// loadGUIAppIcon reads the GIF, JPEG, PNG or WebP image whose path
+// 'app_icon' of the gui section cfg sets; ~ and environment variables in
+// the path are expanded. It returns nil and no error when the key is absent
+// or empty. It is slow for a large image.
+func loadGUIAppIcon(cfg config.Config) (*gui.AppIcon, error) {
+	path, err := cfg.GetString("app_icon")
+	if err == config.ErrNotFound || (err == nil && path == "") {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	uri, err := workspaceapi.CurrentUserHostURI(os.ExpandEnv(path))
+	if err != nil {
+		return nil, fmt.Errorf("expand %q: %w", path, err)
+	}
+	f, err := os.Open(uri.Path())
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	header, format, err := image.DecodeConfig(f)
+	if err != nil {
+		return nil, fmt.Errorf("decode image header of %s: %w", uri.Path(), err)
+	}
+	if header.Width <= 0 || header.Height <= 0 {
+		return nil, fmt.Errorf("%s image %s is empty", format, uri.Path())
+	}
+	if header.Width > maxAppIconSize || header.Height > maxAppIconSize {
+		return nil, fmt.Errorf("%s image %s is %dx%d, larger than %dx%d", format, uri.Path(),
+			header.Width, header.Height, maxAppIconSize, maxAppIconSize)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	img, _, err := image.Decode(f)
+	if err != nil {
+		return nil, fmt.Errorf("decode %s image %s: %w", format, uri.Path(), err)
+	}
+	return gui.NewAppIcon(img), nil
+}
+
+// getGUIAppIcon is loadGUIAppIcon reporting its error to browser.
+func getGUIAppIcon(browser browser.Browser, cfg config.Config) *gui.AppIcon {
+	icon, err := loadGUIAppIcon(cfg)
+	notifyGUIAppIconErr(browser, err)
+	return icon
+}
+
+// notifyGUIAppIconErr reports err, an error of loadGUIAppIcon, to browser.
+// A nil err reports nothing.
+func notifyGUIAppIconErr(browser browser.Browser, err error) {
+	if err != nil {
+		_, _ = browser.Notify(browserapi.LevelError,
+			"Could not load 'gui.app_icon' from config: %v", err)
+	}
 }
 
 func getGUIWindowOpacity(browser browser.Browser, cfg config.Config) (fg, bg float64) {

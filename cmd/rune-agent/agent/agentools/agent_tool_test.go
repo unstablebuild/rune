@@ -29,6 +29,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/cmd/rune-agent/agent"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 )
 
 func TestAgentTool(t *testing.T) {
@@ -316,6 +317,50 @@ func TestAgentTool(t *testing.T) {
 		for _, ev := range events {
 			assert.Equal(t, "parent-42", ev.ParentToolCallID)
 		}
+	})
+
+	t.Run("a policy restricts the agent types", func(t *testing.T) {
+		dir := t.TempDir()
+		writeTestSkill(t, dir, "acme-triage", "---\nname: acme-triage\ndescription: Triage\ntype: agent\n---\nbody")
+		registry := skills.NewRegistry(osFileSystem{}, dirURI(""), []string{dir}, nil)
+		agents := []agent.AgentSummary{{ID: "default", Name: "Default Agent"}}
+		run := func(p toolpolicy.Policy, args string) (agent.ToolResult, *mockSpawner) {
+			spawner := &mockSpawner{handle: agent.RunHandle{
+				Events: newMockEventIterator(agent.Event{Type: agent.EventText, Text: "done"}),
+			}}
+			tool := NewAgentTool(spawner, agents, make(chan agent.ChildEvent, 64), registry).(agent.PolicyTool).WithPolicy(p)
+			return tool.Execute(agent.WithParentToolCallID(context.Background(), "p"), args), spawner
+		}
+		exploreOnly := mustPolicy(t, []string{"agent(explore)"}, nil)
+
+		desc := NewAgentTool(&mockSpawner{}, agents, nil, registry).(agent.PolicyTool).
+			WithPolicy(exploreOnly).Definition().Function.Description
+		assert.Contains(t, desc, "- explore: ")
+		assert.NotContains(t, desc, "default: Default Agent")
+		assert.NotContains(t, desc, "acme-triage")
+		assert.NotContains(t, desc, "- plan: ")
+		assert.Contains(t, desc, "It is required.")
+
+		result, spawner := run(exploreOnly, `{"description":"x","prompt":"x","subagent_type":"default"}`)
+		assert.True(t, result.IsError)
+		assert.Equal(t, `error: this agent may not spawn "default" sub-agents; use one of: explore`, result.Content)
+		assert.Empty(t, spawner.lastRunReq.Message, "the spawner is never called")
+
+		result, spawner = run(exploreOnly, `{"description":"x","prompt":"x"}`)
+		assert.True(t, result.IsError)
+		assert.Equal(t, "error: subagent_type is required; use one of: explore", result.Content)
+		assert.Empty(t, spawner.lastRunReq.Message)
+
+		result, spawner = run(exploreOnly, `{"description":"x","prompt":"x","subagent_type":"Explore"}`)
+		assert.False(t, result.IsError, result.Content)
+		assert.Equal(t, "Explore", spawner.lastRunReq.AgentID)
+
+		result, _ = run(mustPolicy(t, nil, []string{"agent(*)"}), `{"description":"x","prompt":"x"}`)
+		assert.Equal(t, "error: subagent_type is required; this agent may not spawn sub-agents", result.Content)
+
+		result, spawner = run(mustPolicy(t, []string{"agent"}, nil), `{"description":"x","prompt":"x"}`)
+		assert.False(t, result.IsError, "an unconstrained agent tool keeps the caller's own type")
+		assert.Equal(t, "x", spawner.lastRunReq.Message)
 	})
 }
 

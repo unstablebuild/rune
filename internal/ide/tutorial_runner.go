@@ -30,7 +30,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 
-	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/ide/idetutorial"
 	"unstable.build/rune/internal/text"
 )
@@ -53,7 +52,7 @@ type tutorialRunner struct {
 	tut        idetutorial.Tutorial
 	tile       *idetutorial.Tile
 	pane       tilePane
-	union      *handler.FrameUnion
+	union      *handlerapi.FrameUnion
 	tileSize   int
 	activeName string
 	// stopRequested is set by the tile's Stop button and cleared by
@@ -244,7 +243,7 @@ func (r *tutorialRunner) layout() {
 		return
 	}
 	r.tileSize = size
-	r.union = handler.NewFrameUnion(r.Handler)
+	r.union = handlerapi.NewFrameUnion(r.Handler)
 	// The tile frames itself, like a window beside other windows:
 	// it shares no frame line with the workspaces, so its focus frame
 	// is never drawn over.

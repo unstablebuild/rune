@@ -21,6 +21,7 @@ import (
 	"context"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/png"
 	"maps"
 	"math"
@@ -793,6 +794,95 @@ func TestSetForceFullRepaint(t *testing.T) {
 	assert.True(t, g.forceFullRepaint)
 	assert.True(t, g.renderer.forceFullRepaint)
 	assert.True(t, g.NeedsRender())
+}
+
+func TestNewAppIcon(t *testing.T) {
+	assert.Nil(t, NewAppIcon(nil))
+	assert.Nil(t, NewAppIcon(image.NewNRGBA(image.Rect(3, 3, 3, 9))))
+
+	red := color.NRGBA{R: 255, A: 255}
+	src := image.NewNRGBA(image.Rect(5, 5, 69, 37))
+	draw.Draw(src, src.Bounds(), image.NewUniform(red), image.Point{}, draw.Src)
+	icon := NewAppIcon(src)
+	require.NotNil(t, icon)
+	require.Len(t, icon.images, len(appIconSizes))
+	for i, side := range appIconSizes {
+		assert.Equal(t, image.Rect(0, 0, side, side), icon.images[i].Bounds())
+	}
+
+	small := icon.images[slices.Index(appIconSizes, 32)]
+	rgba := func(x, y int) color.NRGBA {
+		return color.NRGBAModel.Convert(small.At(x, y)).(color.NRGBA)
+	}
+	for x := range 32 {
+		for _, y := range []int{0, 7, 24, 31} {
+			assert.Equal(t, color.NRGBA{}, rgba(x, y), "padding at %d,%d", x, y)
+		}
+		for _, y := range []int{8, 16, 23} {
+			assert.Equal(t, red, rgba(x, y), "picture at %d,%d", x, y)
+		}
+	}
+}
+
+func TestSetAppIcon(t *testing.T) {
+	icon := NewAppIcon(image.NewRGBA(image.Rect(0, 0, 4, 4)))
+	newGUI := func(t *testing.T) (*GUI, *[][]image.Image) {
+		mock := mockHandler{
+			assertDraw:  func(term.Writer) {},
+			assertEvent: func(term.Event) (bool, bool) { return false, true },
+		}
+		g, _ := newTestGUI(t, &mock)
+		shown := new([][]image.Image)
+		g.setAppIcon = func(images []image.Image) { *shown = append(*shown, images) }
+		return g, shown
+	}
+
+	t.Run("an icon set before the first frame shows once", func(t *testing.T) {
+		g, shown := newGUI(t)
+		g.SetAppIcon(icon)
+		assert.Same(t, icon, g.AppIcon())
+		require.NoError(t, g.Update())
+		require.NoError(t, g.Update())
+		assert.Equal(t, [][]image.Image{icon.images}, *shown)
+	})
+
+	t.Run("an idle frame shows a pending icon", func(t *testing.T) {
+		g, shown := newGUI(t)
+		require.NoError(t, g.Update())
+		g.SetAppIcon(icon)
+		require.NoError(t, g.Update())
+		assert.Equal(t, [][]image.Image{icon.images}, *shown)
+	})
+
+	t.Run("no icon without one set does nothing", func(t *testing.T) {
+		g, shown := newGUI(t)
+		g.SetAppIcon(nil)
+		require.NoError(t, g.Update())
+		assert.Empty(t, *shown)
+		assert.Nil(t, g.AppIcon())
+	})
+
+	t.Run("no icon restores the default", func(t *testing.T) {
+		g, shown := newGUI(t)
+		g.SetAppIcon(icon)
+		require.NoError(t, g.Update())
+		g.SetAppIcon(nil)
+		require.NoError(t, g.Update())
+		require.Len(t, *shown, 2)
+		assert.Empty(t, (*shown)[1])
+		assert.Nil(t, g.AppIcon())
+	})
+
+	t.Run("an icon a UserFunc sets shows in its tick", func(t *testing.T) {
+		g, shown := newGUI(t)
+		require.NoError(t, g.Update())
+		require.True(t, g.PublishEvent(term.Event{
+			Type:     term.EventInterrupt,
+			UserFunc: func() { g.SetAppIcon(icon) },
+		}))
+		require.NoError(t, g.Update())
+		assert.Equal(t, [][]image.Image{icon.images}, *shown)
+	})
 }
 
 func TestRootHandlerSynchronization(t *testing.T) {

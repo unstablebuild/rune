@@ -36,6 +36,13 @@ chat input is itself a
 [vim editor](../learn/vim-editor.md), so you get the same motions and
 text objects you use everywhere else while composing messages.
 
+### Chats that keep running
+
+A chat runs apart from the tab that shows it. Closing an agent tab while the agent is
+still working, running tools or waiting on you to answer a question leaves the chat
+running: the [status inbox](../learn/terminal/program-status.md#the-status-inbox) lists it
+as working, blocked or done, and showing it from there opens its tab again.
+
 ### Quick questions with `?`
 
 `? <message>` asks a one-off question and shows the answer in a floating
@@ -78,7 +85,8 @@ cheaper model for quick questions, point the `query` alias at one (see
 Skills are focused capability bundles the agent loads on demand, and
 sub-agents let it spawn scoped, parallel workers such as `explore` and
 `plan`. See [Skills](./skills.md) for how they are discovered, managed,
-and authored.
+and authored, and [Sub-agents](./sub-agents.md) for building your own
+sub-agents with a restricted set of tools.
 
 ## Memory
 
@@ -109,7 +117,7 @@ everything it offers. The most useful subcommands:
 | `agent chats clear <id>` | Clear a conversation (its contents are archived). |
 | `agent skills ...` | Inspect and manage skills (see above). |
 | `agent tools` | List the tools the agent can use. |
-| `agent mcp` | Show MCP server status and tool stats. |
+| `agent mcp ...` | Show MCP server status, and sign in to, trust or reconnect servers (see [MCP servers](./mcp.md#commands)). |
 | `agent config` | Show the current configuration. |
 
 ## Focused chat commands
@@ -131,6 +139,8 @@ conversation:
 | `chatexport [--audit]` | Export the focused chat or its audit log. |
 | `chatlog` | Show the focused chat's LLM token audit log. |
 | `chataddsymbol [<symbol>]` | Attach a named symbol, or the symbol under the editor cursor, to the last focused chat. |
+| `chatattach <id>` | Open another tab that shows a running chat, such as one whose tab closed while it worked. |
+| `chatclose [<id>]` | End a running chat, the focused one without an id, in every tab that shows it. |
 
 These are command-prompt commands, not `agent` console command subcommands and not
 chat-message slash commands. They are useful when you want completion, history,
@@ -274,10 +284,13 @@ instead.
 
 ## Connecting external tools (MCP)
 
-Rune Agent is an MCP (Model Context Protocol) client. Declare external
-MCP servers in an `.mcp.json` file and the agent connects to them,
-discovers their tools, and makes them available in chat, extending what
-it can do with third-party integrations.
+Rune Agent is an MCP (Model Context Protocol) client. Declare MCP servers
+in your project's `.mcp.json` or in your Rune config, and the agent
+connects to them and adds their tools to every chat. Local servers run as
+a command on the workspace host; remote servers are reached over HTTP,
+with a browser sign-in when they need one. See
+[MCP servers](./mcp.md) for the configuration, trust prompts, sign-in,
+and the `agent mcp` commands.
 
 ## Project instructions
 

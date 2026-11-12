@@ -206,9 +206,13 @@ func TestIndexKeywordOnlyUntilTheModelIsDownloaded(t *testing.T) {
 
 	req := searchapi.SemanticRequest{Query: "great circle radius earth", Meaning: true}
 	for range 2 {
-		hits := ti.search(t, localModel(testModel), req)
+		hits, st := ti.searchStatus(t, localModel(testModel), req)
 		require.NotEmpty(t, hits, "keyword search works without the model")
 		assert.False(t, meaningOf(hits))
+		assert.True(t, st.WordsOnly)
+		assert.False(t, st.Indexing)
+		assert.Equal(t, "matched by words only: the embedding model is not downloaded: "+
+			"run `models local download ggml-org/embeddinggemma-2-GGUF:Q8_0`", st.Message)
 	}
 	notified, _ := ti.notify.snapshot()
 	assert.Equal(t, 1, strings.Count(strings.Join(notified, "\n"),
@@ -218,14 +222,18 @@ func TestIndexKeywordOnlyUntilTheModelIsDownloaded(t *testing.T) {
 	seedModel(t, ti.reg, testModel)
 	entry, err := ti.svc.EmbeddingModel(context.Background())
 	require.NoError(t, err)
-	assert.False(t, meaningOf(ti.search(t, entry, req)), "the index has no vectors yet")
+	hits, sst := ti.searchStatus(t, entry, req)
+	assert.False(t, meaningOf(hits), "the index has no vectors yet")
+	assert.True(t, sst.WordsOnly)
+	assert.Contains(t, sst.Message, "matched by words only: the search index has no vectors yet")
 	ti.wait(t)
 	st = ti.idx.Status()
 	assert.Equal(t, "fake@0000000 fake fp32", st.VectorSource, "the search woke the indexer for the model")
 	assert.Positive(t, st.Vectors)
-	hits := ti.search(t, entry, req)
+	hits, sst = ti.searchStatus(t, entry, req)
 	require.NotEmpty(t, hits)
 	assert.GreaterOrEqual(t, hits[0].Z, zGate)
+	assert.Zero(t, sst, "a finished index answers by meaning")
 	assert.Equal(t, encoderReady, ti.idx.Status().Encoder)
 }
 
@@ -247,9 +255,13 @@ func TestIndexKeywordOnlyWithAnotherModel(t *testing.T) {
 		return fakeEmbedder{}
 	}, DefaultOptions())
 
-	hits := ti.search(t, localModel(otherModel), searchapi.SemanticRequest{Query: "great circle radius earth", Meaning: true})
+	hits, st := ti.searchStatus(t, localModel(otherModel), searchapi.SemanticRequest{Query: "great circle radius earth", Meaning: true})
 	require.NotEmpty(t, hits)
 	assert.False(t, meaningOf(hits), "vectors of different models never meet")
+	assert.Equal(t, searchapi.SemanticStatus{
+		WordsOnly: true,
+		Message:   "matched by words only: the search index was built with fake@0000000 fake fp32, not other@1234567 fake fp32",
+	}, st)
 	notified, _ := ti.notify.snapshot()
 	assert.Contains(t, notified,
 		"Meaning search is off: the search index was built with fake@0000000 fake fp32, not other@1234567 fake fp32")
@@ -270,6 +282,10 @@ func TestIndexStallsWhenTheModelGoes(t *testing.T) {
 	assert.Contains(t, st.Stalled, "not downloaded")
 	assert.Equal(t, 1, st.Files[statePending], "files wait for the model; vectors are not mixed")
 	assert.Equal(t, "fake@0000000 fake fp32", st.VectorSource)
+	_, sst := ti.searchStatus(t, localModel(testModel), searchapi.SemanticRequest{Query: "zanzibar"})
+	assert.True(t, sst.Indexing)
+	assert.False(t, sst.WordsOnly, "a search by words is not asked to rank by meaning")
+	assert.Equal(t, "indexing stalled: "+st.Stalled, sst.Message)
 
 	seedModel(t, ti.reg, testModel)
 	ti.search(t, localModel(testModel), searchapi.SemanticRequest{Query: "zanzibar", Meaning: true})
@@ -310,6 +326,62 @@ func TestStatusUnavailable(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, tt.st.Unavailable())
+		})
+	}
+}
+
+func TestStatusSemantic(t *testing.T) {
+	scanned := Status{Loaded: true, Scanned: true, Files: map[string]int{stateDone: 3}}
+	tests := []struct {
+		name      string
+		st        Status
+		wordsOnly string
+		want      searchapi.SemanticStatus
+	}{
+		{"finished", scanned, "", searchapi.SemanticStatus{}},
+		{
+			"first scan running",
+			Status{Loaded: true, Files: map[string]int{}},
+			"",
+			searchapi.SemanticStatus{Indexing: true, Message: "still indexing"},
+		},
+		{
+			"one file pending",
+			Status{Loaded: true, Scanned: true, Files: map[string]int{statePending: 1}},
+			"",
+			searchapi.SemanticStatus{Indexing: true, Message: "1 file left to index"},
+		},
+		{
+			"files pending before the first scan ends",
+			Status{Loaded: true, Files: map[string]int{statePending: 1204}},
+			"",
+			searchapi.SemanticStatus{Indexing: true, Message: "1204 files left to index"},
+		},
+		{
+			"stalled",
+			Status{Loaded: true, Scanned: true, Files: map[string]int{statePending: 2}, Stalled: "embedder: boom"},
+			"",
+			searchapi.SemanticStatus{Indexing: true, Message: "indexing stalled: embedder: boom"},
+		},
+		{
+			"words only",
+			scanned,
+			"the query could not be encoded: server exited",
+			searchapi.SemanticStatus{WordsOnly: true, Message: "matched by words only: the query could not be encoded: server exited"},
+		},
+		{
+			"indexing and words only",
+			Status{Loaded: true, Scanned: true, Files: map[string]int{statePending: 7}},
+			"the search index has no vectors yet",
+			searchapi.SemanticStatus{
+				Indexing: true, WordsOnly: true,
+				Message: "7 files left to index · matched by words only: the search index has no vectors yet",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.st.semantic(tt.wordsOnly))
 		})
 	}
 }

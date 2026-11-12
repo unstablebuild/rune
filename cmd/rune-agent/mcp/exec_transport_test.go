@@ -95,7 +95,7 @@ func newLocalExec() *localExec {
 }
 
 func (e *localExec) Start(
-	_ context.Context, cmd workspaceapi.Cmd,
+	ctx context.Context, cmd workspaceapi.Cmd,
 ) (workspaceapi.Pid, error) {
 	time.Sleep(e.delay)
 
@@ -103,14 +103,15 @@ func (e *localExec) Start(
 	e.calls = append(e.calls, cmd)
 	<-e.mu
 
-	c := exec.Command(cmd.Path, cmd.Args...) // #nosec G204 -- test helper
+	// Like the workspace executor, the process is killed when ctx ends.
+	c := exec.CommandContext(ctx, cmd.Path, cmd.Args...) // #nosec G204 -- test helper
 	c.Dir = cmd.Dir
 	c.Env = append(os.Environ(), cmd.Env...)
 	if f, ok := cmd.Stdin.(*os.File); ok {
 		c.Stdin = f
 	}
-	if f, ok := cmd.Stdout.(*os.File); ok {
-		c.Stdout = f
+	if cmd.Stdout != nil {
+		c.Stdout = cmd.Stdout
 	}
 	if cmd.Stderr != nil {
 		c.Stderr = cmd.Stderr
@@ -186,7 +187,7 @@ func TestExecutorTransportRejectsNonStdio(t *testing.T) {
 	factory := ExecutorTransport(exec, t.TempDir(), nil)
 
 	_, err := factory("remote", ServerConfig{Type: "http", URL: "https://example.com"})
-	require.ErrorContains(t, err, "remote MCP servers are not supported")
+	require.ErrorContains(t, err, "http server cannot run through the workspace executor")
 
 	_, err = factory("empty", ServerConfig{Type: "stdio"})
 	require.ErrorContains(t, err, "no command")
@@ -200,27 +201,34 @@ func TestExecutorTransportStartsThroughExecutor(t *testing.T) {
 	dir := t.TempDir()
 	e := newLocalExec()
 	m := NewManagerWithTransport(ExecutorTransport(e, dir, nil))
+	helper := ServerConfig{
+		Type:    "stdio",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestMain"},
+		Env:     map[string]string{helperEnv: "1"},
+	}
 
 	m.Connect(context.Background(), Config{
-		MCPServers: map[string]ServerConfig{
-			"helper": {
-				Type:    "stdio",
-				Command: os.Args[0],
-				Args:    []string{"-test.run=TestMain"},
-				Env:     map[string]string{helperEnv: "1"},
-			},
-		},
+		MCPServers: Merge(map[string]ServerConfig{"mine": helper}, map[string]ServerConfig{"helper": helper}),
 	})
 	require.NoError(t, m.Close())
 
 	started := e.started()
-	require.Len(t, started, 1, "launch must go through the workspace executor")
-	assert.Equal(t, os.Args[0], started[0].Path)
-	assert.Equal(t, []string{"-test.run=TestMain"}, started[0].Args)
-	assert.Equal(t, dir, started[0].Dir)
-	assert.Contains(t, started[0].Env, "RUNE_TOKEN=")
-	assert.NotNil(t, started[0].Stdin)
-	assert.NotNil(t, started[0].Stdout)
+	require.Len(t, started, 2, "launches must go through the workspace executor")
+	var descriptions []string
+	for _, cmd := range started {
+		assert.Equal(t, os.Args[0], cmd.Path)
+		assert.Equal(t, []string{"-test.run=TestMain"}, cmd.Args)
+		assert.Equal(t, dir, cmd.Dir)
+		assert.Contains(t, cmd.Env, "RUNE_TOKEN=")
+		assert.NotNil(t, cmd.Stdin)
+		assert.NotNil(t, cmd.Stdout)
+		descriptions = append(descriptions, cmd.Description)
+	}
+	assert.ElementsMatch(t, []string{
+		`MCP server "helper" from the workspace's .mcp.json`,
+		`MCP server "mine" from your Rune config`,
+	}, descriptions, "the authorization prompt says what the command is for")
 }
 
 func TestExecutorTransportRoundTrip(t *testing.T) {
@@ -241,7 +249,7 @@ func TestExecutorTransportRoundTrip(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 
 	require.Len(t, tools, 1, "stdio pipes must carry a real MCP session")
-	assert.Equal(t, "helper_echo_env", tools[0].Definition().Function.Name)
+	assert.Equal(t, "mcp__helper__echo_env", tools[0].Definition().Function.Name)
 
 	res := tools[0].Execute(context.Background(), "{}")
 	require.False(t, res.IsError, res.Content)
@@ -280,7 +288,7 @@ func TestUnexpectedServerDeathReportsCauseAndStderr(t *testing.T) {
 	t.Parallel()
 
 	e := newLocalExec()
-	m := NewManager(e, t.TempDir())
+	m := NewManager(e, t.TempDir(), nil)
 	exitCh := make(chan string, 1)
 	m.OnServerExit = func(name, detail string) { exitCh <- name + " " + detail }
 
@@ -320,7 +328,7 @@ func TestDeliberateCloseDoesNotReportServerExit(t *testing.T) {
 	t.Parallel()
 
 	e := newLocalExec()
-	m := NewManager(e, t.TempDir())
+	m := NewManager(e, t.TempDir(), nil)
 	var exits atomic.Int32
 	m.OnServerExit = func(string, string) { exits.Add(1) }
 
@@ -347,7 +355,7 @@ func TestServerDeathDuringConnectFailsFastWithStderr(t *testing.T) {
 	t.Cleanup(func() { connectTimeout = restore })
 
 	e := newLocalExec()
-	m := NewManager(e, t.TempDir())
+	m := NewManager(e, t.TempDir(), nil)
 
 	start := time.Now()
 	_, err := m.ConnectServer(context.Background(), "dying", ServerConfig{

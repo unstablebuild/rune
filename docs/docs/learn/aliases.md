@@ -24,8 +24,8 @@ command:
 },
 ```
 
-Now `:e foo.go` dispatches `edit foo.go`, `:docs` opens the manpage for
-the focused file's language, and `:fmt` formats the focused Go file in
+Now `e foo.go` dispatches `edit foo.go`, `docs` opens the manpage for
+the focused file's language, and `fmt` formats the focused Go file in
 place.
 
 Aliases accept positional arguments via `$1` … `$9`:
@@ -42,11 +42,11 @@ command:
 },
 ```
 
-`:gitblame 42,50` runs `git blame -L 42,50` on the focused file.
+`gitblame 42,50` runs `git blame -L 42,50` on the focused file.
 Calling an alias with fewer arguments than it references is a dispatch
 error; use `${1:-default}` if the argument should be optional.
 Arguments the alias does not reference are appended to its last step,
-each as one argument: with `g: "! grep -n"`, `:g 'a b'` runs
+each as one argument: with `g: "! grep -n"`, `g 'a b'` runs
 `grep -n 'a b'`.
 
 ## Multi-step aliases
@@ -71,7 +71,7 @@ command:
 },
 ```
 
-`:worktreenew feature/x` creates the worktree on disk, then opens it as
+`worktreenew feature/x` creates the worktree on disk, then opens it as
 a new workspace: one keystroke, two commands, no wrapper script.
 
 The rest of this guide is the full variable and operator reference
@@ -100,7 +100,7 @@ command:
 },
 ```
 
-`:gitblame` resolves `$FILE` to the focused tab's path, splits the result into command arguments, and runs `git blame /path/to/file.go` in a transient terminal, no wrapper script required.
+`gitblame` resolves `$FILE` to the focused tab's path, splits the result into command arguments, and runs `git blame /path/to/file.go` in a transient terminal, no wrapper script required.
 
 The same machinery powers alias positional arguments. This alias takes one argument, the new worktree name, and uses it twice while also referencing the workspace identity:
 
@@ -129,7 +129,7 @@ command:
 },
 ```
 
-`:worktreenew feature/x` creates a worktree on disk under a workspace-keyed directory, then opens it as a new workspace.
+`worktreenew feature/x` creates a worktree on disk under a workspace-keyed directory, then opens it as a new workspace.
 
 ## Where expansion runs
 
@@ -145,7 +145,7 @@ command:
       completer: '! git -C $WORKSPACE_PATH branch --format="%(refname:short)"'
 ```
 
-Here `$WORKSPACE_PATH` is doing real work in the completer: it pins both the suggestions and the dispatched command to the focused workspace's git repo, so `:gitcheckout` keeps working regardless of where the Rune process was launched from and which workspace happens to be focused right now.
+Here `$WORKSPACE_PATH` is doing real work in the completer: it pins both the suggestions and the dispatched command to the focused workspace's git repo, so `gitcheckout` keeps working regardless of where the Rune process was launched from and which workspace happens to be focused right now.
 
 ## Variables Rune provides
 
@@ -238,7 +238,7 @@ command:
 "doc": "! man ${1:-$LANG}",
 ```
 
-`:doc` shows docs for the current language; `:doc python` overrides.
+`doc` shows docs for the current language; `doc python` overrides.
 
 ### Substring and length
 
@@ -366,7 +366,7 @@ worktrees; the absolute path is determined by `git`, not by Rune.
 Captures behave like a small, per-alias scope:
 
 - They are scoped to a single alias dispatch; the chain is created when the alias starts and
-  is discarded after the last step. Two separate `:worktreeopen` invocations do not share state.
+  is discarded after the last step. Two separate `worktreeopen` invocations do not share state.
 - They shadow the process environment for the duration of the dispatch, but they do **not**
   shadow Rune builtins like `$FILE`, `$WORD`, `$LANG`, … Pick variable names that do not collide
   with the builtins listed above (a safe convention is to use a name that hints at the alias's
@@ -388,6 +388,11 @@ Rune does not know are left in the body unchanged; the shell interpreter then re
 against the host environment (or the chain captures from earlier steps). The same applies to
 a `!` or `!!` typed at the prompt or bound to a key, such as `:! grep -n $WORD $FILE`, and to
 the arguments an alias appends to a `!`/`!!` step.
+
+Commands that start a program from a shell-style command line, `terminalnew`,
+`terminalnewtab`, `terminalneworsplit` and `console`, read their arguments the same way. A value
+substituted into their arguments, or appended to them by an alias, reaches the program as one
+argument, so `terminalnewtab terminal-browser $1` passes a link holding `&` or `;` intact.
 
 Some places in a shell line do not hold plain text, and Rune limits what it substitutes there:
 
@@ -487,4 +492,4 @@ command:
 "sed": "!! gsed -i $1 $FILE",
 ```
 
-`:sed s/foo/bar/g` rewrites the focused file in place.
+`sed s/foo/bar/g` rewrites the focused file in place.

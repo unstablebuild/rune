@@ -24,6 +24,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,6 +40,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguemanager"
 	"unstable.build/rune/internal/llm/anthropic"
 )
@@ -363,14 +365,13 @@ func TestAgentRun(t *testing.T) {
 				assert.True(t, hasEventType(events, EventDone))
 
 				// The request should include the old messages + new user message
-				// (skills system message is injected at index 1)
+				// (no skills message: the agent has no skill tool)
 				require.Equal(t, 1, svc.getCallCount())
 				msgs := svc.requests[0].Messages
 				assert.Equal(t, llmapi.RoleSystem, msgs[0].Role)
 				assert.Equal(t, "old system prompt", msgs[0].Content)
-				assert.Equal(t, llmapi.RoleSystem, msgs[1].Role) // skills
-				assert.Equal(t, "previous question", msgs[2].Content)
-				assert.Equal(t, "previous answer", msgs[3].Content)
+				assert.Equal(t, "previous question", msgs[1].Content)
+				assert.Equal(t, "previous answer", msgs[2].Content)
 				assert.Equal(t, "test message", msgs[len(msgs)-1].Content)
 
 				// Should use AppendMessages (existing dialogue)
@@ -2153,14 +2154,12 @@ func TestAgentCompact(t *testing.T) {
 		}
 
 		// post-compact call has compacted summary as user message
-		// (skills system message is injected at index 1)
 		postMsgs := svc.requests[2].Messages
-		require.Len(t, postMsgs, 3)
+		require.Len(t, postMsgs, 2)
 		assert.Equal(t, llmapi.RoleSystem, postMsgs[0].Role)
 		assert.Equal(t, "test system prompt", postMsgs[0].Content)
-		assert.Equal(t, llmapi.RoleSystem, postMsgs[1].Role) // skills
-		assert.Equal(t, llmapi.RoleUser, postMsgs[2].Role)
-		assert.Equal(t, CompactSummaryPrefix+"Summary of work so far", postMsgs[2].Content)
+		assert.Equal(t, llmapi.RoleUser, postMsgs[1].Role)
+		assert.Equal(t, CompactSummaryPrefix+"Summary of work so far", postMsgs[1].Content)
 
 		// Archived dialogue exists with old messages
 		archived, ok := store.getDialogue("d-archived")
@@ -3277,7 +3276,7 @@ Greet the user warmly.
 
 	svc := &mockService{responses: []mockResponse{stopResponse("hi")}}
 	store := newMockStore()
-	ag := NewAgent(svc, NewRegistry(), registry, store, NoMemory(), Config{
+	ag := NewAgent(svc, NewRegistry(&mockTool{name: "skill"}), registry, store, NoMemory(), Config{
 		SystemPrompt: "test",
 	})
 
@@ -3505,7 +3504,7 @@ func TestCommitAttributionInjectedWithoutPersistence(t *testing.T) {
 func TestSkillsNotInjectedWhenEmpty(t *testing.T) {
 	svc := &mockService{responses: []mockResponse{stopResponse("hi")}}
 	reg := skills.NewRegistry(nopFileSystem{}, dirURI(""), nil, nil)
-	ag := NewAgent(svc, NewRegistry(), reg, newMockStore(), NoMemory(), Config{
+	ag := NewAgent(svc, NewRegistry(&mockTool{name: "skill"}), reg, newMockStore(), NoMemory(), Config{
 		SystemPrompt: "test",
 	})
 
@@ -3521,6 +3520,58 @@ func TestSkillsNotInjectedWhenEmpty(t *testing.T) {
 	assert.Equal(t, llmapi.RoleUser, req.Messages[2].Role)
 	assert.Contains(t, req.Messages[1].Content, "explore")
 	assert.Contains(t, req.Messages[1].Content, "plan")
+}
+
+func TestSkillsListFollowsTheToolPolicy(t *testing.T) {
+	skillDir := t.TempDir()
+	for _, name := range []string{"acme-notes", "other"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(skillDir, name), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(skillDir, name, "SKILL.md"),
+			[]byte("---\nname: "+name+"\ndescription: The "+name+" skill\n---\nbody\n"), 0o644))
+	}
+	reg := skills.NewRegistry(osFileSystem{}, dirURI(""), []string{skillDir}, nil)
+	acmeOnly, err := toolpolicy.Parse([]string{"read_file", "skill(acme-*)"}, nil)
+	require.NoError(t, err)
+
+	cases := []struct {
+		name    string
+		tools   []Tool
+		policy  toolpolicy.Policy
+		want    []string
+		notWant []string
+	}{
+		{name: "every skill without a policy", tools: []Tool{&mockTool{name: "skill"}},
+			want: []string{"acme-notes:", "other:", "rune-hud:", "explore (agent)"}},
+		{name: "only the skills the policy allows", tools: []Tool{&mockTool{name: "skill"}},
+			policy: acmeOnly, want: []string{"acme-notes:"},
+			notWant: []string{"other", "rune-hud", "explore"}},
+		{name: "none without a skill tool", tools: []Tool{&mockTool{name: "read_file"}},
+			notWant: []string{"acme-notes", "skill tool"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mockService{responses: []mockResponse{stopResponse("hi")}}
+			ag := NewAgent(svc, NewRegistry(tc.tools...), reg, newMockStore(), NoMemory(), Config{
+				SystemPrompt: "test", Tools: tc.policy,
+			})
+			_ = collectEvents(t, ag.Run(context.Background(), "d", "hello"))
+
+			require.Equal(t, 1, svc.getCallCount())
+			var system []string
+			for _, m := range svc.requests[0].Messages {
+				if m.Role == llmapi.RoleSystem {
+					system = append(system, m.Content)
+				}
+			}
+			all := strings.Join(system, "\n")
+			for _, w := range tc.want {
+				assert.Contains(t, all, "- "+w)
+			}
+			for _, w := range tc.notWant {
+				assert.NotContains(t, all, w)
+			}
+		})
+	}
 }
 
 func TestAgentRun_UnlimitedIterations(t *testing.T) {
@@ -3665,6 +3716,155 @@ func TestPersistMessages_ReloadsFullContextAcrossRuns(t *testing.T) {
 	assert.Contains(t, contents, "first answer",
 		"second turn must reload prior assistant message")
 	assert.Contains(t, contents, "second question")
+}
+
+func TestAgentAppendTurn(t *testing.T) {
+	call := llmapi.Message{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{{
+		ID: "skill-1", Type: llmapi.ToolTypeFunction,
+		Function: llmapi.FunctionCall{Name: "skill", Arguments: `{"name":"research"}`},
+	}}}
+	result := llmapi.Message{Role: llmapi.RoleTool, Content: "The notes say hi.", Name: "skill", ToolCallID: "skill-1"}
+	reply := llmapi.Message{Role: llmapi.RoleAssistant, Content: "The notes say hi."}
+	system := llmapi.Message{Role: llmapi.RoleSystem, Content: "test"}
+	earlier := []llmapi.Message{
+		system, {Role: llmapi.RoleUser, Content: "hello"}, {Role: llmapi.RoleAssistant, Content: "hi"},
+	}
+	image := llmapi.ContentPart{Type: llmapi.ContentPartTypeImageURL, ImageURL: "data:image/png;base64,AA=="}
+
+	tests := []struct {
+		name     string
+		existing []llmapi.Message
+		message  string
+		opts     []RunOption
+		replies  []llmapi.Message
+		canceled bool
+		want     []llmapi.Message
+	}{
+		{
+			name:    "new dialogue",
+			message: "/research go",
+			replies: []llmapi.Message{call, result, reply},
+			want:    []llmapi.Message{system, {Role: llmapi.RoleUser, Content: "/research go"}, call, result, reply},
+		},
+		{
+			name:     "existing dialogue",
+			existing: earlier,
+			message:  "/research go",
+			replies:  []llmapi.Message{call, result, reply},
+			want:     append(slices.Clone(earlier), llmapi.Message{Role: llmapi.RoleUser, Content: "/research go"}, call, result, reply),
+		},
+		{
+			name:    "display text and attachments",
+			message: "see <attachment-1>",
+			opts:    []RunOption{WithDisplayMessage("see shot.png"), WithAttachments([]llmapi.ContentPart{image})},
+			replies: []llmapi.Message{call, result, reply},
+			want: []llmapi.Message{system, {
+				Role: llmapi.RoleUser, Content: "see shot.png",
+				MultiContent: []llmapi.ContentPart{{Type: llmapi.ContentPartTypeText, Text: "see <attachment-1>"}, image},
+			}, call, result, reply},
+		},
+		{
+			name:    "tool result without output",
+			message: "/research go",
+			replies: []llmapi.Message{call, {Role: llmapi.RoleTool, Name: "skill", ToolCallID: "skill-1"}},
+			want: []llmapi.Message{system, {Role: llmapi.RoleUser, Content: "/research go"}, call,
+				{Role: llmapi.RoleTool, Content: emptyToolResultPlaceholder, Name: "skill", ToolCallID: "skill-1"}},
+		},
+		{
+			name:     "canceled context",
+			existing: earlier,
+			message:  "/research go",
+			replies:  []llmapi.Message{call, {Role: llmapi.RoleTool, Content: "sub-agent cancelled", Name: "skill", ToolCallID: "skill-1"}},
+			canceled: true,
+			want: append(slices.Clone(earlier), llmapi.Message{Role: llmapi.RoleUser, Content: "/research go"}, call,
+				llmapi.Message{Role: llmapi.RoleTool, Content: "sub-agent cancelled", Name: "skill", ToolCallID: "skill-1"}),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockStore()
+			if tc.existing != nil {
+				store.data["d"] = dialoguemanager.Dialogue{ID: "d", Messages: tc.existing}
+			}
+			ag := NewAgent(&mockService{}, NewRegistry(), noSkills(), store, NoMemory(), Config{
+				SystemPrompt: "test", AgentID: "default", Model: llmapi.ModelEntry{Name: "m"},
+			})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.canceled {
+				cancel()
+			}
+			replies := slices.Clone(tc.replies)
+
+			require.NoError(t, ag.AppendTurn(ctx, "d", tc.message, replies, tc.opts...))
+
+			d, ok := store.getDialogue("d")
+			require.True(t, ok)
+			assert.Equal(t, tc.want, d.Messages)
+			assert.Equal(t, tc.replies, replies, "the caller's replies must not change")
+			if tc.existing == nil {
+				assert.Equal(t, "default", d.AgentID)
+				assert.Equal(t, "m", d.Model)
+			}
+		})
+	}
+}
+
+func TestAgentAppendTurnStoreErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		store   func(*mockStore)
+		wantErr string
+	}{
+		{name: "get", store: func(s *mockStore) { s.getErr = errors.New("read error") }, wantErr: "get dialogue: read error"},
+		{name: "create", store: func(s *mockStore) { s.createErr = errors.New("write error") }, wantErr: "write error"},
+		{name: "append", store: func(s *mockStore) {
+			s.data["d"] = dialoguemanager.Dialogue{ID: "d"}
+			s.appendErr = errors.New("write error")
+		}, wantErr: "write error"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockStore()
+			tc.store(store)
+			ag := NewAgent(&mockService{}, NewRegistry(), noSkills(), store, NoMemory(), Config{SystemPrompt: "test"})
+			assert.EqualError(t, ag.AppendTurn(t.Context(), "d", "/research go", nil), tc.wantErr)
+		})
+	}
+}
+
+func TestAgentRunAfterAppendTurn(t *testing.T) {
+	store := newMockStore()
+	svc := &mockService{responses: []mockResponse{stopResponse("You're welcome.")}}
+	ag := NewAgent(svc, NewRegistry(), noSkills(), store, NoMemory(), Config{SystemPrompt: "test"})
+	call := llmapi.ToolCall{
+		ID: "skill-1", Type: llmapi.ToolTypeFunction,
+		Function: llmapi.FunctionCall{Name: "skill", Arguments: `{"name":"research"}`},
+	}
+	require.NoError(t, ag.AppendTurn(t.Context(), "d", "/research go", []llmapi.Message{
+		{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{call}},
+		{Role: llmapi.RoleTool, Content: "The notes say hi.", Name: "skill", ToolCallID: "skill-1"},
+		{Role: llmapi.RoleAssistant, Content: "The notes say hi."},
+	}))
+
+	_ = collectEvents(t, ag.Run(t.Context(), "d", "thanks"))
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	require.Len(t, svc.requests, 1)
+	var turn []llmapi.Message
+	for _, m := range svc.requests[0].Messages {
+		if m.Role != llmapi.RoleSystem {
+			turn = append(turn, llmapi.Message{Role: m.Role, Content: m.Content, ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID})
+		}
+	}
+	assert.Equal(t, []llmapi.Message{
+		{Role: llmapi.RoleUser, Content: "/research go"},
+		{Role: llmapi.RoleAssistant, ToolCalls: []llmapi.ToolCall{call}},
+		{Role: llmapi.RoleTool, Content: "The notes say hi.", ToolCallID: "skill-1"},
+		{Role: llmapi.RoleAssistant, Content: "The notes say hi."},
+		{Role: llmapi.RoleUser, Content: "thanks"},
+	}, turn, "the agent must answer follow-ups knowing the skill's run")
 }
 
 func TestPersistMessages_SaveOnCancelledContext(t *testing.T) {

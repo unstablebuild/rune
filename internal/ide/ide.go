@@ -233,10 +233,12 @@ func (i *IDE) LoadHUD(ctx context.Context) (*HUD, error) {
 
 // ApplyHUD installs hud in every workspace, and in those still loading
 // once they open, so the next Draw shows it. A HUD whose load started
-// before that of the HUD installed last is ignored. It must run on the
-// event loop.
-func (i *IDE) ApplyHUD(hud *HUD) {
-	i.workspaceHandler.applyHUD(hud)
+// before that of the HUD installed last is ignored, which it reports with
+// applied false. Extensions fetch hud's config from then on, and their
+// running processes are told so; signalled is how many were, which redraw
+// only once they fetched it. It must run on the event loop.
+func (i *IDE) ApplyHUD(hud *HUD) (applied bool, signalled int) {
+	return i.workspaceHandler.applyHUD(hud)
 }
 
 // Sounds returns the player for the sounds defined in the `sounds`

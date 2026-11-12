@@ -114,8 +114,12 @@ You do not have to set every color. Any name you leave out keeps its
 current value, so a theme can be as small as a couple of overrides.
 
 Rune loads the themes in your config at startup. After adding one, restart
-Rune or open a new window with `guiwindownew`, then activate it with
+Rune, open a new window with `guiwindownew`, or run
+[`runectl screenshot`](../develop/runectl.md#screenshots), which reads them
+again and repaints if you edited the active theme. Then activate it with
 `guitheme mytheme`, or set `default_theme` to it to use it at startup.
+`runectl screenshot` also switches to `default_theme` when you change it, and
+otherwise keeps the theme you picked with `guitheme`.
 
 ## Share your theme
 
@@ -162,4 +166,12 @@ Installing merges the theme into `gui.themes` and makes it available to
 `guitheme` immediately, with no restart. It does not change the active theme
 or `gui.default_theme`. Users can select it with `guitheme` or set
 `gui.default_theme: redmond95` in their own config to use it at startup.
+
+A theme package can also ship the images of a HUD: window frames, tabs,
+prompt buttons, status bar ornaments and the rest. Commit the images to the
+repository and name them in `config.yaml` with URIs such as
+`file://$RUNE_DATADIR/lib/$RUNE_PKG_ID/frame/topleft.png`. Rune fills in the
+package's name when it installs it, and its data directory when it loads the
+image. Like any other key, an image setting is merged only where the user's
+config doesn't set it already.
 See [Packages](../develop/packages.md) for installation and versioning details.

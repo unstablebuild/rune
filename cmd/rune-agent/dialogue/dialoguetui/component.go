@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"log/slog"
 	"slices"
 	"sort"
@@ -153,10 +154,13 @@ type Component struct {
 	messages     component.ResponsiveList
 	spanMessages component.Span
 	box          *handler.Frame
-	loadingBox   loadingFrame
-	input        Input
-	height       int
-	width        int
+	// boxGraphics draws the images of the compose box frame. It is nil
+	// until the frame names one.
+	boxGraphics *tcomponent.FrameGraphics
+	loadingBox  loadingFrame
+	input       Input
+	height      int
+	width       int
 
 	// layout: the viewport is split vertically between the messages region
 	// (top, full width) and the compose box (bottom, horizontally centered
@@ -172,6 +176,9 @@ type Component struct {
 	// when the bar is disabled.
 	barArea   component.Virtual[tui.Component]
 	statusBar *StatusBar
+	// barState is what the status bar reports. It is kept while the bar
+	// is disabled, so that enabling it again shows the chat as it is.
+	barState StatusBarState
 	// shadedBar wraps the status bar so a configured effect can run
 	// over it for as long as a turn does.
 	shadedBar shadedBar
@@ -320,26 +327,117 @@ func (c *Component) Init(cfg ComponentConfig) {
 	if cfg.InputBox.FrameCharSet != (component.FrameCharSet{}) {
 		c.box.FrameCharSet = cfg.InputBox.FrameCharSet
 	}
-	c.loadingBox.root = c.box
+	c.loadingBox.root = &framedBox{c: c}
 	c.boxArea.C = &c.loadingBox
 
 	c.attachTabs.Init()
 	c.attachTabs.SetBorder(false)
 	c.attachArea.C = &c.attachTabs
 
-	if cfg.StatusBar.Enabled {
-		// The interrupter only reaches the Component once Handler
-		// wraps it, which is where the bar starts repainting.
-		c.statusBar = NewStatusBar(cfg.StatusBar, nil)
-		c.shadedBar.root = c.statusBar
-		c.shadedBar.name = cfg.StatusBar.Shader
-		c.shadedBar.fps = cfg.StatusBar.ShaderFPS
-		c.shadedBar.loop = cfg.StatusBar.ShaderLoop
-		c.shadedBar.defAttr = term.Attributes{
-			Fg: cfg.StatusBar.ForegroundColor,
-			Bg: cfg.StatusBar.BackgroundColor,
+	// The interrupter only reaches the Component once Handler wraps it,
+	// which is where the bar starts repainting.
+	c.installStatusBar(cfg.StatusBar)
+}
+
+// installStatusBar makes the status bar the one cfg configures, showing
+// barState, or none when cfg disables it. The bar it replaces must be
+// closed already.
+func (c *Component) installStatusBar(cfg StatusBarConfig) {
+	c.statusBar = nil
+	c.barArea.C = nil
+	if !cfg.Enabled {
+		return
+	}
+	c.statusBar = NewStatusBar(cfg, nil)
+	state := c.barState
+	c.statusBar.SetState(func(s *StatusBarState) { *s = state })
+	c.shadedBar.configure(c.statusBar, cfg)
+	c.barArea.C = &c.shadedBar
+}
+
+// SetStatusBarConfig replaces the status bar with the one cfg configures,
+// or removes it when cfg disables it, and lays the dialogue out again. The
+// new bar reports what the old one did: a running turn keeps its elapsed
+// time, and the effect cfg names runs over it.
+func (c *Component) SetStatusBarConfig(cfg StatusBarConfig) {
+	if c.statusBar != nil {
+		c.shadedBar.setRunning(false, c.interrupter)
+		if err := c.statusBar.Close(); err != nil {
+			slog.Warn("dialoguetui: close the replaced status bar", "error", err)
 		}
-		c.barArea.C = &c.shadedBar
+	}
+	c.cfg.StatusBar = cfg
+	c.installStatusBar(cfg)
+	if c.statusBar != nil {
+		c.statusBar.start(c.interrupter)
+	}
+	c.relayout()
+	if c.statusBar != nil {
+		c.shadedBar.setRunning(c.barState.Active, c.interrupter)
+	}
+}
+
+// SetInputBoxFrameCharSet draws the compose box frame with cs from the
+// next Draw on, or with component.FrameCharSetDefault when cs is zero.
+// The frame draws images, by URI, without fetching them, and fetches any
+// other image cs names again.
+func (c *Component) SetInputBoxFrameCharSet(
+	cs component.FrameCharSet, images map[string]image.Image,
+) {
+	c.cfg.InputBox.FrameCharSet = cs
+	if cs == (component.FrameCharSet{}) {
+		cs = component.FrameCharSetDefault()
+	}
+	c.box.FrameCharSet = cs
+	if c.boxGraphics != nil {
+		c.boxGraphics.Reload(images)
+	}
+}
+
+// SetInputBoxColors draws the compose box frame with frame, and fills the
+// box with bg, from the next Draw on. A bg of term.ColorDefault fills the
+// frame with frame's background and leaves the input at the terminal
+// default. The prompt feedback inputboxes opened from then on are drawn
+// with content.
+func (c *Component) SetInputBoxColors(frame, content term.Attributes, bg term.Color) {
+	c.cfg.InputBox.FrameAttr = frame
+	c.cfg.InputBox.ContentAttr = content
+	c.cfg.InputBackgroundColor = bg
+	c.box.SetAttr(frame)
+	if bg != term.ColorDefault {
+		c.box.Bg = bg
+	}
+	c.input.SetDefaultAttributes(term.Attributes{Bg: bg})
+}
+
+// frameGraphics returns what draws the images of the compose box frame,
+// or nil when it names none or cannot fetch them.
+func (c *Component) frameGraphics() *tcomponent.FrameGraphics {
+	if c.box.Graphics.Empty() || c.cfg.InputBox.GraphicsStorage == nil || c.interrupter == nil {
+		return nil
+	}
+	if c.boxGraphics == nil {
+		c.boxGraphics = tcomponent.NewFrameGraphics(c.cfg.InputBox.GraphicsStorage, c.interrupter)
+	}
+	return c.boxGraphics
+}
+
+// framedBox draws the compose box of c, and over its border the images
+// its frame charset names.
+type framedBox struct {
+	c             *Component
+	width, height int
+}
+
+func (b *framedBox) Resize(width, height int) {
+	b.width, b.height = width, height
+	b.c.box.Resize(width, height)
+}
+
+func (b *framedBox) Draw(w term.Writer) {
+	b.c.box.Draw(w)
+	if g := b.c.frameGraphics(); g != nil {
+		g.Draw(w, &b.c.box.Frame, b.width, b.height)
 	}
 }
 
@@ -1443,18 +1541,19 @@ func (c *Component) AddToolCall(id, name, args, summary string) {
 }
 
 // CompleteToolCall replaces the running tool indicator with a completed
-// header (✓ or ✗) and truncated output. If no prior AddToolCall was
-// made for this id (e.g. when replaying stored messages), a new entry
-// is created directly in a completed state.
+// header (✓ or ✗) and truncated output, in the newest turn holding id. If
+// no turn holds it (e.g. when replaying stored messages), a new entry is
+// created directly in a completed state.
 func (c *Component) CompleteToolCall(id, name, args, summary, output string, isError bool) {
 	maxOff, scrolled := c.scrollState()
 	defer c.restoreScroll(maxOff, scrolled)
-	c.ensureCurrentTurn()
-	if _, ok := c.currentTurn.tools[id]; !ok {
-		// No running entry — add one so CompleteToolCall can update it.
-		c.currentTurn.AddToolCall(id, name, args, summary)
+	turn := c.toolTurn(id)
+	if turn == nil {
+		c.ensureCurrentTurn()
+		turn = c.currentTurn
+		turn.AddToolCall(id, name, args, summary)
 	}
-	c.currentTurn.CompleteToolCall(id, name, args, summary, output, isError)
+	turn.CompleteToolCall(id, name, args, summary, output, isError)
 	c.moveTrailingToBack()
 }
 
@@ -1468,38 +1567,76 @@ func (c *Component) AddToolCallImage(id, path, caption string) {
 	}
 }
 
-// AddChildToolCall adds a tool call nested under a parent tool call
-// in the current turn.
+// AddChildToolCall adds a tool call nested under a parent tool call,
+// in whichever turn holds the parent. A parent that no turn holds gets
+// the call as a top-level tool call of the current turn.
 func (c *Component) AddChildToolCall(parentID, id, name, args, summary string) {
 	maxOff, scrolled := c.scrollState()
 	defer c.restoreScroll(maxOff, scrolled)
-	c.ensureCurrentTurn()
-	c.currentTurn.AddChildToolCall(parentID, id, name, args, summary)
+	turn := c.parentTurn(parentID)
+	if turn == nil {
+		c.ensureCurrentTurn()
+		turn = c.currentTurn
+	}
+	turn.AddChildToolCall(parentID, id, name, args, summary)
 	c.moveTrailingToBack()
 }
 
 // CompleteChildToolCall completes a child tool call nested under a
-// parent tool call in the current turn.
+// parent tool call, in whichever turn holds the parent.
 func (c *Component) CompleteChildToolCall(parentID, id, name, args, summary, output string, isError bool) {
 	maxOff, scrolled := c.scrollState()
 	defer c.restoreScroll(maxOff, scrolled)
-	if c.currentTurn == nil {
+	turn := c.parentTurn(parentID)
+	if turn == nil {
+		turn = c.currentTurn
+	}
+	if turn == nil {
 		return
 	}
-	c.currentTurn.CompleteChildToolCall(parentID, id, name, args, summary, output, isError)
+	turn.CompleteChildToolCall(parentID, id, name, args, summary, output, isError)
 	c.moveTrailingToBack()
 }
 
 // AddChildResult adds a sub-agent result leaf node under a parent
-// tool call in the current turn.
+// tool call, in whichever turn holds the parent.
 func (c *Component) AddChildResult(parentID, output string, isError bool) {
 	maxOff, scrolled := c.scrollState()
 	defer c.restoreScroll(maxOff, scrolled)
-	if c.currentTurn == nil {
+	turn := c.parentTurn(parentID)
+	if turn == nil {
 		return
 	}
-	c.currentTurn.AddChildResult(parentID, output, isError)
+	turn.AddChildResult(parentID, output, isError)
 	c.moveTrailingToBack()
+}
+
+// toolTurn returns the newest turn holding the top-level tool call id,
+// or nil. Text detaches the current turn, and a sub-agent running in the
+// background keeps calling tools after its parent's text moved on, so
+// the parent need not be in the current turn.
+func (c *Component) toolTurn(id string) *Turn {
+	for node, ok := c.messages.Back(); ok; node, ok = node.Prev() {
+		if turn, isTurn := node.Value().(*Turn); isTurn {
+			if _, has := turn.tools[id]; has {
+				return turn
+			}
+		}
+	}
+	return nil
+}
+
+// parentTurn is toolTurn for the parent of a child tool call, which may
+// itself be nested, as when a sub-agent runs another one.
+func (c *Component) parentTurn(id string) *Turn {
+	for node, ok := c.messages.Back(); ok; node, ok = node.Prev() {
+		if turn, isTurn := node.Value().(*Turn); isTurn {
+			if tn, _ := turn.findTool(id); tn != nil {
+				return turn
+			}
+		}
+	}
+	return nil
 }
 
 // SetToolStartTime sets the start time for a tool call, used for live
@@ -1899,14 +2036,80 @@ func (c *Component) Reset() {
 	c.resetContent()
 }
 
+// ApplyEvent shows ev as the Handler of c shows the events sent to it.
+// It reports false, changing nothing, for the events only a Handler acts
+// on: prompts, prompt dismissals, busy and command events. The caller
+// must hold the lock that guards c.
+func (c *Component) ApplyEvent(ev MessageEvent) bool {
+	switch ev.Type {
+	case MessageEventReasoning:
+		c.AddReasoningChunk(ev.Text)
+	case MessageEventText:
+		c.AddReceiveMessageChunk(ev.Text)
+	case MessageEventBreak:
+		c.AddReceiveMessageBreak()
+	case MessageEventToolCall:
+		if IsTaskTool(ev.ToolName) {
+			break
+		}
+		if ev.ParentToolCallID != "" {
+			c.AddChildToolCall(ev.ParentToolCallID, ev.ToolCallID, ev.ToolName, ev.ToolArgs, ev.ToolSummary)
+		} else {
+			c.AddToolCall(ev.ToolCallID, ev.ToolName, ev.ToolArgs, ev.ToolSummary)
+		}
+		if !ev.ToolStartTime.IsZero() {
+			c.SetToolStartTime(ev.ToolCallID, ev.ToolStartTime)
+		}
+	case MessageEventToolResult:
+		if IsTaskTool(ev.ToolName) {
+			break
+		}
+		if ev.ToolDuration > 0 {
+			c.SetToolDuration(ev.ToolCallID, ev.ToolDuration)
+		}
+		if ev.ParentToolCallID != "" {
+			c.CompleteChildToolCall(ev.ParentToolCallID, ev.ToolCallID, ev.ToolName, ev.ToolArgs, ev.ToolSummary, ev.ToolOutput, ev.IsError)
+		} else {
+			c.CompleteToolCall(ev.ToolCallID, ev.ToolName, ev.ToolArgs, ev.ToolSummary, ev.ToolOutput, ev.IsError)
+		}
+		for _, path := range ev.ImagePaths {
+			c.AddToolCallImage(ev.ToolCallID, path, ev.ToolSummary)
+		}
+	case MessageEventChildResult:
+		c.AddChildResult(ev.ParentToolCallID, ev.ToolOutput, ev.IsError)
+	case MessageEventError:
+		c.AddErrorMessage(ev.Text)
+	case MessageEventWarning:
+		c.AddWarningMessage(ev.Text)
+	case MessageEventToolsDropped:
+		c.MarkToolsDropped(ev.DroppedToolCallIDs)
+	case MessageEventMemoryRecall:
+		c.AddMemoryRecall(ev.Memories, ev.MemoryDuration)
+	case MessageEventTaskProgress:
+		c.UpdateTaskProgress(ev.TaskProgress)
+	case MessageEventAttachment:
+		c.AddAttachment(ev.Attachment)
+	case MessageEventUserMessage:
+		c.AddSendMessageAttachments(ev.Text, ev.Attachments)
+	default:
+		return false
+	}
+	return true
+}
+
 // Close releases the resources owned by this Component.
 func (c *Component) Close() error {
 	c.closeTranscript()
+	var errs []error
+	if c.boxGraphics != nil {
+		errs = append(errs, c.boxGraphics.Close())
+		c.boxGraphics = nil
+	}
 	if c.statusBar != nil {
 		c.shadedBar.setRunning(false, c.interrupter)
-		return c.statusBar.Close()
+		errs = append(errs, c.statusBar.Close())
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // resetContent clears turns, reasoning, progress, and the message list.
@@ -2242,14 +2445,16 @@ func (c *Component) drawStatusBarImages(w term.Writer) {
 	c.statusBar.drawImages(term.BoundsCheckWriter(c.width, c.height, w), c.height)
 }
 
-// SetStatusBarState applies fn to the status bar state. It is a no-op
-// when the bar is disabled.
+// SetStatusBarState applies fn to the status bar state. A disabled bar
+// shows the state once it is enabled.
 func (c *Component) SetStatusBarState(fn func(*StatusBarState)) {
+	fn(&c.barState)
 	if c.statusBar == nil {
 		return
 	}
-	c.statusBar.SetState(fn)
-	if c.shadedBar.setRunning(c.statusBar.State().Active, c.interrupter) {
+	state := c.barState
+	c.statusBar.SetState(func(s *StatusBarState) { *s = state })
+	if c.shadedBar.setRunning(state.Active, c.interrupter) {
 		// The effect only repaints on its own ticker, so the frame
 		// that starts or ends it needs a wakeup of its own.
 		_ = c.interrupter.Interrupt(context.Background())

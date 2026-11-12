@@ -58,8 +58,9 @@ it, and silences `info`.
 
 Sounds come from your config file and the packages you install; a
 workspace's `.rune/config.yaml` cannot define them. Changes apply after
-`workspacereload`, and sounds added by a package install are available right
-away. To share sounds, publish them in a
+`workspacereload` or [`runectl screenshot`](../develop/runectl.md#screenshots),
+and sounds added by a package install are available right away. To share
+sounds, publish them in a
 [package](../develop/packages.md#registering-sounds).
 
 To hear a sound, run `guisound` with its name:
@@ -101,8 +102,8 @@ terminal:
 config["terminal"]["bell"] = "ding"
 ```
 
-Like other `terminal.*` settings, a change to `terminal.bell` applies after
-`workspacereload`.
+A change to `terminal.bell` applies after `workspacereload`, or to every open
+terminal on the next `runectl screenshot`.
 
 ## Program status
 
@@ -133,7 +134,35 @@ config["gui"]["quick_menu_sounds"] = {"hover": "ding", "click": "success"}
   native macOS quick menu plays none.
 - Rune reports an unknown sound name as a config error, and that event plays
   nothing.
-- Like other `gui.*` settings, a change applies after restarting Rune.
+- A change applies after restarting Rune, or on the next `runectl screenshot`.
+
+## Tabs
+
+`browser.tab_sounds` names the sounds the file tabs play, and
+`workspace.tab_sounds` the sounds the workspace tabs play: `hover` when the
+pointer moves onto a tab that is not in focus and `click` when you click a
+tab. Each is the name of a sound, built-in or your own, or an empty string for
+none, which is the default.
+
+```yaml tab
+browser:
+  tab_sounds:
+    hover: ding
+    click: success
+workspace:
+  tab_sounds:
+    click: success
+```
+
+```python tab
+config["browser"]["tab_sounds"] = {"hover": "ding", "click": "success"}
+config["workspace"]["tab_sounds"] = {"click": "success"}
+```
+
+- A tab is clicked when you release the button over the tab you pressed.
+- Rune reports an unknown sound name as a config error, and that event plays
+  nothing.
+- A change applies after `themereload`, or on the next `runectl screenshot`.
 
 ## Play a sound from an alias
 
@@ -194,6 +223,10 @@ To change the volume for the current session, use `guivolume`:
 | `guivolume increase` | raises the volume by 10% and unmutes |
 | `guivolume decrease` | lowers the volume by 10% and unmutes |
 | `guivolume mute` | mutes, or unmutes at the previous volume |
+
+A change to `gui.sound_volume` applies after restarting Rune, or on the next
+`runectl screenshot`. The screenshot leaves a volume set with `guivolume`
+alone as long as `gui.sound_volume` itself is unchanged.
 
 Sounds play in the Rune window. With `rune --tui`, every sound rings the
 bell of the terminal Rune runs in instead, and that terminal's settings

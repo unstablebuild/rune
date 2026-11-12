@@ -199,6 +199,54 @@ func TestFileExplorerHandlerRenderAndInteraction(t *testing.T) {
 	}
 }
 
+func TestFileExplorerSyncWidth(t *testing.T) {
+	dirs := map[string][]explorerMockEntry{
+		"/project": {{name: "a.go"}, {name: "b.go"}},
+	}
+	t.Run("unchanged width and frame changes", func(t *testing.T) {
+		h, host := newTestFileExplorerHandler(t, dirs)
+		width, _ := h.Dimensions()
+		h.syncWidth()
+		h.syncWidth()
+		require.Equal(t, 1, host.widthCalls)
+		require.Equal(t, width, host.lastWidth)
+
+		host.frame = true
+		h.syncWidth()
+		require.Equal(t, 2, host.widthCalls)
+		require.Equal(t, width+2, host.lastWidth)
+
+		host.frame = false
+		h.syncWidth()
+		require.Equal(t, 3, host.widthCalls)
+		require.Equal(t, width, host.lastWidth)
+	})
+	t.Run("retry after a rejected width", func(t *testing.T) {
+		h, host := newTestFileExplorerHandler(t, dirs)
+		host.rejectWidth = true
+		h.syncWidth()
+		require.Equal(t, 1, host.widthCalls)
+		require.Zero(t, host.lastWidth)
+
+		host.rejectWidth = false
+		h.syncWidth()
+		width, _ := h.Dimensions()
+		require.Equal(t, 2, host.widthCalls)
+		require.Equal(t, width, host.lastWidth)
+		h.syncWidth()
+		require.Equal(t, 2, host.widthCalls)
+	})
+	t.Run("a new window needs the same width applied", func(t *testing.T) {
+		h, host := newTestFileExplorerHandler(t, dirs)
+		h.syncWidth()
+		h.SetWindow(&testExplorerWindow{id: 3})
+		h.syncWidth()
+		require.Equal(t, 2, host.widthCalls)
+		h.syncWidth()
+		require.Equal(t, 2, host.widthCalls)
+	})
+}
+
 func TestFileExplorerClickBelowTreeIsNoop(t *testing.T) {
 	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
 		"/project": {
@@ -1134,7 +1182,9 @@ func TestFileExplorerHandlerPointerLeaves(t *testing.T) {
 	})
 }
 
-func sendExplorerKeys(t *testing.T, h *fileExplorerHandler, seq string) {
+func sendExplorerKeys(
+	t *testing.T, h interface{ Handle(term.Event) (bool, bool) }, seq string,
+) {
 	t.Helper()
 	keys, err := term.ParseKeys(seq)
 	require.NoError(t, err)
@@ -1198,6 +1248,8 @@ type testFileExplorerHost struct {
 	focus       browser.Window
 	opened      []workspaceapi.URI
 	lastWidth   int
+	widthCalls  int
+	rejectWidth bool
 	errs        []error
 	promptCalls int
 	frame       bool
@@ -1209,6 +1261,10 @@ func (h *testFileExplorerHost) Prompt(message string, options []string, bindings
 }
 
 func (h *testFileExplorerHost) SetWindowDefaultWidth(win browser.Window, width int) bool {
+	h.widthCalls++
+	if h.rejectWidth {
+		return false
+	}
 	h.lastWidth = width
 	return true
 }
@@ -1358,6 +1414,10 @@ func (m *explorerMockFS) Stat(string) (os.FileInfo, error) {
 }
 
 func (m *explorerMockFS) MkdirAll(string, os.FileMode) error {
+	panic("not implemented")
+}
+
+func (m *explorerMockFS) Rename(string, string) error {
 	panic("not implemented")
 }
 

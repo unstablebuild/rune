@@ -454,6 +454,94 @@ func TestFileExplorerOpenFile(t *testing.T) {
 	t.Fatalf("expected alpha.go to be opened in a tab")
 }
 
+func TestFileExplorerPreservesWindowSize(t *testing.T) {
+	actions := []struct {
+		name string
+		act  func(t *testing.T, b testEx)
+	}{
+		{"navigate", func(t *testing.T, b testEx) {
+			for i, key := range "jk" {
+				_, handled := b.Handle(term.Event{Type: term.EventKey, Ch: key})
+				require.True(t, handled)
+				require.Equal(t, 1-i, b.fileExplorerHandler.ed.CursorAtScroll().Y)
+			}
+		}},
+		{"open file", func(t *testing.T, b testEx) {
+			_, handled := b.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+			require.True(t, handled)
+			uri, err := workspaceapi.ParseURI("memory:///alpha.go")
+			require.NoError(t, err)
+			_, opened := b.comp.Resource(uri)
+			require.True(t, opened)
+		}},
+		{"click file", func(t *testing.T, b testEx) {
+			for _, key := range []term.Key{term.MouseLeft, term.MouseRelease} {
+				_, handled := b.fileExplorerHandler.Handle(term.Event{Type: term.EventMouse, Key: key})
+				require.True(t, handled)
+			}
+			uri, err := workspaceapi.ParseURI("memory:///alpha.go")
+			require.NoError(t, err)
+			_, opened := b.comp.Resource(uri)
+			require.True(t, opened)
+		}},
+		{"refresh", func(t *testing.T, b testEx) {
+			b.fileExplorerHandler.refreshTree()
+		}},
+	}
+	for _, resize := range []struct {
+		dimension string
+		direction string
+	}{
+		{"width", "decrease"},
+		{"width", "increase"},
+		{"height", "decrease"},
+		{"height", "increase"},
+	} {
+		for _, action := range actions {
+			t.Run(resize.direction+" "+resize.dimension+"/"+action.name, func(t *testing.T) {
+				uri, err := workspaceapi.ParseURI("memory:///")
+				require.NoError(t, err)
+				scheme, err := workspace.NewMemoryScheme(context.Background(), config.NopConfig(), uri)
+				require.NoError(t, err)
+				touchTestFile(t, scheme, "alpha.go")
+				touchTestFile(t, scheme, "beta.go")
+
+				ed := vi.Editor(vi.WithWorkspaceCommandRegistry(uri, texttest.NopWorkspaceRegistry()))
+				b := newExForTestingWithWorkspace(t, workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule),
+					ed, vte.DefaultConfig(), nopPublishEvent, clipboard.NewInMemory())
+				defer b.Close()
+				b.Resize(100, 30)
+				require.NoError(t, b.fexplorer(context.Background()))
+				win := b.fileExplorerWin
+				if resize.dimension == "height" {
+					require.NoError(t, b.dispatchCommand("windowsplit", "down"))
+					_, err = b.comp.SetFocus(win)
+					require.NoError(t, err)
+				}
+				b.Draw(term.NewStringWriter(100, 30))
+				initialSize := term.Coordinates{X: win.Width(), Y: win.Height()}
+
+				require.NoError(t, b.windowresize(context.Background(), resize.direction, resize.dimension))
+				b.Draw(term.NewStringWriter(100, 30))
+				resized := term.Coordinates{X: win.Width(), Y: win.Height()}
+				require.NotEqual(t, initialSize, resized)
+
+				action.act(t, b)
+				b.Draw(term.NewStringWriter(100, 30))
+				require.Equal(t, resized, term.Coordinates{X: win.Width(), Y: win.Height()})
+
+				require.NoError(t, b.windowresize(context.Background(), "reset"))
+				b.Draw(term.NewStringWriter(100, 30))
+				require.Equal(t, initialSize, term.Coordinates{X: win.Width(), Y: win.Height()})
+
+				sendExplorerKeys(t, b.fileExplorerHandler, "A"+strings.Repeat("x", initialSize.X)+"<esc>")
+				b.Draw(term.NewStringWriter(100, 30))
+				require.Greater(t, win.Width(), initialSize.X, "editing a longer name must still resize the window")
+			})
+		}
+	}
+}
+
 func TestFileExplorerToggleTwice(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///")
 	require.NoError(t, err)
@@ -4523,6 +4611,8 @@ func TestCommandPromptUsesSharedStoragePartition(t *testing.T) {
 func TestExRestyle(t *testing.T) {
 	// Nothing is on disk at uri, so only a reloaded image can draw.
 	const uri = "file:///nonexistent/hud/frame.png"
+	const notificationURI = "file:///nonexistent/hud/notification.png"
+	const tabURI = "file:///nonexistent/hud/tab.png"
 	wmCfg := thandler.DefaultWindowManagerConfig()
 	wmCfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
 	wmCfg.Interrupter = term.NopInterrupter()
@@ -4530,33 +4620,56 @@ func TestExRestyle(t *testing.T) {
 	t.Cleanup(func() { _ = b.Close() })
 	unlock := b.lock()
 	defer unlock()
-	b.ex.promptFrameGraphics()
+	b.ex.frameGraphics()
 
 	cfg := ideConfig{cfg: map[string]any{
-		"browser": map[string]any{"window_manager": map[string]any{
-			"frame_charset": map[string]any{
-				"topleft": "╭", "graphics": map[string]any{"topleft": uri},
+		"browser": map[string]any{
+			"window_manager": map[string]any{
+				"frame_charset": map[string]any{
+					"topleft": "╭", "graphics": map[string]any{"topleft": uri},
+				},
 			},
-		}},
+			"focus_tab_highlight_char": "=",
+			"tab_images": map[string]any{"focus": map[string]any{
+				"left": tabURI, "middle": tabURI, "right": tabURI,
+			}},
+		},
 		"command": map[string]any{
 			"frame_charset":     map[string]any{"topright": "╮"},
 			"separator_charset": map[string]any{"left": "├"},
 		},
+		"editor": map[string]any{"status_bar": map[string]any{
+			"layout": "[{{ .Status }}]",
+		}},
+		"notifications": map[string]any{
+			"frame_charset": map[string]any{
+				"topleft":  "╓",
+				"graphics": map[string]any{"topleft": notificationURI, "mode": "overlay"},
+			},
+		},
 	}, errors: map[string]error{}}
 	style := cfg.hudStyle()
 	require.Empty(t, cfg.errors)
+	b.ex.statusBars = text.NewStatusBarStyles(text.StatusBarStyle{})
 
-	b.ex.restyle(style, map[string]image.Image{uri: image.NewRGBA(image.Rect(0, 0, 1, 1))})
+	b.ex.restyle(style, map[string]image.Image{
+		uri:             image.NewRGBA(image.Rect(0, 0, 1, 1)),
+		notificationURI: image.NewRGBA(image.Rect(0, 0, 1, 1)),
+		tabURI:          image.NewRGBA(image.Rect(0, 0, 1, 1)),
+	}, nil)
 
 	assert.Equal(t, '╭', b.ex.config.FrameCharSet.TopLeft)
+	assert.Equal(t, '=', b.ex.config.FocusTabHighlightChar)
+	assert.Equal(t, style.browser.Tabs.Images, b.ex.config.TabImages)
 	assert.Equal(t, style.commandPromptFrame, b.ex.commandPromptCfg.frameCharSet)
 	assert.Equal(t, '├', b.ex.commandPromptCfg.separator.Left)
+	assert.Equal(t, style.statusBar, b.ex.statusBars.Current())
 	frame, _ := b.ex.promptFrameCharSets()
 	assert.Equal(t, '╮', frame.TopRight)
 	for name, g := range map[string]*tcomponent.FrameGraphics{
 		"browser":        b.ex.comp.Browser().FrameGraphics(),
 		"command":        b.ex.cmdV.C.FrameGraphics(),
-		"command prompt": b.ex.promptGraphics,
+		"command prompt": b.ex.graphics,
 	} {
 		require.NotNil(t, g, name)
 		img := g.Image(uri)
@@ -4566,6 +4679,34 @@ func TestExRestyle(t *testing.T) {
 		img.Draw(w)
 		assert.Len(t, w.images, 1, "%s draws the reloaded image at once", name)
 	}
+
+	const width, height = 40, 10
+	b.Resize(width, height)
+
+	tab := b.ex.comp.Browser().NewTab(workspaceapi.URI{}, 'x', "tab", browsertest.NewTestHandler(), nil)
+	require.NoError(t, b.ex.comp.Browser().Focus().SetContent(tab))
+	tabs := newCoveringImageWriter(width, height)
+	b.ex.comp.Browser().Draw(tabs)
+	require.NoError(t, tabs.Flush())
+	label := strings.Index(strings.Split(tabs.String(), "\n")[1], "x tab")
+	require.GreaterOrEqual(t, label, 0, "the tab bar draws the tab")
+	assert.True(t, tabs.images[term.Coordinates{X: label + 1, Y: 1}],
+		"the tab bar draws the reloaded image under the tab at once")
+
+	b.ex.container.Notify(notifications.LevelInfo, "hi")
+	w := newCoveringImageWriter(width, height)
+	b.ex.container.Draw(w)
+	require.NoError(t, w.Flush())
+	var corner []term.Coordinates
+	for y, row := range strings.Split(w.String(), "\n") {
+		for x, ch := range []rune(row) {
+			if ch == '╓' {
+				corner = append(corner, term.Coordinates{X: x, Y: y})
+			}
+		}
+	}
+	require.Len(t, corner, 1, "the notification draws with the restyled frame")
+	assert.True(t, w.images[corner[0]], "the notification draws the reloaded image over its corner")
 }
 
 func TestCommandPromptHasNoWindowBar(t *testing.T) {
@@ -5964,8 +6105,8 @@ func TestExUsesSharedIDEStorage(t *testing.T) {
 	terminals := storage.partitions[idehistory.TerminalStatePartition]
 	require.NotNil(t, terminals)
 	// So do the command prompt's frame images.
-	ex.promptFrameGraphics()
-	ex.promptFrameGraphics()
+	ex.frameGraphics()
+	ex.frameGraphics()
 	require.Equal(t, 2, storage.partitionCalls)
 	frameImages := storage.partitions[frameImagesPartition]
 	require.NotNil(t, frameImages)
@@ -7162,6 +7303,55 @@ func TestOpenURLPluginCommandQuotesURL(t *testing.T) {
 			argv, err := shell.Fields(line[0], nil)
 			require.NoError(t, err, "the URL must reach the shell as data: %s", line[0])
 			assert.Equal(t, tc.want, argv)
+		})
+	}
+}
+
+func TestOpenURLTerminalCommandGetsURLAsOneArgument(t *testing.T) {
+	const raw = "https://auth.example.com/authorize?response_type=code&state=a;b&c=$(id)"
+	const inert = "https://auth.example.com/authorize?response_type=code&state=a;b&c=%24(id)"
+	link, err := url.Parse(raw)
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name    string
+		command string
+		aliases map[string]text.CommandAlias
+	}{
+		{name: "terminal command", command: "terminalnewtab terminal-browser $URL"},
+		{
+			name:    "through an alias",
+			command: "browser $URL",
+			aliases: map[string]text.CommandAlias{
+				"browser": {Commands: []string{"terminalnewtab terminal-browser $1"}},
+			},
+		},
+		{
+			name:    "alias appends the URL",
+			command: "browser $URL",
+			aliases: map[string]text.CommandAlias{
+				"browser": {Commands: []string{"terminalnewtab terminal-browser"}},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newExForAliasRun(t, tc.aliases)
+			defer b.Close()
+			b.Resize(100, 100)
+			var got []string
+			b.ex.newEmulatorHandler = func(args []string) (vtereservoir.VTE, error) {
+				got = append([]string(nil), args...)
+				return newTestVte(), nil
+			}
+			b.ex.metaOpenURL = metaOpenURLConfig{command: tc.command}
+
+			require.NoError(t, b.ex.openURL(link))
+			b.ex.waitAsyncVTELoads()
+			b.flushScheduled()
+
+			// The terminal joins its args into the line it parses.
+			argv, err := shell.Fields(strings.Join(got, " "), nil)
+			require.NoError(t, err, "args: %q", got)
+			assert.Equal(t, []string{"terminal-browser", inert}, argv)
 		})
 	}
 }

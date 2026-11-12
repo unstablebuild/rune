@@ -25,6 +25,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
+	"unstable.build/rune/internal/term/shellplan"
 )
 
 // recordingTool is a base agent.Tool that records the arguments passed to it.
@@ -46,6 +48,30 @@ func (t *recordingTool) Execute(_ context.Context, arguments string) agent.ToolR
 func (t *recordingTool) Summary(arguments string) string { return arguments }
 
 func (t *recordingTool) NeedsDeterministicOrder() bool { return false }
+
+// policyBash is a base bash tool that rejects the commands its policy does
+// not allow, as agentools' bash does.
+type policyBash struct {
+	recordingTool
+	policy toolpolicy.Policy
+}
+
+func (t *policyBash) WithPolicy(p toolpolicy.Policy) agent.Tool {
+	return &policyBash{recordingTool: recordingTool{name: t.name, result: t.result}, policy: p}
+}
+
+func (t *policyBash) Execute(ctx context.Context, arguments string) agent.ToolResult {
+	var args struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return agent.ToolResult{Content: err.Error(), IsError: true}
+	}
+	if err := t.policy.CheckCommand(shellplan.Command("bash", []string{"-c", args.Command}, nil, nil)); err != nil {
+		return agent.ToolResult{Content: err.Error(), IsError: true}
+	}
+	return t.recordingTool.Execute(ctx, arguments)
+}
 
 func decode(t *testing.T, s string) map[string]any {
 	t.Helper()
@@ -72,6 +98,29 @@ func TestRunCommandTranslatesArgs(t *testing.T) {
 	assert.NotContains(t, got, "description")
 
 	assert.Equal(t, "go test ./...", tool.Summary(`{"CommandLine":"go test ./...","Cwd":"/"}`))
+}
+
+func TestRunCommandWithPolicy(t *testing.T) {
+	r := agent.NewRegistry(&policyBash{recordingTool: recordingTool{name: "bash", result: agent.ToolResult{Content: "ok"}}})
+	Register(r)
+	p, err := toolpolicy.Parse([]string{"bash(git log *)"}, nil)
+	require.NoError(t, err)
+
+	tool, ok := r.WithPolicy(p).Get("run_command", LLMProvider)
+	require.True(t, ok)
+
+	assert.Contains(t, tool.Definition().Function.Description,
+		"Commands are restricted: every program a command runs must match one of `git log *`.")
+	denied := tool.Execute(context.Background(), `{"CommandLine":"git push","Cwd":"/repo"}`)
+	assert.True(t, denied.IsError)
+	assert.Contains(t, denied.Content, `"git push" matches no allowed pattern`)
+	allowed := tool.Execute(context.Background(), `{"CommandLine":"git log -1","Cwd":"/repo"}`)
+	assert.False(t, allowed.IsError, allowed.Content)
+	assert.Equal(t, "ok", allowed.Content)
+
+	unrestricted, ok := r.Get("run_command", LLMProvider)
+	require.True(t, ok)
+	assert.NotContains(t, unrestricted.Definition().Function.Description, "Commands are restricted")
 }
 
 func TestGrepSearchEscapesLiteralQuery(t *testing.T) {

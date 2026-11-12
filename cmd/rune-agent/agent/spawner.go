@@ -21,6 +21,7 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 )
 
 // Spawner abstracts the ability to run sub-agents.
@@ -40,10 +41,19 @@ type RunRequest struct {
 	AdditionalContext string
 	Label             string
 	AgentID           string
-	Model             string
-	AllowedTools      []string // if non-empty, sub-agent receives only these tools
-	SystemPrompt      string   // if non-empty, overrides the agent definition's prompt
-	Cleanup           string   // "delete" or "keep"
+	// Skill, when set, names the agent skill the sub-agent runs, which
+	// gives it the skill's body as system prompt and the skill's tool
+	// policy. Unlike an AgentID, it never names an agent definition, so
+	// that one sharing the skill's name cannot run without the skill's
+	// restrictions. AgentID is then ignored.
+	Skill string
+	Model string
+	// Tools restricts the tools of the sub-agent. It is combined with the
+	// restrictions of the caller, which the context of Run carries (see
+	// WithToolPolicy), so a sub-agent never gets more than its parent.
+	Tools        toolpolicy.Policy
+	SystemPrompt string // if non-empty, overrides the agent definition's prompt
+	Cleanup      string // "delete" or "keep"
 
 	// InitialMessages, when non-empty, are prepended to the child
 	// dialogue (after the child agent's own system prompt) before the

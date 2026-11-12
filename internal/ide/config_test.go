@@ -49,8 +49,10 @@ import (
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/imagecomp"
 	"unstable.build/rune/internal/component/notifications"
+	"unstable.build/rune/internal/component/template"
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
+	"unstable.build/rune/internal/ide/ideacp"
 	"unstable.build/rune/internal/ide/idedebug"
 	"unstable.build/rune/internal/ide/idelsp"
 	"unstable.build/rune/internal/ide/idestatus"
@@ -475,7 +477,7 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 
 	actualNotifications := cfg.notificationsConfig()
 	expectedNotifications := defaultNotificationsConfig()
-	setNotificationsColor(&expectedNotifications)
+	setNotificationsColor(&expectedNotifications.Style)
 	assert.NotNil(t, actualNotifications.Interrupter)
 	actualNotifications.Interrupter = nil
 	expectedNotifications.Interrupter = nil
@@ -499,6 +501,8 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 	assert.NotNil(t, vteConfig.ScheduleNextTick)
 	vteConfig.ScheduleNextTick = nil
 	vteConfig.Sounds = nil
+	assert.Equal(t, sounds.Warning, *vteConfig.BellSound.Load())
+	vteConfig.BellSound = nil
 	assertTerminalSearchConfig(t, &vteConfig, cfg.standardResultAttr(), selectAttr)
 	assert.Equal(t, vte.Config{
 		Clipboard:                cfg.clipboard(),
@@ -509,7 +513,6 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 		ClipboardRegister:        clipboard.DefaultRegisterID,
 		MaxLines:                 10_000,
 		MinWidth:                 defaultMinWidth,
-		BellSound:                sounds.Warning,
 	}, vteConfig)
 	assert.True(t, cfg.tabStatusEnabled())
 	assert.Equal(t, browser.DefaultTabStatusConfig(), cfg.tabStatusConfig())
@@ -700,6 +703,142 @@ func TestStatusInboxStyle(t *testing.T) {
 			cfg:     map[string]any{"program_status": map[string]any{"progress_bar": "界界界界"}},
 			want:    def,
 			wantErr: []string{"program_status.progress_bar"},
+		},
+		{
+			name: "images",
+			cfg: map[string]any{"program_status": map[string]any{
+				"images": map[string]any{
+					"idle":     map[string]any{"middle": "file:///inbox/idle.png"},
+					"selected": map[string]any{"left": "file:///inbox/l.png", "right": "file:///inbox/r.png"},
+					"hover":    map[string]any{"middle": "file:///inbox/hover.png"},
+					"outset":   map[string]any{"top": 1, "bottom": 2, "sides": 1},
+				},
+				"marker_graphics": map[string]any{
+					"top": "file:///marker/t.png", "vertical": "file:///marker/v.png", "bottom": "file:///marker/b.png",
+				},
+				"progress_bar_graphics": map[string]any{
+					"left": "file:///bar/l.png", "filled": "file:///bar/f.png",
+					"empty": "file:///bar/e.png", "right": "file:///bar/r.png",
+				},
+			}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Images = browser.PromptImages{
+					Idle:     browser.PromptButtonImage{Middle: "file:///inbox/idle.png"},
+					Selected: browser.PromptButtonImage{Left: "file:///inbox/l.png", Right: "file:///inbox/r.png"},
+					Hover:    browser.PromptButtonImage{Middle: "file:///inbox/hover.png"},
+					Outset:   component.ButtonOutset{Top: 1, Bottom: 2, Sides: 1},
+				}
+				s.MarkerGraphics = tcomponent.LineGraphics{
+					Start: "file:///marker/t.png", Middle: "file:///marker/v.png", End: "file:///marker/b.png",
+				}
+				s.ProgressBarGraphics = idestatus.ProgressBarGraphics{
+					Left: "file:///bar/l.png", Filled: "file:///bar/f.png",
+					Empty: "file:///bar/e.png", Right: "file:///bar/r.png",
+				}
+				return s
+			}(),
+		},
+		{
+			name: "only selected item images",
+			cfg: map[string]any{"program_status": map[string]any{"images": map[string]any{
+				"selected": map[string]any{"middle": "file:///inbox/selected.png"},
+			}}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Images = browser.PromptImages{
+					Selected: browser.PromptButtonImage{Middle: "file:///inbox/selected.png"},
+				}
+				return s
+			}(),
+		},
+		{
+			name: "invalid images draw none of their kind",
+			cfg: map[string]any{"program_status": map[string]any{
+				"images":                map[string]any{"idle": map[string]any{"middle": "ftp://example.com/idle.png"}},
+				"marker_graphics":       map[string]any{"vertical": "ftp://example.com/v.png"},
+				"progress_bar_graphics": map[string]any{"filled": "ftp://example.com/f.png"},
+			}},
+			want: def,
+			wantErr: []string{
+				"program_status.images", "program_status.marker_graphics",
+				"program_status.progress_bar_graphics",
+			},
+		},
+		{
+			name: "divider charset",
+			cfg: map[string]any{"program_status": map[string]any{"divider_charset": map[string]any{
+				"top": "╦", "vertical_top": "║", "vertical": "┃", "bottom": "╩",
+				"graphics": map[string]any{
+					"mode": "overlay", "top": "file:///divider/t.png",
+					"vertical": "file:///divider/v.png", "bottom": "file:///divider/b.png",
+					"outset": map[string]any{"left": 1, "right": 2, "inward": 3},
+				},
+			}}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Divider = tcomponent.DividerCharSet{
+					Top: '╦', VerticalTop: '║', Vertical: '┃', VerticalBottom: '┃', Bottom: '╩',
+					Graphics: tcomponent.DividerGraphics{
+						Top: "file:///divider/t.png", Vertical: "file:///divider/v.png",
+						Bottom: "file:///divider/b.png", Overlay: true,
+						Outset: tcomponent.DividerOutset{Left: 1, Right: 2, Inward: 3},
+					},
+				}
+				return s
+			}(),
+		},
+		{
+			name: "the divider takes the window frame's left edge",
+			cfg: map[string]any{"browser": map[string]any{"window_manager": map[string]any{
+				"frame_charset": map[string]any{
+					"verticalleft": "▏",
+					"graphics":     map[string]any{"mode": "overlay", "verticalleft": "file:///frame/left.png"},
+				},
+			}}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Divider.VerticalTop, s.Divider.Vertical, s.Divider.VerticalBottom = '▏', '▏', '▏'
+				s.Divider.Graphics = tcomponent.DividerGraphics{Vertical: "file:///frame/left.png", Overlay: true}
+				return s
+			}(),
+		},
+		{
+			name: "the divider clears the image it takes from the frame",
+			cfg: map[string]any{
+				"browser": map[string]any{"window_manager": map[string]any{"frame_charset": map[string]any{
+					"graphics": map[string]any{"verticalleft": "file:///frame/left.png"},
+				}}},
+				"program_status": map[string]any{"divider_charset": map[string]any{
+					"graphics": map[string]any{"vertical": ""},
+				}},
+			},
+			want: def,
+		},
+		{
+			name: "an invalid divider image draws none of the divider's images",
+			cfg: map[string]any{"program_status": map[string]any{"divider_charset": map[string]any{
+				"bottom":   "╩",
+				"graphics": map[string]any{"top": "file:///divider/t.png", "mode": "sideways"},
+			}}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.Divider.Bottom = '╩'
+				return s
+			}(),
+			wantErr: []string{"program_status.divider_charset"},
+		},
+		{
+			name: "invalid divider characters keep their defaults",
+			cfg: map[string]any{"program_status": map[string]any{"divider_charset": map[string]any{
+				"top": true, "vertical": []any{"│"},
+				"graphics": map[string]any{"outset": map[string]any{"left": -1}},
+			}}},
+			want: def,
+			wantErr: []string{
+				"program_status.divider_charset.top", "program_status.divider_charset.vertical",
+				"program_status.divider_charset.graphics.outset.left",
+			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1135,7 +1274,7 @@ func TestTerminalBellSound(t *testing.T) {
 				m["terminal"] = tc.terminal
 			}
 			cfg := &ideConfig{cfg: m, errors: map[string]error{}}
-			assert.Equal(t, tc.want, cfg.terminalConfig().BellSound)
+			assert.Equal(t, tc.want, *cfg.terminalConfig().BellSound.Load())
 			assert.Empty(t, cfg.errors)
 		})
 	}
@@ -1151,7 +1290,11 @@ func TestValidateSounds(t *testing.T) {
 		wantStatus any
 		// wantQuickMenu is what is left of gui.quick_menu_sounds.
 		wantQuickMenu any
-		wantErrs      []string
+		// wantBrowserTabs and wantWorkspaceTabs are what is left of
+		// browser.tab_sounds and workspace.tab_sounds.
+		wantBrowserTabs   any
+		wantWorkspaceTabs any
+		wantErrs          []string
 	}{
 		{
 			name:     "no sounds and a reserved bell",
@@ -1261,6 +1404,46 @@ func TestValidateSounds(t *testing.T) {
 			wantQuickMenu: nil,
 			wantErrs:      []string{`'gui.quick_menu_sounds' must map hover and click`},
 		},
+		{
+			name: "tab sounds name events and known sounds",
+			cfg: map[string]any{
+				"sounds":    map[string]any{"tick": "/tick.wav"},
+				"browser":   map[string]any{"tab_sounds": map[string]any{"hover": "tick", "click": "info"}},
+				"workspace": map[string]any{"tab_sounds": map[string]any{"click": ""}},
+			},
+			wantSounds:        map[string]any{"tick": "/tick.wav"},
+			wantBrowserTabs:   map[string]any{"hover": "tick", "click": "info"},
+			wantWorkspaceTabs: map[string]any{"click": ""},
+		},
+		{
+			name: "invalid tab sounds are dropped",
+			cfg: map[string]any{
+				"browser": map[string]any{"tab_sounds": map[string]any{
+					"hover": "tikc", "click": "info", "press": "info",
+				}},
+				"workspace": map[string]any{"tab_sounds": map[string]any{
+					"hover": "info", "click": true,
+				}},
+			},
+			wantBrowserTabs:   map[string]any{"click": "info"},
+			wantWorkspaceTabs: map[string]any{"hover": "info"},
+			wantErrs: []string{
+				`'browser.tab_sounds.hover' names unknown sound "tikc"`,
+				`'browser.tab_sounds.press': unknown event`,
+				`'workspace.tab_sounds.click' must be a sound name or "", got bool`,
+			},
+		},
+		{
+			name: "tab sounds is not a map",
+			cfg: map[string]any{
+				"browser":   map[string]any{"tab_sounds": "info"},
+				"workspace": map[string]any{"tab_sounds": []any{"info"}},
+			},
+			wantErrs: []string{
+				`'browser.tab_sounds' must map hover and click`,
+				`'workspace.tab_sounds' must map hover and click`,
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateSounds(tc.cfg)
@@ -1283,6 +1466,12 @@ func TestValidateSounds(t *testing.T) {
 			}
 			if gui, ok := tc.cfg["gui"].(map[string]any); ok {
 				assert.Equal(t, tc.wantQuickMenu, gui["quick_menu_sounds"])
+			}
+			if b, ok := tc.cfg["browser"].(map[string]any); ok {
+				assert.Equal(t, tc.wantBrowserTabs, b["tab_sounds"])
+			}
+			if ws, ok := tc.cfg["workspace"].(map[string]any); ok {
+				assert.Equal(t, tc.wantWorkspaceTabs, ws["tab_sounds"])
 			}
 		})
 	}
@@ -1554,6 +1743,87 @@ func TestDebuggerConfigsConnectCommand(t *testing.T) {
 		assert.NotContains(t, got, "python")
 		assert.Contains(t, c.errors, "debugger.python.command")
 	})
+}
+
+func TestACPConfigs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		cfg       map[string]any
+		want      map[string]ideacp.AgentConfig
+		wantError string
+	}{
+		{
+			name: "absent block",
+			cfg:  map[string]any{},
+			want: map[string]ideacp.AgentConfig{},
+		},
+		{
+			name: "command args and env",
+			cfg: map[string]any{"acp": map[string]any{"agents": map[string]any{
+				"claude": map[string]any{
+					"command": "claude-agent-acp",
+					"args":    []any{"--verbose"},
+					"env":     map[string]any{"DEBUG": "1"},
+				},
+				"rune-agent": map[string]any{"command": "rune-agent"},
+			}}},
+			want: map[string]ideacp.AgentConfig{
+				"claude": {
+					Command: "claude-agent-acp",
+					Args:    []string{"--verbose"},
+					Env:     map[string]string{"DEBUG": "1"},
+				},
+				"rune-agent": {Command: "rune-agent"},
+			},
+		},
+		{
+			name: "missing command",
+			cfg: map[string]any{"acp": map[string]any{"agents": map[string]any{
+				"x": map[string]any{"args": []any{"a"}},
+			}}},
+			want:      map[string]ideacp.AgentConfig{},
+			wantError: "acp.agents.x.command",
+		},
+		{
+			name: "blank command",
+			cfg: map[string]any{"acp": map[string]any{"agents": map[string]any{
+				"x": map[string]any{"command": "  "},
+			}}},
+			want:      map[string]ideacp.AgentConfig{},
+			wantError: "acp.agents.x.command",
+		},
+		{
+			name: "non-string arg",
+			cfg: map[string]any{"acp": map[string]any{"agents": map[string]any{
+				"x": map[string]any{"command": "x", "args": []any{"a", 1}},
+			}}},
+			want:      map[string]ideacp.AgentConfig{},
+			wantError: "acp.agents.x.args.1",
+		},
+		{
+			name: "non-string env",
+			cfg: map[string]any{"acp": map[string]any{"agents": map[string]any{
+				"x": map[string]any{"command": "x", "env": map[string]any{"N": 1}},
+			}}},
+			want:      map[string]ideacp.AgentConfig{},
+			wantError: "acp.agents.x.env.N",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := ideConfig{cfg: tt.cfg, errors: map[string]error{}}
+			got := c.acpConfigs()
+			assert.Equal(t, tt.want, got.Agents)
+			if tt.wantError == "" {
+				assert.Empty(t, c.errors)
+				return
+			}
+			assert.Contains(t, c.errors, tt.wantError)
+		})
+	}
 }
 
 func TestHighlightTabCharEmptyDisables(t *testing.T) {
@@ -2050,6 +2320,8 @@ func TestConfigSetting(t *testing.T) {
 	vteConfig.ScheduleNextTick = nil
 	assert.NotNil(t, vteConfig.Sounds)
 	vteConfig.Sounds = nil
+	assert.Equal(t, sounds.Info, *vteConfig.BellSound.Load())
+	vteConfig.BellSound = nil
 	assertTerminalSearchConfig(t, &vteConfig, cfg.standardResultAttr(),
 		term.Attributes{Fg: term.ColorGreen, Bg: term.ColorTeal})
 	expectedEmulatorConfig := vte.Config{
@@ -2064,7 +2336,6 @@ func TestConfigSetting(t *testing.T) {
 		DynamicTabName:           true,
 		MaxLines:                 999,
 		Bell:                     []byte{0x07},
-		BellSound:                sounds.Info,
 		MinWidth:                 defaultMinWidth,
 	}
 	assert.Equal(t, expectedEmulatorConfig, vteConfig)
@@ -3000,6 +3271,8 @@ func TestConfigHUDStyle(t *testing.T) {
 		cfg      map[string]any
 		check    func(t *testing.T, s hudStyle)
 		wantURIs []string
+		// wantErr is the key of the only config error.
+		wantErr string
 	}{
 		{
 			name: "no HUD keys draw no images",
@@ -3008,6 +3281,8 @@ func TestConfigHUDStyle(t *testing.T) {
 				def := handler.DefaultWindowManagerConfig()
 				assert.Equal(t, def.FrameCharSet, s.browser.WindowManager.FrameCharSet)
 				assert.Nil(t, s.commandPromptFrame)
+				assert.Equal(t, text.StatusBarStyle{}, s.statusBar)
+				assert.Empty(t, s.statusBarImages())
 			},
 		},
 		{
@@ -3122,6 +3397,197 @@ func TestConfigHUDStyle(t *testing.T) {
 			wantURIs: []string{"file:///btn/left.png", "file:///btn/middle.png"},
 		},
 		{
+			name: "tab style",
+			cfg: map[string]any{"browser": map[string]any{
+				"focus_tab_attr":           map[string]any{"fg": "green"},
+				"non_focus_tab_attr":       map[string]any{"fg": "red"},
+				"focus_tab_icon_attr":      map[string]any{"fg": "yellow"},
+				"non_focus_tab_icon_attr":  map[string]any{"fg": "blue"},
+				"focus_tab_highlight_attr": map[string]any{"fg": "purple"},
+				"focus_tab_highlight_char": "▔",
+				"hover_tab_attr":           map[string]any{"fg": "white", "flags": "bold"},
+				"tab_images": map[string]any{
+					"focus":     map[string]any{"middle": "file:///tab/focus.png"},
+					"non_focus": map[string]any{"left": "file:///tab/l.png", "right": "file:///tab/r.png"},
+					"hover":     map[string]any{"middle": "file:///tab/hover.png"},
+					"pressed":   map[string]any{"middle": "file:///tab/pressed.png"},
+					"outset":    map[string]any{"sides": 1},
+				},
+				"focus_tab_highlight_graphics": map[string]any{
+					"mode": "overlay", "horizontal": "file:///tab/hl.png", "right": "file:///tab/r.png",
+				},
+				"tab_sounds": map[string]any{"hover": "tick", "click": "info"},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, browser.TabStyle{
+					FocusTabAttr:          term.Attributes{Fg: term.ColorGreen},
+					NonFocusTabAttr:       term.Attributes{Fg: term.ColorRed},
+					FocusTabIconAttr:      term.Attributes{Fg: term.ColorYellow},
+					NonFocusTabIconAttr:   term.Attributes{Fg: term.ColorBlue},
+					FocusTabHighlightAttr: term.Attributes{Fg: term.ColorPurple},
+					FocusTabHighlightChar: '▔',
+					HoverTabAttr:          term.Attributes{Fg: term.ColorWhite, Attrs: term.AttrBold},
+					Images: browser.PromptImages{
+						Idle:     browser.PromptButtonImage{Left: "file:///tab/l.png", Right: "file:///tab/r.png"},
+						Selected: browser.PromptButtonImage{Middle: "file:///tab/focus.png"},
+						Hover:    browser.PromptButtonImage{Middle: "file:///tab/hover.png"},
+						Pressed:  browser.PromptButtonImage{Middle: "file:///tab/pressed.png"},
+						Outset:   component.ButtonOutset{Sides: 1},
+					},
+					HighlightGraphics: tcomponent.LineGraphics{
+						Middle: "file:///tab/hl.png", End: "file:///tab/r.png", Overlay: true,
+					},
+					Sounds: handler.TabSounds{Hover: "tick", Click: "info"},
+				}, s.browser.Tabs)
+			},
+			wantURIs: []string{
+				"file:///tab/focus.png", "file:///tab/hl.png", "file:///tab/hover.png",
+				"file:///tab/l.png", "file:///tab/pressed.png", "file:///tab/r.png",
+			},
+		},
+		{
+			name: "only focus tab images",
+			cfg: map[string]any{"browser": map[string]any{"tab_images": map[string]any{
+				"focus": map[string]any{"middle": "file:///tab/focus.png"},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, browser.PromptImages{
+					Selected: browser.PromptButtonImage{Middle: "file:///tab/focus.png"},
+				}, s.browser.Tabs.Images)
+			},
+			wantURIs: []string{"file:///tab/focus.png"},
+		},
+		{
+			name: "an invalid tab image draws no tab images",
+			cfg: map[string]any{"browser": map[string]any{"tab_images": map[string]any{
+				"focus":     map[string]any{"middle": "ftp://example.com/focus.png"},
+				"non_focus": map[string]any{"middle": "file:///tab/idle.png"},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.True(t, s.browser.Tabs.Images.Empty())
+			},
+			wantErr: "browser.tab_images",
+		},
+		{
+			name: "an invalid tab highlight image draws no highlight images",
+			cfg: map[string]any{"browser": map[string]any{"focus_tab_highlight_graphics": map[string]any{
+				"horizontal": "file:///tab/hl.png", "mode": "sideways",
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.True(t, s.browser.Tabs.HighlightGraphics.Empty())
+			},
+			wantErr: "browser.focus_tab_highlight_graphics",
+		},
+		{
+			name: "workspace bar style",
+			cfg: map[string]any{
+				"browser": map[string]any{
+					"focus_tab_attr":           map[string]any{"fg": "green"},
+					"non_focus_tab_attr":       map[string]any{"fg": "red"},
+					"focus_tab_icon_attr":      map[string]any{"fg": "yellow"},
+					"non_focus_tab_icon_attr":  map[string]any{"fg": "blue"},
+					"focus_tab_highlight_attr": map[string]any{"fg": "purple"},
+					"focus_tab_highlight_char": "▔",
+					"hover_tab_attr":           map[string]any{"fg": "white"},
+					"tab_images": map[string]any{
+						"focus": map[string]any{"middle": "file:///tab/focus.png"},
+					},
+					"tab_sounds": map[string]any{"click": "info"},
+				},
+				"workspace": map[string]any{
+					"focus_tab_highlight_char": "",
+					"tab_images": map[string]any{
+						"focus":     map[string]any{"middle": "file:///ws/focus.png"},
+						"non_focus": map[string]any{"middle": "file:///ws/idle.png"},
+						"hover":     map[string]any{"middle": "file:///ws/hover.png"},
+						"outset":    map[string]any{"sides": 1},
+					},
+					"focus_tab_highlight_graphics": map[string]any{
+						"left": "file:///ws/hl-l.png", "horizontal": "file:///ws/hl.png",
+					},
+					"tab_sounds": map[string]any{"hover": "tick"},
+				},
+			},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, workspaceBarStyle{
+					focusTabAttr:        term.Attributes{Fg: term.ColorGreen},
+					nonFocusTabAttr:     term.Attributes{Fg: term.ColorRed},
+					focusTabIconAttr:    term.Attributes{Fg: term.ColorYellow},
+					nonFocusTabIconAttr: term.Attributes{Fg: term.ColorBlue},
+					highlightAttr:       term.Attributes{Fg: term.ColorPurple},
+					hoverAttr:           term.Attributes{Fg: term.ColorWhite},
+					images: browser.PromptImages{
+						Idle:     browser.PromptButtonImage{Middle: "file:///ws/idle.png"},
+						Selected: browser.PromptButtonImage{Middle: "file:///ws/focus.png"},
+						Hover:    browser.PromptButtonImage{Middle: "file:///ws/hover.png"},
+						Outset:   component.ButtonOutset{Sides: 1},
+					},
+					highlight: tcomponent.LineGraphics{
+						Start: "file:///ws/hl-l.png", Middle: "file:///ws/hl.png",
+					},
+					sounds: handler.TabSounds{Hover: "tick"},
+				}, s.workspaceBar)
+				assert.Equal(t, '▔', s.browser.Tabs.FocusTabHighlightChar)
+				assert.Equal(t, handler.TabSounds{Click: "info"}, s.browser.Tabs.Sounds)
+			},
+			wantURIs: []string{
+				"file:///tab/focus.png", "file:///ws/focus.png", "file:///ws/hl-l.png",
+				"file:///ws/hl.png", "file:///ws/hover.png", "file:///ws/idle.png",
+			},
+		},
+		{
+			name: "workspace bar without workspace keys",
+			cfg:  map[string]any{},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, browser.DefaultConfig().FocusTabHighlightChar,
+					s.workspaceBar.highlightChar)
+				assert.True(t, s.workspaceBar.images.Empty())
+				assert.True(t, s.workspaceBar.highlight.Empty())
+			},
+		},
+		{
+			name: "an invalid workspace tab image draws no workspace tab images",
+			cfg: map[string]any{"workspace": map[string]any{"tab_images": map[string]any{
+				"focus": map[string]any{"middle": "ftp://example.com/focus.png"},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.True(t, s.workspaceBar.images.Empty())
+			},
+			wantErr: "workspace.tab_images",
+		},
+		{
+			name: "an invalid workspace highlight image draws no workspace highlight images",
+			cfg: map[string]any{"workspace": map[string]any{"focus_tab_highlight_graphics": map[string]any{
+				"horizontal": "file:///ws/hl.png", "mode": "sideways",
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.True(t, s.workspaceBar.highlight.Empty())
+			},
+			wantErr: "workspace.focus_tab_highlight_graphics",
+		},
+		{
+			name: "status inbox",
+			cfg: map[string]any{"program_status": map[string]any{
+				"marker":          "┃",
+				"images":          map[string]any{"idle": map[string]any{"middle": "file:///inbox/idle.png"}},
+				"marker_graphics": map[string]any{"vertical": "file:///inbox/marker.png"},
+				"divider_charset": map[string]any{"graphics": map[string]any{
+					"top": "file:///inbox/top.png", "vertical": "file:///inbox/divider.png",
+				}},
+				"progress_bar_graphics": map[string]any{
+					"filled": "file:///inbox/filled.png", "empty": "file:///inbox/empty.png",
+				},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, '┃', s.statusInbox.Marker)
+				assert.Equal(t, "file:///inbox/idle.png", s.statusInbox.Images.Idle.Middle)
+			},
+			wantURIs: []string{
+				"file:///inbox/divider.png", "file:///inbox/empty.png", "file:///inbox/filled.png",
+				"file:///inbox/idle.png", "file:///inbox/marker.png", "file:///inbox/top.png",
+			},
+		},
+		{
 			name: "wallpaper",
 			cfg: map[string]any{"workspace": map[string]any{
 				"wallpaper_ascii":           "art",
@@ -3141,13 +3607,128 @@ func TestConfigHUDStyle(t *testing.T) {
 				assert.Equal(t, "art", string(drawn))
 			},
 		},
+		{
+			name: "status bar",
+			cfg: map[string]any{"editor": map[string]any{"status_bar": map[string]any{
+				"layout": `[{{ .Status }}]{{ .Image | src "file:///bar/a.png" | ttl "1h" }}` +
+					`{{ .Image | src "file:///bar/b.png" }}`,
+				"background_attr":       map[string]any{"bg": "navy"},
+				"foreground_error_attr": map[string]any{"fg": "red"},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, term.ColorNavy, s.statusBar.BackgroundColor)
+				assert.Equal(t, term.ColorRed, s.statusBar.ErrorColor)
+				require.Len(t, s.statusBar.Layout, 3)
+				assert.Equal(t, "[%s]", s.statusBar.Layout[0].Template)
+				images := s.statusBarImages()
+				require.Len(t, images, 2)
+				assert.Equal(t, "file:///bar/a.png", images[0].URI)
+				assert.Equal(t, time.Hour, images[0].TTL)
+				assert.Equal(t, "file:///bar/b.png", images[1].URI)
+				assert.Equal(t, template.DefaultImageTTL, images[1].TTL)
+			},
+		},
+		{
+			name: "a status bar layout that does not parse",
+			cfg: map[string]any{"editor": map[string]any{"status_bar": map[string]any{
+				"layout": `{{ .Nope }}`,
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Nil(t, s.statusBar.Layout)
+			},
+			wantErr: "editor.status_bar.layout",
+		},
+		{
+			name: "the bell, the command manual and program status sounds",
+			cfg: map[string]any{
+				"terminal": map[string]any{"bell": "ding"},
+				"command":  map[string]any{"show_manual": false},
+				"program_status": map[string]any{"sounds": map[string]any{
+					"working": "tick", "done": "",
+				}},
+			},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, "ding", s.bellSound)
+				assert.False(t, s.commandShowManual)
+				want := idestatus.DefaultNotifyConfig()
+				want.Sounds[programstatus.Working] = "tick"
+				want.Sounds[programstatus.Done] = ""
+				assert.Equal(t, want, s.notifyStatus)
+			},
+		},
+		{
+			name: "a disabled program status notifies nothing",
+			cfg: map[string]any{"terminal": map[string]any{
+				"status": map[string]any{"enabled": false},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, sounds.Warning, s.bellSound)
+				assert.Equal(t, text.DefaultCommandOverlayConfig().ShowManual, s.commandShowManual)
+				assert.Equal(t, idestatus.NotifyConfig{}, s.notifyStatus)
+			},
+		},
+		{
+			name: "notifications",
+			cfg: map[string]any{"notifications": map[string]any{
+				"progress_bar": false,
+				"padding":      2,
+				"attr":         map[string]any{"fg": "green"},
+				"frame_charset": map[string]any{
+					"topleft": "╓",
+					"graphics": map[string]any{
+						"topleft": "file:///noti/tl.png", "bottomright": "file:///noti/br.png",
+					},
+				},
+				"progress_format": map[string]any{
+					"start": "{",
+					"graphics": map[string]any{
+						"mode":   "overlay",
+						"start":  "file:///noti/start.png",
+						"remain": "file:///noti/tl.png",
+					},
+				},
+				// Read once at startup, so not part of the style.
+				"auto_close": "bogus",
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				n := s.notifications
+				assert.False(t, n.ProgressBar)
+				assert.Equal(t, 2, n.Padding)
+				assert.Equal(t, term.ColorGreen, n.Attributes.Fg)
+				assert.Equal(t, '╓', n.FrameCharSet.TopLeft)
+				assert.Equal(t, "file:///noti/tl.png", n.FrameCharSet.Graphics.TopLeft)
+				assert.Equal(t, '{', n.ProgressRunes.Start)
+				assert.Equal(t, notifications.ProgressGraphics{
+					Start: "file:///noti/start.png", Remain: "file:///noti/tl.png", Overlay: true,
+				}, n.ProgressRunes.Graphics)
+			},
+			wantURIs: []string{"file:///noti/br.png", "file:///noti/start.png", "file:///noti/tl.png"},
+		},
+		{
+			name: "an invalid notification progress image keeps the default progress",
+			cfg: map[string]any{"notifications": map[string]any{
+				"progress_format": map[string]any{
+					"start":    "{",
+					"graphics": map[string]any{"start": "ftp://example.com/start.png"},
+				},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, defaultNotificationsConfig().ProgressRunes, s.notifications.ProgressRunes)
+			},
+			wantErr: "notifications.progress_format",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := ideConfig{cfg: tc.cfg, errors: map[string]error{}}
 
 			s := cfg.hudStyle()
-			assert.Empty(t, cfg.errors)
+			if tc.wantErr == "" {
+				assert.Empty(t, cfg.errors)
+			} else {
+				assert.Len(t, cfg.errors, 1)
+				assert.Contains(t, cfg.errors, tc.wantErr)
+			}
 			tc.check(t, s)
 			if tc.wantURIs == nil {
 				assert.Empty(t, s.imageURIs())

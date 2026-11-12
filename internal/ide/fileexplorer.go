@@ -109,6 +109,10 @@ type fileExplorerHandler struct {
 	win    browser.Window
 	target browser.Window
 
+	// syncedWidth is the default width last applied to win, so a sync
+	// that would not change it leaves a manually resized window alone.
+	syncedWidth int
+
 	cfg fileExplorerConfig
 
 	// readOnly refuses every filesystem-mutating edit. Enforced here
@@ -165,6 +169,7 @@ func newFileExplorerHandler(
 
 func (h *fileExplorerHandler) SetWindow(win browser.Window) {
 	h.win = win
+	h.syncedWidth = 0
 }
 
 func (h *fileExplorerHandler) SetTargetWindow(win browser.Window) {
@@ -579,7 +584,7 @@ func (h *fileExplorerHandler) flush() error {
 	if len(cs.Operations) == 0 {
 		return nil
 	}
-	return h.openApplyPrompt(fileexplorercomp.OrderOperations(cs.Operations))
+	return h.openApplyPrompt(cs.Operations)
 }
 
 func (h *fileExplorerHandler) forceFlush() error {
@@ -728,7 +733,12 @@ func (h *fileExplorerHandler) syncWidth() {
 	if h.host.FrameEnabled() {
 		width += 2
 	}
-	_ = h.host.SetWindowDefaultWidth(h.win, width)
+	if width == h.syncedWidth {
+		return
+	}
+	if h.host.SetWindowDefaultWidth(h.win, width) {
+		h.syncedWidth = width
+	}
 }
 
 func (h *fileExplorerHandler) focusTarget() {

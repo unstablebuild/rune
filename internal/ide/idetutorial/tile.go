@@ -21,8 +21,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
-
-	thandler "unstable.build/rune/internal/handler"
 )
 
 // MinTileWidth is the narrowest tile that still fits a readable
@@ -94,7 +92,7 @@ type Tile struct {
 // tileBody stacks the tutorial over the footer and scrolls with the
 // tutorial, so the frame around it draws the tutorial's scroll bar.
 type tileBody struct {
-	*thandler.FrameUnion
+	*handler.FrameUnion
 	tut Tutorial
 }
 
@@ -136,7 +134,7 @@ func NewTile(tut Tutorial, style TileStyle, onBack, onAdvance, onStop func()) *T
 	}
 	t.footer = handler.NewPrompt(t.footerCfg)
 	t.flattenFooter()
-	t.body = tileBody{FrameUnion: thandler.NewFrameUnion(tut), tut: tut}
+	t.body = tileBody{FrameUnion: handler.NewFrameUnion(tut), tut: tut}
 	// Neither member has a frame of its own to stitch.
 	t.body.Frame = false
 	t.body.UnionBottom(t.footer, footerHeight(style.Prompt))

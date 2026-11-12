@@ -100,7 +100,7 @@ type routerAt struct {
 }
 
 func (r routerAt) SemanticSearch(ctx context.Context, req searchapi.SemanticRequest) (
-	iterator.Iterator[searchapi.SemanticResult], error) {
+	iterator.Iterator[searchapi.SemanticResult], searchapi.SemanticStatus, error) {
 	return r.router.SemanticSearch(ctx, r.root, req)
 }
 
@@ -171,9 +171,9 @@ type cannedSearch struct {
 }
 
 func (s *cannedSearch) SemanticSearch(_ context.Context, req searchapi.SemanticRequest) (
-	iterator.Iterator[searchapi.SemanticResult], error) {
+	iterator.Iterator[searchapi.SemanticResult], searchapi.SemanticStatus, error) {
 	s.req = req
-	return iterator.FromSlice(s.hits), nil
+	return iterator.FromSlice(s.hits), searchapi.SemanticStatus{}, nil
 }
 
 func TestQueryThroughWorkspaceIndex(t *testing.T) {

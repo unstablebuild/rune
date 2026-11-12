@@ -66,8 +66,13 @@ func DefaultOptions() Options {
 
 func (o Options) fingerprint() string { return fmt.Sprintf("code1 lines%d", o.CodeStretch) }
 
-// insertChunk files are inserted per storage round.
-const insertChunk = 1024
+const (
+	// flushFiles files settled, or flushAfter since the first of them, are
+	// stored in one round: a store commit costs about the same whether it
+	// holds one file or thirty, and a synced one is mostly its fsyncs.
+	flushFiles = 32
+	flushAfter = time.Second
+)
 
 // embedderError is a failure of the embedder itself, not of one file: the
 // run stops and the files stay pending.
@@ -200,10 +205,22 @@ type syncSummary struct {
 	complete bool
 }
 
+// syncOps are the storage writes a sync found necessary, made together
+// once it has looked at every file, and the catalog changes that follow
+// them.
+type syncOps struct {
+	vecDel, segDel, fileDel []uint32
+	segPut                  []segmentDoc
+	filePut                 []fileDoc
+	// dropped are the segments each file loses.
+	dropped map[uint32][]uint32
+}
+
 // sync crawls roots (workspace-relative files or folders, "." for all)
 // and reconciles the index with them: new files are queued, changed ones
 // queued again, moved ones (same inode, size and time at a new path) only
-// re-pathed, and the ones gone removed.
+// re-pathed, and the ones gone removed. The store is written once it has
+// looked at every file, so a burst of changes costs one round of writes.
 func (x *indexer) sync(ctx context.Context, roots []string) (syncSummary, error) {
 	cands, report, walkErr := crawl(ctx, x.fs, roots, x.opts)
 	if err := ctx.Err(); err != nil {
@@ -242,6 +259,7 @@ func (x *indexer) sync(ctx context.Context, roots []string) (syncSummary, error)
 		return errors.Is(err, fs.ErrNotExist)
 	}
 
+	ops := syncOps{dropped: map[uint32][]uint32{}}
 	movedFrom := map[string]bool{}
 	var inserts []candidate
 	for _, c := range cands {
@@ -250,9 +268,7 @@ func (x *indexer) sync(ctx context.Context, roots []string) (syncSummary, error)
 				sum.unchanged++
 				continue
 			}
-			if err := x.requeue(ctx, f, c); err != nil {
-				return sum, err
-			}
+			x.requeue(&ops, f, c)
 			sum.changed++
 			sum.queued = append(sum.queued, f.ID)
 			continue
@@ -260,37 +276,30 @@ func (x *indexer) sync(ctx context.Context, roots []string) (syncSummary, error)
 		f, ok := byInode[[2]int64{int64(c.inode), int64(c.device)}]
 		if ok && c.inode != 0 && !seen[f.Path] && !movedFrom[f.Path] &&
 			f.Size == c.size && f.ModTime == c.modTime && gone(f.Path) {
-			if err := x.move(ctx, f, c.path); err != nil {
-				return sum, err
-			}
+			x.move(&ops, f, c.path)
 			movedFrom[f.Path] = true
 			sum.moved++
 			continue
 		}
 		inserts = append(inserts, c)
 	}
-	for chunk := range slices.Chunk(inserts, insertChunk) {
-		ids, err := x.insert(ctx, chunk)
-		if err != nil {
-			return sum, err
+	if sum.complete {
+		var removed []uint32
+		for _, f := range files {
+			if under(f.Path) && !seen[f.Path] && !movedFrom[f.Path] {
+				removed = append(removed, f.ID)
+			}
 		}
-		sum.added += len(ids)
-		sum.queued = append(sum.queued, ids...)
+		x.remove(&ops, removed)
+		sum.removed = len(removed)
 	}
-	if !sum.complete {
-		return sum, nil
-	}
-	var removed []uint32
-	for _, f := range files {
-		if under(f.Path) && !seen[f.Path] && !movedFrom[f.Path] {
-			removed = append(removed, f.ID)
-		}
-	}
-	if err := x.remove(ctx, removed); err != nil {
+	ids, err := x.insert(ctx, &ops, inserts)
+	if err != nil {
 		return sum, err
 	}
-	sum.removed = len(removed)
-	return sum, nil
+	sum.added = len(ids)
+	sum.queued = append(sum.queued, ids...)
+	return sum, x.applySync(ctx, &ops)
 }
 
 // nameRow is a file's row for keyword search by its name and folders.
@@ -300,8 +309,12 @@ func nameRow(id, file uint32, rel string) segmentDoc {
 	return segmentDoc{ID: id, File: file, Kind: segmentName, Name: Normalize(base), Body: Normalize(folders)}
 }
 
-// insert adds files as pending, each with its name row.
-func (x *indexer) insert(ctx context.Context, cands []candidate) ([]uint32, error) {
+// insert stages files as pending, each with its name row, and returns
+// their IDs.
+func (x *indexer) insert(ctx context.Context, ops *syncOps, cands []candidate) ([]uint32, error) {
+	if len(cands) == 0 {
+		return nil, nil
+	}
 	fileIDs, err := x.st.allocFileIDs(ctx, len(cands))
 	if err != nil {
 		return nil, err
@@ -310,99 +323,87 @@ func (x *indexer) insert(ctx context.Context, cands []candidate) ([]uint32, erro
 	if err != nil {
 		return nil, err
 	}
-	segs := make([]segmentDoc, len(cands))
-	files := make([]fileDoc, len(cands))
 	for i, c := range cands {
-		segs[i] = nameRow(segIDs[i], fileIDs[i], c.path)
-		files[i] = fileDoc{
+		ops.segPut = append(ops.segPut, nameRow(segIDs[i], fileIDs[i], c.path))
+		ops.filePut = append(ops.filePut, fileDoc{
 			ID: fileIDs[i], Path: c.path, Kind: kindCode, Size: c.size, ModTime: c.modTime,
 			Inode: int64(c.inode), Device: int64(c.device), State: statePending, Segments: []uint32{segIDs[i]},
-		}
-	}
-	if err := x.st.putSegments(ctx, segs); err != nil {
-		return nil, err
-	}
-	if err := x.st.putFiles(ctx, files); err != nil {
-		return nil, err
-	}
-	x.cat.mu.Lock()
-	defer x.cat.mu.Unlock()
-	for i := range cands {
-		x.cat.addSegmentLocked(segs[i])
-		x.cat.putFileLocked(files[i])
+		})
 	}
 	return fileIDs, nil
 }
 
-// requeue drops what was read from a file that changed and queues it as
-// it is now.
-func (x *indexer) requeue(ctx context.Context, f fileDoc, c candidate) error {
+// requeue stages the drop of what was read from a file that changed, and
+// the file as pending again.
+func (x *indexer) requeue(ops *syncOps, f fileDoc, c candidate) {
 	x.cat.mu.Lock()
-	defer x.cat.mu.Unlock()
 	names, others, vectors := x.cat.splitLocked(&f)
-	if err := x.st.deleteVectors(ctx, vectors); err != nil {
-		return err
-	}
-	if err := x.st.deleteSegments(ctx, others); err != nil {
-		return err
-	}
+	x.cat.mu.Unlock()
+	ops.vecDel = append(ops.vecDel, vectors...)
+	ops.segDel = append(ops.segDel, others...)
+	ops.dropped[f.ID] = others
 	f.Size, f.ModTime, f.Inode, f.Device = c.size, c.modTime, int64(c.inode), int64(c.device)
 	f.State, f.Detail, f.Lines, f.Cells, f.Segments = statePending, "", 0, 0, names
-	if err := x.st.putFiles(ctx, []fileDoc{f}); err != nil {
-		return err
-	}
-	x.cat.dropSegmentsLocked(f.ID, others)
-	x.cat.putFileLocked(f)
-	return nil
+	ops.filePut = append(ops.filePut, f)
 }
 
-// move re-paths a file that was moved: nothing is read again.
-func (x *indexer) move(ctx context.Context, f fileDoc, to string) error {
+// move stages the re-pathing of a file that was moved: nothing is read
+// again.
+func (x *indexer) move(ops *syncOps, f fileDoc, to string) {
 	x.cat.mu.Lock()
-	defer x.cat.mu.Unlock()
 	names, _, _ := x.cat.splitLocked(&f)
-	rows := make([]segmentDoc, len(names))
-	for i, id := range names {
-		rows[i] = nameRow(id, f.ID, to)
-	}
-	if err := x.st.putSegments(ctx, rows); err != nil {
-		return err
+	x.cat.mu.Unlock()
+	for _, id := range names {
+		ops.segPut = append(ops.segPut, nameRow(id, f.ID, to))
 	}
 	f.Path = to
-	if err := x.st.putFiles(ctx, []fileDoc{f}); err != nil {
-		return err
-	}
-	for _, row := range rows {
-		x.cat.addSegmentLocked(row)
-	}
-	x.cat.putFileLocked(f)
-	return nil
+	ops.filePut = append(ops.filePut, f)
 }
 
-// remove deletes files with everything read from them.
-func (x *indexer) remove(ctx context.Context, ids []uint32) error {
-	if len(ids) == 0 {
-		return nil
+// remove stages the deletion of files with everything read from them.
+func (x *indexer) remove(ops *syncOps, ids []uint32) {
+	x.cat.mu.Lock()
+	defer x.cat.mu.Unlock()
+	for _, id := range ids {
+		names, others, vectors := x.cat.splitLocked(x.cat.files[id])
+		ops.segDel = append(append(ops.segDel, names...), others...)
+		ops.vecDel = append(ops.vecDel, vectors...)
+	}
+	ops.fileDel = append(ops.fileDel, ids...)
+}
+
+// applySync writes ops to the store, each kind of write in one round, and
+// then makes the catalog match. The store never ends up pointing at what
+// it does not hold: deletions of what files own come before the files,
+// and additions before them too.
+func (x *indexer) applySync(ctx context.Context, ops *syncOps) error {
+	if err := x.st.deleteVectors(ctx, ops.vecDel); err != nil {
+		return err
+	}
+	if err := x.st.deleteSegments(ctx, ops.segDel); err != nil {
+		return err
+	}
+	if err := x.st.putSegments(ctx, ops.segPut); err != nil {
+		return err
+	}
+	if err := x.st.putFiles(ctx, ops.filePut); err != nil {
+		return err
+	}
+	if err := x.st.deleteFiles(ctx, ops.fileDel); err != nil {
+		return err
 	}
 	x.cat.mu.Lock()
 	defer x.cat.mu.Unlock()
-	var segs, vectors []uint32
-	for _, id := range ids {
-		f := x.cat.files[id]
-		names, others, vecs := x.cat.splitLocked(f)
-		segs = append(append(segs, names...), others...)
-		vectors = append(vectors, vecs...)
+	for file, ids := range ops.dropped {
+		x.cat.dropSegmentsLocked(file, ids)
 	}
-	if err := x.st.deleteVectors(ctx, vectors); err != nil {
-		return err
+	for _, d := range ops.segPut {
+		x.cat.addSegmentLocked(d)
 	}
-	if err := x.st.deleteSegments(ctx, segs); err != nil {
-		return err
+	for _, f := range ops.filePut {
+		x.cat.putFileLocked(f)
 	}
-	if err := x.st.deleteFiles(ctx, ids); err != nil {
-		return err
-	}
-	for _, id := range ids {
+	for _, id := range ops.fileDel {
 		x.cat.dropFileLocked(id)
 	}
 	return nil
@@ -442,13 +443,40 @@ type prepared struct {
 	err  error
 }
 
+// settled is a file embedded and ready to store: its new segments, their
+// vectors, and the file as it will be once they are.
+type settled struct {
+	file    fileDoc
+	segs    []segmentDoc
+	vectors []vectorDoc
+	event   runEvent
+}
+
+// writeWindow gathers settled files until they are stored together.
+type writeWindow struct {
+	items []settled
+	since time.Time
+}
+
+func (w *writeWindow) add(s settled) {
+	if len(w.items) == 0 {
+		w.since = time.Now()
+	}
+	w.items = append(w.items, s)
+}
+
+func (w *writeWindow) full() bool {
+	return len(w.items) >= flushFiles || (len(w.items) > 0 && time.Since(w.since) >= flushAfter)
+}
+
 // run reads, embeds and stores the pending files (only those in only, when
 // it is not nil), newest first, calling onEvent with done 0 before the
 // first file and then as each one settles. While one file is embedded the
-// next is read. With a nil embed every stretch
-// gets keyword search only. A problem with one file is recorded on it; an
-// embedder that fails stops the run with an *embedderError, and the files
-// not done stay pending.
+// next is read, and the files are stored flushFiles at a time, each
+// reported once it is. With a nil embed every stretch gets keyword search
+// only. A problem with one file is recorded on it; an embedder that fails
+// stops the run with an *embedderError, and the files not done stay
+// pending.
 func (x *indexer) run(ctx context.Context, embed Embedder, only []uint32, onEvent func(runEvent)) error {
 	queue := x.pending(only)
 	if len(queue) == 0 {
@@ -473,15 +501,31 @@ func (x *indexer) run(ctx context.Context, embed Embedder, only []uint32, onEven
 	}()
 	done := 0
 	onEvent(runEvent{total: len(queue)})
+	var w writeWindow
 	for p := range jobs {
-		state, note, err := x.commit(ctx, embed, p)
+		s, err := x.settle(ctx, embed, p)
 		if err != nil {
+			// What was embedded before the embedder failed is kept.
+			if _, ok := errors.AsType[*embedderError](err); ok {
+				if ferr := x.flush(ctx, &w, onEvent); ferr != nil {
+					return ferr
+				}
+			}
 			return err
 		}
 		done++
-		onEvent(runEvent{done: done, total: len(queue), path: p.file.Path, state: state, note: note})
+		s.event.done, s.event.total, s.event.path = done, len(queue), p.file.Path
+		w.add(s)
+		if w.full() {
+			if err := x.flush(ctx, &w, onEvent); err != nil {
+				return err
+			}
+		}
 	}
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return x.flush(ctx, &w, onEvent)
 }
 
 // prepare reads a file and cuts it into stretches.
@@ -506,19 +550,19 @@ func (x *indexer) prepare(f fileDoc) prepared {
 	return prepared{file: f, code: code, err: err}
 }
 
-// commit embeds a prepared file's worded stretches and stores them: the
-// vectors, then the segments, then the file as done.
-func (x *indexer) commit(ctx context.Context, embed Embedder, p prepared) (state, note string, _ error) {
+// settle embeds a prepared file's worded stretches and builds what is
+// stored for it; a file that cannot be read settles as failed or skipped.
+func (x *indexer) settle(ctx context.Context, embed Embedder, p prepared) (settled, error) {
 	if p.err != nil {
-		state = stateFailed
+		state := stateFailed
 		if _, ok := errors.AsType[leftOut](p.err); ok {
 			state = stateSkipped
 		}
-		return state, p.err.Error(), x.finish(ctx, p.file, state, p.err.Error())
+		return finish(p.file, state, p.err.Error()), nil
 	}
 	pieces := p.code.pieces
 	if len(pieces) == 0 {
-		return stateSkipped, "no code", x.finish(ctx, p.file, stateSkipped, "no code")
+		return finish(p.file, stateSkipped, "no code"), nil
 	}
 	// Stretches that are mostly numbers and symbols (a table of
 	// constants) get keyword search only.
@@ -537,9 +581,9 @@ func (x *indexer) commit(ctx context.Context, embed Embedder, p prepared) (state
 			out, err := embed.EmbedTexts(ctx, prompts)
 			if err != nil {
 				if ctx.Err() != nil {
-					return "", "", ctx.Err()
+					return settled{}, ctx.Err()
 				}
-				return "", "", &embedderError{err}
+				return settled{}, &embedderError{err}
 			}
 			for j, i := range which {
 				vecs[i] = out[j]
@@ -549,74 +593,104 @@ func (x *indexer) commit(ctx context.Context, embed Embedder, p prepared) (state
 	}
 	ids, err := x.st.allocSegmentIDs(ctx, len(pieces))
 	if err != nil {
-		return "", "", err
+		return settled{}, err
 	}
 	kind := segmentLines
 	if p.code.cells > 0 {
 		kind = segmentCells
 	}
-	segs := make([]segmentDoc, len(pieces))
-	var vectors []vectorDoc
+	s := settled{file: p.file, segs: make([]segmentDoc, len(pieces))}
 	for i, pc := range pieces {
 		body := Normalize(pc.text)
-		segs[i] = segmentDoc{
+		s.segs[i] = segmentDoc{
 			ID: ids[i], File: p.file.ID, Kind: kind, Loc: pc.first, LocEnd: pc.last,
 			Excerpt: summary(pc.text), Body: body,
 		}
 		if body != pc.text {
-			segs[i].Original = pc.text
+			s.segs[i].Original = pc.text
 		}
 		if vecs[i] != nil {
-			segs[i].HasVec = true
-			vectors = append(vectors, vectorDoc{ID: ids[i], Vec: halfBytes(vecs[i])})
+			s.segs[i].HasVec = true
+			s.vectors = append(s.vectors, vectorDoc{ID: ids[i], Vec: halfBytes(vecs[i])})
 		}
 	}
-
-	x.cat.mu.Lock()
-	defer x.cat.mu.Unlock()
-	if err := x.st.putVectors(ctx, vectors); err != nil {
-		return "", "", err
-	}
-	if err := x.st.putSegments(ctx, segs); err != nil {
-		return "", "", err
-	}
-	f := p.file
-	names, _, _ := x.cat.splitLocked(&f)
-	f.State, f.Detail, f.Lines, f.Cells = stateDone, "", p.code.lines, p.code.cells
-	f.Segments = append(names, ids...)
-	if err := x.st.putFiles(ctx, []fileDoc{f}); err != nil {
-		return "", "", err
-	}
-	for _, d := range segs {
-		x.cat.addSegmentLocked(d)
-	}
-	if x.cat.vec != nil {
-		for _, v := range vectors {
-			if err := x.cat.vec.add(v.ID, f.ID, v.Vec); err != nil {
-				return "", "", err
-			}
-		}
-	}
-	x.cat.putFileLocked(f)
-
-	note = fmt.Sprintf("%d stretches, %d lines", len(pieces), p.code.lines)
+	s.file.State, s.file.Detail, s.file.Lines, s.file.Cells = stateDone, "", p.code.lines, p.code.cells
+	note := fmt.Sprintf("%d stretches, %d lines", len(pieces), p.code.lines)
 	if p.code.cells > 0 {
 		note = fmt.Sprintf("%d stretches, %d cells", len(pieces), p.code.cells)
 	}
 	if embed != nil && worded < len(pieces) {
 		note += fmt.Sprintf(", %d for keywords only", len(pieces)-worded)
 	}
-	return stateDone, note, nil
+	s.event.state, s.event.note = stateDone, note
+	return s, nil
 }
 
 // finish settles a file that has nothing to store but its state.
-func (x *indexer) finish(ctx context.Context, f fileDoc, state, detail string) error {
+func finish(f fileDoc, state, detail string) settled {
 	f.State, f.Detail = state, detail
-	if err := x.st.putFiles(ctx, []fileDoc{f}); err != nil {
+	return settled{file: f, event: runEvent{state: state, note: detail}}
+}
+
+// flush stores the window's files — the vectors, then the segments, then
+// the files as done — and reports them once they are.
+func (x *indexer) flush(ctx context.Context, w *writeWindow, onEvent func(runEvent)) error {
+	if len(w.items) == 0 {
+		return nil
+	}
+	if err := x.store(ctx, w.items); err != nil {
 		return err
 	}
+	for _, s := range w.items {
+		onEvent(s.event)
+	}
+	w.items = nil
+	return nil
+}
+
+// store writes settled files and puts them in the catalog, under the one
+// lock, so that loading the vectors never finds ones it would take for
+// orphans.
+func (x *indexer) store(ctx context.Context, items []settled) error {
+	var vectors []vectorDoc
+	var segs []segmentDoc
+	files := make([]fileDoc, len(items))
 	x.cat.mu.Lock()
 	defer x.cat.mu.Unlock()
-	x.cat.putFileLocked(f)
+	for i := range items {
+		s := &items[i]
+		if len(s.segs) > 0 {
+			names, _, _ := x.cat.splitLocked(&s.file)
+			for _, d := range s.segs {
+				names = append(names, d.ID)
+			}
+			s.file.Segments = names
+		}
+		vectors = append(vectors, s.vectors...)
+		segs = append(segs, s.segs...)
+		files[i] = s.file
+	}
+	if err := x.st.putVectors(ctx, vectors); err != nil {
+		return err
+	}
+	if err := x.st.putSegments(ctx, segs); err != nil {
+		return err
+	}
+	if err := x.st.putFiles(ctx, files); err != nil {
+		return err
+	}
+	for _, s := range items {
+		for _, d := range s.segs {
+			x.cat.addSegmentLocked(d)
+		}
+		if x.cat.vec != nil {
+			for _, v := range s.vectors {
+				if err := x.cat.vec.add(v.ID, s.file.ID, v.Vec); err != nil {
+					return err
+				}
+			}
+		}
+		x.cat.putFileLocked(s.file)
+	}
 	return nil
 }

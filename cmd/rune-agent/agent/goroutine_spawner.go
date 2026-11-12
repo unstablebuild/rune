@@ -17,17 +17,18 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguemanager"
 	"unstable.build/rune/cmd/rune-agent/hooks"
 	"unstable.build/rune/cmd/rune-agent/llm/llmarg"
@@ -125,19 +126,23 @@ func (s *GoroutineSpawner) SetAttribution(attribution Attribution) {
 func (s *GoroutineSpawner) Run(
 	ctx context.Context, req RunRequest,
 ) (RunHandle, error) {
-	agentID := req.AgentID
-	if agentID == "" {
-		agentID = s.agentID
+	agentID := cmp.Or(req.AgentID, s.agentID)
+	var def Definition
+	ok := false
+	if req.Skill == "" {
+		def, ok = s.config.Get(agentID)
 	}
-	def, ok := s.config.Get(agentID)
 	skillBased := false
 	if !ok {
 		// Fallback: check skill registry for agent-type skill
 		// (case-insensitive). This lets the LLM call the agent
 		// tool with subagent_type="Plan" and have it resolve to
 		// the "plan" skill transparently.
-		skill, skillOK := s.skillRegistry.GetFold(agentID)
+		skill, skillOK := s.skillRegistry.GetFold(cmp.Or(req.Skill, agentID))
 		if !skillOK || skill.Type != "agent" {
+			if req.Skill != "" {
+				return RunHandle{}, fmt.Errorf("no agent skill named %q exists", req.Skill)
+			}
 			return RunHandle{}, fmt.Errorf("no agent or agent skill named %q exists", agentID)
 		}
 		def = Definition{
@@ -146,9 +151,7 @@ func (s *GoroutineSpawner) Run(
 			SystemPrompt: skill.Body,
 			Model:        skill.Model,
 		}
-		if skill.AllowedTools != "" && len(req.AllowedTools) == 0 {
-			req.AllowedTools = strings.Fields(skill.AllowedTools)
-		}
+		req.Tools = toolpolicy.Intersect(req.Tools, s.skillRegistry.AgentPolicy(skill))
 		skillBased = true
 		agentID = skill.Name
 	}
@@ -197,9 +200,10 @@ func (s *GoroutineSpawner) Run(
 	if registry == nil {
 		registry = NewRegistry()
 	}
-	if len(req.AllowedTools) > 0 {
-		registry = registry.WithFilteredTools(req.AllowedTools)
-	}
+	// The caller's restrictions bind everything it spawns, so that a
+	// restricted agent cannot escape them through an unrestricted child.
+	policy := toolpolicy.Intersect(ToolPolicyFromContext(ctx), req.Tools)
+	registry = registry.WithPolicy(policy)
 	prompt := req.SystemPrompt
 	if prompt == "" {
 		prompt = def.SystemPrompt
@@ -217,6 +221,7 @@ func (s *GoroutineSpawner) Run(
 		SubAgent:            true,
 		Workspace:           s.workspace,
 		Prompter:            s.prompter,
+		Tools:               policy,
 	})
 
 	// Sub-agent runs inherit the caller's cancellation but have no

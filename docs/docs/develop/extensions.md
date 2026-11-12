@@ -294,6 +294,13 @@ you, usually with `path` already set to the installed binary under
 `$RUNE_DATADIR`. In most cases you only ever touch the `config` block to
 tune the extension's own behavior.
 
+An extension reads its `config` block when it starts. Before each
+[`runectl screenshot`](runectl.md#screenshots), Rune reads its config file
+again and tells running extensions; those that support it, such as Rune
+Agent's status bar, apply the new block then (see [Reloading
+configuration](sdk/go.md#reloading-configuration)). Otherwise,
+`extensions restart <id>` picks up the change.
+
 ### Source and package extensions
 
 An extension's `path` can name a source entrypoint or Go package directory
@@ -372,6 +379,7 @@ logs.
 ## See also
 
 - [SDK](./sdk/index.md): build your own extension.
+- [rune.js](./runejs.md): customize Rune with JavaScript that reloads on save.
 - [Packages](./packages.md): how an extension is bundled and distributed for `pkg install`.
 - [runectl](./runectl.md): the same integration surface from the console, no extension required.
 - [Console](../learn/console.md): the `extensions` and `authorizer` commands in context.

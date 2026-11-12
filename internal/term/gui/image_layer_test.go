@@ -186,12 +186,13 @@ func TestImageLayerTextureReuse(t *testing.T) {
 	img.Version++
 	second := l.texture(img)
 	require.NotNil(t, second)
-	assert.NotSame(t, first, second, "a new version must re-upload")
+	assert.Same(t, first, second, "a new version of the same size reuses the GPU image")
+	assert.Equal(t, img.Version, l.textures[img.ID].version, "the new version was uploaded")
 
 	img.Src = solidRGBA(8, 8, color.RGBA{B: 255, A: 255})
 	third := l.texture(img)
 	require.NotNil(t, third)
-	assert.NotSame(t, second, third, "new source bounds must re-upload")
+	assert.NotSame(t, second, third, "new source bounds need a new GPU image")
 	assert.Equal(t, image.Rect(0, 0, 8, 8), third.Bounds())
 }
 

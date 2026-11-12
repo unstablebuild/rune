@@ -61,6 +61,9 @@ const (
 	// MessageEventAttachment adds a pending attachment to the compose
 	// strip, as if the user had picked it from the '#' completion.
 	MessageEventAttachment
+	// MessageEventUserMessage renders a user message sent from elsewhere,
+	// such as another viewer of the same session or a replayed transcript.
+	MessageEventUserMessage
 )
 
 // MessageEvent is a structured event sent through the display channel.
@@ -100,6 +103,9 @@ type MessageEvent struct {
 
 	// Attachment field (MessageEventAttachment)
 	Attachment Attachment
+
+	// Attachments field (MessageEventUserMessage): files sent with Text.
+	Attachments []Attachment
 }
 
 // MemoryRecallEntry represents a single memory in a recall event.

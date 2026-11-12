@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 )
 
 // Skill holds a parsed SKILL.md.
@@ -35,9 +36,15 @@ type Skill struct {
 	License       string            // optional
 	Compatibility string            // optional
 	Metadata      map[string]string // optional
-	AllowedTools  string            // optional, space-delimited
-	Type          string            // "" for prompt-skill, "agent" for agent-skill
-	Model         string            // optional model override for agent-type skills
+	// Tools restricts the tools of the sub-agent of an agent skill, as
+	// its allowed-tools and disallowed-tools say. An allowed-tools field
+	// without entries, even a null one, allows no tools. An agent skill
+	// also may not use or spawn itself. Tools is zero for other skills,
+	// whose tool fields are ignored, since other harnesses give them other
+	// meanings and syntaxes.
+	Tools toolpolicy.Policy
+	Type  string // "" for prompt-skill, "agent" for agent-skill
+	Model string // optional model override for agent-type skills
 	// ParentContext, when true, opts an agent skill into receiving the
 	// parent dialogue's prior user/assistant messages as initial
 	// context when the skill is invoked via a slash command. Default
@@ -46,22 +53,25 @@ type Skill struct {
 }
 
 type frontmatter struct {
-	Name          string            `yaml:"name"`
-	Description   string            `yaml:"description"`
-	License       string            `yaml:"license"`
-	Compatibility string            `yaml:"compatibility"`
-	Metadata      map[string]string `yaml:"metadata"`
-	AllowedTools  string            `yaml:"allowed-tools"`
-	Type          string            `yaml:"type"`
-	Model         string            `yaml:"model"`
-	ParentContext bool              `yaml:"parent-context"`
+	Name            string            `yaml:"name"`
+	Description     string            `yaml:"description"`
+	License         string            `yaml:"license"`
+	Compatibility   string            `yaml:"compatibility"`
+	Metadata        map[string]string `yaml:"metadata"`
+	AllowedTools    yaml.Node         `yaml:"allowed-tools"`
+	DisallowedTools yaml.Node         `yaml:"disallowed-tools"`
+	Type            string            `yaml:"type"`
+	Model           string            `yaml:"model"`
+	ParentContext   bool              `yaml:"parent-context"`
 }
 
 var nameRegexp = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
 // Parse splits YAML frontmatter from body, validates fields, and returns a Skill.
 // Validation is lenient: name format issues are logged as warnings but still load.
-// Only missing name, missing description, or unparseable YAML cause errors.
+// Only missing name, missing description, unparseable YAML or, in an agent
+// skill, an allowed-tools or disallowed-tools value that is not a string or
+// a list of strings, or an entry in them that cannot be parsed cause errors.
 func Parse(data []byte, dir string) (Skill, error) {
 	fm, body, err := splitFrontmatter(data)
 	if err != nil {
@@ -83,6 +93,15 @@ func Parse(data []byte, dir string) (Skill, error) {
 	// Lenient validation: warn but load anyway.
 	warnName(meta.Name, dir)
 
+	var tools toolpolicy.Policy
+	if meta.Type == "agent" {
+		var err error
+		if tools, err = parseTools(meta.AllowedTools, meta.DisallowedTools); err != nil {
+			return Skill{}, err
+		}
+		tools = tools.WithoutSkill(meta.Name)
+	}
+
 	return Skill{
 		Name:          meta.Name,
 		Description:   meta.Description,
@@ -91,11 +110,31 @@ func Parse(data []byte, dir string) (Skill, error) {
 		License:       meta.License,
 		Compatibility: meta.Compatibility,
 		Metadata:      meta.Metadata,
-		AllowedTools:  meta.AllowedTools,
+		Tools:         tools,
 		Type:          meta.Type,
 		Model:         meta.Model,
 		ParentContext: meta.ParentContext,
 	}, nil
+}
+
+func parseTools(allowedNode, disallowedNode yaml.Node) (toolpolicy.Policy, error) {
+	// A present allowed-tools restricts the agent, so that a field left
+	// empty fails closed.
+	var allowed, disallowed toolpolicy.List
+	if !allowedNode.IsZero() {
+		if err := allowedNode.Decode(&allowed); err != nil {
+			return toolpolicy.Policy{}, fmt.Errorf("parse frontmatter: allowed-tools: %w", err)
+		}
+		if allowed == nil {
+			allowed = toolpolicy.List{}
+		}
+	}
+	if !disallowedNode.IsZero() {
+		if err := disallowedNode.Decode(&disallowed); err != nil {
+			return toolpolicy.Policy{}, fmt.Errorf("parse frontmatter: disallowed-tools: %w", err)
+		}
+	}
+	return toolpolicy.Parse(allowed, disallowed)
 }
 
 // warnName logs warnings for name issues without blocking loading.

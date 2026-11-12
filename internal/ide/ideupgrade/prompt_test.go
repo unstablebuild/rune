@@ -18,6 +18,7 @@ package ideupgrade
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -46,6 +47,17 @@ func (p *keyPrompter) Prompt(
 	return nil, h.OnClose()
 }
 
+// countingStarter counts the upgrades started and fails them with err.
+type countingStarter struct {
+	n   int
+	err error
+}
+
+func (s *countingStarter) StartUpgrade() error {
+	s.n++
+	return s.err
+}
+
 func newPromptTestManager(t *testing.T, key rune) *Manager {
 	t.Helper()
 	storage := storagestub.NewInMemoryService()
@@ -55,6 +67,7 @@ func newPromptTestManager(t *testing.T, key rune) *Manager {
 		ManifestURL:    "https://example.invalid",
 		Storage:        storage,
 		Prompter:       &keyPrompter{t: t, key: key},
+		Starter:        &countingStarter{},
 		ScheduleNextTick: func(fn func()) bool {
 			fn()
 			return true
@@ -105,11 +118,56 @@ func TestPromptShowFallsBackToNotificationWithoutPrompter(t *testing.T) {
 	require.NoError(t, err)
 
 	mgr.showPrompt(context.Background(), Manifest{Version: "v9", URL: "u", SHA256: "s"})
-	notifyN, _ := notifs.snapshot()
-	require.Equal(t, 1, notifyN, "fallback should post one notification")
+	require.Equal(t, 1, notifs.count(), "fallback should post one notification")
 	st := mgr.loadState(context.Background())
 	require.Empty(t, st.SkippedVersions)
 	require.True(t, st.RemindAfter.IsZero())
+}
+
+func TestPromptUpgradeNowStartsUpgrade(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		startErr   error
+		noTick     bool
+		wantStarts int
+		wantNotes  int
+	}{
+		{name: "started", wantStarts: 1},
+		{name: "start fails", startErr: errors.New("no console"), wantStarts: 1, wantNotes: 1},
+		// Starting it from the prompt's own event handling would run
+		// the console command re-entrantly, with the prompt still open.
+		{name: "not started when the loop takes no more ticks", noTick: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := newPromptTestManager(t, 'y')
+			notifs := &recordingNotifications{}
+			mgr.cfg.Notifications = notifs
+			starter := &countingStarter{err: tc.startErr}
+			mgr.cfg.Starter = starter
+			if tc.noTick {
+				// The loop shows the prompt and then stops taking ticks.
+				shown := false
+				mgr.cfg.ScheduleNextTick = func(fn func()) bool {
+					if shown {
+						return false
+					}
+					shown = true
+					fn()
+					return true
+				}
+			}
+
+			mgr.showPrompt(context.Background(), Manifest{
+				Version: "v9.9.9", URL: "u", SHA256: "s",
+			})
+
+			require.Equal(t, tc.wantStarts, starter.n)
+			require.Equal(t, tc.wantNotes, notifs.count())
+			st := mgr.loadState(context.Background())
+			require.Empty(t, st.SkippedVersions)
+			require.True(t, st.RemindAfter.IsZero())
+		})
+	}
 }
 
 func TestPromptChoiceBlocksUntilAnswered(t *testing.T) {

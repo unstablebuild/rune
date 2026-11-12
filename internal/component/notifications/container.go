@@ -29,6 +29,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/debug"
 )
 
@@ -48,26 +49,16 @@ const (
 
 // Config configures Container.
 type Config struct {
+	// Style is what Container.Restyle changes.
+	Style
+
 	// AutoClose the minimum time to automatically close a notification.
 	// If the message is longer than usual, the time will be increased proportionately.
 	AutoClose time.Duration
-	// ProgressBar switches an auto-close progress bar on or off.
-	ProgressBar bool
 	// Width determines the width of each notification in columns.
 	Width int
-	// Attributes of the notification text.
-	Attributes term.Attributes
-	// BackgroundAttributes of the notification text.
-	BackgroundAttributes term.Attributes
-	// FrameCharSet of the notification frame if Frame is enabled.
-	// This is optional. If not set, component.FrameCharSetDefault is used.
-	FrameCharSet component.FrameCharSet
 	// Interrupt is needed to asynchronously update the UI. This is optional.
 	Interrupter term.Interrupter
-
-	// Padding adds top and right padding in number of cells from the margins
-	// and between notifications if there's more than one being displayed.
-	Padding int
 
 	// RightInset is a column of this width, at the right edge, that
 	// notifications must not be drawn over. It matches the column the
@@ -75,6 +66,37 @@ type Config struct {
 	// which the inner component cannot express by being narrower: it
 	// still occupies the full width.
 	RightInset int
+
+	// Graphics returns what draws the images that FrameCharSet.Graphics
+	// and ProgressRunes.Graphics name. It is called while drawing, and
+	// only when the style names an image. When it is nil, or returns
+	// nil, the frame and progress bar show their runes alone.
+	Graphics func() *tcomponent.FrameGraphics
+
+	// Observer, when set, is invoked with every notification posted
+	// via Notify before it is rendered. Tests use it to surface
+	// notification text that would otherwise only exist as styled
+	// cells in a rendered frame.
+	Observer func(level Level, msg string)
+}
+
+// Style is how a Container draws notifications.
+type Style struct {
+	// ProgressBar switches an auto-close progress bar on or off. The
+	// progress bar takes the bottom row of the frame, so the images of
+	// its bottom slots are not drawn.
+	ProgressBar bool
+	// Attributes of the notification text.
+	Attributes term.Attributes
+	// BackgroundAttributes of the notification text.
+	BackgroundAttributes term.Attributes
+	// FrameCharSet of the notification frame if Frame is enabled.
+	// This is optional. If not set, component.FrameCharSetDefault is used.
+	FrameCharSet component.FrameCharSet
+
+	// Padding adds top and right padding in number of cells from the margins
+	// and between notifications if there's more than one being displayed.
+	Padding int
 
 	// ProgressRunes determines the runes used to render progress.
 	// If not set, the corresponding characters in FrameCharSet are used.
@@ -92,12 +114,45 @@ type Config struct {
 	// ColorError determines the style of the progress bar for error notifications.
 	// By default, term.ColorRed is used.
 	ColorError term.Attributes
+}
 
-	// Observer, when set, is invoked with every notification posted
-	// via Notify before it is rendered. Tests use it to surface
-	// notification text that would otherwise only exist as styled
-	// cells in a rendered frame.
-	Observer func(level Level, msg string)
+// withDefaults returns s with the defaults of what it leaves unset.
+func (s Style) withDefaults() Style {
+	if s.FrameCharSet == (component.FrameCharSet{}) {
+		s.FrameCharSet = component.FrameCharSetDefault()
+	}
+	if s.ColorInfo == (term.Attributes{}) {
+		s.ColorInfo.Attrs = s.BackgroundAttributes.Attrs
+		s.ColorInfo.Attrs |= term.AttrBold
+	}
+	if s.ColorSuccess == (term.Attributes{}) {
+		s.ColorSuccess.Attrs = s.BackgroundAttributes.Attrs
+		s.ColorSuccess.Attrs |= term.AttrBold
+		s.ColorSuccess.Fg = term.ColorGreen
+	}
+	if s.ColorWarning == (term.Attributes{}) {
+		s.ColorWarning.Attrs = s.BackgroundAttributes.Attrs
+		s.ColorWarning.Attrs |= term.AttrBold
+		s.ColorWarning.Fg = term.ColorYellow
+	}
+	if s.ColorError == (term.Attributes{}) {
+		s.ColorError.Attrs = s.BackgroundAttributes.Attrs
+		s.ColorError.Attrs |= term.AttrBold
+		s.ColorError.Fg = term.ColorRed
+	}
+	if s.ProgressRunes == (ProgressRunes{Graphics: s.ProgressRunes.Graphics}) {
+		s.ProgressRunes.Start = s.FrameCharSet.BottomLeft
+		s.ProgressRunes.Current = s.FrameCharSet.HorizontalBottom
+		s.ProgressRunes.CurrentTip = s.FrameCharSet.HorizontalBottom
+		s.ProgressRunes.Remain = s.FrameCharSet.HorizontalBottom
+		s.ProgressRunes.End = s.FrameCharSet.BottomRight
+	}
+	return s
+}
+
+// hasGraphics reports whether s names any image.
+func (s Style) hasGraphics() bool {
+	return !s.FrameCharSet.Graphics.Empty() || !s.ProgressRunes.Graphics.Empty()
 }
 
 // ProgressRunes contains the runes used by a Container to render progress.
@@ -107,6 +162,26 @@ type ProgressRunes struct {
 	CurrentTip rune
 	Remain     rune
 	End        rune
+
+	// Graphics names an image for each rune, drawn over the cells of
+	// that rune. Images are not tinted with the color of the level.
+	Graphics ProgressGraphics
+}
+
+// ProgressGraphics names the image of each rune of ProgressRunes.
+type ProgressGraphics struct {
+	Start, Current, CurrentTip, Remain, End string
+
+	// Overlay draws each image over its rune, which shows through the
+	// image's transparent pixels in the color of the level. Otherwise
+	// each image replaces its rune.
+	Overlay bool
+}
+
+// Empty reports whether g names no image, whatever its mode.
+func (g ProgressGraphics) Empty() bool {
+	return g.Start == "" && g.Current == "" && g.CurrentTip == "" &&
+		g.Remain == "" && g.End == ""
 }
 
 // Container renders an inner tui.Component and overlays any notifications that were
@@ -143,35 +218,7 @@ func (n *Container) Init(inner tui.Component, cfg Config) {
 	if cfg.AutoClose == 0 {
 		panic(fmt.Sprintf("notifications.Container with invalid close timeout: %v", cfg.AutoClose))
 	}
-	if cfg.FrameCharSet == (component.FrameCharSet{}) {
-		cfg.FrameCharSet = component.FrameCharSetDefault()
-	}
-	if cfg.ColorInfo == (term.Attributes{}) {
-		cfg.ColorInfo.Attrs = cfg.BackgroundAttributes.Attrs
-		cfg.ColorInfo.Attrs |= term.AttrBold
-	}
-	if cfg.ColorSuccess == (term.Attributes{}) {
-		cfg.ColorSuccess.Attrs = cfg.BackgroundAttributes.Attrs
-		cfg.ColorSuccess.Attrs |= term.AttrBold
-		cfg.ColorSuccess.Fg = term.ColorGreen
-	}
-	if cfg.ColorWarning == (term.Attributes{}) {
-		cfg.ColorWarning.Attrs = cfg.BackgroundAttributes.Attrs
-		cfg.ColorWarning.Attrs |= term.AttrBold
-		cfg.ColorWarning.Fg = term.ColorYellow
-	}
-	if cfg.ColorError == (term.Attributes{}) {
-		cfg.ColorError.Attrs = cfg.BackgroundAttributes.Attrs
-		cfg.ColorError.Attrs |= term.AttrBold
-		cfg.ColorError.Fg = term.ColorRed
-	}
-	if cfg.ProgressRunes == (ProgressRunes{}) {
-		cfg.ProgressRunes.Start = cfg.FrameCharSet.BottomLeft
-		cfg.ProgressRunes.Current = cfg.FrameCharSet.HorizontalBottom
-		cfg.ProgressRunes.CurrentTip = cfg.FrameCharSet.HorizontalBottom
-		cfg.ProgressRunes.Remain = cfg.FrameCharSet.HorizontalBottom
-		cfg.ProgressRunes.End = cfg.FrameCharSet.BottomRight
-	}
+	cfg.Style = cfg.Style.withDefaults()
 	n.inner = inner
 	n.cfg = cfg
 	n.vlist.C = component.NewResponsiveList()
@@ -197,6 +244,13 @@ func (n *Container) Resize(width, height int) {
 	defer n.mu.Unlock()
 
 	n.width, n.height = width, height
+	n.layout()
+}
+
+// layout places the notifications within the last size. It must be
+// called with mu held.
+func (n *Container) layout() {
+	width, height := n.width, n.height
 	padding := n.cfg.Padding
 
 	anchor := width - n.cfg.RightInset
@@ -215,6 +269,27 @@ func (n *Container) Resize(width, height int) {
 
 	n.vlist.Move(term.Coordinates{X: offset, Y: padding})
 	n.vlist.Resize(effectiveWidth, height-padding)
+}
+
+// Restyle draws the open notifications, and those posted later, with s.
+func (n *Container) Restyle(s Style) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	progressBar := n.cfg.ProgressBar
+	n.cfg.Style = s.withDefaults()
+	for id, t := range n.notifications {
+		comp := t.el.Value().(*component.Span).Content().(*notificationComp)
+		comp.style(n.cfg)
+		t.el.SetValue(n.newSpan(comp))
+		if progressBar != n.cfg.ProgressBar && comp.pausedAt.IsZero() {
+			// Resuming starts, or stops, the ticker that repaints
+			// the progress bar.
+			n.pauseNotification(t.el)
+			n.resumeNotification(t, id)
+		}
+	}
+	n.layout()
 }
 
 // ID returns the ID of a given notification, as it would be
@@ -251,11 +326,12 @@ func (n *Container) Notify(level Level, msg string) string {
 	}
 
 	ctx, cancel := context.WithTimeout(n.ctx, duration)
-	comp := newNotification(level, msg, n.cfg, duration, cancel)
 	id := n.ID(level, msg)
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
+	comp := newNotification(level, msg, n.cfg, duration, cancel)
 
 	// clear out current notification, based on message equality, if it exists
 	if ticket, exists := n.notifications[id]; exists {
@@ -264,17 +340,20 @@ func (n *Container) Notify(level Level, msg string) string {
 		delete(n.notifications, id)
 	}
 
-	comp = component.NewSpan(comp, component.SpanConfig{
-		PadVertical:      n.cfg.Padding,
-		ContentAlignment: component.AlignmentTop,
-	})
 	// add a new notification
-	el := n.vlist.C.PushFront(comp)
+	el := n.vlist.C.PushFront(n.newSpan(comp))
 	n.notifications[id] = &notificationTicket{el: el, cancelCtx: cancel}
 
 	n.startAutoClose(ctx, cancel, el, id)
 
 	return id
+}
+
+func (n *Container) newSpan(comp *notificationComp) *component.Span {
+	return component.NewSpan(comp, component.SpanConfig{
+		PadVertical:      n.cfg.Padding,
+		ContentAlignment: component.AlignmentTop,
+	})
 }
 
 // UpdateProgress updates the progress of a notification,
@@ -314,8 +393,7 @@ func (c *Container) UpdateProgress(id, message string, progress, total int64) bo
 	comp.manualProgress = progress
 	comp.manualProgressTotal = total
 	if message != "" {
-		comp.Responsive = newString(comp.cfg, message)
-		comp.Responsive.Resize(comp.width, comp.height)
+		comp.setMessage(message)
 		// force responsive list to "dirty" state, so if message
 		// size changed, we re-evaluate sizes.
 		ticket.el.SetValue(span)
@@ -444,6 +522,7 @@ func (n *Container) resumeNotification(t *notificationTicket, id string) {
 	comp.end = newEnd
 	comp.pausedAt = time.Time{}
 	comp.cancel = cancelCtx
+	t.cancelCtx = cancelCtx
 
 	n.startAutoClose(ctx, cancelCtx, t.el, id)
 }

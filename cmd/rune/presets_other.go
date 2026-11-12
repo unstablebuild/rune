@@ -1,0 +1,36 @@
+// Copyright (C) 2017-2026 The Rune Authors
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or (at
+// your option) any later version.
+//
+// This program is distributed in the hope that it will be useful, but
+// WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+// General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+//go:build !darwin
+
+package main
+
+// Platforms without presets of their own use the Linux ones: their modifier conventions
+// are closer to Linux than to macOS.
+
+import _ "embed"
+
+//go:embed preset_modal_linux.yaml
+var presetModalYAML string
+
+//go:embed preset_helix_linux.yaml
+var presetHelixYAML string
+
+//go:embed preset_standard_linux.yaml
+var presetStandardYAML string
+
+//go:embed preset_emacs_linux.yaml
+var presetEmacsYAML string

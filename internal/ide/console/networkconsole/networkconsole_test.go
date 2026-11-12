@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,6 +46,15 @@ type fakeNetwork struct {
 
 	machineNames    []string
 	machineNamesErr error
+
+	// pings are the replies to the pings, in order.
+	pings  []pingReply
+	pinged []string
+}
+
+type pingReply struct {
+	result runenet.PingResult
+	err    error
 }
 
 func (f *fakeNetwork) Status(context.Context) (runenet.Status, error) {
@@ -53,6 +63,13 @@ func (f *fakeNetwork) Status(context.Context) (runenet.Status, error) {
 
 func (f *fakeNetwork) Peers(context.Context) ([]runenet.Peer, error) {
 	return f.peers, nil
+}
+
+func (f *fakeNetwork) Ping(_ context.Context, machine string) (runenet.PingResult, error) {
+	f.pinged = append(f.pinged, machine)
+	reply := f.pings[0]
+	f.pings = f.pings[1:]
+	return reply.result, reply.err
 }
 
 func (f *fakeNetwork) Up(context.Context) error   { f.up++; return f.upErr }
@@ -229,13 +246,13 @@ func TestComplete(t *testing.T) {
 			name: "every subcommand",
 			args: nil,
 			want: []string{
-				"status", "peers", "machines", "remove", "up", "down",
+				"status", "peers", "ping", "machines", "remove", "up", "down",
 			},
 		},
 		{
 			name: "filtered by prefix",
 			args: []string{"p"},
-			want: []string{"peers"},
+			want: []string{"peers", "ping"},
 		},
 		{
 			name: "subcommands take no arguments",
@@ -272,6 +289,16 @@ func TestComplete(t *testing.T) {
 			args: []string{"remove", "laptop", ""},
 			want: nil,
 		},
+		{
+			name: "ping offers the machines online",
+			net: fakeNetwork{peers: []runenet.Peer{
+				{Hostname: "laptop", Online: true},
+				{Hostname: "lab", Online: false},
+				{Hostname: "desktop", Online: true},
+			}},
+			args: []string{"ping", "la"},
+			want: []string{"laptop"},
+		},
 	}
 
 	for _, tcase := range tsuite {
@@ -291,4 +318,101 @@ func TestComplete(t *testing.T) {
 			assert.ElementsMatch(t, tcase.want, got)
 		})
 	}
+}
+
+func TestPing(t *testing.T) {
+	laptop := netip.MustParseAddr("100.64.0.2")
+	relayed := pingReply{result: runenet.PingResult{
+		Peer: "laptop", Addr: laptop, Latency: 31400 * time.Microsecond, DERPRegion: "fra",
+	}}
+	direct := pingReply{result: runenet.PingResult{
+		Peer: "laptop", Addr: laptop, Latency: 2 * time.Millisecond, Endpoint: "192.168.1.5:41641",
+	}}
+	timedOut := pingReply{err: context.DeadlineExceeded}
+	const (
+		relayedLine  = "pong from laptop (100.64.0.2) via DERP(fra) in 31ms"
+		directLine   = "pong from laptop (100.64.0.2) via 192.168.1.5:41641 in 2ms"
+		timedOutLine = `ping "laptop" timed out`
+	)
+	repeat := func(r pingReply, n int) []pingReply {
+		ret := make([]pingReply, n)
+		for i := range ret {
+			ret[i] = r
+		}
+		return ret
+	}
+	repeatLine := func(line string, n int) []string {
+		ret := make([]string, n)
+		for i := range ret {
+			ret[i] = line
+		}
+		return ret
+	}
+
+	cases := []struct {
+		name    string
+		pings   []pingReply
+		want    []string
+		wantErr string
+	}{
+		{
+			name:  "stops once the machines reach each other directly",
+			pings: []pingReply{relayed, relayed, direct},
+			want:  []string{relayedLine, relayedLine, directLine},
+		},
+		{
+			name:  "goes on after a ping times out",
+			pings: []pingReply{timedOut, direct},
+			want:  []string{timedOutLine, directLine},
+		},
+		{
+			name:    "reports a path that stays relayed",
+			pings:   repeat(relayed, pingCount),
+			want:    repeatLine(relayedLine, pingCount),
+			wantErr: "direct connection not established",
+		},
+		{
+			name:    "reports a machine that never answers",
+			pings:   repeat(timedOut, pingCount),
+			want:    repeatLine(timedOutLine, pingCount),
+			wantErr: "no reply",
+		},
+		{
+			name:    "stops at a failure",
+			pings:   []pingReply{relayed, {err: runenet.ErrPeerNotFound}},
+			want:    []string{relayedLine},
+			wantErr: runenet.ErrPeerNotFound.Error(),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			net := &fakeNetwork{pings: tc.pings}
+			h := New(Config{Network: net})
+			h.pingInterval = 0
+			it := handle(t, h, "ping", "laptop")
+			var got []string
+			for {
+				line, ok := it.Next(context.Background())
+				if !ok {
+					break
+				}
+				line.Resize(200, 1)
+				got = append(got, strings.TrimSpace(line.(*component.ResponsiveString).String()))
+			}
+			assert.Equal(t, tc.want, got)
+			if tc.wantErr == "" {
+				assert.NoError(t, it.Err())
+			} else {
+				assert.ErrorContains(t, it.Err(), tc.wantErr)
+			}
+			assert.Empty(t, net.pings, "pings left unsent")
+			assert.Equal(t, repeatLine("laptop", len(tc.pings)), net.pinged)
+		})
+	}
+
+	t.Run("needs exactly one machine", func(t *testing.T) {
+		_, err := New(Config{Network: &fakeNetwork{}}).HandleCommand(context.Background(),
+			repl.Command{Name: CommandName, Args: []string{"ping"}}, nopProgressWriter{})
+		assert.ErrorContains(t, err, "usage: network ping <machine>")
+	})
 }

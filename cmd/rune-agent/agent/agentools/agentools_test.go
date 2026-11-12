@@ -1108,8 +1108,8 @@ func (f *fakeSearcher) RegexpSearch(_ context.Context, req searchapi.RegexpReque
 	return &fakeResults{f: f}, nil
 }
 
-func (f *fakeSearcher) SemanticSearch(context.Context, searchapi.SemanticRequest) (sdkiterator.Iterator[searchapi.SemanticResult], error) {
-	return nil, searchapi.ErrUnsupported
+func (f *fakeSearcher) SemanticSearch(context.Context, searchapi.SemanticRequest) (sdkiterator.Iterator[searchapi.SemanticResult], searchapi.SemanticStatus, error) {
+	return nil, searchapi.SemanticStatus{}, searchapi.ErrUnsupported
 }
 
 type fakeResults struct{ f *fakeSearcher }

@@ -18,10 +18,12 @@ package idecmd
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"mvdan.cc/sh/v3/shell"
 
 	"unstable.build/rune/internal/text/cmdenv"
 )
@@ -52,6 +54,7 @@ func TestExpandTargetPositional(t *testing.T) {
 		[]string{"arg1"},
 		nil,
 		nil,
+		false,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"edit", "arg1", "hellagood"}, argv)
@@ -67,6 +70,7 @@ func TestExpandTargetMissingPositional(t *testing.T) {
 		[]string{"arg1"},
 		nil,
 		nil,
+		false,
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "$2")
@@ -80,6 +84,7 @@ func TestExpandTargetPluginBodyPreservesCommandSubst(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		true,
 	)
 	require.NoError(t, err)
 	require.Len(t, argv, 2)
@@ -97,6 +102,7 @@ func TestExpandTargetChainCapture(t *testing.T) {
 		nil,
 		nil,
 		chain,
+		false,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"edit", "captured"}, argv)
@@ -110,7 +116,41 @@ func TestExpandTargetDollarDollarEscape(t *testing.T) {
 		[]string{"arg1"},
 		nil,
 		nil,
+		false,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"echo", "$1"}, argv)
+}
+
+func TestExpandTargetLineParsingCommandGetsValuesAsData(t *testing.T) {
+	t.Parallel()
+	const url = "https://example.com/?a=1&b=2;c='x' d"
+	for _, tc := range []struct {
+		name   string
+		target string
+		want   []string
+	}{
+		{name: "value", target: "term browser $1", want: []string{"browser", url}},
+		{name: "quoted value", target: `term browser "$1"`, want: []string{"browser", url}},
+		{name: "words as written", target: "term sh -c 'echo a && echo b'", want: []string{"sh", "-c", "echo a && echo b"}},
+		{name: "home", target: "term ls ~", want: []string{"ls", "/home/me"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			argv, ref, err := expandTarget(context.Background(), tc.target, []string{url}, nil, nil, true)
+			require.NoError(t, err)
+			require.Equal(t, "term", argv[0])
+			got, err := shell.Fields(strings.Join(argv[1:], " "), func(name string) string {
+				if name == "HOME" {
+					return "/home/me"
+				}
+				return ""
+			})
+			require.NoError(t, err, "args: %q", argv[1:])
+			assert.Equal(t, tc.want, got)
+			if strings.Contains(tc.target, "$1") {
+				assert.Contains(t, ref, 0)
+			}
+		})
+	}
 }

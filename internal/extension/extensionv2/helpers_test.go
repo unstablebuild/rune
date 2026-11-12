@@ -219,9 +219,9 @@ func (s stubSearcher) RegexpSearch(context.Context, searchapi.RegexpRequest) (
 }
 
 func (s stubSearcher) SemanticSearch(context.Context, searchapi.SemanticRequest) (
-	iterator.Iterator[searchapi.SemanticResult], error,
+	iterator.Iterator[searchapi.SemanticResult], searchapi.SemanticStatus, error,
 ) {
-	return nil, s.err
+	return nil, searchapi.SemanticStatus{}, s.err
 }
 
 // dialExtensionWorkspace serves res through the runner, authorizer and

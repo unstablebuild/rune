@@ -38,9 +38,10 @@ const (
 	phaseRateLimited = "ERROR"
 )
 
-// syncComponent wraps a dialoguetui.Component with the mutex that guards
-// every UI mutation. Helper methods take the lock so callers do not have
-// to coordinate access manually.
+// syncComponent is the chat a turn reports to: a dialoguetui.Component
+// with the mutex that guards every UI mutation, or the session whose
+// views show the chat. Helper methods take the lock so callers do not
+// have to coordinate access manually.
 type syncComponent struct {
 	mu   *sync.Mutex
 	comp *dialoguetui.Component
@@ -48,6 +49,9 @@ type syncComponent struct {
 	// tab reports the turn as the status of the chat's tab. It must
 	// not be used while mu is held.
 	tab *tabStatusReporter
+	// session, when not nil, holds the status bar every view of the
+	// chat shows, and mu and comp are unused.
+	session *chatSession
 }
 
 // completionOpen reports whether the chat's '#' completion band is
@@ -60,6 +64,10 @@ func (s syncComponent) completionOpen() bool {
 
 // setStatusBarState mutates the chat's status bar state.
 func (s syncComponent) setStatusBarState(fn func(*dialoguetui.StatusBarState)) {
+	if s.session != nil {
+		s.session.setStatusBarState(fn)
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.comp.SetStatusBarState(fn)

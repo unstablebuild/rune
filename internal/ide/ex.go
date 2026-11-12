@@ -65,6 +65,7 @@ import (
 	hmarkdown "unstable.build/rune/internal/handler/markdown"
 	"unstable.build/rune/internal/ide/console/ideconsole"
 	"unstable.build/rune/internal/ide/console/ideconsole/workspaceshell"
+	"unstable.build/rune/internal/ide/ideacp/acpcmd"
 	"unstable.build/rune/internal/ide/idecmd"
 	"unstable.build/rune/internal/ide/idetask"
 	"unstable.build/rune/internal/ide/keymeta"
@@ -132,8 +133,8 @@ type ex struct {
 	clip           clipboard.Register
 	ed             text.Editor
 	editorObserver *commandRegisterObserver
-	// rawArgsCommands holds the subscribed commands whose args the
-	// prompt dispatches as typed; see commandAll.rawArgs.
+	// rawArgsCommands holds the commands whose args the prompt
+	// dispatches as typed; see commandAll.rawArgs.
 	rawArgsCommands map[string]bool
 	parser          syntaxapi.Parser
 	svc             vctrl.Service
@@ -206,11 +207,22 @@ type ex struct {
 	// promptMouseDown latches while a mouse button is held over the
 	// prompt handling path so a drag that leaves the prompt rect and
 	// releases outside is not mistaken for an outside click.
-	promptMouseDown       bool
-	promptShader          *shader.Component
-	commandPromptCfg      commandPromptConfig
-	promptGraphics        *tcomponent.FrameGraphics
-	promptGraphicsStorage storageapi.Service
+	promptMouseDown  bool
+	promptShader     *shader.Component
+	commandPromptCfg commandPromptConfig
+	// graphics draws the images of the command prompt and of the
+	// notifications. It is nil until either names one.
+	graphics        *tcomponent.FrameGraphics
+	graphicsStorage storageapi.Service
+	// acpChats is the acp command, whose chats restyleChats restyles. It
+	// is nil until the workspace's extensions are built.
+	acpChats *acpcmd.Handler
+	// acpChatImages caches the images of the acp chats' status bars and
+	// compose box frames.
+	acpChatImages storageapi.Service
+	// statusBars styles the status bars of the editors e opens. It is
+	// nil where they are not restyled.
+	statusBars *text.StatusBarStyles
 	// editorModeModal records whether the editor backing this ex runs in
 	// modal mode. The cheatsheet uses it to gate modal-only key tips.
 	editorModeModal bool
@@ -293,6 +305,7 @@ func newEx(
 	commandObserver commandObserver,
 	debugCommands bool,
 	commandPromptCfg commandPromptConfig,
+	notificationsStyle notifications.Style,
 	editorModeModal bool,
 	editorMode string,
 	metaKey keymeta.Meta,
@@ -303,6 +316,7 @@ func newEx(
 ) (e *ex, err error) {
 	e = new(ex)
 	e.svc = svc
+	e.debugCommands = debugCommands
 	err = e.init(edFactory, m, storage, notifications, uri,
 		emulatorConfig, pluginBarConfig, publishEvent, initialVTECapacity, clip, macro,
 		dispatchOnPreview, tm, parser, promptEditor, nameGen, opts...)
@@ -313,8 +327,8 @@ func newEx(
 		return
 	}
 	e.commandObserver = commandObserver
-	e.debugCommands = debugCommands
 	e.commandPromptCfg = commandPromptCfg
+	e.container.Restyle(notificationsStyle)
 	e.editorModeModal = editorModeModal
 	e.editorMode = editorMode
 	e.metaKey = metaKey
@@ -441,13 +455,13 @@ func (e *ex) init(
 	// "!" plugins float with a window bar that shows the command as
 	// its title, so drop the command from the plugin's own bar. Task
 	// windows keep it: they can be tiled, where there is no bar.
-	floatPluginOpts := pluginOpts
-	if e.config.WindowManagerConfig.Frame &&
-		e.config.WindowManagerConfig.WindowBar {
-		floatPluginOpts = append(slices.Clip(pluginOpts),
-			plugin.WithoutBarCommand())
-	}
 	e.newPluginHandler = func(width int, args ...string) (pluginHandler, error) {
+		floatPluginOpts := pluginOpts
+		if e.config.WindowManagerConfig.Frame &&
+			e.config.WindowManagerConfig.WindowBar {
+			floatPluginOpts = append(slices.Clip(pluginOpts),
+				plugin.WithoutBarCommand())
+		}
 		h, err := plugin.New(e.Browser(), e.Browser(), e.executor, e.terminal,
 			e.tm, args, width, floatPluginOpts...)
 		if err != nil {
@@ -470,12 +484,8 @@ func (e *ex) init(
 
 func (e *ex) subscribeCommands() error {
 	var ret error
-	e.rawArgsCommands = make(map[string]bool)
 	subscribe := func(name string, man commandAll) {
 		man.man.Name = name
-		if man.rawArgs {
-			e.rawArgsCommands[name] = true
-		}
 		err := e.editorObserver.SubscribeCommand(man.man, text.FuncCommandHandler(
 			func(ctx context.Context, cmd textapi.Command) error {
 				return man.handler(e, ctx, cmd.Args...)
@@ -579,11 +589,13 @@ func (e *ex) doInit(
 	e.stepWaitTimeout = e.pluginWaitTimeout + 30*time.Second
 	e.clip = clip
 	e.workspace = m
-	e.container = notifications.New(&e.comp, n.cfg)
+	e.storage = storage
+	notiCfg := n.cfg
+	notiCfg.Graphics = e.frameGraphics
+	e.container = notifications.New(&e.comp, notiCfg)
 	e.notifications = n.new(uri, e.container)
 	e.terminal = newAsyncTerminal(m, e.notifications)
 	e.publishEvent = publishEvent
-	e.storage = storage
 	e.workspaceURI = uri
 	// A t=f, t=t or t=s graphics transmission names a file on the
 	// machine the terminal's command runs on, which is this workspace.
@@ -625,8 +637,22 @@ func (e *ex) doInit(
 		cmdBrowserCfg.TabBarHeight = wmOriginY
 	}
 	e.cmdV.C = browser.NewComponent(cmdBrowserCfg)
+	e.rawArgsCommands = make(map[string]bool)
+	var rawArgs []string
+	tables := []map[string]commandAll{exCommands}
+	if e.debugCommands {
+		tables = append(tables, exDebugCommands)
+	}
+	for _, table := range tables {
+		for name, man := range table {
+			if man.rawArgs {
+				e.rawArgsCommands[name] = true
+				rawArgs = append(rawArgs, name)
+			}
+		}
+	}
 	e.aliasExpander = idecmd.NewExpander(
-		e.config.CommandAliases, e.comp.DispatchEnv(),
+		e.config.CommandAliases, e.comp.DispatchEnv(), rawArgs,
 	)
 	return
 }
@@ -3435,14 +3461,20 @@ func (e *ex) Close() (ret error) {
 		ret = multierror.Append(ret, err)
 	}
 	e.stopPromptShader()
-	if e.promptGraphics != nil {
-		if err := e.promptGraphics.Close(); err != nil {
+	if e.graphics != nil {
+		if err := e.graphics.Close(); err != nil {
 			ret = multierror.Append(ret, err)
 		}
-		if err := e.promptGraphicsStorage.Close(); err != nil {
+		if err := e.graphicsStorage.Close(); err != nil {
 			ret = multierror.Append(ret, err)
 		}
-		e.promptGraphics, e.promptGraphicsStorage = nil, nil
+		e.graphics, e.graphicsStorage = nil, nil
+	}
+	if e.acpChatImages != nil {
+		if err := e.acpChatImages.Close(); err != nil {
+			ret = multierror.Append(ret, err)
+		}
+		e.acpChatImages = nil
 	}
 	if err := e.container.Close(); err != nil {
 		ret = multierror.Append(ret, err)
@@ -3461,12 +3493,12 @@ func (e *ex) cleanPartialReissueState() {
 	e.ctxPartialReissue = context.Background()
 }
 
-func (e *ex) promptFrameGraphics() *tcomponent.FrameGraphics {
-	if e.promptGraphics == nil {
-		e.promptGraphicsStorage = storageapi.WithPartition(e.storage, frameImagesPartition)
-		e.promptGraphics = tcomponent.NewFrameGraphics(e.promptGraphicsStorage, e)
+func (e *ex) frameGraphics() *tcomponent.FrameGraphics {
+	if e.graphics == nil {
+		e.graphicsStorage = storageapi.WithPartition(e.storage, frameImagesPartition)
+		e.graphics = tcomponent.NewFrameGraphics(e.graphicsStorage, e)
 	}
-	return e.promptGraphics
+	return e.graphics
 }
 
 // promptFrameCharSets returns the charset the command prompt draws its frame
@@ -3479,21 +3511,44 @@ func (e *ex) promptFrameCharSets() (frame, radar component.FrameCharSet) {
 }
 
 // restyle draws e with s from the next Draw on, as browser.Component.Restyle
-// does, and the command prompts it opens later. Its frames and prompt
-// buttons draw images as tcomponent.FrameGraphics.Reload takes them.
-func (e *ex) restyle(s hudStyle, images map[string]image.Image) {
+// does, and the command prompts it opens later, and its notifications,
+// open and later. Its frames, prompt buttons and notifications draw
+// images as tcomponent.FrameGraphics.Reload takes them.
+// Its editor status bars, open and later, draw statusBarImages as
+// text.StatusBarStyles.Restyle takes them, and its terminals, open and
+// later, ring the bell with s's sound.
+func (e *ex) restyle(s hudStyle, images, statusBarImages map[string]image.Image) {
 	e.config.Config = e.config.Config.Restyled(s.browser)
+	e.config.CommandOverlay.ShowManual = s.commandShowManual
 	e.commandPromptCfg.frameCharSet = s.commandPromptFrame
 	e.commandPromptCfg.separator = s.commandPromptSeparator
-	e.comp.Browser().Restyle(s.browser)
-	e.cmdV.C.Restyle(s.browser)
+	if e.emulatorConfig.BellSound != nil {
+		e.emulatorConfig.BellSound.Store(new(s.bellSound))
+	}
+	// Reloaded first: the tab bars take their images from the graphics
+	// as they are restyled.
 	for _, g := range []*tcomponent.FrameGraphics{
-		e.comp.Browser().FrameGraphics(), e.cmdV.C.FrameGraphics(), e.promptGraphics,
+		e.comp.Browser().FrameGraphics(), e.cmdV.C.FrameGraphics(), e.graphics,
 	} {
 		if g != nil {
 			g.Reload(images)
 		}
 	}
+	e.comp.Browser().Restyle(s.browser)
+	e.cmdV.C.Restyle(s.browser)
+	e.container.Restyle(s.notifications)
+	if e.statusBars != nil {
+		e.statusBars.Restyle(s.statusBar, statusBarImages)
+	}
+}
+
+// restyleChats gives e's acp chats, open and later, the status bar and
+// compose box frame of the Rune Agent chat settings in cfg.
+func (e *ex) restyleChats(cfg map[string]any) {
+	if e.acpChats == nil {
+		return
+	}
+	e.acpChats.Restyle(ideConfig{cfg: cfg, errors: make(map[string]error)}.agentChatConfig())
 }
 
 // stopTerminal releases the pty-resize worker. It is safe to call on a

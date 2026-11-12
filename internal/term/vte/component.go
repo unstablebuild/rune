@@ -136,9 +136,13 @@ func (t *Component) Init(
 		panic("nil schedule function or sound player")
 	}
 
-	bell := func() {}
-	if cfg.BellSound != "" {
-		bell = func() { cfg.Sounds.Play(cfg.BellSound) }
+	bell := func() {
+		if cfg.BellSound == nil {
+			return
+		}
+		if name := cfg.BellSound.Load(); name != nil && *name != "" {
+			cfg.Sounds.Play(*name)
+		}
 	}
 	t.parserHandler = newParserHandler(
 		&t.mu, t.ptyIn, t, tm, t.clipboard, bell, t.uri,

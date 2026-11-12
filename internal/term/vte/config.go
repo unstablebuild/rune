@@ -18,6 +18,7 @@ package vte
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
@@ -30,13 +31,15 @@ import (
 
 // DefaultConfig returns a sane default Config.
 func DefaultConfig() Config {
+	bellSound := new(atomic.Pointer[string])
+	bellSound.Store(new(sounds.Warning))
 	return Config{
 		Clipboard:                clipboard.NewInMemory(),
 		ClipboardRegister:        clipboard.DefaultRegisterID,
 		ClipboardAccess:          ClipboardAccess{Write: true},
 		ScheduleNextTick:         func(cb func()) bool { cb(); return true },
 		Sounds:                   sounds.Silent,
-		BellSound:                sounds.Warning,
+		BellSound:                bellSound,
 		SelectionAttributes:      term.Attributes{Attrs: term.AttrReverse},
 		NeedsAttentionAttributes: term.Attributes{Attrs: term.AttrBlink},
 		DynamicTabName:           false,
@@ -67,9 +70,12 @@ type Config struct {
 	// sounds.Error when a vi-mode edit is refused, possibly from the pty
 	// goroutine.
 	Sounds sounds.Player
-	// BellSound is the sound the program ringing the bell plays; "" plays
-	// none. The tab is marked as needing attention either way.
-	BellSound string
+	// BellSound names the sound the program ringing the bell plays. The
+	// terminals created with copies of a Config share it, so storing a
+	// name changes what they all play from their next bell on. A nil
+	// BellSound, or one holding nil or "", plays none. The tab is marked
+	// as needing attention either way.
+	BellSound *atomic.Pointer[string]
 	Watcher   workspaceapi.ProcessWatcher
 
 	Attributes               term.Attributes

@@ -64,6 +64,7 @@ import (
 	"unstable.build/rune/internal/handler/search"
 	"unstable.build/rune/internal/handler/searchbox"
 	"unstable.build/rune/internal/ide/hostenv"
+	"unstable.build/rune/internal/ide/ideacp"
 	"unstable.build/rune/internal/ide/idedebug"
 	"unstable.build/rune/internal/ide/idelsp"
 	"unstable.build/rune/internal/ide/idestatus"
@@ -118,10 +119,13 @@ const (
 	keyQuickMenuSounds = "quick_menu_sounds"
 	keyQuickMenuHover  = "hover"
 	keyQuickMenuClick  = "click"
+	keyTabSounds       = "tab_sounds"
 
 	keySounds       = "sounds"
 	keyTerminal     = "terminal"
 	keyTerminalBell = "bell"
+
+	keyACP = "acp"
 
 	keyProgramStatus       = "program_status"
 	keyProgramStatusSounds = "sounds"
@@ -834,6 +838,77 @@ func (c ideConfig) debuggerArgsTemplate(
 		}
 		ret[k] = s
 	}
+	return ret
+}
+
+// acpConfigs reads the Agent Client Protocol agents under
+// acp.agents.<name>: a required command, and optional args (a list of
+// strings) and env (a map of strings). Invalid entries are recorded in
+// c.errors and skipped.
+func (c ideConfig) acpConfigs() ideacp.Config {
+	ret := ideacp.Config{Agents: make(map[string]ideacp.AgentConfig)}
+	if c.cfg == nil {
+		return ret
+	}
+	acpCfg, ok := c.getConfig(config.MapConfig(c.cfg), keyACP)
+	if !ok {
+		return ret
+	}
+	agents, err := acpCfg.GetConfig("agents")
+	if err != nil {
+		if !errors.Is(err, config.ErrNotFound) {
+			c.errors[keyACP+".agents"] = err
+		}
+		return ret
+	}
+	agents.Iterate(func(name string, _ any) {
+		key := keyACP + ".agents." + name
+		entry, err := agents.GetConfig(name)
+		if err != nil {
+			c.errors[key] = err
+			return
+		}
+		command, err := entry.GetString("command")
+		if errors.Is(err, config.ErrNotFound) {
+			err = errors.New("command is required")
+		}
+		if err == nil && strings.TrimSpace(command) == "" {
+			err = errors.New("command is empty")
+		}
+		if err != nil {
+			c.errors[key+".command"] = err
+			return
+		}
+		agent := ideacp.AgentConfig{Command: command}
+		if raw, err := entry.GetSlice("args"); err == nil {
+			for i, v := range raw {
+				s, ok := v.(string)
+				if !ok {
+					c.errors[fmt.Sprintf("%s.args.%d", key, i)] = errors.New("value must be a string")
+					return
+				}
+				agent.Args = append(agent.Args, s)
+			}
+		} else if !errors.Is(err, config.ErrNotFound) {
+			c.errors[key+".args"] = err
+			return
+		}
+		if raw, err := entry.GetMap("env"); err == nil {
+			agent.Env = make(map[string]string, len(raw))
+			for k, v := range raw {
+				s, ok := v.(string)
+				if !ok {
+					c.errors[key+".env."+k] = errors.New("value must be a string")
+					return
+				}
+				agent.Env[k] = s
+			}
+		} else if !errors.Is(err, config.ErrNotFound) {
+			c.errors[key+".env"] = err
+			return
+		}
+		ret.Agents[name] = agent
+	})
 	return ret
 }
 
@@ -2290,62 +2365,183 @@ func (c ideConfig) hudStyle() hudStyle {
 			FrameUnionCharSet: c.frameUnionCharset(),
 			Prompt:            c.promptConfig(),
 			Wallpaper:         c.wallpaper(),
+			Tabs:              c.browserTabStyle(),
 		},
 		commandPromptFrame:     frame,
 		commandPromptSeparator: separator,
+		commandShowManual:      c.commandOverlayShowManual(),
+		statusBar:              c.statusBarStyle(),
+		bellSound:              c.terminalBellSound(),
+		notifications:          c.notificationsStyle(),
+		notifyStatus:           c.statusNotifyConfig(),
+		workspaceBar:           c.workspaceBarStyle(),
+		statusInbox:            c.statusInboxStyle(),
 	}
 }
 
 // promptImages reads browser.prompt.images. Every state but idle falls
-// back to another's images, so naming any without idle is an error,
-// which draws no images at all.
+// back to another's images, so naming any without idle is an error.
 func (c ideConfig) promptImages() browser.PromptImages {
 	cfg, ok := c.prompt()
 	if !ok {
 		return browser.PromptImages{}
 	}
-	images, err := cfg.GetConfig("images")
+	return c.buttonImages(cfg, "images", "prompt", []buttonImageKey{
+		{"idle", component.ButtonIdle},
+		{"selected", component.ButtonSelected},
+		{"hover", component.ButtonHover},
+		{"pressed", component.ButtonPressed},
+	}, true)
+}
+
+// buttonImageKey is the key of cfg that buttonImages reads the images of
+// state from.
+type buttonImageKey struct {
+	key   string
+	state component.ButtonState
+}
+
+// buttonImages reads the images of each state of states from the
+// left, middle and right keys of its key in cfg's table key, and the
+// top, bottom and sides of that table's outset, reporting errors under
+// errKey.key. With requireIdle, naming images for a state without naming
+// images for idle, which the others fall back to, is an error. An error
+// in any state draws no images at all.
+func (c ideConfig) buttonImages(
+	cfg config.Config, key, errKey string, states []buttonImageKey, requireIdle bool,
+) browser.PromptImages {
+	name := errKey + "." + key
+	images, err := cfg.GetConfig(key)
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["prompt.images"] = err
+			c.errors[name] = err
 		}
 		return browser.PromptImages{}
 	}
 	var ret browser.PromptImages
-	states := []struct {
-		key string
-		dst *browser.PromptButtonImage
-	}{
-		{"idle", &ret.Idle},
-		{"selected", &ret.Selected},
-		{"hover", &ret.Hover},
-		{"pressed", &ret.Pressed},
+	slots := map[component.ButtonState]*browser.PromptButtonImage{
+		component.ButtonIdle:     &ret.Idle,
+		component.ButtonSelected: &ret.Selected,
+		component.ButtonHover:    &ret.Hover,
+		component.ButtonPressed:  &ret.Pressed,
 	}
 	var errs []error
 	for _, s := range states {
+		dst := slots[s.state]
 		if err := tconfig.GetGraphics(images, s.key, nil,
-			tconfig.GraphicsSlot{Key: "left", URI: &s.dst.Left},
-			tconfig.GraphicsSlot{Key: "middle", URI: &s.dst.Middle},
-			tconfig.GraphicsSlot{Key: "right", URI: &s.dst.Right},
+			tconfig.GraphicsSlot{Key: "left", URI: &dst.Left},
+			tconfig.GraphicsSlot{Key: "middle", URI: &dst.Middle},
+			tconfig.GraphicsSlot{Key: "right", URI: &dst.Right},
 		); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	if len(errs) > 0 {
-		c.errors["prompt.images"] = errors.Join(errs...)
+		c.errors[name] = errors.Join(errs...)
 		return browser.PromptImages{}
 	}
-	if ret.Idle.Empty() && !ret.Empty() {
-		c.errors["prompt.images.idle"] = errors.New(
+	if requireIdle && ret.Idle.Empty() && !ret.Empty() {
+		c.errors[name+".idle"] = errors.New(
 			"expected images for idle buttons, which the other states fall back to")
 		return browser.PromptImages{}
 	}
-	c.graphicsOutset(cfg, "images", "prompt",
+	c.graphicsOutset(cfg, key, errKey,
 		outsetSide{&ret.Outset.Top, "top"},
 		outsetSide{&ret.Outset.Bottom, "bottom"},
 		outsetSide{&ret.Outset.Sides, "sides"},
 	)
 	return ret
+}
+
+// lineGraphics reads the graphics table key of cfg, with the start,
+// middle and end images of the line under startKey, middleKey and
+// endKey, reporting an error under errKey.key, which draws none of its
+// images.
+func (c ideConfig) lineGraphics(
+	cfg config.Config, key, errKey, startKey, middleKey, endKey string,
+) tcomponent.LineGraphics {
+	var g tcomponent.LineGraphics
+	if err := tconfig.GetGraphics(cfg, key, &g.Overlay,
+		tconfig.GraphicsSlot{Key: startKey, URI: &g.Start},
+		tconfig.GraphicsSlot{Key: middleKey, URI: &g.Middle},
+		tconfig.GraphicsSlot{Key: endKey, URI: &g.End},
+	); err != nil {
+		c.errors[errKey+"."+key] = err
+		return tcomponent.LineGraphics{}
+	}
+	return g
+}
+
+// tabImages reads the tab_images of cfg, whose errors go under errKey:
+// the tabs in focus are drawn over the focus images, or the non_focus
+// ones without them, and the rest over the hover and pressed ones while
+// the pointer is on them.
+func (c ideConfig) tabImages(cfg config.Config, errKey string) browser.PromptImages {
+	return c.buttonImages(cfg, "tab_images", errKey, []buttonImageKey{
+		{"non_focus", component.ButtonIdle},
+		{"focus", component.ButtonSelected},
+		{"hover", component.ButtonHover},
+		{"pressed", component.ButtonPressed},
+	}, false)
+}
+
+// tabSounds reads the tab_sounds of cfg: the sounds a tab bar plays when
+// the pointer moves onto a tab not in focus and when a tab is clicked.
+// validateSounds dropped the entries naming no known sound.
+func (c ideConfig) tabSounds(cfg config.Config) handler.TabSounds {
+	soundsCfg, err := cfg.GetConfig(keyTabSounds)
+	if err != nil {
+		return handler.TabSounds{}
+	}
+	var ret handler.TabSounds
+	ret.Hover, _ = soundsCfg.GetString(keyQuickMenuHover)
+	ret.Click, _ = soundsCfg.GetString(keyQuickMenuClick)
+	return ret
+}
+
+// tabHighlightGraphics reads the focus_tab_highlight_graphics of cfg,
+// whose errors go under errKey.
+func (c ideConfig) tabHighlightGraphics(cfg config.Config, errKey string) tcomponent.LineGraphics {
+	return c.lineGraphics(cfg, "focus_tab_highlight_graphics", errKey,
+		"left", "horizontal", "right")
+}
+
+// browserTabStyle reads how the tab bar of a workspace looks.
+func (c ideConfig) browserTabStyle() browser.TabStyle {
+	ret := browser.TabStyle{
+		FocusTabAttr:          c.focusTabAttr(),
+		NonFocusTabAttr:       c.nonFocusTabAttr(),
+		FocusTabIconAttr:      c.focusTabIconAttr(),
+		NonFocusTabIconAttr:   c.nonFocusTabIconAttr(),
+		FocusTabHighlightAttr: c.highlightTabAttr(),
+		FocusTabHighlightChar: c.highlightTabChar(),
+		HoverTabAttr:          c.hoverTabAttr(),
+	}
+	if cfg, ok := c.browser(); ok {
+		ret.Images = c.tabImages(cfg, "browser")
+		ret.HighlightGraphics = c.tabHighlightGraphics(cfg, "browser")
+		ret.Sounds = c.tabSounds(cfg)
+	}
+	return ret
+}
+
+// workspaceBarStyle reads how the workspace bar looks: the tab colours
+// of browser, with the highlight character, images and sounds of
+// workspace.
+func (c ideConfig) workspaceBarStyle() workspaceBarStyle {
+	ws := c.workspace()
+	return workspaceBarStyle{
+		focusTabAttr:        c.focusTabAttr(),
+		nonFocusTabAttr:     c.nonFocusTabAttr(),
+		focusTabIconAttr:    c.focusTabIconAttr(),
+		nonFocusTabIconAttr: c.nonFocusTabIconAttr(),
+		highlightAttr:       c.highlightTabAttr(),
+		hoverAttr:           c.hoverTabAttr(),
+		highlightChar:       c.workspaceHighlightTabChar(),
+		images:              c.tabImages(ws, "workspace"),
+		highlight:           c.tabHighlightGraphics(ws, "workspace"),
+		sounds:              c.tabSounds(ws),
+	}
 }
 
 func (c ideConfig) getConfig(cfg config.Config, key string) (config.Config, bool) {
@@ -2631,6 +2827,15 @@ func getProgressRunes(c config.Config, def notifications.ProgressRunes) (
 	if err == nil {
 		ret.Start = r
 	}
+	if err := tconfig.GetGraphics(cfg, "graphics", &ret.Graphics.Overlay,
+		tconfig.GraphicsSlot{Key: "start", URI: &ret.Graphics.Start},
+		tconfig.GraphicsSlot{Key: "current", URI: &ret.Graphics.Current},
+		tconfig.GraphicsSlot{Key: "current_tip", URI: &ret.Graphics.CurrentTip},
+		tconfig.GraphicsSlot{Key: "remain", URI: &ret.Graphics.Remain},
+		tconfig.GraphicsSlot{Key: "end", URI: &ret.Graphics.End},
+	); err != nil {
+		return def, err
+	}
 	return ret, nil
 }
 
@@ -2670,18 +2875,26 @@ func (c ideConfig) notificationsDuration(key string, def time.Duration) (ret tim
 
 func (c ideConfig) notificationsConfig() notifications.Config {
 	ret := defaultNotificationsConfig()
+	ret.Style = c.notificationsStyle()
+	ret.AutoClose = c.notificationsDuration("auto_close", ret.AutoClose)
+	return ret
+}
+
+// notificationsStyle reads the keys of notifications that
+// notifications.Container.Restyle applies.
+func (c ideConfig) notificationsStyle() notifications.Style {
+	ret := defaultNotificationsConfig().Style
 	ret.Attributes = c.getConfigAttr("notifications", "attr", ret.Attributes)
 	ret.BackgroundAttributes = c.getConfigAttr("notifications", "background_attr", ret.BackgroundAttributes)
 	ret.FrameCharSet = c.notificationsCharset(ret.FrameCharSet)
 	ret.ProgressBar = c.notificationsBool("progress_bar", ret.ProgressBar)
-	ret.AutoClose = c.notificationsDuration("auto_close", ret.AutoClose)
 	ret.ProgressRunes = c.notificationsProgressRunes(ret.ProgressRunes)
 	ret.Padding = c.notificationsPadding(ret.Padding)
 	setNotificationsColor(&ret)
 	return ret
 }
 
-func setNotificationsColor(ret *notifications.Config) {
+func setNotificationsColor(ret *notifications.Style) {
 	ret.ColorInfo.Bg = ret.BackgroundAttributes.Bg
 	ret.ColorSuccess.Bg = ret.BackgroundAttributes.Bg
 	ret.ColorError.Bg = ret.BackgroundAttributes.Bg
@@ -2719,6 +2932,11 @@ func (c ideConfig) nonFocusTabIconAttr() term.Attributes {
 func (c ideConfig) highlightTabAttr() term.Attributes {
 	return c.getBrowserAttr("focus_tab_highlight_attr",
 		browser.DefaultConfig().FocusTabHighlightAttr)
+}
+
+func (c ideConfig) hoverTabAttr() term.Attributes {
+	return c.getBrowserAttr("hover_tab_attr",
+		browser.DefaultConfig().HoverTabAttr)
 }
 
 func (c ideConfig) highlightTabChar() rune {
@@ -3973,20 +4191,31 @@ func (c ideConfig) statusBarConfig(
 	cwd workspaceapi.URI, pub text.EventPublisher, svc vctrl.Service,
 	interrupter term.Interrupter,
 ) text.StatusBarConfig {
+	style := c.statusBarStyle()
 	ret := text.StatusBarConfig{
 		Workspace:        cwd,
 		ScheduleNextTick: c.scheduleNextTick,
 		Publisher:        pub,
 		Interrupter:      interrupter,
-		BackgroundColor:  c.statusBarAttr("background_attr", term.Attributes{}).Bg,
-		ErrorColor:       c.statusBarAttr("foreground_error_attr", term.Attributes{}).Fg,
+		BackgroundColor:  style.BackgroundColor,
+		ErrorColor:       style.ErrorColor,
 		GitService:       svc,
-		Layout:           c.statusBarLayout(),
+		Layout:           style.Layout,
 	}
 	if c.storage != nil {
 		ret.Storage = storageapi.WithPartition(c.storage, statusBarImagesPartition)
 	}
 	return ret
+}
+
+// statusBarStyle reads the keys of editor.status_bar that a HUD reload
+// restyles open status bars with.
+func (c ideConfig) statusBarStyle() text.StatusBarStyle {
+	return text.StatusBarStyle{
+		Layout:          c.statusBarLayout(),
+		BackgroundColor: c.statusBarAttr("background_attr", term.Attributes{}).Bg,
+		ErrorColor:      c.statusBarAttr("foreground_error_attr", term.Attributes{}).Fg,
+	}
 }
 
 // statusBarImagesPartition caches the images status bar layouts download.
@@ -4961,6 +5190,23 @@ func (c ideConfig) inputMode() term.InputMode {
 	return ret
 }
 
+// agentChatConfig returns what dialoguetui.ReadConfig reads Rune Agent's
+// chats from, which ACP chats share so the two look and edit alike: own
+// is extensions.rune-agent.config, empty without it, and host is c as
+// Rune serves it to Rune Agent.
+func (c ideConfig) agentChatConfig() (own, host config.Config) {
+	if c.cfg == nil {
+		return config.NopConfig(), config.NopConfig()
+	}
+	host = config.MapConfig(c.cfg)
+	if p, ok := c.extensions()["rune-agent"]; ok {
+		if cfg, ok := p.config(); ok {
+			return cfg, host
+		}
+	}
+	return config.NopConfig(), host
+}
+
 func (c ideConfig) extensions() map[string]extensionConfig {
 	pConfigIfc, ok := c.cfg["extensions"]
 	if !ok {
@@ -5230,7 +5476,7 @@ func (c ideConfig) terminalBellTrigger() (ret []byte) {
 // terminalBellSound reads terminal.bell, the name of the sound a
 // program ringing the bell plays; "" plays none.
 func (c ideConfig) terminalBellSound() string {
-	ret := vte.DefaultConfig().BellSound
+	ret := *vte.DefaultConfig().BellSound.Load()
 	cfg, ok := c.terminal()
 	if !ok {
 		return ret
@@ -5399,7 +5645,7 @@ func (c ideConfig) terminalConfig() vte.Config {
 	ret.ClipboardAccess = c.terminalClipboardAccess()
 	ret.ScheduleNextTick = c.scheduleNextTick
 	ret.Sounds = c.sounds
-	ret.BellSound = c.terminalBellSound()
+	ret.BellSound.Store(new(c.terminalBellSound()))
 	ret.CellPixelSize = c.cellPixelSize
 	ret.MinWidth = defaultMinWidth
 	ret.Search = c.terminalSearchConfig()
@@ -5515,13 +5761,13 @@ func (c ideConfig) terminalStatus() (config.Config, bool) {
 // statusInboxStyle reads program_status, which styles the status inbox.
 // Its marker takes what program_status.marker_attr leaves unset of the
 // marker of the focused tab, browser.focus_tab_highlight_attr, but its
-// background, which is the selection's, and its lines the browser's
-// frame.
+// background, which is the selection's, and its divider the window
+// frame's left edge.
 func (c ideConfig) statusInboxStyle() idestatus.InboxStyle {
 	ret := idestatus.DefaultInboxStyle()
 	ret.MarkerAttr = c.highlightTabAttr()
 	ret.MarkerAttr.Bg = term.ColorDefault
-	ret.Frame = c.frameUnionCharset()
+	ret.Divider = c.statusDividerCharset(ret.Divider)
 	if c.cfg == nil {
 		return ret
 	}
@@ -5577,7 +5823,94 @@ func (c ideConfig) statusInboxStyle() idestatus.InboxStyle {
 	} else if err != config.ErrNotFound {
 		c.errors[prefix+"progress_bar"] = err
 	}
+	ret.Images = c.buttonImages(cfg, "images", "program_status", []buttonImageKey{
+		{"idle", component.ButtonIdle},
+		{"selected", component.ButtonSelected},
+		{"hover", component.ButtonHover},
+	}, false)
+	ret.MarkerGraphics = c.lineGraphics(cfg, "marker_graphics", "program_status", "top", "vertical", "bottom")
+	var bar idestatus.ProgressBarGraphics
+	if err := tconfig.GetGraphics(cfg, "progress_bar_graphics", &bar.Overlay,
+		tconfig.GraphicsSlot{Key: "left", URI: &bar.Left},
+		tconfig.GraphicsSlot{Key: "filled", URI: &bar.Filled},
+		tconfig.GraphicsSlot{Key: "empty", URI: &bar.Empty},
+		tconfig.GraphicsSlot{Key: "right", URI: &bar.Right},
+	); err != nil {
+		c.errors[prefix+"progress_bar_graphics"] = err
+	} else {
+		ret.ProgressBarGraphics = bar
+	}
 	return ret
+}
+
+// statusDividerCharset reads program_status.divider_charset over def.
+// Its vertical rune and image, and the image's mode, default to those
+// of the window frame's left edge, and its vertical_top and
+// vertical_bottom to its vertical rune.
+func (c ideConfig) statusDividerCharset(def tcomponent.DividerCharSet) (out tcomponent.DividerCharSet) {
+	const name = "program_status.divider_charset"
+	frame := c.windowFrameCharset()
+	out = def
+	out.VerticalTop, out.Vertical, out.VerticalBottom = 0, frame.VerticalLeft, 0
+	out.Graphics.Vertical = frame.Graphics.VerticalLeft
+	out.Graphics.Overlay = frame.Graphics.Overlay
+	defer func() {
+		if out.VerticalTop == 0 {
+			out.VerticalTop = out.Vertical
+		}
+		if out.VerticalBottom == 0 {
+			out.VerticalBottom = out.Vertical
+		}
+	}()
+	if c.cfg == nil {
+		return out
+	}
+	status, ok := c.getConfig(config.MapConfig(c.cfg), "program_status")
+	if !ok {
+		return out
+	}
+	cfg, err := status.GetConfig("divider_charset")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors[name] = err
+		}
+		return out
+	}
+	for _, f := range []struct {
+		key string
+		dst *rune
+	}{
+		{"top", &out.Top},
+		{"vertical_top", &out.VerticalTop},
+		{"vertical", &out.Vertical},
+		{"vertical_bottom", &out.VerticalBottom},
+		{"bottom", &out.Bottom},
+	} {
+		r, err := cfg.GetRune(f.key)
+		if err != nil {
+			if err != config.ErrNotFound {
+				c.errors[name+"."+f.key] = err
+			}
+			continue
+		}
+		*f.dst = r
+	}
+	g := out.Graphics
+	if err := tconfig.GetGraphics(cfg, "graphics", &g.Overlay,
+		tconfig.GraphicsSlot{Key: "top", URI: &g.Top},
+		tconfig.GraphicsSlot{Key: "vertical", URI: &g.Vertical},
+		tconfig.GraphicsSlot{Key: "bottom", URI: &g.Bottom},
+	); err != nil {
+		c.errors[name] = err
+		return out
+	}
+	c.graphicsOutset(cfg, "graphics", name,
+		outsetSide{&g.Outset.Left, "left"},
+		outsetSide{&g.Outset.Right, "right"},
+		outsetSide{&g.Outset.Inward, "inward"},
+	)
+	out.Graphics = g
+	return out
 }
 
 // parseProgressBarCharSet reads a progress bar from its left end, what is
@@ -5622,6 +5955,15 @@ func tabStatusConfigFor(cfg ideConfig) browser.TabStatusConfig {
 		return browser.TabStatusConfig{}
 	}
 	return cfg.tabStatusConfig()
+}
+
+// statusNotifyConfig returns what tabStatusNotifyConfig selects, or
+// nothing when terminal.status is disabled.
+func (c ideConfig) statusNotifyConfig() idestatus.NotifyConfig {
+	if !c.tabStatusEnabled() {
+		return idestatus.NotifyConfig{}
+	}
+	return c.tabStatusNotifyConfig()
 }
 
 // tabStatusNotifyConfig reads terminal.status.notify, the states a tab

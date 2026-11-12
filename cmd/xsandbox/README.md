@@ -107,6 +107,9 @@ o = expect_resource_opener("chat")   # resource opener for chat:// arrived
 invoke_command(h, args = ["world"])  # dispatch and wait for completion
 out = invoke_repl_command(r, args = [])  # its output, rendered 80 columns wide;
                                      # fails if the output ends in an error
+complete_command(h, args = ["wo"])   # the candidates completing args, in order
+complete_repl_command(r, args = [])  # likewise for a REPL command
+help = repl_help(r, args = [])       # a REPL command's help, rendered as its output
 open_resource(o, "chat://host/1")    # ask for the content and show it
 uris = complete_resource(o, "chat://")  # the URIs completing a prefix, in order
 publish_event("open", uri = "file:///tmp/x", content = "...")
@@ -124,6 +127,14 @@ if "count=0" not in out:                   # assert with `in` / fail()
     fail("unexpected render:\n" + out)
 res = send_key(w, "<space>")               # tokens per handlertest grammar
 out = render(w)                            # re-render to observe the change
+# send_mouse delivers mouse tokens at a cell of the last render, which
+# the browser routes to the window there; send_paste delivers text as a
+# bracketed paste; send_event delivers "focus", "unfocus" or "interrupt".
+# All three return what send_key does.
+send_mouse(w, "<mouse-left><mouse-release>", x = 25, y = 4)
+send_paste(w, "pasted text")
+send_event(w, "focus")
+sel = selection(w)                         # what Rune would copy, or None
 # render_graphics draws in frames of cell_width x cell_height pixel cells,
 # which lets handlers place images, and returns the grid and the images.
 g = render_graphics(w, width = 120, height = 40, cell_width = 9, cell_height = 18)

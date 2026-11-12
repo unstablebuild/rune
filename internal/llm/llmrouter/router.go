@@ -277,14 +277,14 @@ func (r *Router) CountTokens(model llmapi.ModelEntry, messages []llmapi.Message)
 // req.Model without a Provider is an alias the router resolves, and the
 // zero model is SearchAlias. Until the model behind an unset SearchAlias
 // is downloaded, the index answers by words alone and tells the user how
-// to download it. It returns searchapi.ErrUnsupported for a model that
-// is not a local embedding model, and llmsearch.ErrNoIndex when root has
-// no open index.
+// to download it, and the status says so. It returns
+// searchapi.ErrUnsupported for a model that is not a local embedding
+// model, and llmsearch.ErrNoIndex when root has no open index.
 func (r *Router) SemanticSearch(
 	ctx context.Context, root workspaceapi.URI, req searchapi.SemanticRequest,
-) (iterator.Iterator[searchapi.SemanticResult], error) {
+) (iterator.Iterator[searchapi.SemanticResult], searchapi.SemanticStatus, error) {
 	if r.isClosed() {
-		return nil, ErrRouterClosed
+		return nil, searchapi.SemanticStatus{}, ErrRouterClosed
 	}
 	if req.Model == (llmapi.ModelEntry{}) {
 		req.Model.Name = SearchAlias
@@ -294,7 +294,7 @@ func (r *Router) SemanticSearch(
 	case errors.Is(err, llmapi.ErrModelNotFound) && req.Model.Name == SearchAlias:
 		req.Model = r.search.ConfiguredModel()
 	case err != nil:
-		return nil, err
+		return nil, searchapi.SemanticStatus{}, err
 	case ok:
 		req.Model = resolved
 	}

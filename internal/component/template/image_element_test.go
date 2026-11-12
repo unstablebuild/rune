@@ -126,6 +126,49 @@ func TestNewImageElement(t *testing.T) {
 	}
 }
 
+func TestNewLoadedImageElement(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	src := image.NewRGBA(image.Rect(0, 0, 4, 2))
+	tests := []struct {
+		name     string
+		spec     func(*template.Image)
+		wantErr  string
+		wantSize [2]int
+	}{
+		{name: "draws the image it is given from its first frame", wantSize: [2]int{6, 1}},
+		{
+			name: "reads nothing from its URI",
+			spec: func(img *template.Image) {
+				img.URI = "file:///does/not/exist.png"
+			},
+			wantSize: [2]int{6, 1},
+		},
+		{name: "fails for an invalid spec", spec: func(img *template.Image) { img.Height = 0 }, wantErr: "height must be from 1 to 4096, got 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			el, err := template.NewLoadedImageElement(imageSpec(t, tt.spec), src, "ab%scd",
+				term.Attributes{}, term.ColorDefault)
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				assert.Nil(t, el)
+				return
+			}
+			require.NoError(t, err)
+			defer func() { assert.NoError(t, el.Close()) }()
+			w, h := el.Dimensions()
+			assert.Equal(t, tt.wantSize, [2]int{w, h})
+
+			template.PlaceImages([]component.Floating{el}, 0, 20, 20, 3)
+			rec := &recorder{}
+			el.DrawImage(rec, false)
+			require.Len(t, rec.images, 1)
+			assert.Same(t, src, rec.images[0].Src)
+		})
+	}
+}
+
 func TestImageElementLiterals(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 

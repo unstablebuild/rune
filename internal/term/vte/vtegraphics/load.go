@@ -19,6 +19,8 @@ package vtegraphics
 import (
 	"bytes"
 	"compress/zlib"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
 	"image/draw"
@@ -128,76 +130,116 @@ func (s loadSpec) capacity() int {
 	return s.expectedSize() + directSlack
 }
 
-// decode turns the accumulated bytes into premultiplied RGBA pixels
-// (spec §4.1-§4.3). The returned image has a zero Min and a tight
-// stride so the GUI can upload it without copying.
-func (s loadSpec) decode(data []byte) (*image.RGBA, *Error) {
+func (s loadSpec) decode(data []byte, pool *BufferPool) (img *image.RGBA, straight bool, err *Error) {
 	if s.compression == 'z' {
-		inflated, err := inflate(data, s)
+		inflated, err := inflate(data, s, pool)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		data = inflated
 	}
 	if s.format == FormatPNG {
-		return decodePNG(data)
+		img, err := decodePNG(data)
+		return img, false, err
 	}
 	expected := s.expectedSize()
 	if len(data) < expected {
-		return nil, errorf("ENODATA", "Insufficient image data: %d < %d", len(data), expected)
+		pool.Put(data)
+		return nil, false, errorf("ENODATA", "Insufficient image data: %d < %d", len(data), expected)
 	}
 	w, h := int(s.width), int(s.height)
-	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	if s.format == FormatRGBA {
-		premultiply(img.Pix, data[:expected])
-	} else {
-		for i, j := 0, 0; i < expected; i, j = i+3, j+4 {
-			img.Pix[j] = data[i]
-			img.Pix[j+1] = data[i+1]
-			img.Pix[j+2] = data[i+2]
-			img.Pix[j+3] = 0xff
-		}
+		return &image.RGBA{
+			Pix: data[:expected:expected], Stride: 4 * w, Rect: image.Rect(0, 0, w, h),
+		}, true, nil
 	}
-	return img, nil
+	img = &image.RGBA{Pix: pool.Get(4 * w * h), Stride: 4 * w, Rect: image.Rect(0, 0, w, h)}
+	for i, j := 0, 0; i < expected; i, j = i+3, j+4 {
+		img.Pix[j] = data[i]
+		img.Pix[j+1] = data[i+1]
+		img.Pix[j+2] = data[i+2]
+		img.Pix[j+3] = 0xff
+	}
+	pool.Put(data)
+	return img, false, nil
 }
 
-// premultiply converts straight-alpha RGBA bytes into the premultiplied
-// form image.RGBA and the GPU upload path expect.
-func premultiply(dst, src []byte) {
-	for i := 0; i+3 < len(src); i += 4 {
-		a := uint32(src[i+3])
+// premultiply converts straight-alpha RGBA bytes in place into the
+// premultiplied form image.RGBA and the GPU upload path expect.
+func premultiply(pix []byte) {
+	for i := firstTranslucent(pix); i+3 < len(pix); i += 4 {
+		a := uint32(pix[i+3])
 		if a == 0xff {
-			copy(dst[i:i+4], src[i:i+4])
 			continue
 		}
-		dst[i] = byte((uint32(src[i])*a + 127) / 255)
-		dst[i+1] = byte((uint32(src[i+1])*a + 127) / 255)
-		dst[i+2] = byte((uint32(src[i+2])*a + 127) / 255)
-		dst[i+3] = byte(a)
+		pix[i] = byte((uint32(pix[i])*a + 127) / 255)
+		pix[i+1] = byte((uint32(pix[i+1])*a + 127) / 255)
+		pix[i+2] = byte((uint32(pix[i+2])*a + 127) / 255)
 	}
 }
 
-func inflate(data []byte, s loadSpec) ([]byte, *Error) {
+// firstTranslucent returns the offset of the first pixel of pix whose
+// alpha is below 0xff, or that of the first incomplete pixel when there
+// is none.
+func firstTranslucent(pix []byte) int {
+	const alpha = 0xff000000ff000000
+	i := 0
+	for ; i+32 <= len(pix); i += 32 {
+		w := binary.LittleEndian.Uint64(pix[i:]) &
+			binary.LittleEndian.Uint64(pix[i+8:]) &
+			binary.LittleEndian.Uint64(pix[i+16:]) &
+			binary.LittleEndian.Uint64(pix[i+24:])
+		if w&alpha != alpha {
+			break
+		}
+	}
+	for ; i+3 < len(pix); i += 4 {
+		if pix[i+3] != 0xff {
+			break
+		}
+	}
+	return i
+}
+
+// inflate decompresses data. A raw format's size is known up front, so
+// its bytes are read straight into a pool buffer; PNG bytes are read
+// into whatever they need.
+func inflate(data []byte, s loadSpec, pool *BufferPool) ([]byte, *Error) {
 	r, err := zlib.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return nil, errorf("EINVAL", "Failed to inflate image data with error: %v", err)
 	}
 	defer r.Close()
-	limit := MaxDataSize
-	if expected := s.expectedSize(); expected > 0 {
-		limit = expected
+	expected := s.expectedSize()
+	if expected == 0 {
+		// Read one byte past the limit so an over-long stream is detected
+		// without inflating it entirely.
+		out, err := io.ReadAll(io.LimitReader(r, MaxDataSize+1))
+		if err != nil {
+			return nil, errorf("EINVAL", "Failed to inflate image data with error: %v", err)
+		}
+		if len(out) > MaxDataSize {
+			return nil, errorf("EFBIG", "Too much data")
+		}
+		return out, nil
 	}
-	// Read one byte past the limit so an over-long stream is detected
-	// without inflating it entirely.
-	out, err := io.ReadAll(io.LimitReader(r, int64(limit)+1))
-	if err != nil {
+	out := pool.Get(expected)
+	n, err := io.ReadFull(r, out)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		pool.Put(out)
 		return nil, errorf("EINVAL", "Failed to inflate image data with error: %v", err)
 	}
-	if expected := s.expectedSize(); expected > 0 && len(out) != expected {
-		return nil, errorf("EINVAL", "Image data size post inflation does not match expected size")
+	// The stream must end exactly there, and reading on is also what
+	// has zlib verify its checksum.
+	var extra [1]byte
+	more, err := r.Read(extra[:])
+	if err != nil && !errors.Is(err, io.EOF) {
+		pool.Put(out)
+		return nil, errorf("EINVAL", "Failed to inflate image data with error: %v", err)
 	}
-	if len(out) > MaxDataSize {
-		return nil, errorf("EFBIG", "Too much data")
+	if n != expected || more > 0 {
+		pool.Put(out)
+		return nil, errorf("EINVAL", "Image data size post inflation does not match expected size")
 	}
 	return out, nil
 }

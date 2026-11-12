@@ -37,8 +37,10 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"github.com/unstablebuild/tcell/v3"
+	xdraw "golang.org/x/image/draw"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/term/gui/appicon"
 	"unstable.build/rune/internal/term/gui/drawrect"
 	"unstable.build/rune/internal/term/gui/font"
 )
@@ -152,6 +154,76 @@ type GUI struct {
 	processWindowClosed func() []term.Event
 	closingHandled      bool
 	closeOnce           sync.Once
+
+	// appIcon is the icon SetAppIcon set last, which Update has yet to
+	// show while appIconPending.
+	appIcon        *AppIcon
+	appIconPending bool
+	// setAppIcon shows images, smallest first, as the window and
+	// application icon, or the default icon when there are none. It
+	// must run on the main thread.
+	setAppIcon func(images []image.Image)
+}
+
+// appIconSizes are the sides of the pictures of an AppIcon, from the
+// smallest a window title shows to the largest the macOS Dock does.
+var appIconSizes = []int{16, 32, 48, 64, 128, 256}
+
+// AppIcon is an application icon scaled to the sizes that window managers
+// and docks pick from.
+type AppIcon struct {
+	// images are square, one per appIconSizes in the same order.
+	images []image.Image
+}
+
+// NewAppIcon scales img, keeping its aspect ratio, to the center of square
+// transparent pictures of the sizes that window managers and docks show. It
+// returns nil when img is nil or empty. Scaling a large img is slow; it is
+// safe to call from any goroutine.
+func NewAppIcon(img image.Image) *AppIcon {
+	if img == nil || img.Bounds().Empty() {
+		return nil
+	}
+	n := len(appIconSizes)
+	icon := &AppIcon{images: make([]image.Image, n)}
+	largest, picture := scaleToSquare(img, img.Bounds(), appIconSizes[n-1])
+	icon.images[n-1] = largest
+	for i, side := range appIconSizes[:n-1] {
+		// Scaling the largest picture is much faster than scaling img,
+		// which can be thousands of pixels wide.
+		icon.images[i], _ = scaleToSquare(largest, picture, side)
+	}
+	return icon
+}
+
+// scaleToSquare scales the sr part of src to fit, centered, in a
+// transparent square of the given side. It returns the square and the part
+// of it that the picture covers.
+func scaleToSquare(src image.Image, sr image.Rectangle, side int) (*image.RGBA, image.Rectangle) {
+	w, h := side, side
+	if sr.Dx() > sr.Dy() {
+		h = max(1, side*sr.Dy()/sr.Dx())
+	} else {
+		w = max(1, side*sr.Dx()/sr.Dy())
+	}
+	x, y := (side-w)/2, (side-h)/2
+	dr := image.Rect(x, y, x+w, y+h)
+	// An RGBA destination takes the fast paths of the scaler.
+	dst := image.NewRGBA(image.Rect(0, 0, side, side))
+	xdraw.CatmullRom.Scale(dst, dr, src, sr, xdraw.Src, nil)
+	return dst, dr
+}
+
+// showAppIcon is the default GUI.setAppIcon. Each platform ignores the call
+// it does not support: macOS windows have no icon, and only macOS has an
+// application icon apart from that of its windows.
+func showAppIcon(images []image.Image) {
+	ebiten.SetWindowIcon(images)
+	var largest image.Image
+	if len(images) > 0 {
+		largest = images[len(images)-1]
+	}
+	appicon.Set(largest)
 }
 
 // New allocates storage for a new GUI and initializes it with the given
@@ -185,6 +257,7 @@ func New(handler tui.Handler, options ...Option) (*GUI, error) {
 		startPositionY:   0,
 		defaultWidth:     defaultWidth,
 		defaultHeight:    defaultHeight,
+		setAppIcon:       showAppIcon,
 	}
 	ret.input = newInput(ret.fontManager)
 	ret.mouse = newMouse(ret.fontManager)
@@ -401,6 +474,24 @@ func (g *GUI) SetForceFullRepaint(force bool) {
 	g.needsRender = true
 }
 
+// SetAppIcon shows icon, from the next Update on, as the window icon on
+// Linux and as the Dock and application switcher icon on macOS, or restores
+// the default icon when icon is nil. It must run on the GUI event loop or
+// before Run.
+func (g *GUI) SetAppIcon(icon *AppIcon) {
+	if icon == nil && g.appIcon == nil {
+		return
+	}
+	g.appIcon = icon
+	g.appIconPending = true
+}
+
+// AppIcon returns the icon SetAppIcon set last, or nil for the default
+// icon. It must run on the GUI event loop.
+func (g *GUI) AppIcon() *AppIcon {
+	return g.appIcon
+}
+
 // PublishEvent returns true only if ev's UserFunc will run exactly once.
 func (g *GUI) PublishEvent(ev term.Event) bool {
 	if ev.Type == term.EventInterrupt && ev.Raw == nil && ev.UserFunc == nil {
@@ -502,7 +593,7 @@ func (g *GUI) Update() error {
 	// with the extension RPC goroutines that need it, and the loop holds
 	// it for the whole tick. An empty queue means no interrupt was
 	// pending either, so no draw and no echo wait can be owed.
-	if len(g.pendingEvents) == 0 && !needsDraw && g.drag.idle() {
+	if len(g.pendingEvents) == 0 && !needsDraw && g.drag.idle() && !g.appIconPending {
 		g.prevTickKey = false
 		g.iteration++
 		return nil
@@ -589,6 +680,15 @@ func (g *GUI) Update() error {
 	}
 	if needsDraw {
 		g.drawHandler(ctx)
+	}
+	// After the events, so an icon a UserFunc set shows in its own frame.
+	if g.appIconPending {
+		g.appIconPending = false
+		var images []image.Image
+		if g.appIcon != nil {
+			images = g.appIcon.images
+		}
+		g.setAppIcon(images)
 	}
 
 	// Zero the slots before truncating: term.Event contains heap pointers

@@ -294,7 +294,7 @@ you may be managing it yourself outside Rune. Install the toolchain on the
 remote, or set the matching override key from the remote `.rune/config.yaml`.
 If you chose **ignore** when Rune asked whether to trust that file, the
 override doesn't apply until you trust it: revoke that decision with
-`authorizer revoke` from the console and run `:workspacereload` to be asked
+`authorizer revoke` from the console and run `workspacereload` to be asked
 again.
 See
 [Language toolchains on the remote host](#language-toolchains-on-the-remote-host).

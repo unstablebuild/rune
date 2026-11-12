@@ -61,15 +61,15 @@ frontmatter sets `type: agent`, so you can add your own simply by dropping
 a `SKILL.md` into one of your [skill directories](#skill-directories). The
 agent picks it up automatically and can spawn it by name.
 
-The frontmatter fields that define a sub-agent:
+The main frontmatter fields that define a sub-agent:
 
 | Field | Purpose |
 | --- | --- |
 | `name` | The agent's ID, used to spawn it. |
 | `description` | Tells the agent what the sub-agent is for and when to use it. |
 | `type: agent` | Marks the skill as a spawnable sub-agent. |
-| `allowed-tools` | The exact set of tools the sub-agent may use. Omitting a tool denies it, which is how `explore` and `plan` stay read-only. |
-| `parent-context` | When `true`, the sub-agent receives the parent conversation's context. |
+| `allowed-tools` | The tools the sub-agent may use, including command patterns such as `bash(git log *)`. Anything the list does not allow is unavailable, which is how `explore` and `plan` stay read-only. |
+| `disallowed-tools` | Tools, commands, skills and sub-agents the sub-agent may not use, even when `allowed-tools` allows them. |
 
 The body of the file is the sub-agent's system prompt: its instructions,
 constraints, and style.
@@ -99,3 +99,7 @@ Because its `allowed-tools` list contains only read and search tools, this
 sub-agent cannot edit files or run commands, the same way the built-in
 read-only agents are constrained. Once the file is in place, the main
 agent can spawn it to run a focused review in parallel with other work.
+
+See [Sub-agents](./sub-agents.md) for every frontmatter field, the full
+tool rule syntax, command patterns, giving a sub-agent new tools through
+skill scripts, and how restrictions carry over to the sub-agents it spawns.

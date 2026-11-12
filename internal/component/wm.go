@@ -278,12 +278,14 @@ func (wm *WindowManager) DrawWindow(win Window, w term.Writer) {
 	if !ok {
 		wm.tree.DrawTile(win.node.(*TileNode), &nonMinimizedW)
 		wm.drawFrameGraphics(win, &nonMinimizedW)
+		wm.stitchFrame(win, &nonMinimizedW, false)
 		return
 	}
 
 	if f.minimized == 0 {
 		f.Draw(&nonMinimizedW)
 		wm.drawFrameGraphics(win, &nonMinimizedW)
+		wm.stitchFrame(win, &nonMinimizedW, wm.hasWindowBar(f))
 		wm.drawWindowBar(f, &nonMinimizedW)
 		return
 	}
@@ -332,6 +334,32 @@ func (wm *WindowManager) drawFrameGraphics(win Window, w term.Writer) {
 // has no FrameGraphicsStorage or Interrupter, which draws no images.
 func (wm *WindowManager) FrameGraphics() *FrameGraphics {
 	return wm.graphics
+}
+
+// FrameStitcher is the content of a window that joins rules of its own
+// to the frame the WindowManager draws around it.
+type FrameStitcher interface {
+	// StitchFrame draws over the frame f drew width by height at 0,0 of
+	// w, after the frame's images, which g draws unless it is nil. bar
+	// reports that a window bar takes the frame's top row, which
+	// StitchFrame must then leave alone.
+	StitchFrame(w term.Writer, f *component.Frame, g *FrameGraphics, width, height int, bar bool)
+}
+
+// stitchFrame lets win's content join its rules to win's frame.
+func (wm *WindowManager) stitchFrame(win Window, w term.Writer, bar bool) {
+	if !wm.config.Frame {
+		return
+	}
+	frame := win.node.Content().(*component.Frame)
+	s, ok := frame.Content().(FrameStitcher)
+	if !ok {
+		return
+	}
+	width, height := win.node.Width(), win.node.Height()
+	s.StitchFrame(&component.VirtualWriter{
+		Writer: w, Offset: win.node.Position(), Width: width, Height: height,
+	}, frame, wm.graphics, width, height, bar)
 }
 
 // Close releases the images of the frames' graphics. It does not close
@@ -727,15 +755,17 @@ func (wm *WindowManager) FloatingWindow(
 }
 
 // Restyled returns c with the style of s: its frame, scroll bar and
-// window bar attributes and charsets, ScrollBarOutset and close icon.
-// What changes the layout or how images load, Frame, NoMaxSize,
-// WindowBar, FrameGraphicsStorage and Interrupter, stays c's.
+// window bar attributes and charsets, ScrollBarOutset, close icon and
+// whether floating windows draw the window bar, which takes their top
+// frame row either way. What changes the layout or how images load,
+// Frame, NoMaxSize, FrameGraphicsStorage and Interrupter, stays c's.
 func (c WindowManagerConfig) Restyled(s WindowManagerConfig) WindowManagerConfig {
 	c.FrameAttr = s.FrameAttr
 	c.FrameCharSet = s.FrameCharSet
 	c.ScrollBarAttr = s.ScrollBarAttr
 	c.ScrollBarCharSet = s.ScrollBarCharSet
 	c.ScrollBarOutset = s.ScrollBarOutset
+	c.WindowBar = s.WindowBar
 	c.WindowBarCharSet = s.WindowBarCharSet
 	c.CloseIcon = s.CloseIcon
 	c.CloseIconAttr = s.CloseIconAttr

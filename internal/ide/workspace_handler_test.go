@@ -19,6 +19,8 @@ package ide
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -40,14 +42,17 @@ import (
 	"sync"
 	"testing"
 
+	acp "github.com/coder/acp-go-sdk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	blueauth "github.com/unstablebuild/blue/auth"
 	"github.com/unstablebuild/blue/document"
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/blue/release/docrelease"
+	"github.com/unstablebuild/rune-go-sdk/api/acpapi"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/config/configrpc"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
@@ -62,11 +67,15 @@ import (
 	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"golang.org/x/oauth2"
+	"google.golang.org/grpc"
+	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/cell"
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/asciiart"
+	"unstable.build/rune/internal/component/fileexplorer/fileexplorertest"
 	"unstable.build/rune/internal/component/imageuri/imageuritest"
 	"unstable.build/rune/internal/component/notifications"
 	"unstable.build/rune/internal/component/shader"
@@ -76,6 +85,7 @@ import (
 	thandler "unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/handlertest"
 	handlermarkdown "unstable.build/rune/internal/handler/markdown"
+	"unstable.build/rune/internal/ide/ideacp/acpcmd"
 	"unstable.build/rune/internal/ide/ideauthorizer"
 	"unstable.build/rune/internal/ide/idehistory"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
@@ -406,6 +416,165 @@ func TestFileExplorerReactsToFilesystemChangesIntegration(t *testing.T) {
 			InputSequence: "<c-\\\\>fexplorer<enter>",
 			Expected:      reopenedFrame,
 		}})
+}
+
+func TestFileExplorerFlushIntegration(t *testing.T) {
+	cases := []struct {
+		name string
+		// files seeds the workspace; see fileexplorertest.WriteTree.
+		files map[string]string
+		// keys edits the explorer, which starts focused with every
+		// directory collapsed and the cursor on the first row. The
+		// edit is then written and the confirmation accepted.
+		keys string
+		// want is the workspace afterwards; see
+		// fileexplorertest.ReadTree.
+		want map[string]string
+	}{
+		{
+			name: "cut_paste_collapsed_dir_into_sibling",
+			files: map[string]string{
+				"agent/agent.go":            "agent",
+				"toolpolicy/policy.go":      "policy",
+				"toolpolicy/policy_test.go": "test",
+			},
+			// Rows after <enter>: agent/, │agent.go, toolpolicy/.
+			keys: "<enter>jjddp\\>\\>",
+			want: map[string]string{
+				"agent/agent.go":                  "agent",
+				"agent/toolpolicy/policy.go":      "policy",
+				"agent/toolpolicy/policy_test.go": "test",
+			},
+		},
+		{
+			name: "cut_paste_expanded_dir_into_sibling",
+			files: map[string]string{
+				"agent/agent.go":            "agent",
+				"toolpolicy/policy.go":      "policy",
+				"toolpolicy/policy_test.go": "test",
+			},
+			// Rows after both <enter>s: agent/, │agent.go,
+			// toolpolicy/, │policy.go, │policy_test.go.
+			keys: "<enter>jj<enter>3ddp\\>\\>j\\>\\>j\\>\\>",
+			want: map[string]string{
+				"agent/agent.go":                  "agent",
+				"agent/toolpolicy/policy.go":      "policy",
+				"agent/toolpolicy/policy_test.go": "test",
+			},
+		},
+		{
+			name: "replace_empty_dir_with_moved_dir",
+			files: map[string]string{
+				"agent/agent.go":            "agent",
+				"agent/toolpolicy/":         "",
+				"toolpolicy/policy.go":      "policy",
+				"toolpolicy/policy_test.go": "test",
+			},
+			// Rows after <enter>: agent/, │toolpolicy/, │agent.go,
+			// toolpolicy/.
+			keys: "<enter>jddj<enter>3ddp\\>\\>j\\>\\>j\\>\\>",
+			want: map[string]string{
+				"agent/agent.go":                  "agent",
+				"agent/toolpolicy/policy.go":      "policy",
+				"agent/toolpolicy/policy_test.go": "test",
+			},
+		},
+		{
+			name: "move_dir_carries_gitignored_files",
+			files: map[string]string{
+				".gitignore":           "*.log\n",
+				"agent/":               "",
+				"toolpolicy/debug.log": "log",
+				"toolpolicy/policy.go": "policy",
+			},
+			// Rows after j<enter>: agent/, toolpolicy/, │policy.go,
+			// .gitignore.
+			keys: "j<enter>\\>\\>j\\>\\>",
+			want: map[string]string{
+				".gitignore":                 "*.log\n",
+				"agent/toolpolicy/debug.log": "log",
+				"agent/toolpolicy/policy.go": "policy",
+			},
+		},
+		{
+			name: "delete_collapsed_dir",
+			files: map[string]string{
+				"keep.go":      "keep",
+				"pkg/a.go":     "a",
+				"pkg/sub/b.go": "b",
+			},
+			keys: "dd",
+			want: map[string]string{"keep.go": "keep"},
+		},
+		{
+			name: "delete_expanded_dir",
+			files: map[string]string{
+				"keep.go":      "keep",
+				"pkg/a.go":     "a",
+				"pkg/sub/b.go": "b",
+			},
+			// Rows after <enter>: pkg/, │sub/, │a.go, keep.go.
+			keys: "<enter>3dd",
+			want: map[string]string{"keep.go": "keep"},
+		},
+		{
+			name:  "move_file_out_then_delete_its_dir",
+			files: map[string]string{"src/a.go": "a", "src/b.go": "b"},
+			// Rows after <enter>: src/, │a.go, │b.go.
+			keys: "<enter>jcc-<space>a.go<esc>jddggdd",
+			want: map[string]string{"a.go": "a"},
+		},
+		{
+			name:  "rename_chain",
+			files: map[string]string{"a": "A", "b": "B"},
+			keys:  "jcc-<space>c<esc>kcc-<space>b<esc>",
+			want:  map[string]string{"b": "A", "c": "B"},
+		},
+		{
+			name:  "rename_swap",
+			files: map[string]string{"a": "A", "b": "B"},
+			keys:  "cc-<space>b<esc>jcc-<space>a<esc>",
+			want:  map[string]string{"a": "B", "b": "A"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The watcher reports canonical paths; see
+			// TestFileExplorerReactsToFilesystemChangesIntegration.
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			fileexplorertest.WriteTree(t, dir, tc.files)
+
+			cfg := defaultConfigWithWrap(false)
+			editorCfg := cfg.cfg["editor"].(map[string]any)
+			editorCfg["mode"] = editorModeVim
+			editorCfg["file_explorer"] = map[string]any{"read_only": false}
+			uri, err := workspaceapi.ParseURI("file://" + dir)
+			require.NoError(t, err)
+			m := newTestWorkspaceManagerHandlerWithDirs(t, cfg, dir,
+				t.TempDir(), nopShutdownShaderConfig())
+			require.NoError(t, m.addOrCreateWorkspace(uri))
+			m.quiesce()
+			t.Cleanup(func() { _ = m.Close() })
+
+			h := newSafeHandler(m)
+			h.Resize(60, 24)
+			sendExplorerKeys(t, h, "<c-\\\\>fexplorer<enter>")
+			m.mu.Lock()
+			ex := m.focusEx()
+			_, err = ex.comp.SetFocus(ex.fileExplorerWin)
+			m.mu.Unlock()
+			require.NoError(t, err)
+
+			sendExplorerKeys(t, h, tc.keys+"<c-\\\\>write<enter>y")
+
+			m.mu.Lock()
+			rows := ex.fileExplorerHandler.buf.String()
+			m.mu.Unlock()
+			assert.Equal(t, tc.want, fileexplorertest.ReadTree(t, dir),
+				"explorer after write:\n%s", rows)
+		})
+	}
 }
 
 func TestGitlinkIntegration(t *testing.T) {
@@ -1622,6 +1791,60 @@ func TestWorkspaceTabManagerDropsClosedWorkspaceStatus(t *testing.T) {
 	}
 }
 
+func TestStatusInboxReopensExtensionProgramWithoutTab(t *testing.T) {
+	runner := newWaitReadyRunner()
+	close(runner.ready)
+	m := newTestWorkspaceManagerHandlerWithRunner(t, defaultConfigWithWrap(false), t.TempDir(), runner)
+	t.Cleanup(func() { _ = m.Close() })
+	m.quiesce()
+	content := browsertest.NewTestHandler()
+	opener := &recordingOpener{h: content}
+	opener.register(t, m)
+	view, err := workspaceapi.ParseURI("fake://host/chat")
+	require.NoError(t, err)
+	other, err := workspaceapi.ParseURI("fake://host/chat?view=2")
+	require.NoError(t, err)
+
+	m.mu.Lock()
+	m.Resize(80, 24)
+	ws := m.workspaces[m.focus].uri
+	e := m.exHandler(m.focusHandler())
+	b := statusInboxBrowser{Browser: e.Browser(), tm: e.tabAliases.TabManager}
+	_, err = e.comp.Tab(other, 'x', "chat", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	// As an extension whose program goes on working once its tab closed.
+	require.NoError(t, b.SetTabStatus(view, programstatus.Report{
+		State: programstatus.Working, Progress: -1, App: "agent", Title: "Running tools",
+	}))
+	m.mu.Unlock()
+	m.quiesce()
+
+	m.mu.Lock()
+	items := m.status.Items()
+	require.Len(t, items, 1, "the program is listed without a tab")
+	assert.Equal(t, view.String(), items[0].URI.String())
+	require.NoError(t, m.focusStatusEntry(ws, view))
+	m.mu.Unlock()
+
+	require.Eventually(t, func() bool {
+		m.quiesce()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tab, ok := e.comp.Browser().Tab(view)
+		return ok && tab.Handler() == content
+	}, 5*time.Second, 10*time.Millisecond, "the inbox must open the program in a tab")
+	assert.Equal(t, []string{view.String()}, opener.snapshot())
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	focused, ok := e.comp.FocusTab()
+	require.True(t, ok)
+	assert.Equal(t, view.String(), focused.URI().String(), "the program's tab is shown, not another view's")
+	status, ok := m.status.Status(ws, view)
+	require.True(t, ok)
+	assert.Equal(t, programstatus.Working, status.State, "the tab takes over what the program reported")
+}
+
 func TestCommandProgramStatusFocusesEntry(t *testing.T) {
 	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
 	t.Cleanup(func() { _ = m.Close() })
@@ -1846,7 +2069,7 @@ func TestCommandProgramStatusPreviewsTab(t *testing.T) {
 func statusInboxSidebarWidth(t *testing.T, drawn string) int {
 	t.Helper()
 	first, _, _ := strings.Cut(drawn, "\n")
-	i := slices.Index([]rune(first), idestatus.DefaultInboxStyle().Frame.VerticalLeft)
+	i := slices.Index([]rune(first), idestatus.DefaultInboxStyle().Divider.Vertical)
 	require.GreaterOrEqual(t, i, 0, "the sidebar ends with a divider")
 	return i + 1
 }
@@ -2003,6 +2226,129 @@ type statusTestPluginHandler struct {
 }
 
 func (h *statusTestPluginHandler) StatusURI() workspaceapi.URI { return h.uri }
+
+func TestCommandProgramStatusListsACPSessions(t *testing.T) {
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	session := &statusTestACPSession{log: acpapi.NewLog()}
+	t.Cleanup(func() { session.log.Close(nil) })
+	require.NoError(t, session.log.Prompt(nil))
+	tabURI := mustURI(t, "acp://claude/brave-fox")
+	statusURI := mustURI(t, "acp://claude/brave-fox/session")
+	var e *ex
+	var ws workspaceapi.URI
+	m.locked(func() {
+		w := m.workspaces[slot]
+		e, ws = w.ex, w.uri
+		e.acpChats = acpcmd.New(statusTestACP{session}, acpcmd.Config{
+			WindowManager: newBrowserAdapter(e.Browser()),
+			Interrupter:   term.NopInterrupter(),
+			Root:          ws,
+			Chat:          dialoguetui.DefaultComponentConfig(),
+			Status:        e.tm,
+		})
+		require.NoError(t, e.acpChats.HandleCommand(context.Background(), textapi.Command{
+			Name: acpcmd.Name, Args: []string{"open", "brave-fox"},
+		}))
+		require.NoError(t, m.closeStatusSource(ws, tabURI), "its tab closes mid-turn")
+	})
+	listed := func() (idestatus.Item, bool) {
+		m.quiesce()
+		var item idestatus.Item
+		var ok bool
+		m.locked(func() {
+			i := slices.IndexFunc(m.status.Items(), func(it idestatus.Item) bool { return it.URI.Equal(statusURI) })
+			if ok = i >= 0; ok {
+				item = m.status.Items()[i]
+			}
+		})
+		return item, ok
+	}
+	require.Eventually(t, func() bool {
+		_, ok := listed()
+		return ok
+	}, 10*time.Second, 10*time.Millisecond, "the session runs on in the inbox")
+	item, _ := listed()
+	assert.Equal(t, programstatus.Working, item.Status.State)
+	assert.Equal(t, "brave-fox", item.App, "labelled by its name")
+
+	m.locked(func() {
+		require.NoError(t, m.focusStatusEntry(ws, statusURI))
+		tab, ok := e.comp.Browser().Tab(tabURI)
+		require.True(t, ok, "choosing it opens its chat")
+		win, shown := tab.Window()
+		require.True(t, shown)
+		assert.Equal(t, win.WindowID(), e.comp.Browser().Focus().WindowID())
+	})
+	require.Eventually(t, func() bool {
+		_, ok := listed()
+		return !ok
+	}, 10*time.Second, 10*time.Millisecond, "its chat shows it again")
+
+	m.locked(func() { require.NoError(t, m.closeStatusSource(ws, tabURI)) })
+	require.Eventually(t, func() bool {
+		_, ok := listed()
+		return ok
+	}, 10*time.Second, 10*time.Millisecond)
+	m.locked(func() { require.NoError(t, m.closeStatusSource(ws, statusURI)) })
+	require.Eventually(t, func() bool {
+		_, ok := listed()
+		return !ok && session.closed.Load()
+	}, 10*time.Second, 10*time.Millisecond, "closing it in the inbox ends the session")
+}
+
+// statusTestACP runs the one session brave-fox of agent claude.
+type statusTestACP struct{ s *statusTestACPSession }
+
+func (a statusTestACP) Agents(context.Context) sdkiterator.Iterator[acpapi.AgentInfo] {
+	return sdkiterator.FromSlice([]acpapi.AgentInfo{{Name: "claude", Running: true}})
+}
+
+func (a statusTestACP) NewSession(context.Context, acpapi.NewSessionRequest) (acpapi.Session, error) {
+	return nil, acpapi.ErrExists
+}
+
+func (a statusTestACP) Sessions(context.Context) sdkiterator.Iterator[acpapi.SessionInfo] {
+	return sdkiterator.FromSlice([]acpapi.SessionInfo{a.s.Info()})
+}
+
+func (a statusTestACP) OpenSession(_ context.Context, name string) (acpapi.Session, error) {
+	if name != "brave-fox" || a.s.closed.Load() {
+		return nil, acpapi.ErrNotFound
+	}
+	return a.s, nil
+}
+
+type statusTestACPSession struct {
+	log    *acpapi.Log
+	closed atomic.Bool
+}
+
+func (s *statusTestACPSession) Info() acpapi.SessionInfo {
+	return acpapi.SessionInfo{Name: "brave-fox", Agent: "claude", ID: "s1"}
+}
+
+func (s *statusTestACPSession) Events() sdkiterator.Iterator[acpapi.Event] { return s.log.Events() }
+
+func (s *statusTestACPSession) Prompt(_ context.Context, content []acp.ContentBlock) error {
+	return s.log.Prompt(content)
+}
+
+func (s *statusTestACPSession) Cancel(context.Context) error { return nil }
+
+func (s *statusTestACPSession) Respond(_ context.Context, id acpapi.PermissionID, o acp.RequestPermissionOutcome) error {
+	return s.log.Respond(id, o)
+}
+
+func (s *statusTestACPSession) SetConfigOption(context.Context, acp.SetSessionConfigOptionRequest) error {
+	return nil
+}
+
+func (s *statusTestACPSession) Close() error {
+	s.closed.Store(true)
+	s.log.Close(nil)
+	return nil
+}
 
 func TestCommandProgramStatusClosesPrograms(t *testing.T) {
 	type program struct {
@@ -3420,13 +3766,13 @@ func TestViewImageUnderCommandPromptShader(t *testing.T) {
 │ ▐                                      │
 │ !                                      │
 │ !!                                     │
+│ acp                                    │
 │ addBlaBla                              │
 │ cheatsheet                             │
 │ clipboardcopy                          │
 │ clipboardpaste                         │
 │ console                                │
 │ cursorhistory                          │
-│ debugger                               │
 ├────────────────────────────────────────┤
 │1 1  2 2                                │
 └─────━━━────────────────────────────────┘`,
@@ -3624,13 +3970,13 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 				{
 					InputSequence: "<c-\\\\>openCase<enter>",
 					Expected: `┌━━━━━━━━━━──────────────────┐
-│o ········                  │
+│o·········                  │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 ·  2 2                    │
+│1··  2 2                    │
 └━━━─────────────────────────┘`,
 				},
 				{
@@ -3642,19 +3988,19 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 │     workspaceWallpaper     │
 │                            │
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 				{
 					InputSequence: "<c-\\\\>to1<enter>",
 					Expected: `┌━━━━━━━━━━──────────────────┐
-│o ········                  │
+│o·········                  │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 ·  2 2                    │
+│1··  2 2                    │
 └━━━─────────────────────────┘`,
 				},
 			},
@@ -3678,13 +4024,13 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 				{
 					InputSequence: "<c-\\\\>openCase<enter>",
 					Expected: `┌━━━━━━━━━━──────────────────┐
-│o ········                  │
+│o·········                  │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 				{
@@ -3696,19 +4042,19 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 │     workspaceWallpaper     │
 │                            │
 ├────────────────────────────┤
-│1 ·  2 2                    │
+│1··  2 2                    │
 └━━━─────────────────────────┘`,
 				},
 				{
 					InputSequence: "<c-\\\\>to2<enter>",
 					Expected: `┌━━━━━━━━━━──────────────────┐
-│o ········                  │
+│o·········                  │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 			},
@@ -3737,13 +4083,13 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 				{
 					InputSequence: "<c-\\\\>openCase<enter>",
 					Expected: `┌━━━━━━━━━━━─────────────────┐
-│o ·········                 │
+│o··········                 │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 				{
@@ -3755,19 +4101,19 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 │     workspaceWallpaper     │
 │                            │
 ├────────────────────────────┤
-│1 ·  2 2                    │
+│1··  2 2                    │
 └━━━─────────────────────────┘`,
 				},
 				{
 					InputSequence: "<c-\\\\>to2<enter>",
 					Expected: `┌━━━━━━━━━━━─────────────────┐
-│o ·········                 │
+│o··········                 │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 			},
@@ -3791,13 +4137,13 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 				{
 					InputSequence: "<c-\\\\>openCase<enter>",
 					Expected: `┌━━━━━━━━━───────────────────┐
-│o ·······                   │
+│o········                   │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 				{
@@ -3809,19 +4155,19 @@ func TestCrossWorkspaceOpenRoutingIntegration(t *testing.T) {
 │     workspaceWallpaper     │
 │                            │
 ├────────────────────────────┤
-│1 ·  2 2                    │
+│1··  2 2                    │
 └━━━─────────────────────────┘`,
 				},
 				{
 					InputSequence: "<c-\\\\>to2<enter>",
 					Expected: `┌━━━━━━━━━───────────────────┐
-│o ·······                   │
+│o········                   │
 ├────────────────────────────┤
 │▐ackage main                │
 │                            │
 │                      NORMAL│
 ├────────────────────────────┤
-│1 1  2 ·                    │
+│1 1  2··                    │
 └─────━━━────────────────────┘`,
 				},
 			},
@@ -6893,25 +7239,25 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			name:      "dense_click_first_tab_focuses_slot_1",
 			filled:    []bool{true, true, true},
 			focusSlot: 2, mouseX: 1,
-			expected: screen("│1 ·  2 2  3 3               │", 0, 3),
+			expected: screen("│1··  2 2  3 3               │", 0, 3),
 		},
 		{
 			name:      "dense_click_middle_tab_focuses_slot_2",
 			filled:    []bool{true, true, true},
 			focusSlot: 0, mouseX: 7,
-			expected: screen("│1 1  2 ·  3 3               │", 5, 3),
+			expected: screen("│1 1  2··  3 3               │", 5, 3),
 		},
 		{
 			name:      "dense_click_last_tab_focuses_slot_3",
 			filled:    []bool{true, true, true},
 			focusSlot: 0, mouseX: 12,
-			expected: screen("│1 1  2 2  3 ·               │", 10, 3),
+			expected: screen("│1 1  2 2  3··               │", 10, 3),
 		},
 		{
 			name:      "dense_click_far_past_last_tab_keeps_focus",
 			filled:    []bool{true, true, true},
 			focusSlot: 0, mouseX: width - 2,
-			expected: screen("│1 ·  2 2  3 3               │", 0, 3),
+			expected: screen("│1··  2 2  3 3               │", 0, 3),
 		},
 
 		// Single empty middle slot — the original RUNE-126 bug. Bar
@@ -6921,19 +7267,19 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			name:      "middle_gap_click_first_visible_tab_focuses_slot_1",
 			filled:    []bool{true, false, true},
 			focusSlot: 2, mouseX: 1,
-			expected: screen("│1 ·  3 3                    │", 0, 3),
+			expected: screen("│1··  3 3                    │", 0, 3),
 		},
 		{
 			name:      "middle_gap_click_second_visible_tab_focuses_slot_3",
 			filled:    []bool{true, false, true},
 			focusSlot: 0, mouseX: 7,
-			expected: screen("│1 1  3 ·                    │", 5, 3),
+			expected: screen("│1 1  3··                    │", 5, 3),
 		},
 		{
 			name:      "middle_gap_click_past_last_visible_tab_keeps_focus",
 			filled:    []bool{true, false, true},
 			focusSlot: 0, mouseX: 15,
-			expected: screen("│1 ·  3 3                    │", 0, 3),
+			expected: screen("│1··  3 3                    │", 0, 3),
 		},
 
 		// Two consecutive empty middle slots: bar renders "1 1  4 4".
@@ -6941,7 +7287,7 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			name:      "double_gap_click_second_visible_tab_focuses_slot_4",
 			filled:    []bool{true, false, false, true},
 			focusSlot: 0, mouseX: 7,
-			expected: screen("│1 1  4 ·                    │", 5, 3),
+			expected: screen("│1 1  4··                    │", 5, 3),
 		},
 
 		// Focused empty middle slot: bar renders "1 1  2    3 3".
@@ -6955,13 +7301,13 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			name:      "focused_empty_middle_click_left_filled_focuses_slot_1",
 			filled:    []bool{true, false, true},
 			focusSlot: 1, mouseX: 1,
-			expected: screen("│1 ·  3 3                    │", 0, 3),
+			expected: screen("│1··  3 3                    │", 0, 3),
 		},
 		{
 			name:      "focused_empty_middle_click_right_filled_focuses_slot_3",
 			filled:    []bool{true, false, true},
 			focusSlot: 1, mouseX: 10,
-			expected: screen("│1 1  3 ·                    │", 5, 3),
+			expected: screen("│1 1  3··                    │", 5, 3),
 		},
 
 		// Focused empty first slot: bar renders "1  2 2  3 3" with
@@ -6972,13 +7318,13 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			name:      "focused_empty_first_click_second_visible_focuses_slot_2",
 			filled:    []bool{false, true, true},
 			focusSlot: 0, mouseX: 5,
-			expected: screen("│2 ·  3 3                    │", 0, 3),
+			expected: screen("│2··  3 3                    │", 0, 3),
 		},
 		{
 			name:      "focused_empty_first_click_third_visible_focuses_slot_3",
 			filled:    []bool{false, true, true},
 			focusSlot: 0, mouseX: 10,
-			expected: screen("│2 2  3 ·                    │", 5, 3),
+			expected: screen("│2 2  3··                    │", 5, 3),
 		},
 	}
 
@@ -7028,10 +7374,12 @@ func TestWorkspaceBarTabClickIntegration(t *testing.T) {
 			writer := term.NewStringWriter(width, height)
 			writer.BackgroundCh = '·'
 			h.Resize(width, height)
-			h.Handle(term.Event{
-				Type: term.EventMouse, Key: term.MouseLeft,
-				MouseX: tc.mouseX, MouseY: barY,
-			})
+			for _, key := range []term.Key{term.MouseLeft, term.MouseRelease} {
+				h.Handle(term.Event{
+					Type: term.EventMouse, Key: key,
+					MouseX: tc.mouseX, MouseY: barY,
+				})
+			}
 			handlertest.RunHandlerSequenceWriter(t, writer, h,
 				width, height, []handlertest.SequenceTestCase{
 					{InputSequence: "", Expected: tc.expected},
@@ -7785,6 +8133,8 @@ func (f fnRunner) Run(extensionID, path string, config config.Config) error {
 func (f fnRunner) Close() error {
 	return nil
 }
+
+func (f fnRunner) SignalReload() int { return 0 }
 
 func (f fnRunner) WaitReady(ctx context.Context, id string) error {
 	return nil
@@ -9641,6 +9991,8 @@ func (r *waitReadyRunner) Run(extensionID, path string, config config.Config) er
 
 func (r *waitReadyRunner) Close() error { return nil }
 
+func (r *waitReadyRunner) SignalReload() int { return 0 }
+
 func (r *waitReadyRunner) WaitReady(ctx context.Context, id string) error {
 	if r.waitErr != nil {
 		return r.waitErr
@@ -9688,6 +10040,8 @@ func (r *perIDReadyRunner) Run(extensionID, path string, config config.Config) e
 }
 
 func (r *perIDReadyRunner) Close() error { return nil }
+
+func (r *perIDReadyRunner) SignalReload() int { return 0 }
 
 func (r *perIDReadyRunner) WaitReady(ctx context.Context, id string) error {
 	ch := r.chanFor(id)
@@ -12258,6 +12612,40 @@ func TestLoadHUD(t *testing.T) {
 		assert.NotContains(t, missing.images, uri)
 	})
 
+	t.Run("status bar images are read again", func(t *testing.T) {
+		dir := tempDir(t)
+		imgPath := filepath.Join(dir, "ornament.png")
+		uri := "file://" + imgPath
+		configPath := filepath.Join(dir, "rune.yaml")
+		require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+			"workspace:\n  home: "+dir+"\n"+
+			"editor:\n  status_bar:\n    layout: '{{ .Status }}{{ .Image | src \""+uri+"\" }}'\n"),
+			0o644))
+		writeHUDTestPNG(t, imgPath, color.White)
+		i, _ := newHUDTestIDE(t, "", configPath)
+		pixel := func(hud *HUD) color.Color {
+			require.Contains(t, hud.statusBarImages, uri)
+			return color.NRGBAModel.Convert(hud.statusBarImages[uri].At(0, 0))
+		}
+
+		first, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, first.configErrs)
+		assert.Equal(t, color.NRGBAModel.Convert(color.White), pixel(first))
+		assert.NotContains(t, first.images, uri, "status bar images are cached apart")
+
+		red := color.NRGBA{R: 255, A: 255}
+		writeHUDTestPNG(t, imgPath, red)
+		overwritten, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, red, pixel(overwritten), "an image overwritten in place")
+
+		require.NoError(t, os.Remove(imgPath))
+		missing, err := i.LoadHUD(ctx)
+		require.NoError(t, err)
+		assert.NotContains(t, missing.statusBarImages, uri)
+	})
+
 	t.Run("config errors", func(t *testing.T) {
 		dir := tempDir(t)
 		configPath := filepath.Join(dir, "rune.yaml")
@@ -12332,6 +12720,495 @@ func TestLoadHUD(t *testing.T) {
 	})
 }
 
+func TestWorkspaceNotificationsTakeItsConfig(t *testing.T) {
+	const width, height = 30, 6
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	frame := filepath.Join(ws, "frame.png")
+	writeHUDTestPNG(t, frame, color.Gray{Y: 128})
+	overlay := []byte("notifications:\n  frame_charset:\n    topleft: \"╓\"\n" +
+		"    graphics:\n      topright: file://" + frame + "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(ws, ".iderc"), overlay, 0o644))
+	configPath := filepath.Join(home, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+		"workspace:\n  home: "+home+"\n  wallpaper_ascii: wallpaper\n"+
+		"notifications:\n  progress_bar: false\n"+
+		// Indexing would post notifications of its own.
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"), 0o644))
+	i, mu := newHUDTestIDE(t, ws, configPath, WithTrustedWorkspaceConfig(overlay))
+	mu.Lock()
+	defer mu.Unlock()
+	w := i.workspaceHandler.workspaces[i.workspaceHandler.focus]
+	require.NotNil(t, w)
+
+	for _, tt := range []struct {
+		name     string
+		ex       *ex
+		expected string
+	}{
+		{
+			name: "a workspace's notifications take its own config", ex: w.ex,
+			expected: `╓────────────────────────────a
+│hud                         │
+└────────────────────────────┘
+│         wallpaper          │
+│                            │
+└────────────────────────────┘`,
+		},
+		{
+			name: "the home workspace's notifications take the user's", ex: i.workspaceHandler.empty,
+			expected: `┌────────────────────────────┐
+│hud                         │
+└────────────────────────────┘
+│         wallpaper          │
+│                            │
+└────────────────────────────┘`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := tt.ex.container
+			c.Resize(width, height)
+			require.True(t, c.UpdateProgress(c.Notify(notifications.LevelInfo, "hud"), "", 1, 2))
+			awaitFrame(t, c, asciiart.NewStringWriter(width, height, asciiart.DefaultConfig()),
+				nil, tt.expected)
+		})
+	}
+}
+
+func TestTabBarGraphicsIntegration(t *testing.T) {
+	const width, height = 40, 12
+	ctx := context.Background()
+	tempDir := func() string {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		return dir
+	}
+	home, ws, ws2 := tempDir(), tempDir(), tempDir()
+	uri := func(name string, y uint8) string {
+		path := filepath.Join(home, name)
+		writeHUDTestPNG(t, path, color.Gray{Y: y})
+		return "file://" + path
+	}
+	slices := func(uri string) string {
+		return "      left: " + uri + "\n      middle: " + uri + "\n      right: " + uri + "\n"
+	}
+	focus, highlight := uri("focus.png", 255), uri("highlight.png", 128)
+	wsFocus, wsIdle := uri("ws-focus.png", 200), uri("ws-idle.png", 75)
+	wsHighlight := uri("ws-highlight.png", 160)
+	// The bar is every workspace's, so a workspace's own config leaves it
+	// alone.
+	overlay := []byte("workspace:\n  tab_images:\n    focus:\n" + slices(uri("overlay.png", 40)))
+	require.NoError(t, os.WriteFile(filepath.Join(ws, ".iderc"), overlay, 0o644))
+	main := filepath.Join(ws, "main.go")
+	require.NoError(t, os.WriteFile(main, []byte("package main\n"), 0o644))
+	configPath := filepath.Join(home, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+		"workspace:\n  home: "+home+"\n  wallpaper_ascii: wallpaper\n"+
+		"  focus_tab_highlight_char: \"\"\n"+
+		"  tab_images:\n    focus:\n"+slices(wsFocus)+"    non_focus:\n"+slices(wsIdle)+
+		"  focus_tab_highlight_graphics:\n    horizontal: "+wsHighlight+"\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"browser:\n"+
+		"  tab_images:\n    focus:\n"+slices(focus)+
+		"  focus_tab_highlight_graphics:\n    horizontal: "+highlight+"\n"), 0o644))
+	i, mu := newHUDTestIDE(t, ws, configPath, WithTrustedWorkspaceConfig(overlay),
+		WithTabBarOffset(13), WithTabBarHeight(2),
+		WithWorkspacesBarHeight(2), WithWorkspacesBarOffset(2), WithWorkspacesBarFrame(false))
+	uri2, err := workspaceapi.CurrentUserHostURI(ws2)
+	require.NoError(t, err)
+	h := i.workspaceHandler
+	mu.Lock()
+	slot := h.focus
+	require.NoError(t, h.addWorkspace(uri2, false, false, -1))
+	mu.Unlock()
+	i.WaitWorkspaces()
+	fileURI, err := workspaceapi.ParseURI("file://" + main)
+	require.NoError(t, err)
+	mu.Lock()
+	require.True(t, h.switchToWorkspace(slot))
+	require.NoError(t, i.Open(fileURI))
+	mu.Unlock()
+	root := &safeHandler{mu: mu, Component: &i.root}
+	root.Resize(width, height)
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+
+	awaitFrame(t, root, w, nil, `             aaaaaaaaa                  
+             o@main.go                  
+┌──────────────────────────────────────┐
+│package main                          │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                NORMAL│
+└──────────────────────────────────────┘
+  161  2*2                              
+  111  ***                              `)
+
+	writeHUDTestPNG(t, strings.TrimPrefix(focus, "file://"), color.Gray{Y: 40})
+	writeHUDTestPNG(t, strings.TrimPrefix(wsFocus, "file://"), color.Gray{Y: 230})
+	hud, err := i.LoadHUD(ctx)
+	require.NoError(t, err)
+	mu.Lock()
+	applied, _ := i.ApplyHUD(hud)
+	mu.Unlock()
+	require.True(t, applied)
+	require.NoError(t, w.Clear(term.Attributes{}))
+	root.Draw(w)
+	require.NoError(t, w.Flush())
+	assert.Equal(t, `             aaaaaaaaa                  
+             o_main.go                  
+┌──────────────────────────────────────┐
+│package main                          │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                NORMAL│
+└──────────────────────────────────────┘
+  191  2*2                              
+  111  ***                              `, w.String(), "the tabs draw the reloaded images at once")
+}
+
+func TestTabBarHoverIntegration(t *testing.T) {
+	const width, height = 40, 12
+	tempDir := func() string {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		return dir
+	}
+	home, ws, ws2 := tempDir(), tempDir(), tempDir()
+	uri := func(name string, y uint8) string {
+		path := filepath.Join(home, name)
+		writeHUDTestPNG(t, path, color.Gray{Y: y})
+		return "file://" + path
+	}
+	images := "  tab_images:\n"
+	for _, state := range []struct {
+		name string
+		y    uint8
+	}{{"non_focus", 75}, {"hover", 255}, {"pressed", 40}} {
+		u := uri(state.name+".png", state.y)
+		images += "    " + state.name + ":\n      left: " + u + "\n      middle: " + u +
+			"\n      right: " + u + "\n"
+	}
+	main, other := filepath.Join(ws, "main.go"), filepath.Join(ws, "other.go")
+	require.NoError(t, os.WriteFile(main, []byte("package main\n"), 0o644))
+	require.NoError(t, os.WriteFile(other, []byte("package other\n"), 0o644))
+	configPath := filepath.Join(home, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+		"sounds:\n  tab-hover: /tab-hover.wav\n  tab-click: /tab-click.wav\n"+
+		"  ws-hover: /ws-hover.wav\n  ws-click: /ws-click.wav\n"+
+		"workspace:\n  home: "+home+"\n  wallpaper_ascii: wallpaper\n"+
+		"  focus_tab_highlight_char: \"\"\n"+images+
+		"  tab_sounds:\n    hover: ws-hover\n    click: ws-click\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"browser:\n  focus_tab_highlight_char: \"\"\n"+images+
+		"  tab_sounds:\n    hover: tab-hover\n    click: tab-click\n"), 0o644))
+	var soundsMu sync.Mutex
+	var played []string
+	i, mu := newHUDTestIDE(t, ws, configPath,
+		WithSoundBackend(sounds.BackendFunc(func(s sounds.Sound) {
+			soundsMu.Lock()
+			defer soundsMu.Unlock()
+			played = append(played, s.Name)
+		})),
+		WithTabBarOffset(13), WithTabBarHeight(2),
+		WithWorkspacesBarHeight(2), WithWorkspacesBarOffset(2), WithWorkspacesBarFrame(false))
+	uri2, err := workspaceapi.CurrentUserHostURI(ws2)
+	require.NoError(t, err)
+	h := i.workspaceHandler
+	mu.Lock()
+	slot := h.focus
+	require.NoError(t, h.addWorkspace(uri2, false, false, -1))
+	mu.Unlock()
+	i.WaitWorkspaces()
+	mu.Lock()
+	require.True(t, h.switchToWorkspace(slot))
+	for _, path := range []string{main, other} {
+		fileURI, err := workspaceapi.ParseURI("file://" + path)
+		require.NoError(t, err)
+		require.NoError(t, i.Open(fileURI))
+	}
+	mu.Unlock()
+	root := &safeHandler{mu: mu, Component: &i.root, Handler: &i.root}
+	root.Resize(width, height)
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+	mouse := func(key term.Key, x, y int) {
+		root.Handle(term.Event{Type: term.EventMouse, Key: key, MouseX: x, MouseY: y})
+	}
+	heard := func() []string {
+		soundsMu.Lock()
+		defer soundsMu.Unlock()
+		return slices.Clone(played)
+	}
+	screen := func(top, editor, bottom string) string {
+		return top + `
+┌──────────────────────────────────────┐
+│` + editor + `│
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                NORMAL│
+└──────────────────────────────────────┘
+` + bottom
+	}
+	const (
+		idleFiles = `             *********  **********      
+             o*main.go  o*other.go      `
+		idleWorkspaces = `  1*1  2*2                              
+  ***  ***                              `
+	)
+
+	awaitFrame(t, root, w, nil, screen(idleFiles, "package other                         ",
+		idleWorkspaces))
+
+	mouse(0, 15, 1)
+	awaitFrame(t, root, w, nil, screen(`             @@@@@@@@@  **********      
+             o@main.go  o*other.go      `, "package other                         ",
+		idleWorkspaces))
+	assert.Equal(t, []string{"tab-hover"}, heard(), "the pointer moves onto a file tab")
+
+	mouse(term.MouseLeft, 15, 1)
+	awaitFrame(t, root, w, nil, screen(`             _________  **********      
+             o_main.go  o*other.go      `, "package other                         ",
+		idleWorkspaces))
+	mouse(term.MouseRelease, 15, 1)
+	awaitFrame(t, root, w, nil, screen(idleFiles, "package main                          ",
+		idleWorkspaces))
+	assert.Equal(t, []string{"tab-hover", "tab-click"}, heard(),
+		"the release clicks the file tab, which keeps the look of the tab in focus")
+
+	mouse(0, 8, 11)
+	awaitFrame(t, root, w, nil, screen(idleFiles, "package main                          ",
+		`  1*1  2@2                              
+  ***  @@@                              `))
+	mouse(term.MouseLeft, 8, 11)
+	awaitFrame(t, root, w, nil, screen(idleFiles, "package main                          ",
+		`  1*1  2_2                              
+  ***  ___                              `))
+	mouse(term.MouseRelease, 8, 11)
+	assert.Equal(t, []string{"tab-hover", "tab-click", "ws-hover", "ws-click"}, heard(),
+		"the workspace tabs play the workspace's sounds")
+	mu.Lock()
+	assert.NotEqual(t, slot, h.focus, "the release clicks the workspace tab")
+	mu.Unlock()
+}
+
+func TestStatusInboxGraphicsIntegration(t *testing.T) {
+	const width, height = 30, 6
+	ctx := context.Background()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	selected := filepath.Join(home, "selected.png")
+	writeHUDTestPNG(t, selected, color.Gray{Y: 200})
+	configPath := filepath.Join(home, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+		"workspace:\n  home: "+home+"\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"program_status:\n  images:\n    selected:\n      middle: file://"+selected+"\n"), 0o644))
+	i, mu := newHUDTestIDE(t, ws, configPath)
+	agent := mustURI(t, "rune-agent://model/agent")
+	mu.Lock()
+	h := i.workspaceHandler
+	focused := h.focusEx()
+	_, err = focused.comp.Tab(agent, 'x', "agent", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	require.NoError(t, focused.comp.SetTabStatus(agent, programstatus.Report{
+		State: programstatus.Blocked, Progress: -1,
+	}))
+	require.NoError(t, h.commandProgramStatus())
+	win, err := focused.comp.Focus()
+	require.NoError(t, err)
+	content, err := win.Content()
+	require.NoError(t, err)
+	inbox, ok := content.(*idestatus.View)
+	require.True(t, ok)
+	inbox.Resize(width, height)
+	mu.Unlock()
+	view := &safeHandler{mu: mu, Component: inbox}
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+
+	awaitFrame(t, view, w, nil, `                        │AAAAA
+ ▌6661666666666666666   │AAAAA
+ ▌6󰹇6agent66666666666   │AAAAA
+ ▌666blocked666666666   │AAAAA
+                        │AAAAA
+                        │AAAAA`)
+
+	writeHUDTestPNG(t, selected, color.Gray{Y: 40})
+	hud, err := i.LoadHUD(ctx)
+	require.NoError(t, err)
+	mu.Lock()
+	applied, _ := i.ApplyHUD(hud)
+	mu.Unlock()
+	require.True(t, applied)
+	require.NoError(t, w.Clear(term.Attributes{}))
+	view.Draw(w)
+	require.NoError(t, w.Flush())
+	assert.Equal(t, `                        │AAAAA
+ ▌___1_______________   │AAAAA
+ ▌_󰹇_agent___________   │AAAAA
+ ▌___blocked_________   │AAAAA
+                        │AAAAA
+                        │AAAAA`, w.String(), "the open inbox draws the reloaded image at once")
+}
+
+func TestStatusInboxDividerIntegration(t *testing.T) {
+	const width, height = 50, 12
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	bottom := filepath.Join(home, "bottom.png")
+	writeHUDTestPNG(t, bottom, color.Gray{Y: 255})
+	configPath := filepath.Join(home, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+		"workspace:\n  home: "+home+"\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"program_status:\n  divider_charset:\n"+
+		"    top: T\n    vertical_top: t\n    vertical: v\n    vertical_bottom: b\n    bottom: B\n"+
+		"    graphics:\n      bottom: file://"+bottom+"\n"), 0o644))
+	i, mu := newHUDTestIDE(t, ws, configPath)
+	agent := mustURI(t, "rune-agent://model/agent")
+	mu.Lock()
+	h := i.workspaceHandler
+	focused := h.focusEx()
+	_, err = focused.comp.Tab(agent, 'x', "agent", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	require.NoError(t, focused.comp.SetTabStatus(agent, programstatus.Report{
+		State: programstatus.Blocked, Progress: -1,
+	}))
+	require.NoError(t, h.commandProgramStatus())
+	mu.Unlock()
+	root := &safeHandler{mu: mu, Component: &i.root}
+	root.Resize(width, height)
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+
+	// The window bar takes the top join's place.
+	awaitFrame(t, root, w, nil, `┌────────────────────────────────────────────────┐
+│󰹇  agent                                        │
+├█●██████████████████████████████████████████████┤
+││                        vAAAAAAAAAAAAAAAAAAAAA││
+││ ▌   1                  vAAAAAAAAAAAAAAAAAAAAA││
+││ ▌ 󰹇 agent              vAAAAAAAAAAAAAAAAAAAAA││
+││ ▌   blocked            vAAAAAAAAAAAAAAAAAAAAA││
+││                        vAAAAAAAAAAAAAAAAAAAAA││
+││                        bAAAAAAAAAAAAAAAAAAAAA││
+│└────────────────────────@─────────────────────┘│
+│                                                │
+└────────────────────────────────────────────────┘`)
+}
+
+func TestNotificationGraphicsIntegration(t *testing.T) {
+	const width, height = 40, 8
+	interrupts := make(chan struct{}, 1)
+	newTestPublishOverride = func(term.Event) bool {
+		select {
+		case interrupts <- struct{}{}:
+		default:
+		}
+		return true
+	}
+	t.Cleanup(func() { newTestPublishOverride = nil })
+
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	uri := func(name string, y uint8) string {
+		path := filepath.Join(dir, name)
+		writeHUDTestPNG(t, path, color.Gray{Y: y})
+		return "file://" + path
+	}
+	frame, progress, reloaded := uri("frame.png", 128), uri("progress.png", 255), uri("reloaded.png", 40)
+	notificationsCfg := func(frame string) map[string]any {
+		return map[string]any{
+			"progress_bar": true,
+			"frame_charset": map[string]any{"graphics": map[string]any{
+				"topleft": frame, "topright": frame, "bottomleft": frame, "bottomright": frame,
+				"horizontaltop": frame, "horizontalbottom": frame,
+				"verticalleft": frame, "verticalright": frame,
+			}},
+			"progress_format": map[string]any{
+				"start": "{", "current": "-", "current_tip": ">", "remain": " ", "end": "}",
+				"graphics": map[string]any{"current": progress, "current_tip": progress},
+			},
+		}
+	}
+	cfg := defaultConfigWithWrap(false)
+	cfg.cfg["notifications"] = notificationsCfg(frame)
+	m := newTestWorkspaceManagerHandlerWithDir(t, cfg, dir, nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+	// The workspace reads cfg in the background, so the reload swaps in a
+	// config of its own rather than editing cfg.
+	reloadedCfg := defaultConfigWithWrap(false)
+	reloadedCfg.cfg["notifications"] = notificationsCfg(reloaded)
+	var current atomic.Pointer[ideConfig]
+	current.Store(&cfg)
+	m.reloadConfig = func() (ideConfig, error) { return *current.Load(), nil }
+	wsURI, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	require.NoError(t, m.addOrCreateWorkspace(wsURI))
+	m.quiesce()
+
+	h := newSafeHandler(m)
+	h.Resize(width, height)
+	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+	notify := func(msg string) {
+		m.locked(func() {
+			c := m.workspaces[m.focus].ex.container
+			// Pinned, so the progress bar neither moves nor closes.
+			require.True(t, c.UpdateProgress(c.Notify(notifications.LevelInfo, msg), "", 4, 10))
+		})
+	}
+	draw := func() string {
+		require.NoError(t, w.Clear(term.Attributes{}))
+		h.Draw(w)
+		require.NoError(t, w.Flush())
+		return w.String()
+	}
+
+	notify("hud")
+	awaitFrame(t, h, w, interrupts, `┌────────────────────────aaaaaaaaaaaaaaa
+│                        a hud         a
+├────────────────────────{@@@@@@       }
+│          workspaceWallpaper          │
+│                                      │
+├──────────────────────────────────────┤
+│1 1  2 2                              │
+└─────━━━──────────────────────────────┘`)
+
+	current.Store(&reloadedCfg)
+	hud, err := m.loadHUD(context.Background())
+	require.NoError(t, err)
+	m.locked(func() { m.applyHUD(hud) })
+	assert.Equal(t, `┌────────────────────────_______________
+│                        _ hud         _
+├────────────────────────{@@@@@@       }
+│          workspaceWallpaper          │
+│                                      │
+├──────────────────────────────────────┤
+│1 1  2 2                              │
+└─────━━━──────────────────────────────┘`, draw(),
+		"the open notification draws the reloaded images at once")
+
+	notify("new")
+	// The workspace bar's frame covers the last column of the lower one.
+	assert.Equal(t, `┌────────────────────────_______________
+│                        _ new         _
+├────────────────────────{@@@@@@       }
+│          workspaceWallp_______________
+│                        _ hud         _
+├────────────────────────{@@@@@@       ┤
+│1 1  2 2                              │
+└─────━━━──────────────────────────────┘`, draw(),
+		"a notification posted afterwards draws the reloaded images")
+}
+
 // hudTestStyle is the HUD style of a config whose window frames start with
 // topLeft and whose frame union has top junctions.
 func hudTestStyle(topLeft, top string) hudStyle {
@@ -12344,37 +13221,175 @@ func hudTestStyle(topLeft, top string) hudStyle {
 }
 
 func TestApplyHUD(t *testing.T) {
-	m, other := newActivityTestManager(t, defaultConfigWithWrap(false))
+	cfg := defaultConfigWithWrap(false)
+	var soundsMu sync.Mutex
+	var played []string
+	cfg.sounds = sounds.PlayerFunc(func(name string) {
+		soundsMu.Lock()
+		defer soundsMu.Unlock()
+		played = append(played, name)
+	})
+	m, other := newActivityTestManager(t, cfg)
 	t.Cleanup(func() { _ = m.Close() })
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	focused, skipped := m.workspaces[m.focus], m.workspaces[other]
 	topLeft := func(e *ex) rune { return e.config.FrameCharSet.TopLeft }
+	bell := func(e *ex) string { return *e.emulatorConfig.BellSound.Load() }
 	untouched := topLeft(skipped.ex)
+	untouchedBell := bell(skipped.ex)
+	// A terminal opened before the reload holds a copy of the config.
+	openTerminal := focused.ex.emulatorConfig
 
+	base, overlaid := hudTestStyle("╭", "┳"), hudTestStyle("┏", "┳")
+	base.bellSound, overlaid.bellSound = "base-bell", "overlay-bell"
+	base.commandShowManual, overlaid.commandShowManual = true, true
+	base.notifyStatus = idestatus.NotifyConfig{
+		Sounds: map[programstatus.State]string{programstatus.Working: "tick"},
+	}
 	hud := &HUD{
 		load:       2,
-		base:       hudTestStyle("╭", "┳"),
-		workspaces: map[string]hudStyle{focused.uri.String(): hudTestStyle("┏", "┳")},
+		base:       base,
+		workspaces: map[string]hudStyle{focused.uri.String(): overlaid},
 		skip:       map[string]struct{}{skipped.uri.String(): {}},
 	}
-	m.applyHUD(hud)
+	applied, _ := m.applyHUD(hud)
+	require.True(t, applied)
 	assert.Equal(t, '╭', topLeft(m.empty), "the home workspace gets the base style")
 	assert.Equal(t, '┏', topLeft(focused.ex), "a workspace gets its overlay's style")
 	assert.Equal(t, untouched, topLeft(skipped.ex), "a skipped workspace keeps its style")
 	assert.Equal(t, '┳', m.union.Top)
+	assert.Equal(t, "base-bell", bell(m.empty))
+	assert.Equal(t, "overlay-bell", bell(focused.ex))
+	assert.Equal(t, "overlay-bell", *openTerminal.BellSound.Load(),
+		"an open terminal rings the new bell")
+	assert.Equal(t, untouchedBell, bell(skipped.ex))
+	assert.True(t, m.empty.config.CommandOverlay.ShowManual)
+	assert.True(t, focused.ex.config.CommandOverlay.ShowManual)
+	assert.False(t, skipped.ex.config.CommandOverlay.ShowManual)
 
-	m.applyHUD(&HUD{load: 1, base: hudTestStyle("╔", "┯")})
+	chat, err := workspaceapi.ParseURI("rune-agent://model/hud")
+	require.NoError(t, err)
+	_, err = focused.comp.Tab(chat, 'x', "hud", browsertest.NewTestHandler())
+	require.NoError(t, err)
+	require.NoError(t, focused.comp.SetTabStatus(chat,
+		programstatus.Report{State: programstatus.Working, Progress: -1}))
+	m.mu.Unlock()
+	m.quiesce()
+	m.mu.Lock()
+	soundsMu.Lock()
+	assert.Equal(t, []string{"tick"}, played, "program_status.sounds of the base config")
+	soundsMu.Unlock()
+
+	applied, _ = m.applyHUD(&HUD{load: 1, base: hudTestStyle("╔", "┯")})
+	assert.False(t, applied)
 	assert.Same(t, hud, m.hud, "an older HUD is ignored")
 	assert.Equal(t, '╭', topLeft(m.empty))
 	assert.Equal(t, '┳', m.union.Top)
 
 	skipped.configOverlay = []byte("browser: {}")
-	m.applyHUD(&HUD{load: 3, base: hudTestStyle("╔", "┯")})
+	applied, _ = m.applyHUD(&HUD{load: 3, base: hudTestStyle("╔", "┯")})
+	assert.True(t, applied)
 	assert.Equal(t, '╔', topLeft(m.empty))
 	assert.Equal(t, '╔', topLeft(focused.ex))
 	assert.Equal(t, untouched, topLeft(skipped.ex),
 		"a workspace whose overlay the HUD did not read keeps its style")
+}
+
+// capturedServices is a registrar that keeps the services registered on it.
+type capturedServices map[string]any
+
+func (c capturedServices) RegisterService(desc *grpc.ServiceDesc, impl any) {
+	c[desc.ServiceName] = impl
+}
+
+func (c capturedServices) GetServiceInfo() map[string]grpc.ServiceInfo { return nil }
+
+// servedConfig returns the config res serves to an extension without an
+// ID.
+func servedConfig(t *testing.T, res extension.ResourceRegistrar) map[string]any {
+	t.Helper()
+	services := capturedServices{}
+	_, err := res.Register(services, new(sync.Mutex))
+	require.NoError(t, err)
+	server, ok := services[configrpc.Config_ServiceDesc.ServiceName].(configrpc.ConfigServer)
+	require.True(t, ok)
+	got, err := server.Get(context.Background(), &configrpc.GetRequest{})
+	require.NoError(t, err)
+	var cfg map[string]any
+	require.NoError(t, json.Unmarshal([]byte(got.GetData()), &cfg))
+	return cfg
+}
+
+func TestApplyHUDReloadsExtensionConfig(t *testing.T) {
+	var mu sync.Mutex
+	runners := map[string]*recordingRunner{}
+	configs := map[string]extension.ResourceRegistrar{}
+	runnerFn := func(
+		uri workspaceapi.URI,
+		res map[extensionapi.Permission]extension.ResourceRegistrar,
+		_, _ string, _ browser.Notifications,
+		_, _ schemeapi.Executor, _ extension.Grantor, _ text.Editor,
+		_ ideauthorizer.PromptOpener, _ storageapi.Service,
+		_ func(func()) bool) (extension.Runner, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		r := &recordingRunner{processes: 2}
+		runners[uri.String()] = r
+		configs[uri.String()] = res[extensionapi.PermissionConfig]
+		return r, nil
+	}
+	cfg := defaultConfigWithWrap(false)
+	dir := t.TempDir()
+	schedMu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
+	manager := workspace.NewManager(config.NopConfig(), sched)
+	require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme, workspace.NewMemoryScheme))
+	first, err := workspaceapi.ParseURI("memory://" + dir)
+	require.NoError(t, err)
+	m := newTestWorkspaceManagerHandlerWithManagerMu(t, manager, schedMu, drain,
+		&first, cfg, FuncExtensionsRunner(runnerFn), nil, dir, nil, nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+	m.quiesce()
+	overlaid, err := workspaceapi.ParseURI("memory:///overlaid")
+	require.NoError(t, err)
+	skipped, err := workspaceapi.ParseURI("memory:///skipped")
+	require.NoError(t, err)
+	for _, uri := range []workspaceapi.URI{overlaid, skipped} {
+		require.NoError(t, m.addOrCreateWorkspace(uri))
+		m.quiesce()
+	}
+
+	m.mu.Lock()
+	_, signalled := m.applyHUD(&HUD{
+		load:          1,
+		base:          hudTestStyle("╭", "┳"),
+		cfg:           map[string]any{"marker": "base"},
+		workspaces:    map[string]hudStyle{overlaid.String(): hudTestStyle("┏", "┳")},
+		workspaceCfgs: map[string]map[string]any{overlaid.String(): {"marker": "overlay"}},
+		skip:          map[string]struct{}{skipped.String(): {}},
+	})
+	m.mu.Unlock()
+	assert.Equal(t, 4, signalled, "both processes of each workspace told")
+
+	mu.Lock()
+	defer mu.Unlock()
+	tests := []struct {
+		name        string
+		uri         workspaceapi.URI
+		wantMarker  any
+		wantReloads int
+	}{
+		{"a workspace with the user's config", first, "base", 1},
+		{"a workspace with its own config", overlaid, "overlay", 1},
+		{"a skipped workspace", skipped, nil, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Contains(t, runners, tt.uri.String())
+			assert.Equal(t, tt.wantReloads, runners[tt.uri.String()].reloadCount())
+			assert.Equal(t, tt.wantMarker, servedConfig(t, configs[tt.uri.String()])["marker"])
+		})
+	}
 }
 
 func TestInstallPendingWorkspaceAppliesNewerHUD(t *testing.T) {
@@ -12417,4 +13432,315 @@ func TestInstallPendingWorkspaceAppliesNewerHUD(t *testing.T) {
 			assert.Equal(t, tc.want, m.workspaces[slot].ex.config.FrameCharSet.TopLeft)
 		})
 	}
+}
+
+// acpProbeOutEnv names the file TestACPAgentProbeHelper reports to. Its
+// RUNE_ prefix keeps it in the report, showing configured env reaches the
+// agent too.
+const acpProbeOutEnv = "RUNE_IDE_ACPPROBE_OUT"
+
+// acpProbeReport is what an ACP agent saw of Rune.
+type acpProbeReport struct {
+	// Env are the agent's RUNE_ variables.
+	Env map[string]string
+	// CallErr is why the agent could not call back into Rune.
+	CallErr string
+	// IsDir reports whether Rune said the agent's working directory is a
+	// directory.
+	IsDir bool
+}
+
+func TestACPAgentsCallBackIntoRune(t *testing.T) {
+	workspaceDir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	dataDir := t.TempDir()
+	out := filepath.Join(t.TempDir(), "probe.json")
+	testBinary, err := os.Executable()
+	require.NoError(t, err)
+	// JSON is YAML, and needs no quoting of the paths.
+	cfg, err := json.Marshal(map[string]any{
+		"clipboard": "memory",
+		"acp": map[string]any{"agents": map[string]any{"probe": map[string]any{
+			"command": testBinary,
+			"args":    []string{"-test.run=^TestACPAgentProbeHelper$"},
+			"env":     map[string]string{acpProbeOutEnv: out},
+		}}},
+	})
+	require.NoError(t, err)
+	configPath := filepath.Join(dataDir, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, cfg, 0o600))
+
+	mu := new(sync.Mutex)
+	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
+	runner, err := extensionv2.NewRunner(context.Background(), mu, dataDir)
+	require.NoError(t, err)
+	i, err := New(workspaceDir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
+		WithExtensionsRunner(runner),
+		WithLocker(mu),
+		WithScheduleNextTick(scheduleNextTick),
+		WithPublishEvent(nopPublishEvent),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, i.Close()) })
+	_ = i.Ready()
+	drainSchedule()
+	i.WaitWorkspaces()
+	mu.Lock()
+	acp := i.workspaceHandler.workspaces[i.workspaceHandler.focus].acpManager
+	mu.Unlock()
+	require.NotNil(t, acp)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// The probe exits without speaking ACP, so the session fails.
+	_, sessionErr := acp.NewSession(ctx, acpapi.NewSessionRequest{Agent: "probe"})
+	require.Error(t, sessionErr)
+
+	data, err := os.ReadFile(out)
+	require.NoError(t, err, "the agent did not run: %v", sessionErr)
+	var got acpProbeReport
+	require.NoError(t, json.Unmarshal(data, &got))
+	for _, name := range []string{"RUNE_SOCKET", "RUNE_TOKEN", "RUNE_CERT"} {
+		assert.NotEmpty(t, got.Env[name], name)
+	}
+	assert.Equal(t, dataDir, got.Env["RUNE_DATADIR"])
+	assert.Equal(t, dataDir, got.Env["RUNE_INSTALLDIR"])
+	assert.Equal(t, strconv.Itoa(os.Getpid()), got.Env["RUNE_PID"])
+	assert.Equal(t, out, got.Env[acpProbeOutEnv])
+	assert.Empty(t, got.CallErr)
+	assert.True(t, got.IsDir)
+}
+
+func TestACPAgentProbeHelper(t *testing.T) {
+	out := os.Getenv(acpProbeOutEnv)
+	if out == "" {
+		return
+	}
+	report := acpProbeReport{Env: make(map[string]string)}
+	for _, kv := range os.Environ() {
+		if k, v, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(k, "RUNE_") {
+			report.Env[k] = v
+		}
+	}
+	isDir, err := statWorkingDirThroughRune(report.Env)
+	report.IsDir = isDir
+	if err != nil {
+		report.CallErr = err.Error()
+	}
+	data, err := json.Marshal(report)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(out, data, 0o600))
+}
+
+// acpChatTest is an IDE whose config acpChatConfig writes, with an ACP
+// chat open in its focused window.
+type acpChatTest struct {
+	i          *IDE
+	mu         *sync.Mutex
+	configPath string
+	chat       browserapi.Handler
+}
+
+// acpChatConfig is a config whose idle agent exits at once, its chat
+// still taking input, with editor and chat merged in.
+func acpChatConfig(t *testing.T, editor, chat map[string]any) []byte {
+	t.Helper()
+	testBinary, err := os.Executable()
+	require.NoError(t, err)
+	cfg := map[string]any{
+		"clipboard": "memory",
+		"acp": map[string]any{"agents": map[string]any{"idle": map[string]any{
+			"command": testBinary,
+			"args":    []string{"-test.run=^$"},
+		}}},
+	}
+	if editor != nil {
+		cfg["editor"] = editor
+	}
+	if chat != nil {
+		cfg["extensions"] = map[string]any{"rune-agent": map[string]any{"config": chat}}
+	}
+	data, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	return data
+}
+
+func newACPChatTest(t *testing.T, cfg []byte) *acpChatTest {
+	t.Helper()
+	workspaceDir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	dataDir := t.TempDir()
+	configPath := filepath.Join(dataDir, "rune.yaml")
+	require.NoError(t, os.WriteFile(configPath, cfg, 0o600))
+
+	mu := new(sync.Mutex)
+	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
+	runner, err := extensionv2.NewRunner(context.Background(), mu, dataDir)
+	require.NoError(t, err)
+	i, err := New(workspaceDir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
+		WithExtensionsRunner(runner),
+		WithLocker(mu),
+		WithScheduleNextTick(scheduleNextTick),
+		WithPublishEvent(nopPublishEvent),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, i.Close()) })
+	_ = i.Ready()
+	drainSchedule()
+	i.WaitWorkspaces()
+
+	mu.Lock()
+	defer mu.Unlock()
+	ex := i.workspaceHandler.workspaces[i.workspaceHandler.focus].ex
+	win, err := ex.Browser().Focus()
+	require.NoError(t, err)
+	handled, err := ex.comp.DispatchCommand(context.Background(), textapi.Command{
+		Name: "acp", Args: []string{"new", "idle", "chat"}, Window: win,
+	})
+	require.NoError(t, err)
+	require.True(t, handled)
+	bw, ok := ex.Browser().Window(win.WindowID())
+	require.True(t, ok)
+	content, err := bw.Content()
+	require.NoError(t, err)
+	require.IsType(t, &browser.Tab{}, content)
+	chat := content.(*browser.Tab).Handler()
+	chat.Resize(80, 24)
+	return &acpChatTest{i: i, mu: mu, configPath: configPath, chat: chat}
+}
+
+func (c *acpChatTest) typeKeys(t *testing.T, keys string) {
+	t.Helper()
+	parsed, err := term.ParseKeys(keys)
+	require.NoError(t, err)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, k := range parsed {
+		c.chat.Handle(term.Event{Type: term.EventKey, Ch: k.Ch, Mod: k.Mod, Key: k.Key})
+	}
+}
+
+// screen draws the chat without the cursor, which covers the letter it is
+// on.
+func (c *acpChatTest) screen() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	w := term.NewStringWriter(80, 24)
+	c.chat.Draw(w)
+	_ = w.Flush()
+	return w.String()
+}
+
+func TestACPChatsTakeTheRuneAgentChatConfig(t *testing.T) {
+	styled := map[string]any{
+		"status_bar":              map[string]any{"layout": "{{ .Status }}{{ .ShiftRight }}{{ .Conversation }} @@"},
+		"input_box_frame_charset": map[string]any{"topleft": "╔"},
+		"user_msg_icon":           "",
+	}
+	tests := []struct {
+		name         string
+		editor, chat map[string]any
+		keys         string
+		want, gone   []string
+	}{
+		{
+			name:   "vim edits the message",
+			editor: map[string]any{"mode": "vim"},
+			keys:   "hello<esc>x",
+			want:   []string{"hell"},
+			gone:   []string{"hello"},
+		},
+		{
+			name:   "standard edits the message",
+			editor: map[string]any{"mode": "standard"},
+			keys:   "hello<esc>x",
+			want:   []string{"hellox"},
+		},
+		{
+			name:   "vim starts in normal mode when the chat says so",
+			editor: map[string]any{"mode": "vim"},
+			chat:   map[string]any{"editor_modal_start_insert": false},
+			keys:   "ihello<esc>",
+			want:   []string{"hello"},
+			gone:   []string{"ihello"},
+		},
+		{
+			name: "the status bar and compose frame",
+			chat: styled,
+			want: []string{"chat @@", "╔"},
+		},
+		{
+			name: "the defaults",
+			gone: []string{"@@", "╔"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newACPChatTest(t, acpChatConfig(t, tt.editor, tt.chat))
+			if tt.keys != "" {
+				c.typeKeys(t, tt.keys)
+			}
+			screen := c.screen()
+			for _, want := range tt.want {
+				assert.Contains(t, screen, want)
+			}
+			for _, gone := range tt.gone {
+				assert.NotContains(t, screen, gone)
+			}
+		})
+	}
+}
+
+func TestACPChatsRestyleWhenTheConfigReloads(t *testing.T) {
+	chat := func(marker, corner string) map[string]any {
+		return map[string]any{
+			"status_bar":              map[string]any{"layout": "{{ .Status }}{{ .ShiftRight }}{{ .Conversation }} " + marker},
+			"input_box_frame_charset": map[string]any{"topleft": corner},
+		}
+	}
+	c := newACPChatTest(t, acpChatConfig(t, nil, chat("@@", "╔")))
+	require.Contains(t, c.screen(), "chat @@")
+
+	require.NoError(t, os.WriteFile(c.configPath, acpChatConfig(t, nil, chat("##", "╓")), 0o600))
+	hud, err := c.i.workspaceHandler.loadHUD(context.Background())
+	require.NoError(t, err)
+	c.mu.Lock()
+	c.i.workspaceHandler.applyHUD(hud)
+	c.mu.Unlock()
+
+	require.Eventually(t, func() bool {
+		screen := c.screen()
+		return strings.Contains(screen, "chat ##") && strings.Contains(screen, "╓")
+	}, 10*time.Second, 10*time.Millisecond, "the open chat takes the reloaded style:\n%s", c.screen())
+}
+
+// statWorkingDirThroughRune connects to Rune as runectl does, with the
+// variables Rune gives the commands it starts, and stats the working
+// directory through it.
+func statWorkingDirThroughRune(env map[string]string) (bool, error) {
+	cert, err := base64.StdEncoding.DecodeString(env["RUNE_CERT"])
+	if err != nil {
+		return false, fmt.Errorf("decode RUNE_CERT: %w", err)
+	}
+	w, err := extensionapi.NewWorkspace(extensionapi.Config{
+		Socket:      env["RUNE_SOCKET"],
+		DataDir:     env["RUNE_DATADIR"],
+		InstallDir:  env["RUNE_INSTALLDIR"],
+		Token:       &oauth2.Token{AccessToken: env["RUNE_TOKEN"]},
+		Certificate: cert,
+	}, extensionapi.Metadata{ExtensionID: "acp-probe"})
+	if err != nil {
+		return false, err
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	info, err := w.FileSystem(ctx).Stat(wd)
+	if err != nil {
+		return false, err
+	}
+	return info.IsDir(), nil
 }

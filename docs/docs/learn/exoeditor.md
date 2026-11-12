@@ -73,7 +73,7 @@ The `command` template is the argv Rune executes inside a vte to open a file. Av
 - `{line}`: 1-based line number for the initial cursor.
 - `{col}`: 1-based column number for the initial cursor.
 
-`goto` is a [key sequence](./key-syntax.md) that, when injected into the vte, makes the editor place its cursor at `{line}`/`{col}`. The same `{line}`/`{col}` substitutions are recognised inside the sequence. Leave it empty to disable `:goto` and mouse click-to-line for this editor.
+`goto` is a [key sequence](./key-syntax.md) that, when injected into the vte, makes the editor place its cursor at `{line}`/`{col}`. The same `{line}`/`{col}` substitutions are recognised inside the sequence. Leave it empty to disable `goto` and mouse click-to-line for this editor.
 
 ### Quit sequence
 
@@ -346,7 +346,7 @@ Handing editing off to a guest TUI editor means forfeiting the integration point
 - **Syntax highlighting** is whatever your editor draws, unless you use the beta [`editor.exo.experimental_highlights`](#experimental-highlights-beta) overlay.
 - **Diagnostic highlights** from LSP are not rendered in your editor's viewport, unless you use the beta [`editor.exo.experimental_highlights`](#experimental-highlights-beta) overlay.
 - **Incremental edit dispatching to extensions** is gone; extensions no longer see edits as you type.
-- **Auto-saving is off.** Saving is delegated to the guest editor; Rune commands like `:write` return an error. `editor.auto_save` is silently ignored in `exo` mode.
+- **Auto-saving is off.** Saving is delegated to the guest editor; Rune commands like `write` return an error. `editor.auto_save` is silently ignored in `exo` mode.
 - **Auto-reload on external changes is off.** When something outside your editor (an agent, `git`, another process) rewrites the file on disk, Rune does not push that change into the guest editor. If your TUI editor does not detect and reload changed files itself, you will keep editing a stale buffer and may overwrite the new contents on save.
 
 ## What you keep

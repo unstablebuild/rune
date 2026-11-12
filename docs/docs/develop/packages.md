@@ -67,7 +67,8 @@ extension package also needs its source files:
   [source and package extensions](./extensions.md#source-and-package-extensions)).
   Point `path` back into the checkout with
   `$RUNE_DATADIR/lib/$RUNE_PKG_ID`, which resolves to your repository's files
-  on disk.
+  on disk. An extension entry without a `path` only
+  [configures an extension another package installs](#configuring-another-packages-extension).
 - For extensions, their **sources** and project manifest, so the toolchain
   can build and run them: `go.mod` (and `go.sum`) for Go, `pyproject.toml`
   for Python, `Cargo.toml` for Rust. Config-only packages need no sources.
@@ -282,6 +283,28 @@ values like any other config. See the [Extensions guide](./extensions.md) for
 the SDK side of writing the extension process, and
 [source and package extensions](./extensions.md#source-and-package-extensions)
 for how each entrypoint is run.
+
+### Configuring another package's extension
+
+A package can set config for an extension that another package installs,
+such as a theme that styles the Rune Agent status bar. Leave out `path` and
+give only `config`:
+
+```yaml title="config.yaml"
+extensions:
+  rune-agent:
+    config:
+      status_bar:
+        layout: '{{ .Image | src "file://$RUNE_DATADIR/lib/$RUNE_PKG_ID/status/rail.png" | alt "" }}{{ .Status }}'
+```
+
+The keys merge like any other: they are added where the user's config does
+not set them already, and the user's own values stay. Rune does not start an
+extension that has no `path`, so if the extension isn't installed yet, its
+config waits in the user's config until a package installs it and adds the
+`path`. An extension reads the new config when it starts, or sooner if it
+reloads its config on `themereload`, as Rune Agent does for its status bar
+and compose box frame.
 
 ### Registering a tutorial
 

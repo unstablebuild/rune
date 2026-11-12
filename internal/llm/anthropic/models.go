@@ -27,6 +27,8 @@ import (
 const LLMProvider = "anthropic"
 
 const (
+	// ClaudeFable5Dot2 is Anthropic's Claude Fable 5.2 model.
+	ClaudeFable5Dot2 = "claude-fable-5-2"
 	// ClaudeFable5Dot1 is Anthropic's Claude Fable 5.1 model.
 	ClaudeFable5Dot1 = "claude-fable-5-1"
 	// ClaudeFable5 is Anthropic's Claude Fable 5 model — its most capable
@@ -77,6 +79,7 @@ const (
 // provider at runtime for account- or region-specific limits.
 func AvailableModels() map[string]int {
 	return map[string]int{
+		ClaudeFable5Dot2:  1000000,
 		ClaudeFable5Dot1:  1000000,
 		ClaudeFable5:      1000000,
 		ClaudeOpus5Dot5:   1000000,
@@ -106,7 +109,7 @@ func SupportsAdaptiveThinking(model string) bool {
 	switch model {
 	case ClaudeOpus4Dot6, ClaudeSonnet4Dot6, ClaudeOpus4Dot7, ClaudeOpus4Dot8,
 		ClaudeOpus5, ClaudeOpus5Dot5, ClaudeSonnet5, ClaudeSonnet5Dot5,
-		ClaudeHaiku5Dot5, ClaudeFable5, ClaudeFable5Dot1:
+		ClaudeHaiku5Dot5, ClaudeFable5, ClaudeFable5Dot1, ClaudeFable5Dot2:
 		return true
 	default:
 		return false
@@ -117,6 +120,7 @@ func SupportsAdaptiveThinking(model string) bool {
 // (API max_tokens) ceiling. Models absent from the map have an unknown
 // ceiling; MaxOutputTokens returns 0 for them so callers apply no cap.
 var maxOutputTokens = map[string]int{
+	ClaudeFable5Dot2:  128000,
 	ClaudeFable5Dot1:  128000,
 	ClaudeFable5:      128000,
 	ClaudeOpus5Dot5:   128000,

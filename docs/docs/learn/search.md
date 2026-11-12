@@ -187,6 +187,12 @@ whether it trails far behind the best ones, with the lines that matched
 on the right. Type to narrow the results down and press `<enter>` to
 open one.
 
+While Rune is still indexing the workspace, files it has not reached may
+be missing from the results, and the status bar says so: `1204 files left
+to index`, or `indexing stalled:` and why. When a query could not be
+ranked by meaning, for instance before the embedding model is
+downloaded, the status bar says `matched by words only:` and why.
+
 When the embedding model cannot run, for instance because the local
 model server failed to load it, `searchsemantic` searches the
 workspace's trigram index for the query's words instead. The status bar

@@ -149,6 +149,14 @@ RELEASE_FILES=$(wildcard release/*)
 	runectl-prod-dist-linux-arm64 runectl-staging-dist-linux-arm64 \
 	runectl-prod-dist-darwin-amd64 runectl-staging-dist-darwin-amd64 \
 	runectl-prod-dist-darwin-arm64 runectl-staging-dist-darwin-arm64 \
+	xsandbox-pkg xsandbox-sign xsandbox-notarize \
+	xsandbox-prod-dist xsandbox-staging-dist \
+	xsandbox-prod-dist-notarized xsandbox-staging-dist-notarized \
+	xsandbox-prod-dist-linux-amd64 xsandbox-staging-dist-linux-amd64 \
+	xsandbox-prod-dist-linux-arm64 xsandbox-staging-dist-linux-arm64 \
+	xsandbox-prod-dist-darwin-amd64 xsandbox-staging-dist-darwin-amd64 \
+	xsandbox-prod-dist-darwin-arm64 xsandbox-staging-dist-darwin-arm64 \
+	xsandbox-prod-dist-all xsandbox-staging-dist-all \
 	notary-credentials runectl \
 	rune-release-linux-amd64 rune-release-linux-arm64 \
 	rune-release-linux-amd64-native rune-release-linux-arm64-native \
@@ -176,7 +184,7 @@ RELEASE_FILES=$(wildcard release/*)
 # selected by the make target rather than by ~/.bluectl/config or
 # whatever bucket the user's local config happens to name.
 #
-# The host targets (rune-agent-{prod,staging}-dist, runectl-*, fuzzy-*)
+# The host targets (rune-agent-{prod,staging}-dist, runectl-*, xsandbox-*, fuzzy-*)
 # derive their os/arch from the host running make.
 BLUECTL_HOST_OS   := $(shell uname | awk '{print tolower($$0)}')
 BLUECTL_HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
@@ -311,6 +319,7 @@ clean:
 	@$(MAKE) -C cmd/rune-agent clean
 	@$(MAKE) -C cmd/extension_fuzzy_search clean
 	@$(MAKE) -C cmd/runectl clean
+	@$(MAKE) -C cmd/xsandbox clean
 	@$(MAKE) -C cmd/rune clean
 
 $(BIN):
@@ -599,7 +608,8 @@ rune-agent-staging-dist-darwin-arm64: clean
 # Each target cleans first, so they run as separate makes one after another: as
 # prerequisites they would share a single clean and run at once under -j.
 rune-agent-prod-dist-all rune-agent-staging-dist-all \
-fuzzy-search-prod-dist-all fuzzy-search-staging-dist-all:
+fuzzy-search-prod-dist-all fuzzy-search-staging-dist-all \
+xsandbox-prod-dist-all xsandbox-staging-dist-all:
 	@$(MAKE) $(@:%-all=%)-linux-amd64
 	@$(MAKE) $(@:%-all=%)-linux-arm64
 	@$(MAKE) $(@:%-all=%)-darwin-amd64
@@ -691,6 +701,51 @@ runectl-prod-dist-darwin-arm64: clean
 runectl-staging-dist-darwin-arm64: clean
 	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,darwin-arm64) $(MAKE) -C cmd/runectl dist-darwin-arm64
 
+xsandbox-pkg:
+	@$(MAKE) -C cmd/xsandbox pkg
+
+xsandbox-sign:
+	@$(MAKE) -C cmd/xsandbox sign
+
+xsandbox-notarize:
+	@$(MAKE) -C cmd/xsandbox notarize
+
+xsandbox-prod-dist: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/xsandbox dist
+
+xsandbox-staging-dist: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/xsandbox dist
+
+xsandbox-prod-dist-notarized: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/xsandbox dist-notarized
+
+xsandbox-staging-dist-notarized: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/xsandbox dist-notarized
+
+xsandbox-prod-dist-linux-amd64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,linux-amd64) $(MAKE) -C cmd/xsandbox dist-linux-amd64
+
+xsandbox-staging-dist-linux-amd64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,linux-amd64) $(MAKE) -C cmd/xsandbox dist-linux-amd64
+
+xsandbox-prod-dist-linux-arm64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,linux-arm64) $(MAKE) -C cmd/xsandbox dist-linux-arm64
+
+xsandbox-staging-dist-linux-arm64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,linux-arm64) $(MAKE) -C cmd/xsandbox dist-linux-arm64
+
+xsandbox-prod-dist-darwin-amd64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,darwin-amd64) $(MAKE) -C cmd/xsandbox dist-darwin-amd64
+
+xsandbox-staging-dist-darwin-amd64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,darwin-amd64) $(MAKE) -C cmd/xsandbox dist-darwin-amd64
+
+xsandbox-prod-dist-darwin-arm64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,darwin-arm64) $(MAKE) -C cmd/xsandbox dist-darwin-arm64
+
+xsandbox-staging-dist-darwin-arm64: clean
+	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,darwin-arm64) $(MAKE) -C cmd/xsandbox dist-darwin-arm64
+
 notary-credentials:
 	xcrun notarytool store-credentials "$(NOTARY_PROFILE)" --team-id "YYZRWD888J"
 
@@ -705,7 +760,7 @@ notary-credentials:
 # context excludes .git, and a git worktree's .git is a file pointing
 # outside the context anyway.
 PKG_OUT ?= $(TARGET)/pkg
-PKG_GO_VERSION ?= 1.27.3
+PKG_GO_VERSION ?= 1.27.4
 DEB_BASE_IMAGE ?= debian:bookworm
 PKG_HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 PKG_TAG := $(shell git describe --tags --match 'v*')

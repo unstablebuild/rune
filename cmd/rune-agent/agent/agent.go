@@ -38,6 +38,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/cmd/rune-agent/agent/audit"
 	"unstable.build/rune/cmd/rune-agent/agent/skills"
+	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	"unstable.build/rune/cmd/rune-agent/agent/utf8validate"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguemanager"
 	"unstable.build/rune/cmd/rune-agent/hooks"
@@ -85,6 +86,12 @@ type Config struct {
 	// must handle this case (typically by allowing the operation or
 	// returning an error).
 	Prompter Prompter
+
+	// Tools restricts the skills the agent is shown, and is propagated to
+	// tool executions through the context (see WithToolPolicy) so that
+	// the sub-agents its tools spawn inherit it. The registry the agent
+	// is given must already be restricted by it (see Registry.WithPolicy).
+	Tools toolpolicy.Policy
 }
 
 // Memory represents a single recalled memory entry.
@@ -450,6 +457,22 @@ func (p *readCoverage) record(o *ReadObservation) {
 	p.coverage = append(p.coverage, *o)
 }
 
+// visibleSkills returns the skills the agent is shown: none without a
+// skill tool, and otherwise those its tool policy allows.
+func (a *Agent) visibleSkills() []skills.Skill {
+	if _, ok := a.registry.Get("skill", a.provider()); !ok {
+		return nil
+	}
+	all := a.skillRegistry.List()
+	visible := all[:0]
+	for _, s := range all {
+		if a.config.Tools.AllowsSkill(s.Name) {
+			visible = append(visible, s)
+		}
+	}
+	return visible
+}
+
 func (a *Agent) run(
 	ctx context.Context, ch chan<- Event,
 	dialogueID string, userMessage string, opts runOptions,
@@ -544,23 +567,8 @@ func (a *Agent) run(
 		log.Debug("added file to context", "uri", r.uri, "size", len(r.content))
 	}
 
-	// Content is the transcript representation. MultiContent is the model
-	// representation when the two texts differ or content parts are present.
-	displayMessage := userMessage
-	if opts.displaySet {
-		displayMessage = opts.displayMessage
-	}
-	userMsg := llmapi.Message{Role: llmapi.RoleUser, Content: displayMessage}
-	if displayMessage != userMessage || len(opts.attachments) > 0 {
-		// Providers that support content parts read MultiContent and
-		// ignore Content, so the text has to be repeated as a part.
-		userMsg.MultiContent = append(
-			[]llmapi.ContentPart{{
-				Type: llmapi.ContentPartTypeText,
-				Text: userMessage,
-			}},
-			opts.attachments...)
-	}
+	userMsg := newUserMessage(userMessage, opts)
+	displayMessage := userMsg.Content
 
 	// Build full message list
 	messages := make([]llmapi.Message, 0,
@@ -712,7 +720,7 @@ func (a *Agent) run(
 		if instructions != "" {
 			transient = append(transient, llmapi.Message{Role: llmapi.RoleSystem, Content: instructions})
 		}
-		if section := skillsPromptSection(a.skillRegistry.List()); section != "" {
+		if section := skillsPromptSection(a.visibleSkills()); section != "" {
 			transient = append(transient, llmapi.Message{Role: llmapi.RoleSystem, Content: section})
 		}
 		if preloadedSkillMsg != "" {
@@ -1165,6 +1173,7 @@ func (a *Agent) run(
 							toolCtx = WithDialogueID(toolCtx, dialogueID)
 							toolCtx = WithConversation(toolCtx, toolConversation)
 							toolCtx = WithPrompter(toolCtx, a.config.Prompter)
+							toolCtx = WithToolPolicy(toolCtx, a.config.Tools)
 							toolStart := time.Now()
 							result = info.tool.Execute(toolCtx, info.call.Function.Arguments)
 							dur = time.Since(toolStart)
@@ -1725,16 +1734,79 @@ func (a *Agent) persistMessages(
 	if len(newMessages) == 0 {
 		return false
 	}
-	// If the caller's context is already cancelled (e.g. tab closed or
-	// request cancelled), use a background context with a timeout so
-	// the storage operation can still complete and the conversation
-	// state is not lost.
-	if ctx.Err() != nil {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		slog.Debug("agent: persisting messages with background context", "dialogueID", dialogueID, "messages", len(newMessages))
+	ctx, cancel := storageContext(ctx)
+	defer cancel()
+	if err := a.saveMessages(ctx, dialogueID, dialogue, newMessages, usage); err != nil {
+		slog.Error("agent: persist messages", "error", err, "dialogueID", dialogueID)
+		emit(ctx, ch, Event{Type: EventError, Error: fmt.Errorf(
+			"persist messages: %w", err)})
+		return false
 	}
+	return true
+}
+
+// AppendTurn saves to the dialogue a turn that ran without the agent, such
+// as an agent skill the user invoked.
+func (a *Agent) AppendTurn(
+	ctx context.Context, dialogueID, message string,
+	replies []llmapi.Message, opts ...RunOption,
+) error {
+	var options runOptions
+	for _, o := range opts {
+		o(&options)
+	}
+	ctx, cancel := storageContext(ctx)
+	defer cancel()
+	var newMessages []llmapi.Message
+	dialogue, err := a.store.Get(ctx, dialogueID)
+	switch {
+	case errors.Is(err, storageapi.ErrNotFound):
+		dialogue.ID = dialogueID
+		newMessages = append(newMessages, llmapi.Message{Role: llmapi.RoleSystem, Content: a.config.SystemPrompt})
+	case err != nil:
+		return fmt.Errorf("get dialogue: %w", err)
+	}
+	newMessages = append(newMessages, newUserMessage(message, options))
+	if len(options.toolCallResults) > 0 {
+		newMessages = append(newMessages, buildToolCallMessages(options.toolCallResults)...)
+	}
+	for _, m := range replies {
+		if m.Role == llmapi.RoleTool && len(m.MultiContent) == 0 {
+			m.Content = nonEmptyToolResult(m.Content)
+		}
+		newMessages = append(newMessages, m)
+	}
+	return a.saveMessages(ctx, dialogueID, dialogue, newMessages, llmapi.DialogueUsage{})
+}
+
+func newUserMessage(message string, opts runOptions) llmapi.Message {
+	display := message
+	if opts.displaySet {
+		display = opts.displayMessage
+	}
+	msg := llmapi.Message{Role: llmapi.RoleUser, Content: display}
+	if display != message || len(opts.attachments) > 0 {
+		// Providers that support content parts read MultiContent and
+		// ignore Content, so the text has to be repeated as a part.
+		msg.MultiContent = append(
+			[]llmapi.ContentPart{{Type: llmapi.ContentPartTypeText, Text: message}},
+			opts.attachments...)
+	}
+	return msg
+}
+
+func storageContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx.Err() == nil {
+		return ctx, func() {}
+	}
+	slog.Debug("agent: persisting messages with background context")
+	return context.WithTimeout(context.Background(), 10*time.Second)
+}
+
+func (a *Agent) saveMessages(
+	ctx context.Context, dialogueID string, dialogue dialoguemanager.Dialogue,
+	newMessages []llmapi.Message, usage llmapi.DialogueUsage,
+) error {
 	err := a.store.Create(ctx, dialoguemanager.Dialogue{
 		ID:           dialogueID,
 		AgentID:      a.config.AgentID,
@@ -1747,13 +1819,7 @@ func (a *Agent) persistMessages(
 	if errors.Is(err, storageapi.ErrAlreadyExists) {
 		err = a.store.AppendMessages(ctx, dialogue, newMessages, usage)
 	}
-	if err != nil {
-		slog.Error("agent: persist messages", "error", err, "dialogueID", dialogueID)
-		emit(ctx, ch, Event{Type: EventError, Error: fmt.Errorf(
-			"persist messages: %w", err)})
-		return false
-	}
-	return true
+	return err
 }
 
 // SummarizeMaxOutputTokens returns the output-token budget to use for a

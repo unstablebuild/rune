@@ -12,7 +12,7 @@ especially when you open terminals many times a day.
 
 Rune can keep a small pool of pre-initialized terminals ready in the
 background so that the next terminal you open is already warmed up.
-The next `:terminal` (or any command that opens a terminal tab) hands
+The next `terminal` (or any command that opens a terminal tab) hands
 you a shell that has already started, instead of one that starts when
 you press Enter.
 
@@ -51,7 +51,7 @@ The pool only holds terminals that run your **default shell**, the
 same shell Rune launches when you open a terminal with no explicit
 command. Terminals that run a specific command (for example a
 `!`-prefixed alias, an `exo` editor invocation, or anything you start
-with `:terminal <cmd>`) always spin up fresh, because their command
+with `terminal <cmd>`) always spin up fresh, because their command
 line does not match what the pool warmed up with.
 
 The pool is warmed once, at startup, in the background. From that

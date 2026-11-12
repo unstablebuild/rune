@@ -17,6 +17,7 @@
 package component
 
 import (
+	"cmp"
 	"errors"
 	"image"
 	"log/slog"
@@ -55,6 +56,98 @@ type SeparatorOutset struct {
 // Empty reports whether no image URIs are set, regardless of mode or outsets.
 func (g SeparatorGraphics) Empty() bool {
 	return g.Left == "" && g.Horizontal == "" && g.Right == ""
+}
+
+// DividerCharSet stitches an interior vertical rule into a frame. Top and
+// Bottom take the rule's cells in the frame's top and bottom rows,
+// VerticalTop and VerticalBottom its first and last cells inside the
+// frame, and Vertical the cells between.
+type DividerCharSet struct {
+	Top, VerticalTop, Vertical, VerticalBottom, Bottom rune
+	Graphics                                           DividerGraphics
+}
+
+// DividerGraphics names the two junction images and the repeating rule.
+// Empty junction slots preserve the frame's top and bottom images. An
+// empty vertical slot leaves the rule's characters visible.
+type DividerGraphics struct {
+	Top, Vertical, Bottom string
+	Overlay               bool
+	Outset                DividerOutset
+}
+
+// DividerOutset extends junction images left and right along the frame,
+// and inward along the rule, in whole cells. Outsets cover content
+// without changing the layout.
+type DividerOutset struct {
+	Left, Right, Inward int
+}
+
+// URIs returns the URIs g names, empty ones included.
+func (g DividerGraphics) URIs() []string {
+	return []string{g.Top, g.Vertical, g.Bottom}
+}
+
+// LineGraphics names the images drawn over a line of cells: Start over
+// its first cell, End over its last and Middle over each cell between.
+// An empty Start or End takes Middle's image, and an empty Middle leaves
+// its cells to their character. A line one cell long is drawn with
+// Start. Overlay keeps the character under the images rather than
+// blanking it.
+type LineGraphics struct {
+	Start, Middle, End string
+	Overlay            bool
+}
+
+// Empty reports whether g names no image, whatever its mode.
+func (g LineGraphics) Empty() bool {
+	return g.Start == "" && g.Middle == "" && g.End == ""
+}
+
+// URIs returns the URIs g names, empty ones included.
+func (g LineGraphics) URIs() []string {
+	return []string{g.Start, g.Middle, g.End}
+}
+
+// DrawCells writes cell along a line of length cells of w from from,
+// rightwards or, when vertical, downwards, but, unless g is Overlay, a
+// blank cell with cell's colors and attributes in place of each cell an
+// image of g goes over. As a cell covers the images drawn before it, the
+// images that go under the line are drawn after it, and the images of g
+// last, with FrameGraphics.DrawLine.
+func (g LineGraphics) DrawCells(
+	w term.Writer, from term.Coordinates, length int, vertical bool, cell term.Cell,
+) {
+	blank := cell
+	blank.Ch = ' '
+	blank.Extra = nil
+	for i := range length {
+		c := cell
+		if !g.Overlay && g.uri(i, length) != "" {
+			c = blank
+		}
+		w.SetCell(linePos(from, i, vertical), c)
+	}
+}
+
+// uri returns the image of cell i of a line of length cells.
+func (g LineGraphics) uri(i, length int) string {
+	switch i {
+	case 0:
+		return cmp.Or(g.Start, g.Middle)
+	case length - 1:
+		return cmp.Or(g.End, g.Middle)
+	}
+	return g.Middle
+}
+
+func linePos(from term.Coordinates, i int, vertical bool) term.Coordinates {
+	if vertical {
+		from.Y += i
+	} else {
+		from.X += i
+	}
+	return from
 }
 
 // FrameGraphics draws the images that FrameCharSet.Graphics names over
@@ -175,6 +268,52 @@ func (g *FrameGraphics) DrawSeparator(
 	}
 }
 
+// DrawDivider draws images over an already drawn divider at x inside the
+// frame, as DrawSeparator does over a separator. The rule's cells inside
+// the frame are in attr, and its junctions in the frame's attributes.
+// Without joinTop, as under a window bar, the top row is left alone and
+// the rule's first cell inside the frame takes Vertical.
+func (g *FrameGraphics) DrawDivider(
+	w term.Writer, f *component.Frame, cs DividerCharSet, attr term.Attributes,
+	width, height, x int, joinTop bool,
+) {
+	if width < 3 || height < 3 || x <= 0 || x >= width-1 {
+		return
+	}
+	w = &component.VirtualWriter{Writer: w, Width: width, Height: height}
+	cw := cellImageWriter{Writer: w, layer: term.ImageLayerAboveText}
+	draw := func(uri string, cell term.Cell, y int, area image.Rectangle, overlay bool) bool {
+		if uri == "" {
+			return false
+		}
+		cw.keep = overlay
+		cw.under = term.NewCell(' ', 1, cell.Attributes())
+		cw.fallback = cell
+		return g.drawArea(&cw, uri, term.Coordinates{X: x, Y: y}, area)
+	}
+	gr := cs.Graphics
+	for y := 1; y < height-1; y++ {
+		ch := cs.Vertical
+		if y == 1 && joinTop {
+			ch = cs.VerticalTop
+		}
+		if y == height-2 {
+			ch = cs.VerticalBottom
+		}
+		draw(gr.Vertical, term.NewCell(ch, 1, attr), y, image.Rect(x, y, x+1, y+1), gr.Overlay)
+	}
+	// Junctions cover the ends of the repeated rule, including their outsets.
+	left, right, inward := max(0, gr.Outset.Left), max(0, gr.Outset.Right), max(0, gr.Outset.Inward)
+	top := term.NewCell(cs.Top, 1, f.Attributes)
+	if joinTop && !draw(gr.Top, top, 0, image.Rect(x-left, 0, x+1+right, 1+inward), gr.Overlay) {
+		draw(f.Graphics.HorizontalTop, top, 0, image.Rect(x, 0, x+1, 1), f.Graphics.Overlay)
+	}
+	bottom := term.NewCell(cs.Bottom, 1, f.Attributes)
+	if !draw(gr.Bottom, bottom, height-1, image.Rect(x-left, height-1-inward, x+1+right, height), gr.Overlay) {
+		draw(f.Graphics.HorizontalBottom, bottom, height-1, image.Rect(x, height-1, x+1, height), f.Graphics.Overlay)
+	}
+}
+
 // DrawScrollBar draws, over the scroll bar that f draws when it is
 // width x height at 0,0 of w, the image that f.ScrollBarCharSet names for
 // each of the bar's cells. Each image fills its cell and the outset cells
@@ -212,6 +351,50 @@ func (g *FrameGraphics) DrawScrollBar(
 		at := term.Coordinates{X: pos.X, Y: pos.Y + i}
 		g.drawArea(&cw, uri, at,
 			image.Rect(at.X-outset, at.Y, at.X+1, at.Y+1))
+	}
+}
+
+// DrawCell draws the image of uri over cell, which w shows at pos: over a
+// blank cell with cell's colors and attributes, or over cell itself when
+// overlay is set. The cell keeps its rune while the image is not loaded
+// yet, failed to load or w cannot draw it. It draws nothing when uri is
+// empty.
+func (g *FrameGraphics) DrawCell(
+	w term.Writer, uri string, pos term.Coordinates, cell term.Cell, overlay bool,
+) {
+	if uri == "" {
+		return
+	}
+	under := cell
+	under.Ch = ' '
+	under.Extra = nil
+	cw := cellImageWriter{Writer: w, under: under, fallback: cell, keep: overlay}
+	g.drawCell(&cw, uri, pos)
+}
+
+// DrawLine draws the images of lg over the line of length cells that
+// lg.DrawCells wrote with cell from from, rightwards or, when vertical,
+// downwards, each filling its cell in layer on its row. It leaves the
+// cells as they are, for the images drawn under them since to stay. A
+// cell whose image is not loaded yet, failed to load or that w cannot
+// draw is written cell again, unless lg is Overlay, which kept it.
+func (g *FrameGraphics) DrawLine(
+	w term.Writer, lg LineGraphics, from term.Coordinates, length int,
+	vertical bool, cell term.Cell, layer term.ImageLayer,
+) {
+	if length <= 0 || lg.Empty() {
+		return
+	}
+	cw := cellImageWriter{Writer: w, keep: true, layer: layer}
+	for i := range length {
+		uri := lg.uri(i, length)
+		if uri == "" {
+			continue
+		}
+		pos := linePos(from, i, vertical)
+		if !g.drawCell(&cw, uri, pos) && !lg.Overlay {
+			w.SetCell(pos, cell)
+		}
 	}
 }
 
@@ -274,11 +457,12 @@ func (g *FrameGraphics) image(uri string) *imageuri.Component {
 	return img
 }
 
-// drawCell draws the image of uri over the cell at pos.
+// drawCell draws the image of uri over the cell at pos, and reports
+// whether it drew it.
 func (g *FrameGraphics) drawCell(
 	cw *cellImageWriter, uri string, pos term.Coordinates,
-) {
-	g.drawArea(cw, uri, pos, image.Rect(pos.X, pos.Y, pos.X+1, pos.Y+1))
+) bool {
+	return g.drawArea(cw, uri, pos, image.Rect(pos.X, pos.Y, pos.X+1, pos.Y+1))
 }
 
 // drawArea draws the image of uri stretched over the cells of area, in

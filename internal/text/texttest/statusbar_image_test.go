@@ -981,6 +981,80 @@ func TestStatusBarImageSharesDownloads(t *testing.T) {
 	assert.Equal(t, frames[0], frames[1])
 }
 
+func TestStatusBarRestyleImage(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	path := filepath.Join(t.TempDir(), "a.png")
+	require.NoError(t, os.WriteFile(path, encodePNG(t, solid(4, 4, 128)), 0o600))
+	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	layout, err := text.ParseStatusBarLayout(fmt.Sprintf(
+		`{{ .Status }}{{ .Image | src %q | width 4 }}`, uri))
+	require.NoError(t, err)
+	loaded := solid(4, 4, 255)
+	images := map[string]image.Image{uri: loaded}
+
+	tests := []struct {
+		name string
+		bar  func(t *testing.T, styles *text.StatusBarStyles) *text.StatusBar
+	}{
+		{
+			name: "in an open bar",
+			bar: func(t *testing.T, styles *text.StatusBarStyles) *text.StatusBar {
+				bar := newStyledImageBar(t, styles)
+				styles.Restyle(text.StatusBarStyle{Layout: layout}, images)
+				return bar
+			},
+		},
+		{
+			name: "in a bar created afterwards",
+			bar: func(t *testing.T, styles *text.StatusBarStyles) *text.StatusBar {
+				styles.Restyle(text.StatusBarStyle{Layout: layout}, images)
+				return newStyledImageBar(t, styles)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			styles := text.NewStatusBarStyles(text.StatusBarStyle{})
+			bar := tt.bar(t, styles)
+			rec := &placementRecorder{
+				StringerWriter: imageBarWriter(imageBarWidth, imageBarHeight, true),
+			}
+			bar.Draw(rec)
+			require.Len(t, rec.images, 1)
+			assert.Same(t, loaded, rec.images[0].Src)
+		})
+	}
+}
+
+// newStyledImageBar returns an imageBarWidth x imageBarHeight status bar
+// styled by styles, whose images load through storage nothing caches.
+func newStyledImageBar(t *testing.T, styles *text.StatusBarStyles) *text.StatusBar {
+	t.Helper()
+	uri, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	buf := cell.NewBuffer()
+	buf.WriteString("first line\n")
+	scroll := component.NewScroll(buf)
+	bar := text.WithStatusBar(newTestHandler(scroll), buf, scroll, false, false,
+		text.StatusBarConfig{
+			ScheduleNextTick: func(fn func()) bool {
+				fn()
+				return true
+			},
+			Workspace:   uri,
+			Publisher:   &TestEditor{},
+			GitService:  &differ{},
+			Storage:     storagestub.NewInMemoryService(),
+			Interrupter: term.NopInterrupter(),
+			Styles:      styles,
+		})
+	t.Cleanup(func() { assert.NoError(t, bar.Close()) })
+	bar.SetStatus("NORMAL", term.Attributes{})
+	bar.Resize(imageBarWidth, imageBarHeight)
+	return bar
+}
+
 const (
 	imageBarTimeout = 5 * time.Second
 	// imageBarQuiet is how long settle waits for another interrupt. It

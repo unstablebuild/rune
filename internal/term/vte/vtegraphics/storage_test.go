@@ -23,7 +23,9 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"runtime"
 	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -83,9 +85,32 @@ func TestTransmitFormats(t *testing.T) {
 			img := s.byClientID(1)
 			require.NotNil(t, img)
 			assert.True(t, img.loaded)
-			assert.Equal(t, tt.want, img.pix.Pix)
+			assert.Equal(t, tt.want, img.pixels().Pix)
 		})
 	}
+}
+
+func TestTransmitDefersPremultiply(t *testing.T) {
+	s := NewStorage()
+	payload := []byte{255, 0, 0, 255, 200, 100, 0, 128}
+	assert.Equal(t, "\x1b_Gi=1;OK\x1b\\", exec(t, s, nil, "a=T,i=1,s=2,v=1", payload))
+	img := s.byClientID(1)
+	require.NotNil(t, img)
+	assert.True(t, img.straight)
+	assert.Equal(t, payload, img.pix.Pix, "the transmission is kept as sent until shown")
+
+	view := View{Width: 80, Height: 24, Cell: CellSize{Width: 10, Height: 20}}
+	want := []byte{255, 0, 0, 255, 100, 50, 0, 128}
+	for range 2 {
+		images := s.Visible(view, nil)
+		require.Len(t, images, 1)
+		assert.Equal(t, want, images[0].Src.(*image.RGBA).Pix, "shown pixels are premultiplied once")
+	}
+	assert.False(t, img.straight)
+
+	assert.Equal(t, "\x1b_Gi=1;OK\x1b\\", exec(t, s, nil, "a=T,i=1,s=2,v=1", payload),
+		"a replacement transmission is deferred again")
+	assert.True(t, s.byClientID(1).straight)
 }
 
 func TestTransmitErrors(t *testing.T) {
@@ -628,6 +653,178 @@ func TestVisible(t *testing.T) {
 	assert.Len(t, images, 2, "the bottom placement scrolled out of view")
 }
 
+func TestStreamReusesBuffers(t *testing.T) {
+	const ctl = "a=T,i=1,s=2,v=2,t=f,q=2"
+	view := View{Width: 80, Height: 24, Cell: CellSize{Width: 10, Height: 20}}
+	tests := []struct {
+		name string
+		run  func(t *testing.T, s *Storage)
+	}{
+		{
+			name: "a frame replaced before it is drawn is read into again",
+			run: func(t *testing.T, s *Storage) {
+				a := stream(t, s, ctl, 1)
+				b := stream(t, s, ctl, 2)
+				assert.NotSame(t, &a.Pix[0], &b.Pix[0], "a is still shown while b is read")
+				assert.Same(t, &a.Pix[0], &stream(t, s, ctl, 3).Pix[0])
+				assert.Same(t, &b.Pix[0], &stream(t, s, ctl, 4).Pix[0])
+			},
+		},
+		{
+			name: "a frame on screen is kept until a draw shows another",
+			run: func(t *testing.T, s *Storage) {
+				a := stream(t, s, ctl, 1)
+				shown := s.Visible(view, nil)
+				require.Len(t, shown, 1)
+				assert.Same(t, &a.Pix[0], &shown[0].Src.(*image.RGBA).Pix[0])
+
+				b := stream(t, s, ctl, 2)
+				c := stream(t, s, ctl, 3)
+				assert.NotSame(t, &a.Pix[0], &c.Pix[0], "the writer may still be reading a")
+				assert.Equal(t, []byte{1, 1, 1, 0xff}, a.Pix[:4], "a is intact")
+
+				shown = s.Visible(view, nil)
+				require.Len(t, shown, 1)
+				assert.Same(t, &c.Pix[0], &shown[0].Src.(*image.RGBA).Pix[0])
+				assert.Same(t, &b.Pix[0], &stream(t, s, ctl, 4).Pix[0], "b was never shown")
+				assert.Same(t, &a.Pix[0], &stream(t, s, ctl, 5).Pix[0], "a was let go of at the draw that showed c")
+			},
+		},
+		{
+			name: "a draw that shows the same frame keeps it",
+			run: func(t *testing.T, s *Storage) {
+				a := stream(t, s, ctl, 1)
+				s.Visible(view, nil)
+				s.Visible(view, nil)
+				b := stream(t, s, ctl, 2)
+				assert.NotSame(t, &a.Pix[0], &b.Pix[0])
+				assert.NotSame(t, &a.Pix[0], &stream(t, s, ctl, 3).Pix[0])
+			},
+		},
+		{
+			name: "a query's pixels are read into again",
+			run: func(t *testing.T, s *Storage) {
+				q := stream(t, s, "a=q,i=1,s=2,v=2,t=f,q=2", 1)
+				assert.Nil(t, s.byClientID(1), "the query image is gone")
+				assert.Same(t, &q.Pix[0], &stream(t, s, ctl, 2).Pix[0])
+			},
+		},
+		{
+			name: "a removed image's pixels are read into again",
+			run: func(t *testing.T, s *Storage) {
+				a := stream(t, s, ctl, 1)
+				exec(t, s, nil, "a=d,d=I,i=1", nil)
+				assert.Nil(t, s.byClientID(1))
+				assert.Same(t, &a.Pix[0], &stream(t, s, ctl, 2).Pix[0])
+			},
+		},
+		{
+			name: "a removed image on screen is left alone",
+			run: func(t *testing.T, s *Storage) {
+				a := stream(t, s, ctl, 1)
+				s.Visible(view, nil)
+				exec(t, s, nil, "a=d,d=I,i=1", nil)
+				assert.NotSame(t, &a.Pix[0], &stream(t, s, ctl, 2).Pix[0])
+			},
+		},
+		{
+			name: "another size is not read into a frame's buffer",
+			run: func(t *testing.T, s *Storage) {
+				a := stream(t, s, ctl, 1)
+				b := stream(t, s, "a=T,i=1,s=3,v=3,t=f,q=2", 2)
+				assert.NotSame(t, &a.Pix[0], &b.Pix[0])
+				assert.Len(t, b.Pix, 36)
+				assert.Same(t, &a.Pix[0], &stream(t, s, ctl, 3).Pix[0], "its buffer waits for its size")
+			},
+		},
+		{
+			name: "a frame kept by an animation is not read into",
+			run: func(t *testing.T, s *Storage) {
+				root := stream(t, s, ctl, 1)
+				s.Visible(view, nil)
+				exec(t, s, nil, "a=f,i=1,s=2,v=2,z=10", bytes.Repeat([]byte{9, 9, 9, 0xff}, 4))
+				exec(t, s, nil, "a=a,i=1,s=3,c=2", nil)
+				shown := s.Visible(view, nil)
+				require.Len(t, shown, 1)
+				assert.NotSame(t, &root.Pix[0], &shown[0].Src.(*image.RGBA).Pix[0], "frame 2 is shown")
+				assert.Equal(t, []byte{1, 1, 1, 0xff}, root.Pix[:4])
+				s.Pool.Put(make([]byte, 16)) // so that a reuse below would be of the root
+				s.Pool.free = s.Pool.free[:0]
+				b := stream(t, s, "a=T,i=2,s=2,v=2,t=f,q=2", 2)
+				assert.NotSame(t, &root.Pix[0], &b.Pix[0], "the root is still frame 1")
+				assert.Equal(t, []byte{1, 1, 1, 0xff}, s.byClientID(1).anim.frames[0].pix.Pix[:4])
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewStorage()
+			s.Pool = new(BufferPool)
+			tt.run(t, s)
+		})
+	}
+}
+
+func TestStreamNeverOverwritesTheFrameOnScreen(t *testing.T) {
+	const w, h, draws = 64, 64, 200
+	s := NewStorage()
+	s.Pool = new(BufferPool)
+	var mu sync.Mutex
+	view := View{Width: 80, Height: 24, Cell: CellSize{Width: 10, Height: 20}}
+	ctl := "a=T,i=1,s=" + strconv.Itoa(w) + ",v=" + strconv.Itoa(h) + ",t=f,q=2;" +
+		base64.StdEncoding.EncodeToString([]byte("/frame"))
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for i := 0; ; i++ {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			cmd, err := Parse([]byte(ctl))
+			require.NoError(t, err)
+			// The read runs without the lock, as the terminal's does.
+			cmd.ReadMedium(func(_ byte, _ string, _, _ int64) ([]byte, error) {
+				buf := s.Pool.Get(w * h * 4)
+				for j := 0; j < len(buf); j += 4 {
+					buf[j], buf[j+1], buf[j+2], buf[j+3] = byte(i), byte(i), byte(i), 0xff
+				}
+				return buf, nil
+			})
+			mu.Lock()
+			s.Handle(cmd, &Cursor{}, view.Cell)
+			mu.Unlock()
+		}
+	})
+	defer wg.Wait()
+	defer close(done)
+
+	for drawn := 0; drawn < draws; {
+		mu.Lock()
+		shown := s.Visible(view, nil)
+		mu.Unlock()
+		if len(shown) != 1 {
+			runtime.Gosched()
+			continue
+		}
+		drawn++
+		// The writer reads what it was lent until it draws again, while
+		// the stream runs ahead of it.
+		pix := shown[0].Src.(*image.RGBA).Pix
+		want := pix[0]
+		for range 8 {
+			for j := 0; j < len(pix); j += 4 {
+				if pix[j] != want || pix[j+1] != want || pix[j+2] != want {
+					t.Fatalf("the frame on screen changed under the writer: %d then %d", want, pix[j])
+				}
+			}
+			runtime.Gosched()
+		}
+	}
+}
+
 // exec parses ctl (with payload appended, base64 encoded) and executes
 // it at the origin with a 10x20 cell.
 func exec(t *testing.T, s *Storage, cur *Cursor, ctl string, payload []byte) string {
@@ -660,6 +857,32 @@ func px(n int) []byte {
 		out = append(out, 1, 2, 3, 255)
 	}
 	return out
+}
+
+func stream(t *testing.T, s *Storage, ctl string, v byte) *image.RGBA {
+	t.Helper()
+	cmd, err := Parse([]byte(ctl + ";" + base64.StdEncoding.EncodeToString([]byte("/frame"))))
+	require.NoError(t, err)
+	spec := newLoadSpec(cmd)
+	cmd.ReadMedium(func(_ byte, _ string, _, _ int64) ([]byte, error) {
+		buf := s.Pool.Get(spec.expectedSize())
+		for i := 0; i < len(buf); i += 4 {
+			buf[i], buf[i+1], buf[i+2], buf[i+3] = v, v, v, 0xff
+		}
+		return buf, nil
+	})
+	before := len(s.images)
+	resp, _ := s.Handle(cmd, &Cursor{}, CellSize{Width: 10, Height: 20})
+	require.Empty(t, resp)
+	if cmd.Action == 'q' {
+		require.Len(t, s.images, before, "a query leaves no image")
+		return &image.RGBA{Pix: cmd.mediumData}
+	}
+	img := s.byClientID(cmd.ImageID)
+	require.NotNil(t, img)
+	require.True(t, img.loaded)
+	require.Same(t, &cmd.mediumData[0], &img.pix.Pix[0], "the frame is shown from the buffer it was read into")
+	return img.pix
 }
 
 func deflate(data []byte) []byte {

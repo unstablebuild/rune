@@ -55,10 +55,11 @@ import (
 type commandAdapter struct {
 	handler    repl.CommandHandler
 	dialogueID string
-	resetFn    func() // visual reset (Component.Reset under lock)
+	resetFn    func() // visual reset of every view
 	wm         browserapi.WindowManager
 	store      dialoguemanager.Store
-	// compactFn replaces messages in the component after a successful compact.
+	// compactFn replaces the messages every view shows after a
+	// successful compact.
 	compactFn func(msgs []llmapi.Message)
 
 	// Model switching support. When agent is non-nil, the /model command
@@ -78,7 +79,7 @@ type commandAdapter struct {
 
 	// Conversation patch review (/diff). editor opens the aggregate diff
 	// in a floating window and attachFn hands the edited text back to the
-	// live dialogue component as a pending attachment.
+	// view last focused as a pending attachment.
 	editor      text.Editor
 	editorModal bool
 	parser      syntaxapi.Parser
@@ -91,8 +92,8 @@ type commandAdapter struct {
 	reviewContext int
 	attachFn      func(dialoguetui.Attachment)
 	reviewSeq     int
-	// statusBarFn mutates the chat status bar state under the component
-	// lock. It is nil for sessions without a status bar.
+	// statusBarFn mutates the status bar state every view of the chat
+	// shows. It is nil for sessions without a status bar.
 	statusBarFn func(func(*dialoguetui.StatusBarState))
 }
 
@@ -119,16 +120,13 @@ type commandAdapterDeps struct {
 	git           vctrl.Service
 	reviewContext int
 
-	// mu guards comp writes; the closures below take it.
-	mu          *sync.Mutex
-	comp        **dialoguetui.Component // late-bound: caller assigns *comp later
-	interrupter term.Interrupter
+	// session is the chat the commands act on, whose views the
+	// closures below change.
+	session *chatSession
 }
 
-// newCommandAdapter builds the commandAdapter and its resetFn / compactFn
-// closures. The closures dereference *deps.comp at call time, so the
-// caller can construct the adapter before instantiating the component
-// and assign *deps.comp afterwards.
+// newCommandAdapter builds the commandAdapter and the closures that
+// change the views of deps.session.
 func newCommandAdapter(deps commandAdapterDeps) *commandAdapter {
 	return &commandAdapter{
 		handler:       deps.handler,
@@ -149,32 +147,10 @@ func newCommandAdapter(deps commandAdapterDeps) *commandAdapter {
 		cwd:           deps.cwd,
 		git:           deps.git,
 		reviewContext: deps.reviewContext,
-		resetFn: func() {
-			deps.mu.Lock()
-			(*deps.comp).Reset()
-			deps.mu.Unlock()
-		},
-		attachFn: func(a dialoguetui.Attachment) {
-			deps.mu.Lock()
-			(*deps.comp).UpsertAttachment(a)
-			deps.mu.Unlock()
-		},
-		statusBarFn: func(fn func(*dialoguetui.StatusBarState)) {
-			deps.mu.Lock()
-			(*deps.comp).SetStatusBarState(fn)
-			deps.mu.Unlock()
-		},
-		compactFn: func(msgs []llmapi.Message) {
-			deps.mu.Lock()
-			comp := *deps.comp
-			comp.Reset()
-			pending := make(map[string]llmapi.ToolCall)
-			for _, msg := range msgs {
-				addMessage(comp, msg, pending)
-			}
-			deps.mu.Unlock()
-			_ = deps.interrupter.Interrupt(context.Background())
-		},
+		resetFn:       func() { deps.session.replace(nil) },
+		attachFn:      deps.session.attachToFocused,
+		statusBarFn:   deps.session.setStatusBarState,
+		compactFn:     deps.session.replace,
 	}
 }
 
@@ -286,6 +262,8 @@ func rejectPositionalID(name string, args []string) error {
 // in the user turn, to invoke the skill tool. Without this cue the
 // model frequently fails to notice the system-message skill body and
 // either ignores the command or falls back to request_skill.
+// Agent skills get no hint: the message goes to the sub-agent running
+// the skill, whose system prompt the skill already is.
 func formatSkillMessage(skill skills.Skill, args string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "<command-message>%s</command-message>\n", skill.Name)
@@ -294,11 +272,13 @@ func formatSkillMessage(skill skills.Skill, args string) string {
 		b.WriteString("\n")
 		b.WriteString(args)
 	}
-	fmt.Fprintf(
-		&b,
-		"\n<command-hint>Call the skill tool with name=%q to load and run this skill.</command-hint>",
-		skill.Name,
-	)
+	if skill.Type != "agent" {
+		fmt.Fprintf(
+			&b,
+			"\n<command-hint>Call the skill tool with name=%q to load and run this skill.</command-hint>",
+			skill.Name,
+		)
+	}
 	return b.String()
 }
 

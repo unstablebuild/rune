@@ -20,9 +20,16 @@ import (
 	"image"
 	"slices"
 
+	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/component"
+	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
 	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/notifications"
+	"unstable.build/rune/internal/component/template"
+	"unstable.build/rune/internal/handler"
+	"unstable.build/rune/internal/ide/idestatus"
+	"unstable.build/rune/internal/text"
 )
 
 // hudStyle is what a HUD reload re-applies to a running workspace.
@@ -32,11 +39,41 @@ type hudStyle struct {
 	// which draws the command prompt with the window frame charset.
 	commandPromptFrame     *component.FrameCharSet
 	commandPromptSeparator tcomponent.SeparatorCharSet
+	commandShowManual      bool
+	statusBar              text.StatusBarStyle
+	bellSound              string
+	notifications          notifications.Style
+	// notifyStatus applies to every workspace, from the user's config
+	// alone.
+	notifyStatus idestatus.NotifyConfig
+	// workspaceBar applies to every workspace, from the user's config
+	// alone.
+	workspaceBar workspaceBarStyle
+	// statusInbox applies to every workspace, from the user's config
+	// alone.
+	statusInbox idestatus.InboxStyle
+}
+
+// workspaceBarStyle is how the workspace bar looks and sounds: the tab
+// colours of the browser's tab bar, with a highlight character, images
+// and sounds of its own.
+type workspaceBarStyle struct {
+	focusTabAttr        term.Attributes
+	nonFocusTabAttr     term.Attributes
+	focusTabIconAttr    term.Attributes
+	nonFocusTabIconAttr term.Attributes
+	highlightAttr       term.Attributes
+	hoverAttr           term.Attributes
+	// highlightChar is 0 when the bar draws no highlight character.
+	highlightChar rune
+	images        browser.PromptImages
+	highlight     tcomponent.LineGraphics
+	sounds        handler.TabSounds
 }
 
 // imageURIs returns, sorted and once each, the URI of every image the
-// frames, scroll bars, window bar, command prompt and prompt buttons of
-// s name.
+// frames, scroll bars, window bar, command prompt, prompt buttons, tab
+// bars, notifications and status inbox of s name.
 func (s hudStyle) imageURIs() []string {
 	wm := s.browser.WindowManager
 	var uris []string
@@ -54,25 +91,53 @@ func (s hudStyle) imageURIs() []string {
 	if s.commandPromptFrame != nil {
 		frame(*s.commandPromptFrame)
 	}
+	frame(s.notifications.FrameCharSet)
+	progress := s.notifications.ProgressRunes.Graphics
+	uris = append(uris, progress.Start, progress.Current, progress.CurrentTip,
+		progress.Remain, progress.End)
 	scrollBar(wm.ScrollBarCharSet)
 	scrollBar(wm.ScrollBarHoverCharSet)
 	bar, sep := wm.WindowBarCharSet.Graphics, s.commandPromptSeparator.Graphics
 	uris = append(uris, bar.Left, bar.Horizontal, bar.Right, sep.Left, sep.Horizontal, sep.Right)
-	images := s.browser.Prompt.Images
-	for _, b := range []browser.PromptButtonImage{
-		images.Idle, images.Selected, images.Hover, images.Pressed,
-	} {
-		uris = append(uris, b.Left, b.Middle, b.Right)
+	buttons := func(images browser.PromptImages) {
+		for _, b := range []browser.PromptButtonImage{
+			images.Idle, images.Selected, images.Hover, images.Pressed,
+		} {
+			uris = append(uris, b.Left, b.Middle, b.Right)
+		}
 	}
+	buttons(s.browser.Prompt.Images)
+	buttons(s.browser.Tabs.Images)
+	buttons(s.workspaceBar.images)
+	buttons(s.statusInbox.Images)
+	uris = append(uris, s.browser.Tabs.HighlightGraphics.URIs()...)
+	uris = append(uris, s.workspaceBar.highlight.URIs()...)
+	uris = append(uris, s.statusInbox.MarkerGraphics.URIs()...)
+	uris = append(uris, s.statusInbox.Divider.Graphics.URIs()...)
+	uris = append(uris, s.statusInbox.ProgressBarGraphics.URIs()...)
 	slices.Sort(uris)
 	uris = slices.Compact(uris)
 	return slices.DeleteFunc(uris, func(uri string) bool { return uri == "" })
 }
 
+// statusBarImages returns the images of the editor status bar layout of
+// s, in layout order.
+func (s hudStyle) statusBarImages() []template.Image {
+	var ret []template.Image
+	for _, comp := range s.statusBar.Layout {
+		if comp.Type == text.StatusBarImage {
+			ret = append(ret, comp.Image)
+		}
+	}
+	return ret
+}
+
 // HUD holds what IDE.LoadHUD read from the config file for ApplyHUD to
 // install: the keys of window frames, scroll bars, floating window bars,
-// frame unions, the command prompt frame and separator, prompt buttons and
-// the wallpaper, and the images they name.
+// frame unions, the command prompt frame, separator and manual, prompt
+// buttons, the tab bars, the editor status bar, the wallpaper, the
+// terminal bell, notifications, the program status notifications and
+// inbox, and the images they name, and the config extensions fetch.
 type HUD struct {
 	// load orders HUDs by when their load started.
 	load uint64
@@ -82,7 +147,21 @@ type HUD struct {
 	workspaces map[string]hudStyle
 	// skip holds the workspaces whose overlay failed to decode, which
 	// keep their style.
-	skip       map[string]struct{}
-	images     map[string]image.Image
-	configErrs map[string]error
+	skip   map[string]struct{}
+	images map[string]image.Image
+	// statusBarImages holds, by URI, the images of the status bar
+	// layouts, which are cached apart from images.
+	statusBarImages map[string]image.Image
+	configErrs      map[string]error
+	// cfg is the user's config the HUD was read from.
+	cfg map[string]any
+	// workspaceCfgs holds, by URI, the config of the workspaces in
+	// workspaces: the user's with their own overlaid.
+	workspaceCfgs map[string]map[string]any
+}
+
+// Config returns the user's config h was read from, without the config
+// of any workspace. Its errors are reported when h is applied.
+func (h *HUD) Config() config.Config {
+	return config.MapConfig(h.cfg)
 }

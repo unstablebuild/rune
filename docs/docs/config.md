@@ -32,7 +32,7 @@ pulled a change. A workspace config larger than 64 KiB is never applied.
 
 To change your mind, find the decision with `authorizer list` in the
 [console](./learn/console.md#reviewing-permissions-and-trust-with-authorizer),
-revoke it with `authorizer revoke <decision>`, and run `:workspacereload` in
+revoke it with `authorizer revoke <decision>`, and run `workspacereload` in
 that workspace to be asked again.
 
 ## YAML or Starlark?
@@ -70,12 +70,13 @@ comments) is treated as an empty overlay.
 
 ## Applying config changes
 
-Rune does not watch the config file. Open it with `:config`, edit it, save it —
-nothing happens until you reload. There are two levels of reload.
+Rune does not watch the config file. Open it with `config`, edit it, save it —
+nothing happens until you reload. There are two levels of reload, and
+`themereload` applies the appearance keys without either.
 
-### `:workspacereload`
+### `workspacereload`
 
-`:workspacereload` closes the focused workspace and opens it again. The open
+`workspacereload` closes the focused workspace and opens it again. The open
 buffers, cursor positions, window layout and the extension tabs shown in it,
 such as agent chats, are restored, but everything the workspace owns is
 rebuilt from a fresh read of your config file and the workspace's
@@ -96,18 +97,31 @@ surface:
 Only the focused workspace is reloaded; other workspace tabs keep running with
 the configuration they were opened with.
 
+### `themereload`
+
+`themereload` reads the config file again and applies the keys that style
+Rune to every open workspace, with nothing closed or reopened: frames, window
+bars and prompts, tabs and their sounds, notifications, the editor and Rune
+Agent status bars, the Rune Agent compose box frame, the wallpaper, `sounds`,
+the terminal bell, the program status inbox and its sounds, and the quick
+menu, themes, sound volume and app icon of the GUI. It also reads again every
+image those keys name.
+[`runectl screenshot`](./develop/runectl.md#screenshots) does the same before
+each capture, which is how Rune Agent checks a theme it is designing; the
+screenshot section lists the exact keys.
+
 ### Restart
 
 Everything that belongs to the process or to the GUI window is built once at
 startup and needs a restart:
 
 - all `gui.*` settings: fonts, themes, ligatures, opacity, blur,
-  scroll multiplier, sound volume, key mapping, quick menu, `gui.env`. Themes and
-  `gui.env` variables added by a package install are available right away
-  (see below).
+  scroll multiplier, sound volume, key mapping, quick menu, app icon,
+  `gui.env`. `runectl screenshot` applies the themes, sound volume, quick menu
+  and app icon without one, and themes and `gui.env` variables added by a
+  package install are available right away (see below).
 - `log.output_path` and `log.level`
-- `models.*` (the LLM router), `notifications.*`, `telemetry.*`
-- `program_status.*`: the status inbox and the sounds of program status
+- `models.*` (the LLM router), `notifications.auto_close`, `telemetry.*`
 - `animations.*`, `workspace.home`, clipboard and macro settings
 - the configuration of the home screen shown when no workspace is open
 
@@ -446,6 +460,34 @@ available:
   }
   ```
 
+- `gui.app_icon`: the path of a GIF, JPEG, PNG or WebP image that Rune shows
+  as its icon while it runs, in place of the Rune logo. `~` and variables
+  such as `$HOME` expand. A square image at least 256 pixels wide looks best;
+  other shapes are centered on a transparent square. Images wider or taller
+  than 8192 pixels are rejected.
+
+  - On Linux the image becomes the window icon. GNOME and KDE Plasma show the
+    icon of Rune's launcher instead, so also set the `Icon=` line of
+    `~/.local/share/applications/rune.desktop` to the absolute path of the
+    image. Rune's installer writes that file; with the Debian package, copy
+    `/usr/share/applications/rune.desktop` there first. Upgrades from within
+    Rune keep the edit, but running the installer again replaces the file.
+  - On macOS the image replaces the icon in the Dock and the Command-Tab
+    switcher. Finder, Launchpad and the Dock tile shown while Rune is not
+    running keep the bundled icon.
+
+  [`runectl screenshot`](./develop/runectl.md#screenshots) reads the key and
+  the image again, so you can try an icon without restarting Rune.
+
+  ```yaml tab
+  gui:
+    app_icon: ~/.config/rune/icon.png
+  ```
+
+  ```python tab
+  config["gui"]["app_icon"] = "~/.config/rune/icon.png"
+  ```
+
 ## Links
 
 - `meta_open_url`: how an `http://` or `https://` link opens when you click it
@@ -461,11 +503,12 @@ available:
   run anything. `$URL` always expands to a single argument. In `$URL`,
   characters a URL may not contain, as well as `'` and `$`, are
   percent-encoded, which leaves the link pointing at the same page. Inside a
-  `!` or `!!` command, `$URL` is read as plain text whether you write it
-  unquoted, in double quotes or in single quotes, and Rune refuses to run the
-  command rather than let a link change it. A command that passes `$URL` on to
-  a second shell, such as `sh -c`, `eval` or `ssh`, must quote it again there,
-  since characters like `&` and `;` can appear in links.
+  `!` or `!!` command, or a terminal command such as `terminalnewtab`, `$URL`
+  is read as plain text whether you write it unquoted, in double quotes or in
+  single quotes, and Rune refuses to run the command rather than let a link
+  change it. A command that passes `$URL` on to a second shell, such as
+  `sh -c`, `eval` or `ssh`, must quote it again there, since characters like
+  `&` and `;` can appear in links.
 
   Clicking a link with another scheme with `<meta>` held in the GUI opens it
   in the system browser.

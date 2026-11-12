@@ -36,6 +36,7 @@ import (
 	"unstable.build/rune/internal/ide/console/networkconsole"
 	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
 	"unstable.build/rune/internal/runenet"
+	"unstable.build/rune/internal/tailnet"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacerune"
 )
@@ -44,10 +45,12 @@ import (
 // exposes to peers. The stack is always fully assembled, whatever the
 // configuration says: `network.auto_join` only decides whether boot
 // joins the mesh, so the `network up` console command works later
-// without a restart.
+// without a restart. It also holds tailscale, the user's own tailnet,
+// which serves and opens workspaces next to Rune's network.
 type network struct {
-	node *runenet.Node
-	gate *networkGate
+	node      *runenet.Node
+	gate      *networkGate
+	tailscale *tailscaleNet
 	// gated is false only when the node joins with credentials it was
 	// given directly, which is a debug-build escape hatch: that mesh
 	// is the developer's own, not the paid one, so the account is
@@ -101,6 +104,8 @@ func newNetwork(
 		cfg.OnNeedsLogin = ret.onNeedsLogin
 	}
 	ret.node = runenet.New(cfg)
+	ret.tailscale = newTailscaleNet(
+		tailnet.New(tailnet.Config{}), dataDir, shellRCDir, &ret.packages)
 	return ret
 }
 
@@ -164,11 +169,15 @@ func (n *network) currentPrompter() *networkPrompter {
 	return n.prompter
 }
 
-// startAutoJoin joins the mesh off the boot path when the user asked
-// for it. Failures stay out of the UI on purpose: a signed-out or
-// unentitled account simply does not join, and the prompt comes when
-// the user asks for the network explicitly.
-func (n *network) startAutoJoin() {
+// start serves this machine's workspaces to the user's own tailnet,
+// which needs nothing from the user, and joins Rune's network off the
+// boot path when the user asked for it. Failures stay out of the UI on
+// purpose: a signed-out or unentitled account simply does not join,
+// and the prompt comes when the user asks for the network explicitly.
+func (n *network) start() {
+	if err := n.tailscale.serve(); err != nil {
+		log.Errorf("could not serve workspaces to the tailnet: %v", err)
+	}
 	if !n.autoJoin {
 		return
 	}
@@ -225,29 +234,15 @@ func networkConfig(rootCfg config.Config, dataDir string) (runenet.Config, error
 	return runenet.FromConfig(cfg, dataDir)
 }
 
-// serveNetworkWorkspaces exposes the whole filesystem to peers, rooted
-// at "/", so a rune:// URI can name any path the user could open
-// locally. Only machines owned by the same account get that far; see
-// runenet.PeerAuthorizer.
-//
-// dataDir is advertised to peers as this instance's install root, so
-// it is resolved to an absolute path here: the peer consumes it as a
-// path on this host, not relative to its own process.
+// serveNetworkWorkspaces exposes the whole filesystem to peers; see
+// rootWorkspaceScheme. Only machines owned by the same account get that
+// far; see runenet.PeerAuthorizer.
 func serveNetworkWorkspaces(
 	node *runenet.Node, dataDir, shellRCDir string, opts ...runenet.ServeOption,
 ) (*runenet.WorkspaceServer, error) {
-	uri, err := workspaceapi.CurrentUserHostURI("/")
+	scheme, dataDir, err := rootWorkspaceScheme(dataDir, shellRCDir)
 	if err != nil {
-		return nil, fmt.Errorf("root workspace URI: %w", err)
-	}
-	dataDir, err = workspaceapi.ExpandPath(dataDir, user.Current, os.Getwd)
-	if err != nil {
-		return nil, fmt.Errorf("resolve data dir %s: %w", dataDir, err)
-	}
-	scheme, err := workspace.NewFileSchemeFunc(dataDir, shellRCDir)(
-		context.Background(), config.NopConfig(), uri)
-	if err != nil {
-		return nil, fmt.Errorf("root workspace scheme: %w", err)
+		return nil, err
 	}
 	server, err := runenet.ServeWorkspace(node, scheme, dataDir, opts...)
 	if err != nil {
@@ -257,22 +252,52 @@ func serveNetworkWorkspaces(
 	return server, nil
 }
 
-// completerOption feeds mesh peers and their directories to
-// `workspaceopen` completion. The completer deliberately never
-// prompts — a completion runs on a keystroke, and a keystroke must not
-// open a modal — so unlike the scheme it needs no IDE and is wired at
-// IDE construction.
-func (n *network) completerOption() ide.Option {
-	return ide.WithWorkspaceOpenCompleter(
-		workspacerune.Scheme, workspacerune.Completer(gatedMesh{n}))
+// rootWorkspaceScheme is the whole filesystem as served to peers,
+// rooted at "/", so a workspace URI can name any path the user could
+// open locally.
+//
+// dataDir is advertised to peers as this instance's install root, so
+// the absolute path it resolves to is returned: the peer consumes it as
+// a path on this host, not relative to its own process.
+func rootWorkspaceScheme(
+	dataDir, shellRCDir string,
+) (schemeapi.Scheme, string, error) {
+	uri, err := workspaceapi.CurrentUserHostURI("/")
+	if err != nil {
+		return nil, "", fmt.Errorf("root workspace URI: %w", err)
+	}
+	dataDir, err = workspaceapi.ExpandPath(dataDir, user.Current, os.Getwd)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve data dir %s: %w", dataDir, err)
+	}
+	scheme, err := workspace.NewFileSchemeFunc(dataDir, shellRCDir)(
+		context.Background(), config.NopConfig(), uri)
+	if err != nil {
+		return nil, "", fmt.Errorf("root workspace scheme: %w", err)
+	}
+	return scheme, dataDir, nil
 }
 
-// register wires the network into a live IDE: the rune:// workspace
-// scheme, the `network` console command and the IDE's package manager,
-// which peers install through. The first two prompt the user to sign
-// in or upgrade when the plan does not cover the network, which is why
-// they are registered here rather than at IDE construction — the
-// prompter cannot exist before the IDE does.
+// completerOptions feed the peers of both meshes and their directories
+// to `workspaceopen` completion. The completers deliberately never
+// prompt — a completion runs on a keystroke, and a keystroke must not
+// open a modal — so unlike the schemes they need no IDE and are wired
+// at IDE construction.
+func (n *network) completerOptions() []ide.Option {
+	return []ide.Option{
+		ide.WithWorkspaceOpenCompleter(
+			workspacerune.Scheme, workspacerune.Completer(workspacerune.Scheme, gatedMesh{n})),
+		n.tailscale.completerOption(),
+	}
+}
+
+// register wires the network into a live IDE: the rune:// and
+// tailscale:// workspace schemes, the `network` console command and
+// the IDE's package manager, which peers install through. The rune://
+// scheme and the console command prompt the user to sign in or upgrade
+// when the plan does not cover the network, which is why they are
+// registered here rather than at IDE construction — the prompter
+// cannot exist before the IDE does.
 func (n *network) register(
 	i *ide.IDE, scheduleNextTick func(func()) bool,
 ) error {
@@ -282,6 +307,9 @@ func (n *network) register(
 	if err := i.RegisterScheme(
 		workspacerune.Scheme, n.schemeFunc(prompter)); err != nil {
 		return fmt.Errorf("register %s scheme: %w", workspacerune.Scheme, err)
+	}
+	if err := n.tailscale.register(i); err != nil {
+		return err
 	}
 	// The mesh round-trips run off the editor's event loop, which is
 	// why `network` is a console command rather than an ex-command.
@@ -299,7 +327,7 @@ func (n *network) register(
 // loop; a machine that has not joined yet does so in the background
 // while the scheme's reconnect loop waits for it.
 func (n *network) schemeFunc(prompter *networkPrompter) schemeapi.SchemeFunc {
-	inner := workspacerune.New(n.node)
+	inner := workspacerune.New(workspacerune.Scheme, n.node)
 	return func(
 		ctx context.Context, cfg config.Config, uri workspaceapi.URI,
 	) (schemeapi.Scheme, error) {
@@ -421,6 +449,10 @@ func (g gatedNetwork) Peers(ctx context.Context) ([]runenet.Peer, error) {
 	return g.n.node.Peers(ctx)
 }
 
+func (g gatedNetwork) Ping(ctx context.Context, machine string) (runenet.PingResult, error) {
+	return g.n.node.Ping(ctx, machine)
+}
+
 func (g gatedNetwork) Down(ctx context.Context) error {
 	return g.n.node.Down(ctx)
 }
@@ -489,6 +521,6 @@ func (n *network) Close() error {
 	}
 	// The node outlives Close so a rune:// open racing shutdown reads
 	// a closed node rather than a nil one.
-	errs = append(errs, n.node.Close())
+	errs = append(errs, n.node.Close(), n.tailscale.Close())
 	return errors.Join(errs...)
 }

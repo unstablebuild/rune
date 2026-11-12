@@ -32,7 +32,7 @@ in four places:
 - **As a notification.** Every new message comes through as a notification,
   and a tab out of sight that becomes blocked, fails, or finishes raises one
   too. See [Notifications](#notifications).
-- **In the status inbox.** `:programstatus` lists every reported status across
+- **In the status inbox.** `programstatus` lists every reported status across
   your workspaces, most pressing first, and jumps to the one you pick. See [The
   status inbox](#the-status-inbox).
 
@@ -190,7 +190,8 @@ config["program_status"]["sounds"]["working"] = "info"
 
 A state mapped to a sound Rune does not know keeps its default, and Rune
 reports it as a config error. Changes to `program_status.sounds` apply after a
-restart.
+restart, or on the next
+[`runectl screenshot`](../../develop/runectl.md#screenshots).
 
 ### The status inbox
 
@@ -214,7 +215,9 @@ workspaces, most pressing first, then by workspace and tab. Each shows:
 A tab stays listed until you close it, even once you have seen what it
 reported: it then reads `idle`, followed by the `app` it last reported. A
 terminal that is not a tab leaves the list once it holds no record: once you
-have seen what it reported, or once it closes.
+have seen what it reported, or once it closes. An
+[ACP session](../acp.md#chat-with-an-agent) whose last tab closed mid-turn
+is listed under its name until a tab shows it again or it ends.
 
 When the programs don't all fit, the sidebar scrolls to keep the selected one
 in sight: moving past the last program shown scrolls down, and past the first
@@ -230,7 +233,7 @@ stays empty once you reach the last one, so the list doesn't shift.
 | Click | Select a program |
 | Mouse wheel over the sidebar | Scroll the programs |
 | `<enter>` | Switch to the program's workspace and show it |
-| `<delete>` / `<backspace>` | Close the program as `:tabclose` would: a tab or window is closed, a task stopped, and the companion terminal hidden. A `working` or `blocked` program, or a file with unwritten changes, asks first |
+| `<delete>` / `<backspace>` | Close the program as `tabclose` would: a tab or window is closed, a task stopped, an ACP session ended, and the companion terminal hidden. A `working` or `blocked` program, or a file with unwritten changes, asks first |
 | `<esc>` / `q` / `<ctrl-c>` | Close the inbox |
 
 Tabs that never reported a status are not listed, and the inbox is not bound
@@ -396,8 +399,13 @@ err := wm.SetTabStatus(uri, browserapi.TabStatus{
   one, or carries a control character, fails with an `InvalidArgument` error.
 - `TabDone`, `TabError` and `TabIdle` clear once you see the tab, and every
   record goes away when the tab closes.
+- A report for a URI that no tab shows, such as that of a program that goes
+  on working once its tab closed, is listed in the status inbox as a terminal
+  that is not a tab is. Showing it from the inbox opens the URI again, in a
+  tab, through the extension's resource opener.
 
-Rune Agent reports its chats this way.
+Rune Agent reports its chats this way, including those that keep running
+once their tab closes.
 
 ## Configuration
 
@@ -471,12 +479,28 @@ over.
 | `more_below` | `\uf063` (Nerd Font arrow down) | The arrow drawn below the programs when there are more out of sight below. |
 | `more_below_attr` | default | Styles that arrow. |
 | `divider_attr` | gray | The line between the programs and the preview. |
+| `divider_charset` | joins `🭽` and `🭼` in the GUI, `┬` and `┴` in a terminal | The characters joining that line to the inbox's frame: `top` and `bottom` in the frame's top and bottom rows, colored as the frame, and `vertical_top`, `vertical` and `vertical_bottom` down the line, colored by `divider_attr`. `vertical` defaults to the window frame's `verticalleft`, and `vertical_top` and `vertical_bottom` to `vertical`. Under a window bar, there is no top join. A `graphics` table names images for the GUI: `top` and `bottom` over the joins, `vertical` over each cell of the line, a `mode`, and an `outset` with `left`, `right` and `inward` in cells that the joins reach into. A missing join image keeps the frame's own image; `vertical` defaults to the frame's `verticalleft` image. |
 | `placeholder_attr` | gray | The text shown when no program reported a status, or the selected one has nothing to preview. |
+| `images` | none | Images the GUI draws under each program, with its text on top: `selected`, `hover` and `idle`, each with a `left`, `middle` and `right` image, and an `outset` with `top`, `bottom` and `sides` in cells. `selected` falls back to `hover`, and `hover` to `idle`. They stand in for the backgrounds of `selected_attr` and `hover_attr`. |
+| `marker_graphics` | none | Images drawn down the marker of the selected program: `top`, `vertical` and `bottom`, and a `mode`. A top or bottom image left out is the vertical one. |
+| `progress_bar_graphics` | none | Images drawn over the cells of a progress bar: `left` and `right` over its ends, `filled` over what is done and `empty` over the rest, and a `mode`. An end left out takes the image of the cell it stands in. |
 
 A bar's ends are colored as the part of the bar they stand in, so a single
 character repeated four times draws a bar that only its colors split. The
 default, `🬋`, fills the middle third of a cell; Rune's GUI draws it itself,
 while a terminal running Rune draws it from its own fonts.
+
+With `mode: replace`, the default, the images of `marker_graphics`,
+`divider_charset` and `progress_bar_graphics` take the place of their
+characters; with `mode: overlay` they are drawn over them. The divider's mode
+defaults to the window frame's. The terminal UI, and any image that has not
+loaded or failed to load, shows the inbox in its characters and colors. The
+divider joins the frame, and draws its images, only while windows are framed.
+
+Every workspace shares the inbox, so only your config styles it, not a
+workspace's own. `themereload` and
+[`runectl screenshot`](../../develop/runectl.md#screenshots) apply these keys,
+and every image they name, to the inbox even while it is open.
 
 For example, to draw progress bars as the console does, on a dark track, and
 to highlight the program under the mouse:

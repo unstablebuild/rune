@@ -62,10 +62,13 @@ type Server struct {
 	publish  func(term.Event) error
 	graphics thandlerrpc.GraphicsConfig
 
-	// scheme -> the stream whose opener is registered for it; guarded by
-	// the editor lock.
-	openers map[string]*resourceOpenerClientStream
-	opens   pendingOpens
+	// name or scheme -> the stream whose handler is registered for it, so
+	// a stream that ends after another took its name over leaves the newer
+	// registration alone; guarded by the editor lock.
+	commands map[string]*commandClientStream
+	repls    map[string]*replCommandClientStream
+	openers  map[string]*resourceOpenerClientStream
+	opens    pendingOpens
 }
 
 // NewServer allocates storage for a new Server and initializes it.
@@ -86,6 +89,8 @@ func (s *Server) Init(
 	s.editor.Editor = editor
 	s.editor.Locker = lock
 	s.editor.Notifications = b
+	s.commands = make(map[string]*commandClientStream)
+	s.repls = make(map[string]*replCommandClientStream)
 	s.openers = make(map[string]*resourceOpenerClientStream)
 	s.publish = func(term.Event) error { return errNoEventPublisher }
 	s.ctx, s.cancelCtx = context.WithCancel(context.Background())
@@ -212,6 +217,7 @@ func (s *Server) SubscribeCommand(srv textrpc.Editor_SubscribeCommandServer) err
 		s.editor.Unlock()
 		return err
 	}
+	s.commands[man.Name] = clientStream
 	// The client takes the first message on the stream as the subscribe
 	// response. Dispatches run under the editor lock, so sending while it
 	// is still held is what keeps a dispatch that lands the moment the
@@ -249,6 +255,10 @@ func (s *Server) SubscribeCommand(srv textrpc.Editor_SubscribeCommandServer) err
 	s.editor.Lock()
 	defer s.editor.Unlock()
 
+	if s.commands[man.Name] != clientStream {
+		return err
+	}
+	delete(s.commands, man.Name)
 	// replace the command handler in place so command doesn't "disappear"
 	if uerr := s.editor.UnsubscribeCommand(man.Name); uerr != nil {
 		err = multierror.Append(err, uerr)
@@ -275,8 +285,10 @@ func (s *Server) SubscribeREPLCommand(srv textrpc.Editor_SubscribeREPLCommandSer
 		return errors.New("receive subscribe repl command request: missing request")
 	}
 
+	streamCtx, cancelStream := context.WithCancel(s.ctx)
+	defer cancelStream()
 	clientStream := newREPLCommandClientStream(
-		s.ctx, srv, req.GetSupportsCompleteCancel(), req.GetSupportsHandleCancel())
+		streamCtx, srv, req.GetSupportsCompleteCancel(), req.GetSupportsHandleCancel())
 	man := makeStdMan(req.GetCommand())
 
 	s.editor.Lock()
@@ -290,6 +302,7 @@ func (s *Server) SubscribeREPLCommand(srv textrpc.Editor_SubscribeREPLCommandSer
 		s.editor.Unlock()
 		return err
 	}
+	s.repls[man.Name] = clientStream
 	resp := textrpc.SubscribeREPLCommandResponse{}
 	err = clientStream.send(&textrpc.ServerREPLCommandMessage{
 		Type:     textrpc.ServerREPLCommandMessage_Response,
@@ -297,10 +310,22 @@ func (s *Server) SubscribeREPLCommand(srv textrpc.Editor_SubscribeREPLCommandSer
 	})
 	s.editor.Unlock()
 	if err != nil {
-		return fmt.Errorf("send subscribe repl command response: %w", err)
+		err = fmt.Errorf("send subscribe repl command response: %w", err)
+	} else {
+		err = clientStream.receiveMessages()
 	}
+	cancelStream()
 
-	return clientStream.receiveMessages()
+	s.editor.Lock()
+	defer s.editor.Unlock()
+	if s.repls[man.Name] != clientStream {
+		return err
+	}
+	delete(s.repls, man.Name)
+	if uerr := s.editor.UnregisterREPLCommand(man.Name); uerr != nil {
+		err = multierror.Append(err, uerr)
+	}
+	return err
 }
 
 // SubscribeResourceOpener satisfies EditorServer. A new subscription for a

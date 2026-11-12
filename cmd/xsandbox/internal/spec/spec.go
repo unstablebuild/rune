@@ -65,6 +65,13 @@ type Host interface {
 	// rendered as a string, and fails the command when it ends in an
 	// error.
 	InvokeCommand(name string, args []string, repl bool, timeout time.Duration) (string, error)
+	// CompleteCommand asks a registered (REPL) command for the
+	// candidates that complete args, as Rune does when Tab is pressed in
+	// the command prompt or a console.
+	CompleteCommand(name string, args []string, repl bool, timeout time.Duration) ([]string, error)
+	// REPLHelp asks a registered REPL command for its help on args and
+	// returns it rendered as InvokeCommand renders REPL output.
+	REPLHelp(name string, args []string, timeout time.Duration) (string, error)
 	// ExpectResourceOpener blocks until a resource opener is registered
 	// for scheme.
 	ExpectResourceOpener(scheme string, timeout time.Duration) error
@@ -95,6 +102,19 @@ type Host interface {
 	// installed handler and returns whether the last event was handled
 	// and whether it requested exit.
 	SendKey(handle, keys string) (handled, quit bool, err error)
+	// SendMouse delivers the mouse keys of a handlertest-style sequence,
+	// such as <mouse-left><mouse-release>, at column x and row y of the
+	// browser, and returns as SendKey does.
+	SendMouse(handle, keys string, x, y int) (handled, quit bool, err error)
+	// SendPaste delivers text as a bracketed paste, its keys between a
+	// paste start and a paste end, and returns as SendKey does.
+	SendPaste(handle, text string) (handled, quit bool, err error)
+	// SendEvent delivers an event without a key, "focus", "unfocus" or
+	// "interrupt", and returns as SendKey does.
+	SendEvent(handle, eventType string) (handled, quit bool, err error)
+	// Selection returns the selection of the focused installed handler,
+	// which Rune copies, and whether it has one.
+	Selection(handle string) (string, bool, error)
 }
 
 // Graphics is what a render with images drew.
@@ -180,6 +200,9 @@ func (e *environment) builtins() starlark.StringDict {
 		"expect_repl_command":       starlark.NewBuiltin("expect_repl_command", e.expectREPLCommand),
 		"invoke_command":            starlark.NewBuiltin("invoke_command", e.invokeCommand),
 		"invoke_repl_command":       starlark.NewBuiltin("invoke_repl_command", e.invokeREPLCommand),
+		"complete_command":          starlark.NewBuiltin("complete_command", e.completeCommand),
+		"complete_repl_command":     starlark.NewBuiltin("complete_repl_command", e.completeREPLCommand),
+		"repl_help":                 starlark.NewBuiltin("repl_help", e.replHelp),
 		"expect_resource_opener":    starlark.NewBuiltin("expect_resource_opener", e.expectResourceOpener),
 		"open_resource":             starlark.NewBuiltin("open_resource", e.openResource),
 		"complete_resource":         starlark.NewBuiltin("complete_resource", e.completeResource),
@@ -190,6 +213,10 @@ func (e *environment) builtins() starlark.StringDict {
 		"render":                    starlark.NewBuiltin("render", e.render),
 		"render_graphics":           starlark.NewBuiltin("render_graphics", e.renderGraphics),
 		"send_key":                  starlark.NewBuiltin("send_key", e.sendKey),
+		"send_mouse":                starlark.NewBuiltin("send_mouse", e.sendMouse),
+		"send_paste":                starlark.NewBuiltin("send_paste", e.sendPaste),
+		"send_event":                starlark.NewBuiltin("send_event", e.sendEvent),
+		"selection":                 starlark.NewBuiltin("selection", e.selection),
 		"present":                   starlark.NewBuiltin("present", predicateBuiltin("present", false)),
 		"contains":                  starlark.NewBuiltin("contains", predicateBuiltin("contains", true)),
 		"regex":                     starlark.NewBuiltin("regex", predicateBuiltin("regex", true)),
@@ -431,6 +458,84 @@ func (e *environment) invokeCommandKind(
 	return starlark.String(out), nil
 }
 
+func (e *environment) completeCommand(
+	t *starlark.Thread, b *starlark.Builtin,
+	args starlark.Tuple, kwargs []starlark.Tuple,
+) (starlark.Value, error) {
+	return e.completeCommandKind(b, args, kwargs, false)
+}
+
+func (e *environment) completeREPLCommand(
+	t *starlark.Thread, b *starlark.Builtin,
+	args starlark.Tuple, kwargs []starlark.Tuple,
+) (starlark.Value, error) {
+	return e.completeCommandKind(b, args, kwargs, true)
+}
+
+func (e *environment) completeCommandKind(
+	b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple, repl bool,
+) (starlark.Value, error) {
+	name, argv, d, err := e.commandCall(b, args, kwargs, repl)
+	if err != nil {
+		return nil, err
+	}
+	values, err := e.host.CompleteCommand(name, argv, repl, d)
+	if err != nil {
+		return nil, err
+	}
+	return stringValues(values), nil
+}
+
+func (e *environment) replHelp(
+	_ *starlark.Thread, b *starlark.Builtin,
+	args starlark.Tuple, kwargs []starlark.Tuple,
+) (starlark.Value, error) {
+	name, argv, d, err := e.commandCall(b, args, kwargs, true)
+	if err != nil {
+		return nil, err
+	}
+	out, err := e.host.REPLHelp(name, argv, d)
+	if err != nil {
+		return nil, err
+	}
+	return starlark.String(out), nil
+}
+
+// commandCall unpacks the command, args and timeout of a builtin that
+// calls a registered (REPL) command.
+func (e *environment) commandCall(
+	b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple, repl bool,
+) (string, []string, time.Duration, error) {
+	var cmd starlark.Value
+	var cmdArgs *starlark.List
+	var timeout string
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs,
+		"command", &cmd, "args?", &cmdArgs, "timeout?", &timeout); err != nil {
+		return "", nil, 0, err
+	}
+	name, err := commandName(cmd, repl)
+	if err != nil {
+		return "", nil, 0, fmt.Errorf("%s: %w", b.Name(), err)
+	}
+	argv, err := stringList(cmdArgs)
+	if err != nil {
+		return "", nil, 0, fmt.Errorf("%s: args: %w", b.Name(), err)
+	}
+	d, err := e.timeout(timeout)
+	if err != nil {
+		return "", nil, 0, fmt.Errorf("%s: %w", b.Name(), err)
+	}
+	return name, argv, d, nil
+}
+
+func stringValues(values []string) *starlark.List {
+	list := make([]starlark.Value, len(values))
+	for i, v := range values {
+		list[i] = starlark.String(v)
+	}
+	return starlark.NewList(list)
+}
+
 func commandName(v starlark.Value, repl bool) (string, error) {
 	switch t := v.(type) {
 	case starlark.String:
@@ -515,11 +620,7 @@ func (e *environment) completeResource(
 	if err != nil {
 		return nil, err
 	}
-	list := make([]starlark.Value, len(values))
-	for i, v := range values {
-		list[i] = starlark.String(v)
-	}
-	return starlark.NewList(list), nil
+	return stringValues(values), nil
 }
 
 func (e *environment) publishEvent(
@@ -664,6 +765,85 @@ func (e *environment) sendKey(
 		return nil, fmt.Errorf("%s: %w", b.Name(), err)
 	}
 	handled, quit, err := e.host.SendKey(handle, keys)
+	return handledResult(handled, quit, err)
+}
+
+func (e *environment) sendMouse(
+	_ *starlark.Thread, b *starlark.Builtin,
+	args starlark.Tuple, kwargs []starlark.Tuple,
+) (starlark.Value, error) {
+	var win starlark.Value
+	var keys string
+	var x, y int
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs,
+		"window", &win, "keys", &keys, "x", &x, "y", &y); err != nil {
+		return nil, err
+	}
+	handle, err := windowHandleID(win)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", b.Name(), err)
+	}
+	return handledResult(e.host.SendMouse(handle, keys, x, y))
+}
+
+func (e *environment) sendPaste(
+	_ *starlark.Thread, b *starlark.Builtin,
+	args starlark.Tuple, kwargs []starlark.Tuple,
+) (starlark.Value, error) {
+	var win starlark.Value
+	var text string
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs,
+		"window", &win, "text", &text); err != nil {
+		return nil, err
+	}
+	handle, err := windowHandleID(win)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", b.Name(), err)
+	}
+	return handledResult(e.host.SendPaste(handle, text))
+}
+
+func (e *environment) sendEvent(
+	_ *starlark.Thread, b *starlark.Builtin,
+	args starlark.Tuple, kwargs []starlark.Tuple,
+) (starlark.Value, error) {
+	var win starlark.Value
+	var eventType string
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs,
+		"window", &win, "type", &eventType); err != nil {
+		return nil, err
+	}
+	handle, err := windowHandleID(win)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", b.Name(), err)
+	}
+	return handledResult(e.host.SendEvent(handle, eventType))
+}
+
+func (e *environment) selection(
+	_ *starlark.Thread, b *starlark.Builtin,
+	args starlark.Tuple, kwargs []starlark.Tuple,
+) (starlark.Value, error) {
+	var win starlark.Value
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "window", &win); err != nil {
+		return nil, err
+	}
+	handle, err := windowHandleID(win)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", b.Name(), err)
+	}
+	sel, ok, err := e.host.Selection(handle)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return starlark.None, nil
+	}
+	return starlark.String(sel), nil
+}
+
+// handledResult is the {"handled", "quit"} dict the send builtins return.
+func handledResult(handled, quit bool, err error) (starlark.Value, error) {
 	if err != nil {
 		return nil, err
 	}

@@ -5235,6 +5235,90 @@ func TestNormalModeIMovesToFirstNonBlank(t *testing.T) {
 	assert.Equal(t, "    Xabc", vi.less.Buffer().String())
 }
 
+func TestInsertModeDelete(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		cursor  term.Coordinates
+		want    string
+	}{
+		{
+			name:    "deletes the character under the cursor",
+			content: "abc",
+			cursor:  term.Coordinates{X: 1},
+			want:    "ac",
+		},
+		{
+			name:    "deletes the first character",
+			content: "abc",
+			want:    "bc",
+		},
+		{
+			name:    "deletes the last character",
+			content: "abc",
+			cursor:  term.Coordinates{X: 2},
+			want:    "ab",
+		},
+		{
+			name:    "joins lines at the line end",
+			content: "ab\ncd",
+			cursor:  term.Coordinates{X: 2},
+			want:    "abcd",
+		},
+		{
+			name:    "joins an empty line with the next line",
+			content: "\nabc",
+			want:    "abc",
+		},
+		{
+			name:    "deletes the trailing newline",
+			content: "ab\n",
+			cursor:  term.Coordinates{X: 2},
+			want:    "ab",
+		},
+		{
+			name:    "does nothing on the last empty line",
+			content: "ab\n",
+			cursor:  term.Coordinates{Y: 1},
+			want:    "ab\n",
+		},
+		{
+			name:    "deletes a wide character",
+			content: "a界b",
+			cursor:  term.Coordinates{X: 1},
+			want:    "ab",
+		},
+		{
+			name:    "does nothing at the buffer end",
+			content: "abc",
+			cursor:  term.Coordinates{X: 3},
+			want:    "abc",
+		},
+		{
+			name: "does nothing in an empty buffer",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vi := setupVi(t, tc.content, 2)
+			vi.Resize(10, 10)
+
+			exit, handled := vi.Handle(term.Event{Type: term.EventKey, Ch: 'i'})
+			require.False(t, exit)
+			require.True(t, handled)
+			require.Equal(t, insertMode, vi.mode())
+			vi.setCursorAtScroll(tc.cursor)
+			require.Equal(t, tc.cursor, vi.cursor.ScrollCoordinates(vi.cursor.Coordinates()))
+
+			exit, handled = vi.Handle(term.Event{Type: term.EventKey, Key: term.KeyDelete})
+			assert.False(t, exit)
+			assert.True(t, handled)
+			assert.Equal(t, tc.want, vi.less.Buffer().String())
+			assert.Equal(t, tc.cursor, vi.cursor.ScrollCoordinates(vi.cursor.Coordinates()))
+			assert.Equal(t, insertMode, vi.mode())
+		})
+	}
+}
+
 func TestInsertModeCtrlShortcuts(t *testing.T) {
 	type testCase struct {
 		name       string
