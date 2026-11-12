@@ -289,6 +289,24 @@ func TestRunUpgradeDarwin_PrunesOldBackups(t *testing.T) {
 	require.True(t, os.IsNotExist(errOld1), "old backup %s should be pruned", old1)
 }
 
+func TestRunUpgradeDarwin_ReplacesStaleBackup(t *testing.T) {
+	fake := &fakePlatformOps{}
+	opts, root := newDarwinFixture(t, fake)
+	writeExistingApp(t, root, "#!/bin/sh\necho old\n")
+	stale := filepath.Join(root, "Rune.app.bak-v9.9.0", "Contents", "MacOS", "rune")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o755))
+	require.NoError(t, os.WriteFile(stale, []byte("stale"), 0o755))
+
+	require.NoError(t, runUpgrade(context.Background(), opts))
+
+	got, err := os.ReadFile(filepath.Join(root, "Rune.app", "Contents", "MacOS", "rune"))
+	require.NoError(t, err)
+	require.Equal(t, "#!/bin/sh\necho new\n", string(got))
+	got, err = os.ReadFile(stale)
+	require.NoError(t, err)
+	require.Equal(t, "#!/bin/sh\necho old\n", string(got))
+}
+
 func TestRunUpgrade_RejectsInsufficientSpace(t *testing.T) {
 	fake := &fakePlatformOps{}
 	opts, root := newDarwinFixture(t, fake)

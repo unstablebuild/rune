@@ -2036,6 +2036,67 @@ func (c *Component) Reset() {
 	c.resetContent()
 }
 
+// ApplyEvent shows ev as the Handler of c shows the events sent to it.
+// It reports false, changing nothing, for the events only a Handler acts
+// on: prompts, prompt dismissals, busy and command events. The caller
+// must hold the lock that guards c.
+func (c *Component) ApplyEvent(ev MessageEvent) bool {
+	switch ev.Type {
+	case MessageEventReasoning:
+		c.AddReasoningChunk(ev.Text)
+	case MessageEventText:
+		c.AddReceiveMessageChunk(ev.Text)
+	case MessageEventBreak:
+		c.AddReceiveMessageBreak()
+	case MessageEventToolCall:
+		if IsTaskTool(ev.ToolName) {
+			break
+		}
+		if ev.ParentToolCallID != "" {
+			c.AddChildToolCall(ev.ParentToolCallID, ev.ToolCallID, ev.ToolName, ev.ToolArgs, ev.ToolSummary)
+		} else {
+			c.AddToolCall(ev.ToolCallID, ev.ToolName, ev.ToolArgs, ev.ToolSummary)
+		}
+		if !ev.ToolStartTime.IsZero() {
+			c.SetToolStartTime(ev.ToolCallID, ev.ToolStartTime)
+		}
+	case MessageEventToolResult:
+		if IsTaskTool(ev.ToolName) {
+			break
+		}
+		if ev.ToolDuration > 0 {
+			c.SetToolDuration(ev.ToolCallID, ev.ToolDuration)
+		}
+		if ev.ParentToolCallID != "" {
+			c.CompleteChildToolCall(ev.ParentToolCallID, ev.ToolCallID, ev.ToolName, ev.ToolArgs, ev.ToolSummary, ev.ToolOutput, ev.IsError)
+		} else {
+			c.CompleteToolCall(ev.ToolCallID, ev.ToolName, ev.ToolArgs, ev.ToolSummary, ev.ToolOutput, ev.IsError)
+		}
+		for _, path := range ev.ImagePaths {
+			c.AddToolCallImage(ev.ToolCallID, path, ev.ToolSummary)
+		}
+	case MessageEventChildResult:
+		c.AddChildResult(ev.ParentToolCallID, ev.ToolOutput, ev.IsError)
+	case MessageEventError:
+		c.AddErrorMessage(ev.Text)
+	case MessageEventWarning:
+		c.AddWarningMessage(ev.Text)
+	case MessageEventToolsDropped:
+		c.MarkToolsDropped(ev.DroppedToolCallIDs)
+	case MessageEventMemoryRecall:
+		c.AddMemoryRecall(ev.Memories, ev.MemoryDuration)
+	case MessageEventTaskProgress:
+		c.UpdateTaskProgress(ev.TaskProgress)
+	case MessageEventAttachment:
+		c.AddAttachment(ev.Attachment)
+	case MessageEventUserMessage:
+		c.AddSendMessageAttachments(ev.Text, ev.Attachments)
+	default:
+		return false
+	}
+	return true
+}
+
 // Close releases the resources owned by this Component.
 func (c *Component) Close() error {
 	c.closeTranscript()

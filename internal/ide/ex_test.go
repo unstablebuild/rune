@@ -7307,6 +7307,55 @@ func TestOpenURLPluginCommandQuotesURL(t *testing.T) {
 	}
 }
 
+func TestOpenURLTerminalCommandGetsURLAsOneArgument(t *testing.T) {
+	const raw = "https://auth.example.com/authorize?response_type=code&state=a;b&c=$(id)"
+	const inert = "https://auth.example.com/authorize?response_type=code&state=a;b&c=%24(id)"
+	link, err := url.Parse(raw)
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name    string
+		command string
+		aliases map[string]text.CommandAlias
+	}{
+		{name: "terminal command", command: "terminalnewtab terminal-browser $URL"},
+		{
+			name:    "through an alias",
+			command: "browser $URL",
+			aliases: map[string]text.CommandAlias{
+				"browser": {Commands: []string{"terminalnewtab terminal-browser $1"}},
+			},
+		},
+		{
+			name:    "alias appends the URL",
+			command: "browser $URL",
+			aliases: map[string]text.CommandAlias{
+				"browser": {Commands: []string{"terminalnewtab terminal-browser"}},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newExForAliasRun(t, tc.aliases)
+			defer b.Close()
+			b.Resize(100, 100)
+			var got []string
+			b.ex.newEmulatorHandler = func(args []string) (vtereservoir.VTE, error) {
+				got = append([]string(nil), args...)
+				return newTestVte(), nil
+			}
+			b.ex.metaOpenURL = metaOpenURLConfig{command: tc.command}
+
+			require.NoError(t, b.ex.openURL(link))
+			b.ex.waitAsyncVTELoads()
+			b.flushScheduled()
+
+			// The terminal joins its args into the line it parses.
+			argv, err := shell.Fields(strings.Join(got, " "), nil)
+			require.NoError(t, err, "args: %q", got)
+			assert.Equal(t, []string{"terminal-browser", inert}, argv)
+		})
+	}
+}
+
 func TestPluginArgsReachShellAsData(t *testing.T) {
 	const taint = "x; touch pwned"
 	t.Setenv("RUNE_TEST_TAINT", taint)

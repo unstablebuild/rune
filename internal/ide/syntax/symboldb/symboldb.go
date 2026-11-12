@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 	bluebolt "github.com/unstablebuild/blue/document/bolt"
@@ -50,6 +51,11 @@ import (
 // so retries only fire when another process indexes the same
 // workspace through the shared store.
 var retryStrategy = retry.DefaultStrategy
+
+// settleDelay lets a burst of disk events gather before the indexer
+// looks at them: a checkout touches hundreds of files, and seen together
+// they cost one round of writes rather than one each.
+const settleDelay = 100 * time.Millisecond
 
 // EditorEvents returns the editor event types the Parser must be
 // subscribed to in order to keep the index fresh: in-editor saves and
@@ -324,21 +330,22 @@ func (p *Parser) setScanned() {
 	p.wakeLocked()
 }
 
-// nextDirty pops one dirty entry, tracking the worker's busy state so
+// drainDirty pops every dirty entry, tracking the worker's busy state so
 // Wait cannot observe an empty queue while a job is still in flight.
-func (p *Parser) nextDirty() (string, bool) {
+func (p *Parser) drainDirty() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for us := range p.dirty {
-		delete(p.dirty, us)
+	if len(p.dirty) > 0 {
+		uris := slices.Sorted(maps.Keys(p.dirty))
+		clear(p.dirty)
 		p.busy = true
-		return us, true
+		return uris
 	}
 	if p.busy {
 		p.busy = false
 		p.wakeLocked()
 	}
-	return "", false
+	return nil
 }
 
 func (p *Parser) hasScannedEver() bool {
@@ -572,13 +579,17 @@ func (p *Parser) run() {
 			return
 		default:
 		}
-		uri, ok := p.nextDirty()
-		if ok {
-			p.indexFile(p.ctx, q, uri)
+		if uris := p.drainDirty(); len(uris) > 0 {
+			p.indexFiles(p.ctx, q, uris)
 			continue
 		}
 		select {
 		case <-p.wake:
+		case <-p.ctx.Done():
+			return
+		}
+		select {
+		case <-time.After(settleDelay):
 		case <-p.ctx.Done():
 			return
 		}
@@ -611,13 +622,18 @@ func (p *Parser) scan() {
 	writerDone := make(chan struct{})
 	go debug.CapturePanicReport(func() {
 		defer close(writerDone)
+		var w symbolWindow
 		for {
 			select {
 			case u, ok := <-updates:
 				if !ok {
+					p.flushWindow(nctx, nctx, &w)
 					return
 				}
-				p.applyFile(nctx, u)
+				w.add(u)
+				if w.full() {
+					p.flushWindow(nctx, nctx, &w)
+				}
 			case <-p.ctx.Done():
 				return
 			}
@@ -687,6 +703,7 @@ func (p *Parser) removeMissingFiles(ctx context.Context) {
 		return
 	}
 	defer func() { _ = it.Close() }()
+	var w symbolWindow
 	for it.HasNext() {
 		var doc fileDoc
 		if err := it.NextTo(&doc); err != nil {
@@ -697,11 +714,13 @@ func (p *Parser) removeMissingFiles(ctx context.Context) {
 			return
 		}
 		if _, serr := p.fs.Stat(doc.Path); errors.Is(serr, fs.ErrNotExist) {
-			p.applyFile(ctx, fileUpdate{
-				us: doc.URI, oldNames: doc.Names, removed: true,
-			})
+			w.add(fileUpdate{us: doc.URI, oldNames: doc.Names, removed: true})
+			if w.full() {
+				p.flushWindow(ctx, ctx, &w)
+			}
 		}
 	}
+	p.flushWindow(ctx, ctx, &w)
 }
 
 // seen records key in set, reporting whether it was already present.
@@ -801,6 +820,42 @@ type fileUpdate struct {
 	removed  bool
 }
 
+// symbols is what the file now contributes, by name: only its first
+// occurrence of a name per kind, since resolution surfaces at most one
+// location per (file, kind) — see matchesForSpec — and hot symbols
+// appear dozens of times per file, so repeat occurrences would only
+// bloat docs that are re-encoded once per contributing file.
+func (u fileUpdate) symbols() map[string][]symbolLoc {
+	if u.removed {
+		return nil
+	}
+	symbols := make(map[string][]symbolLoc)
+	for _, s := range u.ext.Symbols {
+		kind := storedKind(s.Kind)
+		if hasKind(symbols[s.Name], kind) {
+			continue
+		}
+		symbols[s.Name] = append(symbols[s.Name], symbolLoc{
+			URI: u.us, X: s.Pos.X, Y: s.Pos.Y, Kind: kind,
+		})
+	}
+	return symbols
+}
+
+// record is the file's record once symbols, what it contributes, are
+// stored.
+func (u fileUpdate) record(symbols map[string][]symbolLoc) fileDoc {
+	return fileDoc{
+		URI:     u.us,
+		Path:    u.rel,
+		ModTime: u.modTime,
+		Version: schemaVersion,
+		Grammar: u.grammar,
+		Names:   slices.Sorted(maps.Keys(symbols)),
+		Imports: u.ext.Imports,
+	}
+}
+
 // grammar returns langID's grammar fingerprint, or "" when it is not
 // installed. The value is fixed for the Parser's lifetime.
 func (p *Parser) grammar(ctx context.Context, langID string) string {
@@ -870,6 +925,8 @@ func (p *Parser) stageFile(
 	}, true
 }
 
+// applyFile stores one file's update through the per-operation path, for
+// a store without batching.
 func (p *Parser) applyFile(ctx context.Context, u fileUpdate) {
 	if ctx.Err() != nil {
 		return
@@ -887,47 +944,20 @@ func (p *Parser) applyFile(ctx context.Context, u fileUpdate) {
 		}
 		return
 	}
-	symbols := make(map[string][]symbolLoc)
-	for _, s := range u.ext.Symbols {
-		kind := storedKind(s.Kind)
-		// Store only the file's first occurrence per kind: resolution
-		// surfaces at most one location per (file, kind) — see
-		// matchesForSpec — and hot symbols appear dozens of times per
-		// file, so repeat occurrences only bloat docs that the writer
-		// re-encodes once per contributing file.
-		if hasKind(symbols[s.Name], kind) {
-			continue
-		}
-		symbols[s.Name] = append(symbols[s.Name], symbolLoc{
-			URI: u.us, X: s.Pos.X, Y: s.Pos.Y, Kind: kind,
-		})
-	}
+	symbols := u.symbols()
 	p.upsertSymbols(nctx, u.us, u.oldNames, symbols, u.force)
-	doc := fileDoc{
-		URI:     u.us,
-		Path:    u.rel,
-		ModTime: u.modTime,
-		Version: schemaVersion,
-		Grammar: u.grammar,
-		Names:   slices.Sorted(maps.Keys(symbols)),
-		Imports: u.ext.Imports,
-	}
-	if err := p.files.Set(ctx, u.us, doc); err != nil {
+	if err := p.files.Set(ctx, u.us, u.record(symbols)); err != nil {
 		log.Errorf("symboldb: persist file record %q: %v", u.us, err)
 	}
 }
 
-// upsertSymbols writes every symbol record one file contributes to:
-// the names it now defines, plus the names it used to define and no
-// longer does, which lose this file's locations.
+// upsertSymbols writes every symbol record one file contributes to, one
+// operation at a time: the names it now defines, plus the names it used
+// to define and no longer does, which lose this file's locations.
 func (p *Parser) upsertSymbols(
 	ctx context.Context, us string, oldNames []string,
 	symbols map[string][]symbolLoc, force bool,
 ) {
-	if p.batch != nil {
-		p.upsertSymbolBatch(ctx, us, oldNames, symbols, force)
-		return
-	}
 	stored := make(map[string]struct{}, len(oldNames))
 	for _, name := range oldNames {
 		stored[name] = struct{}{}
@@ -942,15 +972,27 @@ func (p *Parser) upsertSymbols(
 	}
 }
 
-// indexFile stages and applies one file inline; it serves the dirty
-// drain, where staging and writing share the event goroutine.
-func (p *Parser) indexFile(
-	ctx context.Context, q symbolresolve.FileQueryer, us string,
+// indexFiles stages and stores files inline, in one window; it serves
+// the dirty drain, where staging and writing share the event goroutine.
+// Symbol and name records are derived from the file records, so their
+// writes skip the per-commit fsync: the file records written last, synced,
+// restore durability for everything before them, and a crash in between
+// only costs a re-index of the window's files.
+func (p *Parser) indexFiles(
+	ctx context.Context, q symbolresolve.FileQueryer, uris []string,
 ) {
 	qc := symbolresolve.NewQualifierContext(p.fs, p.root)
-	if u, ok := p.stageFile(ctx, q, qc, us); ok {
-		p.applyFile(ctx, u)
+	nctx := bluebolt.ContextWithNoSync(ctx)
+	var w symbolWindow
+	for _, us := range uris {
+		if u, ok := p.stageFile(ctx, q, qc, us); ok {
+			w.add(u)
+			if w.full() {
+				p.flushWindow(nctx, ctx, &w)
+			}
+		}
 	}
+	p.flushWindow(nctx, ctx, &w)
 }
 
 func (p *Parser) upsertSymbol(
@@ -966,7 +1008,7 @@ func (p *Parser) upsertSymbol(
 	callback := func() ([]storageapi.Update, []storageapi.Precondition) {
 		wrote = false
 		wasListed = listed(doc.Locs)
-		kept := mergeLocs(doc.Locs, us, locs)
+		kept := mergeLocs(doc.Locs, map[string][]symbolLoc{us: locs})
 		merged = kept
 		if sameLocs(doc.Locs, kept) {
 			return nil, nil
@@ -1031,16 +1073,21 @@ func (p *Parser) upsertSymbol(
 	p.syncNameIndex(ctx, name, merged, wrote && !force, wasListed)
 }
 
-// mergeLocs replaces the locations us contributed to a stored symbol
-// with locs, leaving every other file's locations in place.
-func mergeLocs(stored []symbolLoc, us string, locs []symbolLoc) []symbolLoc {
-	kept := make([]symbolLoc, 0, len(stored)+len(locs))
+// mergeLocs replaces the locations each file in replace contributed to
+// a stored symbol with what it maps to (nothing, when nil), leaving every
+// other file's locations in place. The replacements come after them, by
+// file, so that the same inputs give the same document.
+func mergeLocs(stored []symbolLoc, replace map[string][]symbolLoc) []symbolLoc {
+	kept := make([]symbolLoc, 0, len(stored))
 	for _, l := range stored {
-		if l.URI != us {
+		if _, ok := replace[l.URI]; !ok {
 			kept = append(kept, l)
 		}
 	}
-	return append(kept, locs...)
+	for _, us := range slices.Sorted(maps.Keys(replace)) {
+		kept = append(kept, replace[us]...)
+	}
+	return kept
 }
 
 // syncNameIndex reflects a symbol write in the name markers. When the

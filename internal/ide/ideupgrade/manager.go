@@ -34,6 +34,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -68,10 +69,10 @@ const (
 	storageKeyState  = "state"
 )
 
-// upgradeProgressInterval throttles intermediate progress samples so a
-// fast download does not peg the IDE event loop. Boundary samples
-// (progress == total) and phase changes always emit regardless.
-const upgradeProgressInterval = 50 * time.Millisecond
+// errRestartRequired is returned by Check once this process has
+// installed an upgrade, which only takes effect on restart.
+var errRestartRequired = errors.New(
+	"already upgraded; restart Rune to apply")
 
 // Config is the externally-provided configuration for a Manager.
 // All fields except CurrentVersion, ManifestURL and Storage have safe
@@ -105,14 +106,18 @@ type Config struct {
 	// different install layouts.
 	Executable func() (string, error)
 
-	// Notifications, when set, is used to surface upgrade progress and
-	// errors in the IDE.
+	// Notifications, when set, announces an available upgrade when
+	// there is no Prompter, and reports a failure to start one.
 	Notifications browserapi.Notifications
 
 	// Prompter, when set, opens the upgrade prompt. It is called on the
 	// event loop that ScheduleNextTick schedules on. Without one, the
 	// prompt is dismissed and an available upgrade is only notified.
 	Prompter browserapi.Prompter
+
+	// Starter starts the upgrade accepted in the prompt, and is
+	// required with Prompter.
+	Starter Starter
 
 	// ScheduleNextTick schedules fn to run on the IDE event loop.
 	ScheduleNextTick func(func()) bool
@@ -152,6 +157,13 @@ type Config struct {
 	BackupRetention int
 }
 
+// Starter starts an upgrade the user accepted in the upgrade prompt.
+type Starter interface {
+	// StartUpgrade is called on the event loop and must not wait for
+	// the upgrade to finish.
+	StartUpgrade() error
+}
+
 // state is the persistent record of what the user has decided about
 // the latest available version, plus the throttle timestamp.
 type state struct {
@@ -166,6 +178,8 @@ type state struct {
 type Manager struct {
 	cfg Config
 	ops platformOps
+
+	upgraded atomic.Bool
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -242,6 +256,9 @@ func newWithPlatformOps(cfg Config, ops platformOps) (*Manager, error) {
 	if cfg.ScheduleNextTick == nil {
 		return nil, fmt.Errorf("ScheduleNextTick is nil")
 	}
+	if cfg.Prompter != nil && cfg.Starter == nil {
+		return nil, errors.New("ideupgrade: Starter is required with Prompter")
+	}
 
 	storage, err := cfg.Storage.Partition(storagePartition)
 	if err != nil {
@@ -286,8 +303,12 @@ func (m *Manager) CurrentVersion() string { return m.cfg.CurrentVersion }
 
 // Check performs a manifest fetch outside the regular throttle and
 // reports whether the manifest describes an upgrade the user has not
-// already skipped or postponed.
+// already skipped or postponed. It fails once this process has
+// installed an upgrade, since it is the restart that applies it.
 func (m *Manager) Check(ctx context.Context) (Manifest, bool, error) {
+	if m.upgraded.Load() {
+		return Manifest{}, false, errRestartRequired
+	}
 	manifest, has, err := m.fetchManifest(ctx)
 	if err != nil {
 		return Manifest{}, false, err
@@ -322,7 +343,7 @@ func (m *Manager) run(ctx context.Context) {
 }
 
 func (m *Manager) tick(ctx context.Context) {
-	if m.isThrottled(ctx) {
+	if m.upgraded.Load() || m.isThrottled(ctx) {
 		return
 	}
 	manifest, has, err := m.fetchManifest(ctx)
@@ -567,7 +588,7 @@ func (m *Manager) Upgrade(
 	if err != nil {
 		return err
 	}
-	return runUpgrade(ctx, upgradeOpts{
+	if err := runUpgrade(ctx, upgradeOpts{
 		manifest:         manifest,
 		currentVersion:   m.cfg.CurrentVersion,
 		cacheDir:         m.cfg.CacheDir,
@@ -578,36 +599,10 @@ func (m *Manager) Upgrade(
 		backupRetention:  m.cfg.BackupRetention,
 		ops:              m.ops,
 		pw:               pw,
-	})
-}
-
-// upgradeWithNotifications runs Upgrade for the background auto-check
-// prompt, which has no console attached: progress is pinned to a
-// single notification and the outcome is surfaced as a toast.
-func (m *Manager) upgradeWithNotifications(
-	ctx context.Context, manifest Manifest,
-) error {
-	pw := &notificationProgressWriter{
-		n:       m.cfg.Notifications,
-		message: fmt.Sprintf("Upgrading to %s", manifest.Version),
-	}
-	defer pw.close()
-
-	if err := m.Upgrade(ctx, manifest, pw); err != nil {
-		var notSupported *ErrUpgradeNotSupported
-		if errors.As(err, &notSupported) {
-			_, _ = m.cfg.Notifications.Notify(browserapi.LevelError,
-				"Rune cannot upgrade itself in place: %v",
-				notSupported.Reason)
-			return err
-		}
-		_, _ = m.cfg.Notifications.Notify(browserapi.LevelError,
-			"Upgrade to %s failed: %v", manifest.Version, err)
+	}); err != nil {
 		return err
 	}
-	_, _ = m.cfg.Notifications.Notify(browserapi.LevelSuccess,
-		"Upgrade to %s complete — restart Rune to apply",
-		manifest.Version)
+	m.upgraded.Store(true)
 	return nil
 }
 

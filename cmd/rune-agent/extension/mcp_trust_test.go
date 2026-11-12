@@ -18,6 +18,7 @@ package extension
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -26,7 +27,9 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/handler"
+	"github.com/unstablebuild/rune-go-sdk/term"
 	runemcp "unstable.build/rune/cmd/rune-agent/mcp"
+	"unstable.build/rune/internal/component/markdown"
 )
 
 // answeringPrompter picks options from answers in turn, or dismisses
@@ -296,6 +299,25 @@ func TestMCPTrustMessage(t *testing.T) {
 			assert.Equal(t, []string{trustOpt, trustOnceOpt, distrustOpt}, prompter.shown[0].Options)
 		})
 	}
+}
+
+func TestMCPTrustMessageRendersURLAsWritten(t *testing.T) {
+	t.Parallel()
+
+	const url = "https://sourcegraph.sourcegraph.com/.api/mcp/deepsearch?a=1&b=*x*&c=[y](z)"
+	cfg := workspaceServers(t, map[string]any{"s2ds": map[string]any{"url": url}})["s2ds"]
+
+	md, err := markdown.NewWithConfig(mcpTrustMessage("s2ds", cfg, runemcp.Expansion{}), markdown.DefaultConfig())
+	require.NoError(t, err)
+	const width = 200
+	md.Resize(width, md.Height(width))
+	shown := md.TextRange(term.Coordinates{}, term.Coordinates{Y: md.Height(width)})
+
+	lines := strings.Split(shown, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSpace(lines[i])
+	}
+	assert.Contains(t, lines, url, "rendered prompt:\n%s", shown)
 }
 
 func TestMCPTrustAllowStopsWithContext(t *testing.T) {

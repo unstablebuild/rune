@@ -19,6 +19,7 @@ package llmsearch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -33,13 +34,16 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 )
 
-// countingEmbedder counts the texts it embeds.
+// countingEmbedder counts the texts it embeds, failing with err (from the
+// call after failAfter, when it is set) when it is not nil.
 type countingEmbedder struct {
 	Embedder
-	info  *EmbedderInfo
-	mu    sync.Mutex
-	texts int
-	err   error
+	info      *EmbedderInfo
+	mu        sync.Mutex
+	texts     int
+	calls     int
+	failAfter int
+	err       error
 }
 
 func newCountingEmbedder() *countingEmbedder {
@@ -56,7 +60,8 @@ func (e *countingEmbedder) Info() EmbedderInfo {
 func (e *countingEmbedder) EmbedTexts(ctx context.Context, texts []string) ([][]float32, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.err != nil {
+	e.calls++
+	if e.err != nil && e.calls > e.failAfter {
 		return nil, e.err
 	}
 	e.texts += len(texts)
@@ -399,4 +404,147 @@ func TestIndexerPendingNewestFirst(t *testing.T) {
 		got = append(got, f.Path)
 	}
 	assert.Equal(t, []string{"billing/tax.py", "retry/policy.go", "README.md"}, got)
+}
+
+func TestIndexerRunFlushesInWindows(t *testing.T) {
+	ti := newTestIndexer(t)
+	db := newBatchStorage(ti.db, nil)
+	ti.db = db
+	ti.reload(t)
+	extra := flushFiles + 5
+	for i := range extra {
+		writeFile(t, ti.dir, fmt.Sprintf("many/file%02d.go", i),
+			fmt.Sprintf("package many\n\n// Thing%d returns the number %d.\nfunc Thing%d() int { return %d }\n", i, i, i, i))
+	}
+	ctx := context.Background()
+	embed := newCountingEmbedder()
+	_, err := ti.x.adopt(ctx, embed)
+	require.NoError(t, err)
+	sum, err := ti.x.sync(ctx, []string{"."})
+	require.NoError(t, err)
+	n := len(fixtureCode) + extra
+	require.Equal(t, n, sum.added)
+	db.batches()
+
+	var events []runEvent
+	require.NoError(t, ti.x.run(ctx, embed, nil, func(ev runEvent) { events = append(events, ev) }))
+
+	windows := (n + flushFiles - 1) / flushFiles
+	batches, singles := db.batches()
+	assert.Equal(t, windows, batches[filesPartition], "files are stored once per window")
+	assert.Equal(t, windows, batches[segmentsPartition])
+	assert.LessOrEqual(t, batches[vectorsPartition], windows)
+	assert.Empty(t, singles, "nothing is written one document at a time")
+	require.Len(t, events, n+1)
+	for i, ev := range events {
+		assert.Equal(t, i, ev.done, "events are reported in order")
+	}
+	assert.Equal(t, embed.count(), ti.x.cat.vectorCount())
+}
+
+func TestIndexerRunKeepsTheWindowWhenTheEmbedderDies(t *testing.T) {
+	ti := newTestIndexer(t)
+	embed := newCountingEmbedder()
+	embed.err, embed.failAfter = errors.New("llama-server exited"), 3
+	ctx := context.Background()
+	_, err := ti.x.adopt(ctx, embed)
+	require.NoError(t, err)
+	_, err = ti.x.sync(ctx, []string{"."})
+	require.NoError(t, err)
+	var events []runEvent
+	err = ti.x.run(ctx, embed, nil, func(ev runEvent) { events = append(events, ev) })
+	require.ErrorIs(t, err, embed.err)
+	settled := len(events) - 1
+	assert.GreaterOrEqual(t, settled, embed.failAfter, "the files embedded before the failure are reported")
+	assert.Less(t, settled, len(fixtureCode))
+	done := 0
+	for _, f := range ti.x.cat.snapshot() {
+		if f.State != statePending {
+			done++
+		}
+	}
+	assert.Equal(t, settled, done, "what was embedded before the failure is kept")
+	files, err := ti.x.st.listFiles(ctx)
+	require.NoError(t, err)
+	stored := 0
+	for _, f := range files {
+		if f.State != statePending {
+			stored++
+		}
+	}
+	assert.Equal(t, settled, stored)
+}
+
+func TestIndexerSyncAppliesChangesInOneBatch(t *testing.T) {
+	ti := newTestIndexer(t)
+	db := newBatchStorage(ti.db, nil)
+	ti.db = db
+	ti.reload(t)
+	embed := newCountingEmbedder()
+	ti.index(t, embed)
+	ids := map[string]uint32{}
+	for _, f := range ti.x.cat.snapshot() {
+		ids[f.Path] = f.ID
+	}
+	db.batches()
+
+	writeFile(t, ti.dir, "geo/distance.py", "def bearing(a, b):\n    return compass(a, b)\n")
+	writeFile(t, ti.dir, "billing/invoice.py", "def total(lines):\n    return sum(lines)\n")
+	require.NoError(t, os.Remove(filepath.Join(ti.dir, "auth/session.ts")))
+	writeFile(t, ti.dir, "shipping/parcel.go", "package shipping\n\n// Parcel is a parcel.\ntype Parcel struct{}\n")
+	require.NoError(t, os.Rename(filepath.Join(ti.dir, "billing/tax.py"), filepath.Join(ti.dir, "billing/rates.py")))
+	sum, err := ti.x.sync(context.Background(), []string{"."})
+	require.NoError(t, err)
+	assert.Equal(t, 2, sum.changed)
+	assert.Equal(t, 1, sum.removed)
+	assert.Equal(t, 1, sum.added)
+	assert.Equal(t, 1, sum.moved)
+
+	batches, singles := db.batches()
+	assert.Equal(t, map[string]int{
+		vectorsPartition:  1, // the edited and removed files' vectors go
+		segmentsPartition: 2, // their stretches go; the new and moved files' name rows come
+		filesPartition:    2, // the edited, new and moved files are written; the removed one goes
+	}, batches)
+	assert.Empty(t, singles)
+
+	got := states(ti.x.cat)
+	assert.Equal(t, statePending, got["geo/distance.py"])
+	assert.Equal(t, statePending, got["billing/invoice.py"])
+	assert.Equal(t, statePending, got["shipping/parcel.go"])
+	assert.Equal(t, stateDone, got["billing/rates.py"])
+	assert.NotContains(t, got, "auth/session.ts")
+	assert.NotContains(t, got, "billing/tax.py")
+	assert.Equal(t, ids["billing/tax.py"], ti.file(t, "billing/rates.py").ID)
+	assert.NotContains(t, ti.stored(t, ti.x.st.files), ids["auth/session.ts"])
+	assert.ElementsMatch(t, []uint32{ids["geo/distance.py"], ids["billing/invoice.py"], ti.file(t, "shipping/parcel.go").ID}, sum.queued)
+}
+
+func TestIndexerEventsFollowStorage(t *testing.T) {
+	ti := newTestIndexer(t)
+	ctx := context.Background()
+	embed := newCountingEmbedder()
+	_, err := ti.x.adopt(ctx, embed)
+	require.NoError(t, err)
+	_, err = ti.x.sync(ctx, []string{"."})
+	require.NoError(t, err)
+	reported := 0
+	require.NoError(t, ti.x.run(ctx, embed, nil, func(ev runEvent) {
+		if ev.done == 0 {
+			return
+		}
+		reported++
+		f := ti.file(t, ev.path)
+		assert.Equal(t, ev.state, f.State, ev.path)
+		vectors := ti.stored(t, ti.x.st.vectors)
+		for _, id := range f.Segments {
+			_, found, err := ti.x.st.segment(ctx, id)
+			require.NoError(t, err)
+			assert.True(t, found, "%s: segment %d is reported before it is stored", ev.path, id)
+			if s, _ := ti.x.cat.segment(id); s.hasVec {
+				assert.Contains(t, vectors, id, "%s: vector %d is reported before it is stored", ev.path, id)
+			}
+		}
+	}))
+	assert.Equal(t, len(fixtureCode), reported)
 }

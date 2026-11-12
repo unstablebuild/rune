@@ -27,6 +27,7 @@ package upgradeconsole
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -39,11 +40,16 @@ import (
 // CommandName is the top-level REPL command exposed by this shell.
 const CommandName = "upgrade"
 
+// YesFlag installs an available release without prompting.
+const YesFlag = "-y"
+
 var commandManual = textapi.CommandManual{
 	Name: CommandName,
 	Summary: "Check for a new Rune release and install it in place. " +
 		"When a release is available you are prompted to confirm, " +
-		"postpone the reminder, or skip the version.",
+		"postpone the reminder, or skip the version, unless `" + YesFlag +
+		"` is given.",
+	Synopsis: "[" + YesFlag + "]",
 }
 
 // Manual returns the REPL command manual.
@@ -121,9 +127,12 @@ func (h *Handler) upgrade(
 			"Rune is up to date (**%s**)", h.mgr.CurrentVersion()), nil
 	}
 
-	choice, err := h.mgr.PromptChoice(ctx, manifest)
-	if err != nil {
-		return "", err
+	choice := ideupgrade.ChoiceUpgradeNow
+	if !slices.Contains(cmd.Args, YesFlag) {
+		choice, err = h.mgr.PromptChoice(ctx, manifest)
+		if err != nil {
+			return "", err
+		}
 	}
 	switch choice {
 	case ideupgrade.ChoiceUpgradeNow:
@@ -143,7 +152,7 @@ func (h *Handler) upgrade(
 }
 
 // Complete satisfies repl.CommandHandler. `upgrade` takes no
-// arguments, so there is nothing to complete.
+// arguments besides YesFlag, so there is nothing to complete.
 func (h *Handler) Complete(
 	context.Context, string, []string,
 ) (iterator.Iterator[string], error) {

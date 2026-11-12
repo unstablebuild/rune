@@ -40,6 +40,13 @@ func seedLinuxAppDir(t *testing.T, root, appName, binName string) string {
 	return resolved
 }
 
+// seedInstall materializes a default install under root and returns
+// its resolved binary path.
+func seedInstall(t *testing.T, root string) string {
+	t.Helper()
+	return seedLinuxAppDir(t, root, "rune.app", "rune")
+}
+
 func TestDetectRunningInstall_LinuxHappyPath(t *testing.T) {
 	root := t.TempDir()
 	bin := seedLinuxAppDir(t, root, "rune.app", "rune")

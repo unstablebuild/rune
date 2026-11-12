@@ -58,8 +58,15 @@ type Image struct {
 	Number uint32
 	termID term.ImageID
 	// version changes whenever pix changes so the writer re-uploads.
-	version   uint64
-	pix       *image.RGBA
+	version uint64
+	pix     *image.RGBA
+	// lent is the raster last handed to the writer, which may still be
+	// reading it until its next Clear: the one buffer that is not free
+	// the moment the image lets go of it.
+	lent *image.RGBA
+	// straight is set while pix holds the transmitted straight alpha,
+	// which pixels premultiplies on first use.
+	straight  bool
 	width     int
 	height    int
 	loaded    bool
@@ -113,6 +120,10 @@ type pendingLoad struct {
 type Storage struct {
 	// Limit is the storage quota in bytes; 0 disables the quota.
 	Limit int
+	// Pool recycles the pixel buffers of transmissions that are replaced
+	// or removed, for the reader of the next transmission to fill. nil
+	// allocates every transmission.
+	Pool *BufferPool
 
 	images  []*Image
 	nextID  uint64
@@ -322,21 +333,25 @@ func (s *Storage) transmit(cmd Command, isQuery bool) (*Image, Command, bool, *E
 	}
 	s.pending = nil
 
-	pix, err := p.spec.decode(p.buf)
+	pix, straight, err := p.spec.decode(p.buf, s.Pool)
 	if err != nil {
 		return img, start, false, err
 	}
-	if !p.isQuery {
-		s.setPixels(img, pix, p.spec.format, start.Usage&UsageTransient != 0)
+	if p.isQuery {
+		s.Pool.Put(pix.Pix)
+	} else {
+		s.setPixels(img, pix, straight, p.spec.format, start.Usage&UsageTransient != 0)
 	}
 	img.loaded = true
 	return img, start, true, nil
 }
 
 // setPixels installs a freshly transmitted root frame.
-func (s *Storage) setPixels(img *Image, pix *image.RGBA, format uint32, transient bool) {
+func (s *Storage) setPixels(img *Image, pix *image.RGBA, straight bool, format uint32, transient bool) {
 	s.used -= img.used
+	s.dropPixels(img)
 	img.pix = pix
+	img.straight = straight
 	img.width = pix.Rect.Dx()
 	img.height = pix.Rect.Dy()
 	bpp := 4
@@ -347,8 +362,61 @@ func (s *Storage) setPixels(img *Image, pix *image.RGBA, format uint32, transien
 	s.used += img.used
 	img.transient = transient
 	img.version++
-	img.anim = nil
 	img.atime = s.tick()
+}
+
+// dropPixels forgets img's raster and frames. The raster goes back to
+// the pool unless the writer may still be reading it, in which case
+// lend recycles it once the writer has moved on. Frames are left to the
+// collector: they are composed, not streamed.
+func (s *Storage) dropPixels(img *Image) {
+	old := img.pix
+	img.pix = nil
+	img.anim = nil
+	if old != nil && old != img.lent {
+		s.Pool.Put(old.Pix)
+	}
+}
+
+// lend hands out img's displayed raster for the frame being drawn. The
+// writer cleared before this draw, so whatever it was lent before and
+// img no longer shows is free again.
+func (s *Storage) lend(img *Image) *image.RGBA {
+	pix := img.pixels()
+	if prev := img.lent; prev != pix {
+		if prev != nil && !img.holds(prev) {
+			s.Pool.Put(prev.Pix)
+		}
+		img.lent = pix
+	}
+	return pix
+}
+
+// holds reports whether pix is still img's raster or one of its frames.
+func (img *Image) holds(pix *image.RGBA) bool {
+	if pix == img.pix {
+		return true
+	}
+	if img.anim == nil {
+		return false
+	}
+	for _, f := range img.anim.frames {
+		if f.pix == pix {
+			return true
+		}
+	}
+	return false
+}
+
+// pixels returns the displayed pixels, premultiplied. A root frame is
+// kept as transmitted until then, so a frame that is replaced before it
+// is drawn never pays for the pass.
+func (img *Image) pixels() *image.RGBA {
+	if img.straight {
+		premultiply(img.pix.Pix)
+		img.straight = false
+	}
+	return img.pix
 }
 
 func (s *Storage) tick() uint64 {
@@ -387,11 +455,11 @@ func (s *Storage) freeResources(img *Image) {
 	img.refs = nil
 	s.used -= img.used
 	img.used = 0
-	img.pix = nil
+	s.dropPixels(img)
+	img.straight = false
 	img.width = 0
 	img.height = 0
 	img.loaded = false
-	img.anim = nil
 	img.version++
 }
 
@@ -461,6 +529,7 @@ func (s *Storage) removeImage(img *Image) {
 	if s.pending != nil && s.pending.image == img.internalID {
 		s.pending = nil
 	}
+	s.dropPixels(img)
 	s.images = slices.DeleteFunc(s.images, func(x *Image) bool { return x == img })
 	if len(s.images) == 0 {
 		s.used = 0
@@ -1023,7 +1092,7 @@ func (s *Storage) resolvePosition(ref *Placement, cellRefs cellRefLookup) (row, 
 
 func (img *Image) ensureAnimation() *animation {
 	if img.anim == nil {
-		img.anim = &animation{frames: []*frame{{pix: img.pix}}}
+		img.anim = &animation{frames: []*frame{{pix: img.pixels()}}}
 	}
 	return img.anim
 }
@@ -1057,6 +1126,7 @@ func (img *Image) showCurrentFrame(now time.Time) {
 		return
 	}
 	img.pix = f.pix
+	img.straight = false
 	img.version++
 	img.anim.shownAt = now
 }
@@ -1165,9 +1235,14 @@ func (s *Storage) loadFrame(cmd Command, img *Image) (Command, bool, *Error) {
 	}
 	s.pending = nil
 
-	data, err := p.spec.decode(p.buf)
+	data, straight, err := p.spec.decode(p.buf, s.Pool)
 	if err != nil {
 		return start, false, err
+	}
+	// installFrame composes data onto a canvas of its own.
+	defer s.Pool.Put(data.Pix)
+	if straight {
+		premultiply(data.Pix)
 	}
 	if data.Rect.Dx() > img.width {
 		return start, false, errorf("EINVAL", "Frame width %d larger than image width: %d",
@@ -1495,7 +1570,7 @@ func (s *Storage) Visible(v View, runs []PlaceholderRun) []term.Image {
 			}
 			items = append(items, drawItem{
 				img: term.Image{
-					Src:          img.pix,
+					Src:          s.lend(img),
 					ID:           img.termID,
 					Version:      img.version,
 					Crop:         ref.src,
@@ -1592,7 +1667,7 @@ func (s *Storage) cellImage(run PlaceholderRun, v View) (drawItem, bool) {
 	}
 	return drawItem{
 		img: term.Image{
-			Src:     img.pix,
+			Src:     s.lend(img),
 			ID:      img.termID,
 			Version: img.version,
 			Pos:     term.Coordinates{X: run.Col - run.ImgCol, Y: run.Row - run.ImgRow},

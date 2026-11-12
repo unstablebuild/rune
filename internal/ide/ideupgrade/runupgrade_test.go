@@ -361,3 +361,35 @@ func TestRunUpgradeLinux_RenameFailureRollsBack(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "old", string(got))
 }
+
+func TestRunUpgradeLinux_ReplacesStaleBackup(t *testing.T) {
+	root := t.TempDir()
+	cache := t.TempDir()
+	tarball := filepath.Join(cache, "rune-v0.42.1.tar.gz")
+	writeReleaseTarGz(t, tarball, map[string]string{"rune.app/bin/rune": "new"})
+	opts := upgradeOpts{
+		manifest:         Manifest{Version: "v0.42.1"},
+		currentVersion:   "v0.42.0",
+		cacheDir:         cache,
+		installRoot:      root,
+		appName:          "rune.app",
+		cliBinaryRelPath: filepath.Join("bin", "rune"),
+		backupRetention:  1,
+		ops:              realLinuxOps{},
+	}
+	existing := filepath.Join(root, "rune.app", "bin", "rune")
+	require.NoError(t, os.MkdirAll(filepath.Dir(existing), 0o755))
+	require.NoError(t, os.WriteFile(existing, []byte("old"), 0o755))
+	stale := filepath.Join(root, "rune.app.bak-v0.42.0", "bin", "rune")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o755))
+	require.NoError(t, os.WriteFile(stale, []byte("stale"), 0o755))
+
+	require.NoError(t, runUpgradeLinux(context.Background(), opts, tarball))
+
+	got, err := os.ReadFile(existing)
+	require.NoError(t, err)
+	require.Equal(t, "new", string(got))
+	got, err = os.ReadFile(stale)
+	require.NoError(t, err)
+	require.Equal(t, "old", string(got))
+}
