@@ -31,7 +31,10 @@ import (
 // texture is the GPU-side copy of a picture's pixels. It is keyed by
 // term.ImageID and re-uploaded only when the placement's Version or the
 // source bounds change, so a static picture costs a single draw call
-// per frame.
+// per frame. A new Version of the same size is uploaded into the same
+// GPU image: a client streaming frames replaces its picture hundreds of
+// times a second, and allocating a texture each time costs more than
+// the upload.
 type texture struct {
 	img     *ebiten.Image
 	version uint64
@@ -153,13 +156,16 @@ func (l *imageLayer) texture(img term.Image) *ebiten.Image {
 		tex.used = true
 		return tex.img
 	}
-	if ok {
-		tex.img.Deallocate()
-	} else {
+	if !ok {
 		tex = new(texture)
 		l.textures[img.ID] = tex
+	} else if !tex.bounds.Eq(bounds) {
+		tex.img.Deallocate()
+		tex.img = nil
 	}
-	tex.img = ebiten.NewImage(bounds.Dx(), bounds.Dy())
+	if tex.img == nil {
+		tex.img = ebiten.NewImage(bounds.Dx(), bounds.Dy())
+	}
 	tex.img.WritePixels(l.pixels(img.Src, bounds))
 	tex.version = img.Version
 	tex.bounds = bounds

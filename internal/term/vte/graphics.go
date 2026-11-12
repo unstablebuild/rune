@@ -28,15 +28,21 @@ type graphicsState struct {
 	// fall back.
 	cellPixelSize func() (width, height int)
 	prim, alt     *vtegraphics.Storage
-	lastCell      vtegraphics.CellSize
+	// pool is shared by both screens, so a stream that switches screens
+	// keeps its buffers.
+	pool     *vtegraphics.BufferPool
+	lastCell vtegraphics.CellSize
 	// runs is scratch for the placeholder scan of one draw.
 	runs []vtegraphics.PlaceholderRun
 }
 
 func (g *graphicsState) init(cellPixelSize func() (int, int)) {
 	g.cellPixelSize = cellPixelSize
+	g.pool = new(vtegraphics.BufferPool)
 	g.prim = vtegraphics.NewStorage()
 	g.alt = vtegraphics.NewStorage()
+	g.prim.Pool = g.pool
+	g.alt.Pool = g.pool
 }
 
 // cell reports the current cell size and whether the protocol is

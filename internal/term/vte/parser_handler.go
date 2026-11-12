@@ -2234,7 +2234,7 @@ func (t *parserHandler) readGraphicsMedium(
 	}
 	defer func() { _ = f.Close() }()
 
-	data, err := readGraphicsFile(f, offset, size)
+	data, err := readGraphicsFile(f, offset, size, t.graphics.pool)
 	if err != nil {
 		return nil, err
 	}
