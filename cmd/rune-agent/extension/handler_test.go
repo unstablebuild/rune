@@ -2266,12 +2266,17 @@ func TestE2ESkillRuns(t *testing.T) {
 			if !tt.unechoed {
 				assert.Contains(t, screen, tt.shown)
 			}
-			rows := runRows(screen)
-			if assert.Len(t, rows, len(tt.rows), "screen:\n%s", screen) {
-				for i, want := range tt.rows {
-					assert.True(t, strings.HasPrefix(rows[i], want), "row %d is %q, want %q", i, rows[i], want)
+			// A run started by a slash command saves its reply before its row
+			// is marked done.
+			require.EventuallyWithT(t, func(t *assert.CollectT) {
+				screen = c.screen()
+				rows := runRows(screen)
+				if assert.Len(t, rows, len(tt.rows), "screen:\n%s", screen) {
+					for i, want := range tt.rows {
+						assert.True(t, strings.HasPrefix(rows[i], want), "row %d is %q, want %q", i, rows[i], want)
+					}
 				}
-			}
+			}, 5*time.Second, 10*time.Millisecond)
 			assert.Greater(t, strings.LastIndex(screen, tt.reply), strings.Index(screen, tt.rows[0]),
 				"the reply follows the run:\n%s", screen)
 			if tt.research != "" {
