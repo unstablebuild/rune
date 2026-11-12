@@ -1121,6 +1121,24 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 			},
 			wrapped: []int{0},
 		},
+		{
+			// A bare path and a URL on the same row: the bare path is
+			// found after the scheme pass, so the URL must still join
+			// across the wrap, and both spans must come out in x order.
+			description: "a bare path beside a wrapped url",
+			rows: []string{
+				"a/b.go:1 https://rune.build?aaaa",
+				"bbbb=cc",
+			},
+			wrapped: []int{0},
+			expected: []linkSpan{
+				{y: 0, x0: 0, x1: 8, kind: linkPath, link: Link{
+					Path: "a/b.go", Line: 1, Col: 1,
+				}},
+				{y: 0, x0: 9, x1: 32, kind: linkScheme, text: "https://rune.build?aaaabbbb=cc"},
+				{y: 1, x0: 0, x1: 7, kind: linkScheme, text: "https://rune.build?aaaabbbb=cc"},
+			},
+		},
 	}
 
 	for _, tc := range suite {
