@@ -555,28 +555,6 @@ func parsePathRef(text string) (path string, line, col, start, end int, ok bool)
 	return path, line, col, start, pos + 1 + n, true
 }
 
-// pathStart returns the offset of the first cell that starts a
-// ":digit" pair, or -1. A colon is the only cell that can start a
-// path reference, and the digit behind it is checked once the colon
-// is found. The window keeps the common case cheap.
-func pathStart(row []term.Cell) int {
-	i := 0
-	for ; i+8 <= len(row); i += 8 {
-		win := row[i : i+8 : i+8]
-		if win[0].Ch == ':' || win[1].Ch == ':' || win[2].Ch == ':' ||
-			win[3].Ch == ':' || win[4].Ch == ':' || win[5].Ch == ':' ||
-			win[6].Ch == ':' || win[7].Ch == ':' {
-			break
-		}
-	}
-	for ; i+1 < len(row); i++ {
-		if row[i].Ch == ':' && isDigit(row[i+1].Ch) {
-			return i
-		}
-	}
-	return -1
-}
-
 // linkStart returns the offset of the first cell that could begin a
 // link, or -1. A cell could begin one when it is the lead of a scheme
 // or the colon of a path reference. Prose is the overwhelming majority
@@ -737,24 +715,49 @@ func schemeLink(text string) (Link, bool) {
 }
 
 // splitPosition splits a trailing position off a file path, as in
-// /x/y.go:76:7.
+// /x/y.go:76:7. The longest position the path ends in wins, so that
+// /x/y.go:76:7 reads as line 76 and column 7. A path that ends in a
+// number the caller could not have meant is left whole rather than
+// guessed at.
 func splitPosition(path string) (string, int, int, bool) {
 	i := strings.LastIndex(path, ":")
 	if i < 0 {
 		return path, 0, 0, false
 	}
 	head, tail := path[:i], path[i+1:]
-	// The position may name a line and a column, in which case the line
+	// A position may name a line and a column, in which case the line
 	// sits in front of the last colon.
 	if j := strings.LastIndex(head, ":"); j >= 0 {
-		if line, col, _, ok := linecol.Parse(head[j+1:] + ":" + tail); ok {
+		synth := head[j+1:] + ":" + tail
+		if line, col, n, ok := linecol.Parse(synth); ok && n == len(synth) &&
+			!endsWithNumber(head[:j]) {
 			return head[:j], line, col, true
 		}
 	}
-	if line, col, _, ok := linecol.Parse(tail); ok {
+	if line, col, n, ok := linecol.Parse(tail); ok && i+1+n == len(path) &&
+		!endsWithNumber(head) {
 		return head, line, col, true
 	}
 	return path, 0, 0, false
+}
+
+// endsWithNumber reports whether s ends in a colon and a number, or in
+// a bare colon. A position in front of one of those would be
+// ambiguous, so the path is left whole rather than guessed at.
+func endsWithNumber(s string) bool {
+	if strings.HasSuffix(s, ":") {
+		return true
+	}
+	i := strings.LastIndex(s, ":")
+	if i < 0 {
+		return false
+	}
+	for _, r := range s[i+1:] {
+		if !isDigit(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // linkScanner gives every URL rendered as plain text a link affordance:

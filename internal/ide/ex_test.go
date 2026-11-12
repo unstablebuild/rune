@@ -7744,6 +7744,53 @@ func TestOnLinkClickFile(t *testing.T) {
 	assert.True(t, e.onLinkClick(parse(missing)))
 }
 
+// TestOpenFileAtPositions pins the cursor contract of openFileAt, which
+// the link observer and the markdown link handler both call. A line of
+// zero must leave an existing cursor alone rather than jump to 1:1.
+func TestOpenFileAtPositions(t *testing.T) {
+	clip := clipboard.NewInMemory()
+	e, fileScheme, tempDir := newExForTestingFileWorkspace(t, clip)
+	defer func() { require.NoError(t, e.Close()) }()
+	defer func() { require.NoError(t, fileScheme.Close()) }()
+
+	const relPath = "cursor.go"
+	var content strings.Builder
+	for i := range 50 {
+		fmt.Fprintf(&content, "line %d\n", i+1)
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, relPath),
+		[]byte(content.String()), 0o644))
+
+	uri, err := e.workspace.URI(relPath)
+	require.NoError(t, err)
+	e.Resize(80, 24)
+
+	editor := func() text.Handler {
+		tab, ok := e.comp.FocusTab()
+		require.True(t, ok, "a tab must be focused")
+		h, ok := tab.Handler().(text.Handler)
+		require.True(t, ok, "the focused tab must hold an editor")
+		return h
+	}
+
+	// Open the file and put the cursor somewhere other than the start.
+	require.NoError(t, e.openFileAt(uri, 4, 3))
+	assert.Equal(t, term.Coordinates{Y: 3, X: 2}, editor().CursorAtScroll())
+
+	// A line of zero leaves the cursor where it is.
+	require.NoError(t, e.openFileAt(uri, 0, 0))
+	assert.Equal(t, term.Coordinates{Y: 3, X: 2}, editor().CursorAtScroll(),
+		"a link without a position must not move the cursor")
+
+	// A line with a column lands on both.
+	require.NoError(t, e.openFileAt(uri, 2, 5))
+	assert.Equal(t, term.Coordinates{Y: 1, X: 4}, editor().CursorAtScroll())
+
+	// A line with a column of zero starts at the first column.
+	require.NoError(t, e.openFileAt(uri, 2, 0))
+	assert.Equal(t, term.Coordinates{Y: 1, X: 0}, editor().CursorAtScroll())
+}
+
 func TestBrowserShow(t *testing.T) {
 	cases := []struct {
 		name     string

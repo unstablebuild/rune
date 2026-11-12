@@ -5286,7 +5286,11 @@ func (h *workspaceManagerHandler) openPathAt(path string, line, col int, focus b
 	if _, err := ex.workspace.Stat(path); err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
-	return h.openURIAt(uri, line, col, focus)
+	if !focus {
+		_, err := ex.comp.Open(uri)
+		return err
+	}
+	return ex.openFileAt(uri, line, col)
 }
 
 func (h *workspaceManagerHandler) openFile(file string, focus bool) error {
