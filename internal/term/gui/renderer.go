@@ -68,6 +68,7 @@ type renderer struct {
 	fgOpacity        float64
 	bgColor          color.RGBA
 	fgColor          color.RGBA
+	defaultAttr      term.Attributes
 	frame            *ebiten.Image
 	enableLigatures  bool
 	cursorBackground color.RGBA
@@ -178,6 +179,7 @@ func newRenderer(
 		bgColor:          bgColor,
 		frame:            ebiten.NewImage(imageWidth, imageHeight),
 		fgColor:          tcellToColor(defaultAttr.Fg, fgWhite, fgOpacity),
+		defaultAttr:      defaultAttr,
 		font:             newFontFace(fontManager),
 		emojiFace:        resolveColorEmojiFace(fontManager),
 		bgOpacity:        bgOpacity,
@@ -769,15 +771,18 @@ func (r *renderer) renderCursor(
 
 func (r *renderer) cursorColors(cell term.Cell) (fg, bg color.RGBA) {
 	fg, bg = r.cursorForeground, r.cursorBackground
-	cellBG := tcellToColor(cell.Bg, r.bgColor, r.bgOpacity)
+	defaultBG := tcellToColor(r.defaultAttr.Bg, color.RGBA{A: 255}, 1)
+	cellBG := tcellToColor(cell.Bg, defaultBG, 1)
 	if cell.Attrs&term.AttrReverse != 0 {
-		cellBG = tcellToColor(cell.Fg, r.fgColor, r.fgOpacity)
+		defaultFG := tcellToColor(r.defaultAttr.Fg, color.RGBA{R: 255, G: 255, B: 255, A: 255}, 1)
+		cellBG = tcellToColor(cell.Fg, defaultFG, 1)
 	}
-	if bg != cellBG {
+	if bg.R != cellBG.R || bg.G != cellBG.G || bg.B != cellBG.B {
 		return fg, bg
 	}
 
-	// Swapping also keeps the glyph readable inside a block cursor.
+	// The cursor fill must stay opaque even when its text uses fgOpacity.
+	fg.A = 255
 	return bg, fg
 }
 

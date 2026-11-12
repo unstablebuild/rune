@@ -24,6 +24,7 @@ import (
 	ebiten "github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/benchdraw"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/term/gui/drawtext"
 	"unstable.build/rune/internal/term/gui/font"
@@ -47,29 +48,40 @@ func TestRendererCursorColorsOnMatchingBackground(t *testing.T) {
 	black := color.RGBA{A: 255}
 	redCell := term.NewColor(202, 124, 94)
 	creamCell := term.NewColor(255, 255, 234)
-	r := renderer{
-		cursorForeground: black,
-		cursorBackground: red,
-		bgColor:          color.RGBA{R: 255, G: 255, B: 234, A: 255},
-		fgOpacity:        1, bgOpacity: 1,
-	}
+	cursorAttr := term.Attributes{Bg: redCell}
+	defaultAttr := term.Attributes{Fg: term.NewColor(0, 0, 0), Bg: creamCell}
+	manager, err := font.NewManager(1, 1)
+	require.NoError(t, err)
 
-	for _, tt := range []struct {
-		name           string
-		cell           term.Cell
-		wantFG, wantBG color.RGBA
-	}{
-		{"Pike error background", term.Cell{Bg: redCell}, red, black},
-		{"ordinary background", term.Cell{}, black, red},
-		{"reversed matching background",
-			term.Cell{Fg: redCell, Attrs: term.AttrReverse}, red, black},
-		{"reversed different background",
-			term.Cell{Fg: creamCell, Bg: redCell, Attrs: term.AttrReverse}, black, red},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			fg, bg := r.cursorColors(tt.cell)
-			assert.Equal(t, tt.wantFG, fg, "text inside the block cursor")
-			assert.Equal(t, tt.wantBG, bg, "cursor fill")
+	for _, opacity := range []float64{1, 0.9, 0} {
+		t.Run(strconv.FormatFloat(opacity, 'f', 1, 64), func(t *testing.T) {
+			textBlack := color.RGBA{A: uint8(255 * opacity)}
+			for _, tt := range []struct {
+				name           string
+				cell           term.Cell
+				defaults       term.Attributes
+				wantFG, wantBG color.RGBA
+			}{
+				{"Pike error background", term.Cell{Bg: redCell}, defaultAttr, red, black},
+				{"ordinary background", term.Cell{}, defaultAttr, textBlack, red},
+				{"reversed matching background",
+					term.Cell{Fg: redCell, Attrs: term.AttrReverse}, defaultAttr, red, black},
+				{"reversed different background",
+					term.Cell{Fg: creamCell, Bg: redCell, Attrs: term.AttrReverse},
+					defaultAttr, textBlack, red},
+				{"matching default background", term.Cell{}, term.Attributes{Bg: redCell}, red, black},
+				{"reversed default foreground", term.Cell{Attrs: term.AttrReverse},
+					term.Attributes{Fg: redCell}, red, black},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					r := newRenderer(20, 40, 1, manager, opacity, opacity, false,
+						cursorAttr, tt.defaults)
+					t.Cleanup(r.deallocate)
+					fg, bg := r.cursorColors(tt.cell)
+					assert.Equal(t, tt.wantFG, fg, "text inside the block cursor")
+					assert.Equal(t, tt.wantBG, bg, "cursor fill")
+				})
+			}
 		})
 	}
 }
