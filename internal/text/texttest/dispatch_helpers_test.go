@@ -36,7 +36,7 @@ import (
 func dispatchWithAliases(
 	ctx context.Context, c *text.Component, cmd textapi.Command,
 ) (bool, error) {
-	exp := idecmd.NewExpander(c.CommandAliases(), c.DispatchEnv())
+	exp := idecmd.NewExpander(c.CommandAliases(), c.DispatchEnv(), nil)
 	ctx = idecmd.WithChain(ctx, cmd.Name, idecmd.NewChain())
 	it, err := exp.Expand(ctx, cmd)
 	if err != nil {

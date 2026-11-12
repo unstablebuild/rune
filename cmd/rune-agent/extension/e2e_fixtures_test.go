@@ -64,8 +64,14 @@ type recordingWindowManager struct {
 
 	statusMu  sync.Mutex
 	statusURI workspaceapi.URI
-	statuses  []browserapi.TabStatus
+	reports   []tabReport
 	statusErr error
+}
+
+// tabReport is a status report and the URI it was made at.
+type tabReport struct {
+	uri    workspaceapi.URI
+	status browserapi.TabStatus
 }
 
 func (m *recordingWindowManager) Focus() (browserapi.Window, error) { return nil, nil }
@@ -99,20 +105,119 @@ func (m *recordingWindowManager) SetTabStatus(uri workspaceapi.URI, status brows
 	m.statusMu.Lock()
 	defer m.statusMu.Unlock()
 	m.statusURI = uri
-	m.statuses = append(m.statuses, status)
+	m.reports = append(m.reports, tabReport{uri: uri, status: status})
 	return m.statusErr
 }
 
 func (m *recordingWindowManager) tabStatuses() []browserapi.TabStatus {
 	m.statusMu.Lock()
 	defer m.statusMu.Unlock()
-	return slices.Clone(m.statuses)
+	statuses := make([]browserapi.TabStatus, len(m.reports))
+	for i, r := range m.reports {
+		statuses[i] = r.status
+	}
+	return statuses
+}
+
+// tabReports returns the reports made at uri.
+func (m *recordingWindowManager) tabReports(uri workspaceapi.URI) []browserapi.TabStatus {
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+	var statuses []browserapi.TabStatus
+	for _, r := range m.reports {
+		if sameURI(r.uri, uri) {
+			statuses = append(statuses, r.status)
+		}
+	}
+	return statuses
 }
 
 func (m *recordingWindowManager) reset() {
 	m.statusMu.Lock()
 	defer m.statusMu.Unlock()
-	m.statuses = nil
+	m.reports = nil
+}
+
+// channelSender is a chatSender that takes every event, on itself.
+type channelSender chan dialoguetui.MessageEvent
+
+func (c channelSender) send(ev dialoguetui.MessageEvent) bool {
+	c <- ev
+	return true
+}
+
+// recordingOpener is a browserapi.ResourceOpener that records the
+// resources it opens.
+type recordingOpener struct {
+	mu     sync.Mutex
+	opened []workspaceapi.URI
+}
+
+func (o *recordingOpener) Open(uri workspaceapi.URI) (browserapi.Handler, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.opened = append(o.opened, uri)
+	return nil, nil
+}
+
+func (o *recordingOpener) Show(workspaceapi.URI) error { return nil }
+
+func (o *recordingOpener) openedURIs() []workspaceapi.URI {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Clone(o.opened)
+}
+
+// newChatTestHandler returns a handler whose chats svc answers and
+// store keeps, and the window manager it opens their tabs with.
+func newChatTestHandler(
+	t *testing.T, svc llmapi.Service, store dialoguemanager.Store,
+) (*aiEditorHandler, *recordingWindowManager) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	wm := &recordingWindowManager{}
+	fs := nopFileSystem{}
+	return &aiEditorHandler{
+		ctx:            ctx,
+		llmSvc:         svc,
+		defaultModel:   "test-model",
+		dialogueStore:  store,
+		wm:             wm,
+		n:              stubNotifications{},
+		o:              &recordingOpener{},
+		p:              term.NopInterrupter(),
+		config:         configedit.NopConfig(),
+		skillRegistry:  skills.NewRegistry(fs, dirURI(""), nil, nil),
+		toolRegistry:   agent.NewRegistry(),
+		agentsConfig:   agent.NewConfig([]agent.Definition{{ID: "default", AllowAny: true}}),
+		cwd:            dirURI(""),
+		fs:             fs,
+		memoryDataPath: t.TempDir(),
+	}, wm
+}
+
+// openBareChat opens a view of a session of the chat id that runs no
+// agent, for tests of what its views show. It must not be given
+// commands, which no adapter handles.
+func openBareChat(t *testing.T, h *aiEditorHandler, id string) (*chatSession, *chat) {
+	t.Helper()
+	if h.ctx == nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		h.ctx = ctx
+	}
+	if h.fs == nil {
+		h.fs = nopFileSystem{}
+	}
+	uri, err := getModelUri(id, "test-model")
+	require.NoError(t, err)
+	s := newChatSession(h, id, uri)
+	h.openChats.Store(id, s)
+	c, err := s.attach(workspaceapi.URI{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, c.content.Close()) })
+	return s, c
 }
 
 // stubNotifications is a no-op browserapi.Notifications. wrapDialogueHandler

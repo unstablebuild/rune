@@ -117,6 +117,30 @@ func TestParseParagraphs(t *testing.T) {
 			expected: 1,
 			text:     "Hello code world",
 		},
+		{
+			name:     "backslash escapes render the punctuation they escape",
+			input:    `https\:\/\/example\.com\/a\_b?x=1\&y=\*2\*`,
+			expected: 1,
+			text:     "https://example.com/a_b?x=1&y=*2*",
+		},
+		{
+			name:     "backslash escape inside emphasis",
+			input:    `**example\.com**`,
+			expected: 1,
+			text:     "example.com",
+		},
+		{
+			name:     "backslash before a non-punctuation character stays",
+			input:    `C:\Users\me`,
+			expected: 1,
+			text:     `C:\Users\me`,
+		},
+		{
+			name:     "code span keeps its backslashes",
+			input:    "`a\\.b`",
+			expected: 1,
+			text:     `a\.b`,
+		},
 	}
 
 	for _, tt := range tests {

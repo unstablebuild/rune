@@ -19,6 +19,8 @@ package extension
 import (
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"unicode"
@@ -55,24 +57,28 @@ const (
 	statusMsgMaxBytes   = 2048
 )
 
-// tabStatusReporter reports what a chat is doing as the status of its
-// tab: one root record for the turn and one record per sub-agent
-// running in it. A chat without a tab falls back to notifications for
-// what the user must be told. Methods may be called from any
-// goroutine, but never while holding the chat's UI mutex: the host
-// serves status reports under the lock it also draws the chat with.
+// tabStatusReporter reports what a chat is doing as the status of the
+// tabs showing it: one root record for the turn and one record per
+// sub-agent running in it. Shown in no tab, the chat reports at its own
+// URI, which the host keeps for the status inbox. A chat without a URI
+// falls back to notifications for what the user must be told. Methods
+// may be called from any goroutine, but never while holding the chat's
+// UI mutex: the host serves status reports under the lock it also draws
+// the chat with.
 type tabStatusReporter struct {
 	wm   browserapi.WindowManager
 	uri  workspaceapi.URI
 	noti browserapi.Notifications
 
 	mu       sync.Mutex
+	tabs     []workspaceapi.URI
 	title    string
 	progress int
 	prompts  []promptStatus
 	promptID uint64
 	children map[string]string
 	last     map[string]browserapi.TabStatus
+	closed   bool
 }
 
 type promptStatus struct {
@@ -96,9 +102,67 @@ func newTabStatusReporter(
 	}
 }
 
-// hasTab reports whether the chat has a tab to report on.
+// hasTab reports whether the chat has a URI to report at.
 func (r *tabStatusReporter) hasTab() bool {
 	return r.uri != (workspaceapi.URI{})
+}
+
+// attach reports at the tab at uri from now on, and shows it what the
+// chat reported so far. The chat's own URI stops listing it in the
+// inbox once it is shown in a tab elsewhere.
+func (r *tabStatusReporter) attach(uri workspaceapi.URI) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || slices.ContainsFunc(r.tabs, func(t workspaceapi.URI) bool { return sameURI(t, uri) }) {
+		return
+	}
+	if len(r.tabs) == 0 && !sameURI(uri, r.uri) && len(r.last) > 0 {
+		r.sendLocked(r.uri, browserapi.TabStatus{State: browserapi.TabClear, Progress: -1})
+	}
+	r.tabs = append(r.tabs, uri)
+	r.replayLocked(uri)
+}
+
+// detach stops reporting at the tab at uri, which closed. Shown in no
+// tab, the chat goes on reporting at its own URI, for the inbox.
+func (r *tabStatusReporter) detach(uri workspaceapi.URI) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	i := slices.IndexFunc(r.tabs, func(t workspaceapi.URI) bool { return sameURI(t, uri) })
+	if r.closed || i < 0 {
+		return
+	}
+	r.tabs = slices.Delete(r.tabs, i, i+1)
+	if len(r.tabs) == 0 {
+		r.replayLocked(r.uri)
+	}
+}
+
+// close stops reporting: the chat ended. What it was still doing is
+// withdrawn, since nothing will finish it, while the outcome of a turn
+// stays until the user sees it.
+func (r *tabStatusReporter) close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return
+	}
+	for _, status := range r.last {
+		if status.State == browserapi.TabWorking || status.State == browserapi.TabBlocked {
+			r.prompts = nil
+			clear(r.children)
+			r.reportLocked(browserapi.TabStatus{State: browserapi.TabClear, Progress: -1})
+			break
+		}
+	}
+	r.closed = true
+}
+
+// replayLocked reports every record the chat holds at uri, root first.
+func (r *tabStatusReporter) replayLocked(uri workspaceapi.URI) {
+	for _, id := range slices.Sorted(maps.Keys(r.last)) {
+		r.sendLocked(uri, r.last[id])
+	}
 }
 
 // beginTurn reports the chat working on a new turn, dropping whatever
@@ -289,7 +353,7 @@ func (r *tabStatusReporter) publishRootLocked(msg string) {
 // report for its record. Failures are logged and otherwise ignored: a
 // lost indicator must never cost the turn.
 func (r *tabStatusReporter) reportLocked(status browserapi.TabStatus) {
-	if !r.hasTab() {
+	if !r.hasTab() || r.closed {
 		return
 	}
 	if status.State == browserapi.TabClear {
@@ -304,9 +368,19 @@ func (r *tabStatusReporter) reportLocked(status browserapi.TabStatus) {
 		}
 		r.last[status.ID] = status
 	}
-	if err := r.wm.SetTabStatus(r.uri, status); err != nil {
+	if len(r.tabs) == 0 {
+		r.sendLocked(r.uri, status)
+		return
+	}
+	for _, uri := range r.tabs {
+		r.sendLocked(uri, status)
+	}
+}
+
+func (r *tabStatusReporter) sendLocked(uri workspaceapi.URI, status browserapi.TabStatus) {
+	if err := r.wm.SetTabStatus(uri, status); err != nil {
 		slog.Debug("set chat tab status",
-			"uri", r.uri.String(), "id", status.ID, "state", status.State, "error", err)
+			"uri", uri.String(), "id", status.ID, "state", status.State, "error", err)
 	}
 }
 

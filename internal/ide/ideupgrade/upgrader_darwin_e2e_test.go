@@ -141,13 +141,13 @@ func TestDarwinE2E_HappyPath(t *testing.T) {
 	}, ops)
 	require.NoError(t, err)
 
-	// Drive the upgrade synchronously through the same path Manager
-	// would use after the prompt selects "Upgrade Now".
+	// Drive the upgrade synchronously through the same path as the
+	// `upgrade` console command.
 	manifest, _, err := mgr.fetchManifest(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "v9.9.9", manifest.Version)
 
-	require.NoError(t, mgr.upgradeWithNotifications(context.Background(), manifest))
+	require.NoError(t, mgr.Upgrade(context.Background(), manifest, nil))
 
 	// Verify the new binary is installed.
 	got, err := os.ReadFile(filepath.Join(installRoot, "Rune.app", "Contents", "MacOS", "rune"))

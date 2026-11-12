@@ -19,6 +19,7 @@ package symboldb
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"time"
@@ -29,12 +30,178 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+const (
+	// batchOps bounds the operations of one ApplyBatch call.
+	batchOps = 256
+	// windowPairs bounds a window by the (file, name) pairs it holds,
+	// which is about what its staged writes weigh in memory.
+	windowPairs = 100_000
+)
+
+// stagedFile is a file update with the symbols it contributes, by name.
+type stagedFile struct {
+	u       fileUpdate
+	symbols map[string][]symbolLoc
+}
+
+// symbolWindow gathers the updates of several files so that each name
+// they touch is read and written once, however many of them contribute
+// to it: a scan sees most names from dozens of files, and a checkout
+// changes hundreds of files at once.
+type symbolWindow struct {
+	files []stagedFile
+	// contrib is what each file now contributes to a name: nil when it
+	// no longer does.
+	contrib map[string]map[string][]symbolLoc
+	// forced names have a contributor stamped by another schema version,
+	// so their markers are reconciled rather than trusted.
+	forced map[string]bool
+	pairs  int
+}
+
+func (w *symbolWindow) add(u fileUpdate) {
+	if w.contrib == nil {
+		w.contrib = map[string]map[string][]symbolLoc{}
+		w.forced = map[string]bool{}
+	}
+	symbols := u.symbols()
+	set := func(name string, locs []symbolLoc) {
+		files := w.contrib[name]
+		if files == nil {
+			files = map[string][]symbolLoc{}
+			w.contrib[name] = files
+		}
+		files[u.us] = locs
+		if u.force {
+			w.forced[name] = true
+		}
+		w.pairs++
+	}
+	for _, name := range u.oldNames {
+		set(name, nil)
+	}
+	for name, locs := range symbols {
+		set(name, locs)
+	}
+	w.files = append(w.files, stagedFile{u: u, symbols: symbols})
+}
+
+// full reports whether the window should be flushed before taking more.
+func (w *symbolWindow) full() bool { return w.pairs >= windowPairs }
+
+// flushWindow stores what the window holds and empties it: the symbol
+// docs, one write per name however many files changed it, then the name
+// markers, then the file records, which vouch for the rest and so go
+// last. sctx is for the derived records and fctx for the file records,
+// whose durability differs between the scan and a re-index. Without a
+// batching store the files are applied one at a time, as staged.
+func (p *Parser) flushWindow(sctx, fctx context.Context, w *symbolWindow) {
+	defer func() { *w = symbolWindow{} }()
+	if sctx.Err() != nil {
+		return
+	}
+	if p.batch == nil {
+		for _, f := range w.files {
+			p.applyFile(fctx, f.u)
+		}
+		return
+	}
+	// A map iteration would make the batch — and so the bolt page
+	// writes and any conflict ordering — differ run to run.
+	names := slices.Sorted(maps.Keys(w.contrib))
+	writes := make([]symbolWrite, 0, len(names))
+	for _, name := range names {
+		if sw, ok := p.stageSymbolWrite(sctx, name, w.contrib[name]); ok {
+			writes = append(writes, sw)
+		}
+	}
+	if !p.applySymbolWrites(sctx, fmt.Sprintf("%d files", len(w.files)), writes) {
+		// The store turned out not to support batching after all;
+		// replay the files through the per-operation path.
+		for _, f := range w.files {
+			p.applyFile(fctx, f.u)
+		}
+		return
+	}
+	var nameOps []storageapi.BatchOp
+	for _, sw := range writes {
+		if !sw.wrote || w.forced[sw.name] {
+			p.syncName(sctx, sw.name, sw.merged)
+			continue
+		}
+		switch isListed := listed(sw.merged); {
+		case isListed && !sw.wasListed:
+			nameOps = append(nameOps, storageapi.BatchOp{
+				Type: storageapi.BatchSet, ID: sw.name, Doc: nameDoc{Name: sw.name},
+			})
+		case sw.wasListed && !isListed:
+			nameOps = append(nameOps, storageapi.BatchOp{Type: storageapi.BatchDelete, ID: sw.name})
+		}
+	}
+	p.applyOps(sctx, p.names, "name", nameOps)
+	fileOps := make([]storageapi.BatchOp, 0, len(w.files))
+	for _, f := range w.files {
+		if f.u.removed {
+			fileOps = append(fileOps, storageapi.BatchOp{Type: storageapi.BatchDelete, ID: f.u.us})
+			continue
+		}
+		fileOps = append(fileOps, storageapi.BatchOp{
+			Type: storageapi.BatchSet, ID: f.u.us, Doc: f.u.record(f.symbols),
+		})
+	}
+	p.applyOps(fctx, p.files, "file record", fileOps)
+}
+
+// applyOps writes ops to part, batchOps at a time when it takes batches
+// and one at a time otherwise. A failure is logged and the rest goes on:
+// a record that did not land only costs a re-index of its file.
+func (p *Parser) applyOps(
+	ctx context.Context, part storageapi.Service, what string, ops []storageapi.BatchOp,
+) {
+	if writer, ok := part.(storageapi.BatchWriter); ok {
+		for len(ops) > 0 {
+			n := min(len(ops), batchOps)
+			results, err := writer.ApplyBatch(ctx, ops[:n])
+			if status.Code(err) == codes.Unimplemented {
+				break
+			}
+			if err != nil {
+				if ctx.Err() == nil {
+					log.Errorf("symboldb: persist %d %ss: %v", n, what, err)
+				}
+			} else {
+				for i, r := range results {
+					if r.Err != nil && !(ops[i].Type == storageapi.BatchDelete &&
+						errors.Is(r.Err, storageapi.ErrNotFound)) {
+						log.Errorf("symboldb: persist %s %q: %v", what, ops[i].ID, r.Err)
+					}
+				}
+			}
+			ops = ops[n:]
+		}
+	}
+	for _, op := range ops {
+		var err error
+		if op.Type == storageapi.BatchDelete {
+			if err = part.Delete(ctx, op.ID); errors.Is(err, storageapi.ErrNotFound) {
+				err = nil
+			}
+		} else {
+			err = part.Set(ctx, op.ID, op.Doc)
+		}
+		if err != nil && ctx.Err() == nil {
+			log.Errorf("symboldb: persist %s %q: %v", what, op.ID, err)
+		}
+	}
+}
+
 // symbolWrite is the write one name needs so that a file's stored
 // contribution matches what the file now defines, plus the before-state
 // the name index needs once the write lands.
 type symbolWrite struct {
-	name      string
-	locs      []symbolLoc
+	name string
+	// replace is what each contributing file now defines under name.
+	replace   map[string][]symbolLoc
 	merged    []symbolLoc
 	wasListed bool
 	// wrote is true while op still has to be applied, and stays true
@@ -43,56 +210,20 @@ type symbolWrite struct {
 	op    storageapi.BatchOp
 }
 
-// upsertSymbolBatch writes every symbol record of a file in one round
-// trip: it reads the affected documents, stages the writes they need,
-// and applies them in a single batch, re-staging only the ones the
-// store rejected because another writer moved first.
-func (p *Parser) upsertSymbolBatch(
-	ctx context.Context, us string, oldNames []string,
-	symbols map[string][]symbolLoc, force bool,
-) {
-	if ctx.Err() != nil {
-		return
-	}
-	writes := make([]symbolWrite, 0, len(oldNames)+len(symbols))
-	for _, name := range oldNames {
-		if _, ok := symbols[name]; ok {
-			continue
-		}
-		if w, ok := p.stageSymbolWrite(ctx, name, us, nil); ok {
-			writes = append(writes, w)
-		}
-	}
-	// A map iteration would make the batch — and so the bolt page
-	// writes and any conflict ordering — differ run to run.
-	for _, name := range slices.Sorted(maps.Keys(symbols)) {
-		if w, ok := p.stageSymbolWrite(ctx, name, us, symbols[name]); ok {
-			writes = append(writes, w)
-		}
-	}
-	if !p.applySymbolWrites(ctx, us, writes) {
-		// The store turned out not to support batching after all;
-		// replay this file through the per-operation path.
-		p.upsertSymbols(ctx, us, oldNames, symbols, force)
-		return
-	}
-	for _, w := range writes {
-		p.syncNameIndex(ctx, w.name, w.merged, w.wrote && !force, w.wasListed)
-	}
-}
-
 // stageSymbolWrite reads name's stored document and computes the write
-// it needs, if any. It reports false when the name needs no attention
+// it needs so that each file in replace contributes what it maps to (and
+// nothing, when nil). It reports false when the name needs no attention
 // at all, either because nothing is stored and nothing would be, or
 // because the read failed.
 func (p *Parser) stageSymbolWrite(
-	ctx context.Context, name, us string, locs []symbolLoc,
+	ctx context.Context, name string, replace map[string][]symbolLoc,
 ) (symbolWrite, bool) {
-	w := symbolWrite{name: name, locs: locs}
+	w := symbolWrite{name: name, replace: replace}
 	var doc symbolDoc
 	err := p.symbols.Get(ctx, name, &doc)
 	switch {
 	case errors.Is(err, storageapi.ErrNotFound):
+		locs := mergeLocs(nil, replace)
 		if len(locs) == 0 {
 			// Nothing stored and nothing to store: a tombstone for a
 			// symbol that was never stored would be noise.
@@ -110,7 +241,7 @@ func (p *Parser) stageSymbolWrite(
 		return symbolWrite{}, false
 	default:
 		w.wasListed = listed(doc.Locs)
-		w.merged = mergeLocs(doc.Locs, us, locs)
+		w.merged = mergeLocs(doc.Locs, replace)
 		if sameLocs(doc.Locs, w.merged) {
 			return w, true
 		}
@@ -137,9 +268,10 @@ func (p *Parser) stageSymbolWrite(
 
 // applySymbolWrites applies the staged writes, retrying the operations
 // a concurrent writer invalidated. It reports false when the store does
-// not implement batching, leaving the writes unapplied.
+// not implement batching, leaving the writes unapplied. what names the
+// writes' origin for the log.
 func (p *Parser) applySymbolWrites(
-	ctx context.Context, us string, writes []symbolWrite,
+	ctx context.Context, what string, writes []symbolWrite,
 ) bool {
 	pending := make([]int, 0, len(writes))
 	for i := range writes {
@@ -148,41 +280,42 @@ func (p *Parser) applySymbolWrites(
 		}
 	}
 	for attempt := uint(1); len(pending) > 0; attempt++ {
-		ops := make([]storageapi.BatchOp, len(pending))
-		for i, idx := range pending {
-			ops[i] = writes[idx].op
-		}
-		results, err := p.batch.ApplyBatch(ctx, ops)
-		if err != nil {
-			if status.Code(err) == codes.Unimplemented {
-				p.batch = nil
-				return false
-			}
-			if ctx.Err() == nil {
-				log.Errorf("symboldb: persist %d symbols of %q: %v",
-					len(ops), us, err)
-			}
-			for _, idx := range pending {
-				writes[idx].wrote = false
-			}
-			return true
-		}
-
 		var stale []int
-		for i, result := range results {
-			idx := pending[i]
-			switch {
-			case result.Err == nil:
-			case errors.Is(result.Err, storageapi.ErrPreconditionFailed),
-				errors.Is(result.Err, storageapi.ErrAlreadyExists),
-				errors.Is(result.Err, storageapi.ErrNotFound):
-				stale = append(stale, idx)
-			default:
-				if ctx.Err() == nil {
-					log.Errorf("symboldb: persist symbol %q: %v",
-						writes[idx].name, result.Err)
+		for chunk := range slices.Chunk(pending, batchOps) {
+			ops := make([]storageapi.BatchOp, len(chunk))
+			for i, idx := range chunk {
+				ops[i] = writes[idx].op
+			}
+			results, err := p.batch.ApplyBatch(ctx, ops)
+			if err != nil {
+				if status.Code(err) == codes.Unimplemented {
+					p.batch = nil
+					return false
 				}
-				writes[idx].wrote = false
+				if ctx.Err() == nil {
+					log.Errorf("symboldb: persist %d symbols of %s: %v",
+						len(ops), what, err)
+				}
+				for _, idx := range chunk {
+					writes[idx].wrote = false
+				}
+				continue
+			}
+			for i, result := range results {
+				idx := chunk[i]
+				switch {
+				case result.Err == nil:
+				case errors.Is(result.Err, storageapi.ErrPreconditionFailed),
+					errors.Is(result.Err, storageapi.ErrAlreadyExists),
+					errors.Is(result.Err, storageapi.ErrNotFound):
+					stale = append(stale, idx)
+				default:
+					if ctx.Err() == nil {
+						log.Errorf("symboldb: persist symbol %q: %v",
+							writes[idx].name, result.Err)
+					}
+					writes[idx].wrote = false
+				}
 			}
 		}
 		if len(stale) == 0 {
@@ -206,7 +339,7 @@ func (p *Parser) applySymbolWrites(
 		pending = pending[:0]
 		for _, idx := range stale {
 			w, ok := p.stageSymbolWrite(
-				ctx, writes[idx].name, us, writes[idx].locs)
+				ctx, writes[idx].name, writes[idx].replace)
 			if !ok {
 				writes[idx].wrote = false
 				continue

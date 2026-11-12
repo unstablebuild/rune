@@ -224,6 +224,9 @@ func runUpgradeDarwin(ctx context.Context, opts upgradeOpts, dmgPath string) err
 	hasExisting := pathExists(dstApp)
 	symlinkOwned := shouldRefreshCLISymlink(opts.cliSymlinkPath, dstApp)
 	if hasExisting {
+		if err := removeStaleBackup(opts, backup); err != nil {
+			return err
+		}
 		if err := opts.ops.RenameAtomic(dstApp, backup); err != nil {
 			return fmt.Errorf("snapshot existing app: %w", err)
 		}
@@ -307,6 +310,10 @@ func runUpgradeLinux(ctx context.Context, opts upgradeOpts, archivePath string) 
 
 	hasExisting := pathExists(dstApp)
 	if hasExisting {
+		if err := removeStaleBackup(opts, backup); err != nil {
+			_ = opts.ops.RemoveAll(stagingDir)
+			return err
+		}
 		if err := opts.ops.RenameAtomic(dstApp, backup); err != nil {
 			_ = opts.ops.RemoveAll(stagingDir)
 			return fmt.Errorf("snapshot existing app: %w", err)
@@ -352,6 +359,17 @@ func backupPath(installPath, currentVersion string) string {
 		suffix = "previous"
 	}
 	return installPath + ".bak-" + suffix
+}
+
+// removeStaleBackup deletes a backup left at backup by an earlier
+// upgrade from the same version, which would make snapshotting the
+// existing app fail. pruneBackups would delete it after this upgrade
+// anyway.
+func removeStaleBackup(opts upgradeOpts, backup string) error {
+	if err := opts.ops.RemoveAll(backup); err != nil {
+		return fmt.Errorf("remove stale backup: %w", err)
+	}
+	return nil
 }
 
 // pruneBackups deletes all but the most recent BackupRetention

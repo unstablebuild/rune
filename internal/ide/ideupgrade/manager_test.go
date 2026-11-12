@@ -18,17 +18,22 @@ package ideupgrade
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 )
 
 func newTestManager(t *testing.T, srv *httptest.Server, current string, now func() time.Time) *Manager {
@@ -324,6 +329,15 @@ func TestNewRequiresFields(t *testing.T) {
 	_, err = New(Config{Storage: storagestub.NewInMemoryService()})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "ManifestURL")
+
+	_, err = New(Config{
+		Storage:          storagestub.NewInMemoryService(),
+		ManifestURL:      "https://example.invalid",
+		ScheduleNextTick: func(fn func()) bool { fn(); return true },
+		Prompter:         &countingPrompter{},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Starter")
 }
 
 func TestNewRejectsNonHTTPSManifestURL(t *testing.T) {
@@ -478,4 +492,57 @@ func TestFetchManifestAcceptsAtMinSupported(t *testing.T) {
 	_, has, err := mgr.fetchManifest(context.Background())
 	require.NoError(t, err)
 	require.True(t, has)
+}
+
+// countingPrompter counts the prompts opened and leaves them unanswered.
+type countingPrompter struct {
+	n atomic.Int32
+}
+
+func (p *countingPrompter) Prompt(
+	browserapi.PromptConfig, handler.PromptHandler,
+) (browserapi.Window, error) {
+	p.n.Add(1)
+	return nil, nil
+}
+
+func TestManagerStopsOfferingUpgradesOnceUpgraded(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakePlatformOps{
+		archiveContent: []byte("artifact"),
+		dmgPayload:     map[string]string{"Contents/MacOS/rune": "new"},
+		archiveLayout:  map[string]string{"bin/rune": "new"},
+	}
+	sum := sha256.Sum256(fake.archiveContent)
+	manifest := Manifest{
+		Version: "v9.9.9",
+		URL:     "https://example.invalid/rune-v9.9.9",
+		SHA256:  hex.EncodeToString(sum[:]),
+	}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(manifest)
+	}))
+	t.Cleanup(srv.Close)
+	bin := seedInstall(t, t.TempDir())
+	prompter := &countingPrompter{}
+	mgr, err := newWithPlatformOps(Config{
+		CurrentVersion:   "v9.9.0",
+		ManifestURL:      srv.URL,
+		HTTPClient:       srv.Client(),
+		Storage:          storagestub.NewInMemoryService(),
+		Executable:       func() (string, error) { return bin, nil },
+		CLISymlinkPath:   filepath.Join(t.TempDir(), "rune"),
+		CacheDir:         t.TempDir(),
+		Prompter:         prompter,
+		Starter:          &countingStarter{},
+		ScheduleNextTick: func(fn func()) bool { fn(); return true },
+	}, fake)
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.Upgrade(ctx, manifest, nil))
+
+	mgr.tick(ctx)
+	require.Zero(t, prompter.n.Load())
+	_, _, err = mgr.Check(ctx)
+	require.ErrorIs(t, err, errRestartRequired)
 }

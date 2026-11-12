@@ -118,6 +118,29 @@ func WithoutSubmitEcho() HandlerOption {
 	return func(dh *dialogueHandler) { dh.noSubmitEcho = true }
 }
 
+// WithCommandEcho makes a handler without the submit echo render the
+// command lines it runs once their command answers, unless the command
+// answers with a user message, which its owner renders.
+func WithCommandEcho() HandlerOption {
+	return func(dh *dialogueHandler) { dh.commandEcho = true }
+}
+
+// SubmitQueue holds the follow-ups sent while the agent is busy for
+// handlers that do not queue them themselves, as when several handlers
+// show one chat.
+type SubmitQueue interface {
+	// TakeLast removes the follow-up queued last and reports whether
+	// there was one. Taking it off the queue shown is the owner's.
+	TakeLast() (SubmitMessage, bool)
+}
+
+// WithSubmitQueue makes the handler recall queued follow-ups from q
+// instead of from those it queued itself. Its owner then does the
+// queueing, and must not send it MessageEventBusy.
+func WithSubmitQueue(q SubmitQueue) HandlerOption {
+	return func(dh *dialogueHandler) { dh.submitQueue = q }
+}
+
 // Handler wraps a dialogue.Component and provides a simple-to-use
 // tui.Handler which sends input messages via rx and can
 // receive messages into the dialogue history via tx.
@@ -174,6 +197,8 @@ type dialogueHandler struct {
 	toolCallOpener   ToolCallOpener
 	closeFn          func()
 	noSubmitEcho     bool
+	commandEcho      bool
+	submitQueue      SubmitQueue
 	ctx              context.Context
 	inputFocused     bool // true when last mouse interaction was in the input area
 	// messagesDragging is true while a left-button selection drag that
@@ -566,7 +591,7 @@ func (s *dialogueHandler) Handle(ev term.Event) (exit, handled bool) {
 				s.appendHistory(Draft{Text: item})
 				name, args := parseCommand(item)
 				go debug.CapturePanicReport(func() {
-					s.executeCommand(name, args)
+					s.executeCommand(name, args, item)
 				})
 			}
 			return
@@ -807,49 +832,6 @@ func (s *dialogueHandler) consumeIncoming() {
 	for ev := range s.rx {
 		s.mu.Lock()
 		switch ev.Type {
-		case MessageEventReasoning:
-			s.comp.AddReasoningChunk(ev.Text)
-		case MessageEventText:
-			s.comp.AddReceiveMessageChunk(ev.Text)
-		case MessageEventBreak:
-			s.comp.AddReceiveMessageBreak()
-		case MessageEventToolCall:
-			if IsTaskTool(ev.ToolName) {
-				break
-			}
-			if ev.ParentToolCallID != "" {
-				s.comp.AddChildToolCall(ev.ParentToolCallID, ev.ToolCallID, ev.ToolName, ev.ToolArgs, ev.ToolSummary)
-			} else {
-				s.comp.AddToolCall(ev.ToolCallID, ev.ToolName, ev.ToolArgs, ev.ToolSummary)
-			}
-			if !ev.ToolStartTime.IsZero() {
-				s.comp.SetToolStartTime(ev.ToolCallID, ev.ToolStartTime)
-			}
-		case MessageEventToolResult:
-			if IsTaskTool(ev.ToolName) {
-				break
-			}
-			if ev.ToolDuration > 0 {
-				s.comp.SetToolDuration(ev.ToolCallID, ev.ToolDuration)
-			}
-			if ev.ParentToolCallID != "" {
-				s.comp.CompleteChildToolCall(ev.ParentToolCallID, ev.ToolCallID, ev.ToolName, ev.ToolArgs, ev.ToolSummary, ev.ToolOutput, ev.IsError)
-			} else {
-				s.comp.CompleteToolCall(ev.ToolCallID, ev.ToolName, ev.ToolArgs, ev.ToolSummary, ev.ToolOutput, ev.IsError)
-			}
-			for _, path := range ev.ImagePaths {
-				s.comp.AddToolCallImage(ev.ToolCallID, path, ev.ToolSummary)
-			}
-		case MessageEventChildResult:
-			s.comp.AddChildResult(ev.ParentToolCallID, ev.ToolOutput, ev.IsError)
-		case MessageEventError:
-			s.comp.AddErrorMessage(ev.Text)
-		case MessageEventWarning:
-			s.comp.AddWarningMessage(ev.Text)
-		case MessageEventToolsDropped:
-			s.comp.MarkToolsDropped(ev.DroppedToolCallIDs)
-		case MessageEventMemoryRecall:
-			s.comp.AddMemoryRecall(ev.Memories, ev.MemoryDuration)
 		case MessageEventPrompt:
 			oldCh := s.comp.AddPrompt(ev.PromptTitle, ev.PromptHeader, ev.PromptBody,
 				ev.PromptOptions, ev.PromptMultiSelect, ev.PromptResult)
@@ -858,12 +840,6 @@ func (s *dialogueHandler) consumeIncoming() {
 				oldCh <- nil
 				s.mu.Lock()
 			}
-		case MessageEventTaskProgress:
-			s.comp.UpdateTaskProgress(ev.TaskProgress)
-		case MessageEventAttachment:
-			s.comp.AddAttachment(ev.Attachment)
-		case MessageEventUserMessage:
-			s.comp.AddSendMessageAttachments(ev.Text, ev.Attachments)
 		case MessageEventPromptDismiss:
 			ch := s.comp.PreparePromptDismiss()
 			if ch != nil {
@@ -879,8 +855,10 @@ func (s *dialogueHandler) consumeIncoming() {
 		case MessageEventCommand:
 			name, args := ev.CommandName, ev.CommandArgs
 			go debug.CapturePanicReport(func() {
-				s.executeCommand(name, args)
+				s.executeCommand(name, args, "")
 			})
+		default:
+			s.comp.ApplyEvent(ev)
 		}
 		s.mu.Unlock()
 		s.publishInterrupt(ctx)
@@ -913,14 +891,22 @@ func (s *dialogueHandler) submitCommandLine() (string, bool) {
 	return text, true
 }
 
-func (s *dialogueHandler) executeCommand(name string, args []string) {
+// executeCommand runs the command name with args, typed as line, which
+// is empty for commands injected through MessageEventCommand.
+func (s *dialogueHandler) executeCommand(name string, args []string, line string) {
 	if s.commands == nil {
 		return
 	}
 	result, err := s.commands.HandleCommand(s.ctx, name, args)
 	defer s.publishInterrupt(s.ctx)
+	echo := func() {
+		if s.commandEcho && s.noSubmitEcho && line != "" {
+			s.comp.AddSendMessage(line)
+		}
+	}
 	if err != nil {
 		s.mu.Lock()
+		echo()
 		s.comp.AddErrorMessage(err.Error())
 		s.mu.Unlock()
 		return
@@ -941,6 +927,9 @@ func (s *dialogueHandler) executeCommand(name string, args []string) {
 		s.mu.Unlock()
 		return
 	}
+	s.mu.Lock()
+	echo()
+	s.mu.Unlock()
 	if result.Display != nil {
 		s.comp.AddCommand(s.ctx, result.Phase, result.Display)
 	}
@@ -982,12 +971,11 @@ func (s *dialogueHandler) appendHistory(d Draft) {
 // pops the newest queued message into the compose input, then walks back
 // through the submit history. It reports whether anything was recalled.
 func (s *dialogueHandler) recallUp() bool {
-	if s.comp.Draft().Empty() && len(s.queue) > 0 {
-		msg := s.queue[len(s.queue)-1]
-		s.queue = s.queue[:len(s.queue)-1]
-		s.comp.RemoveLastQueuedMessage()
-		s.comp.RestoreDraft(msg.Draft())
-		return true
+	if s.comp.Draft().Empty() {
+		if msg, ok := s.takeQueued(); ok {
+			s.comp.RestoreDraft(msg.Draft())
+			return true
+		}
 	}
 	if s.historyIdx <= 0 {
 		return false
@@ -998,6 +986,21 @@ func (s *dialogueHandler) recallUp() bool {
 	s.historyIdx--
 	s.comp.RestoreDraft(s.history[s.historyIdx])
 	return true
+}
+
+// takeQueued removes the follow-up queued last, from the owner's queue
+// when it has one.
+func (s *dialogueHandler) takeQueued() (SubmitMessage, bool) {
+	if s.submitQueue != nil {
+		return s.submitQueue.TakeLast()
+	}
+	if len(s.queue) == 0 {
+		return SubmitMessage{}, false
+	}
+	msg := s.queue[len(s.queue)-1]
+	s.queue = s.queue[:len(s.queue)-1]
+	s.comp.RemoveLastQueuedMessage()
+	return msg, true
 }
 
 // recallDown is the editor-edge fallback for downward navigation: it

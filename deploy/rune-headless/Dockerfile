@@ -13,7 +13,7 @@
 # The build cross-compiles on $BUILDPLATFORM with xx rather than under
 # emulation, because the Go toolchain crashes under qemu-user
 # (https://github.com/golang/go/issues/46527).
-ARG GO_VERSION=1.27.3
+ARG GO_VERSION=1.27.4
 ARG DEBIAN_VERSION=trixie
 ARG XX_VERSION=1.8.0
 

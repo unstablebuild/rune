@@ -1108,6 +1108,122 @@ func TestHandlerUserMessageEvent(t *testing.T) {
 	assert.Contains(t, w.String(), "alpha.go")
 }
 
+func TestHandlerWithCommandEcho(t *testing.T) {
+	cases := []struct {
+		name   string
+		result CommandResult
+		err    error
+		want   []string
+		skip   []string
+	}{
+		{
+			name: "displayed command echoes its line",
+			result: CommandResult{Display: iterator.FromSlice([]component.Responsive{
+				component.NewResponsiveString("shown output", component.StringResponsiveConfig{}),
+			})},
+			want: []string{"/show arg", "shown output"},
+		},
+		{
+			name: "failed command echoes its line",
+			err:  errors.New("it failed"),
+			want: []string{"/show arg", "it failed"},
+		},
+		{
+			name:   "command that sends a message leaves it to the owner",
+			result: CommandResult{UserMessage: "sent instead"},
+			skip:   []string{"/show arg"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			interrupt := make(chan struct{}, 10)
+			h, tx, rx := Handler(context.Background(), new(sync.Mutex), NewComponent(ComponentConfig{}),
+				term.FuncInterrupter(func(context.Context) error {
+					interrupt <- struct{}{}
+					return nil
+				}),
+				WithCommands(&mockCommandHandler{
+					handleFunc: func(context.Context, string, []string) (CommandResult, error) {
+						return tc.result, tc.err
+					},
+				}),
+				WithoutSubmitEcho(), WithCommandEcho())
+			defer close(tx)
+			go func() {
+				for range rx {
+				}
+			}()
+			h.Resize(40, 9)
+
+			typeText(h, "/show arg")
+			h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+			<-interrupt
+
+			var screen string
+			require.Eventually(t, func() bool {
+				w := term.NewStringWriter(40, 9)
+				h.Draw(w)
+				_ = w.Flush()
+				screen = w.String()
+				for _, want := range tc.want {
+					if !strings.Contains(screen, want) {
+						return false
+					}
+				}
+				return true
+			}, 2*time.Second, 10*time.Millisecond)
+			for _, skip := range tc.skip {
+				assert.NotContains(t, screen, skip)
+			}
+		})
+	}
+}
+
+type takeLastQueue struct {
+	msgs []SubmitMessage
+}
+
+func (q *takeLastQueue) TakeLast() (SubmitMessage, bool) {
+	if len(q.msgs) == 0 {
+		return SubmitMessage{}, false
+	}
+	msg := q.msgs[len(q.msgs)-1]
+	q.msgs = q.msgs[:len(q.msgs)-1]
+	return msg, true
+}
+
+func TestHandlerArrowUpRecallsFromSubmitQueue(t *testing.T) {
+	mu := new(sync.Mutex)
+	comp := NewComponent(ComponentConfig{})
+	q := &takeLastQueue{msgs: []SubmitMessage{{Text: "first"}, {Text: "second"}}}
+	h, tx, rx := Handler(context.Background(), mu, comp, term.NopInterrupter(), WithSubmitQueue(q))
+	defer close(tx)
+	h.Resize(30, 10)
+
+	typeText(h, "sent")
+	sent := make(chan SubmitMessage, 1)
+	go func() { sent <- <-rx }()
+	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	assert.Equal(t, "sent", (<-sent).Text, "the handler queues nothing itself")
+
+	_, handled := h.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowUp})
+	assert.True(t, handled)
+	mu.Lock()
+	assert.Equal(t, "second", comp.Input().Text(), "the newest queued follow-up comes back first")
+	mu.Unlock()
+	assert.Equal(t, []SubmitMessage{{Text: "first"}}, q.msgs)
+
+	mu.Lock()
+	comp.Input().Clear()
+	mu.Unlock()
+	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowUp})
+	h.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowUp})
+	mu.Lock()
+	assert.Equal(t, "sent", comp.Input().Text(), "an empty queue leaves recall to the history")
+	mu.Unlock()
+	assert.Empty(t, q.msgs)
+}
+
 func TestHandlerArrowUpRecallsNewestQueuedMessage(t *testing.T) {
 	mu := new(sync.Mutex)
 	comp := NewComponent(ComponentConfig{})

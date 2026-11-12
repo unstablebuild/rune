@@ -2465,7 +2465,7 @@ func TestComponentCommands(t *testing.T) {
 		// text.Component no longer enumerates aliases in Commands();
 		// alias listing is the responsibility of ide/idecmd.
 		assert.Empty(t, c.Commands())
-		mans := idecmd.NewExpander(c.CommandAliases(), nil).Aliases()
+		mans := idecmd.NewExpander(c.CommandAliases(), nil, nil).Aliases()
 		require.Len(t, mans, 1)
 		expectedMan := command.Manual{Name: "blah", AliasOf: []string{"myCmd"}}
 		assert.Equal(t, expectedMan, mans[0])

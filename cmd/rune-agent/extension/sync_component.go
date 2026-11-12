@@ -17,13 +17,11 @@
 package extension
 
 import (
-	stdimage "image"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
-	"github.com/unstablebuild/rune-go-sdk/component"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 )
 
@@ -40,9 +38,10 @@ const (
 	phaseRateLimited = "ERROR"
 )
 
-// syncComponent wraps a dialoguetui.Component with the mutex that guards
-// every UI mutation. Helper methods take the lock so callers do not have
-// to coordinate access manually.
+// syncComponent is the chat a turn reports to: a dialoguetui.Component
+// with the mutex that guards every UI mutation, or the session whose
+// views show the chat. Helper methods take the lock so callers do not
+// have to coordinate access manually.
 type syncComponent struct {
 	mu   *sync.Mutex
 	comp *dialoguetui.Component
@@ -50,6 +49,9 @@ type syncComponent struct {
 	// tab reports the turn as the status of the chat's tab. It must
 	// not be used while mu is held.
 	tab *tabStatusReporter
+	// session, when not nil, holds the status bar every view of the
+	// chat shows, and mu and comp are unused.
+	session *chatSession
 }
 
 // completionOpen reports whether the chat's '#' completion band is
@@ -62,43 +64,13 @@ func (s syncComponent) completionOpen() bool {
 
 // setStatusBarState mutates the chat's status bar state.
 func (s syncComponent) setStatusBarState(fn func(*dialoguetui.StatusBarState)) {
+	if s.session != nil {
+		s.session.setStatusBarState(fn)
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.comp.SetStatusBarState(fn)
-}
-
-// setStatusBarConfig replaces the chat's status bar with the one cfg
-// configures.
-func (s syncComponent) setStatusBarConfig(cfg dialoguetui.StatusBarConfig) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.comp.SetStatusBarConfig(cfg)
-}
-
-// setInputBoxFrameCharSet draws the chat's compose box frame with cs and
-// its images, by URI.
-func (s syncComponent) setInputBoxFrameCharSet(
-	cs component.FrameCharSet, images map[string]stdimage.Image,
-) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.comp.SetInputBoxFrameCharSet(cs, images)
-}
-
-// setInputBoxColors colours the chat's compose box with the colours cfg
-// gives it.
-func (s syncComponent) setInputBoxColors(cfg dialoguetui.ComponentConfig) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.comp.SetInputBoxColors(cfg.InputBox.FrameAttr, cfg.InputBox.ContentAttr, cfg.InputBackgroundColor)
-}
-
-// addWarning shows text as an inline warning in the chat. The caller
-// must interrupt the host for it to be drawn.
-func (s syncComponent) addWarning(text string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.comp.AddWarningMessage(text)
 }
 
 // swapPhase reports a new status bar phase and returns the one it

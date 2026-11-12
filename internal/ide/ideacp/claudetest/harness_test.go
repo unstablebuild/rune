@@ -153,19 +153,28 @@ func (h *harness) run(args ...string) error {
 func (h *harness) newChat(t *testing.T, name string) *chat {
 	t.Helper()
 	require.NoError(t, h.run("new", agent, name))
-	return h.chat(t, name)
+	return h.chat(t, name, name)
 }
 
 // openChat runs acp open name, and returns its chat for t.
 func (h *harness) openChat(t *testing.T, name string) *chat {
 	t.Helper()
 	require.NoError(t, h.run("open", name))
-	return h.chat(t, name)
+	return h.chat(t, name, name)
 }
 
-func (h *harness) chat(t *testing.T, name string) *chat {
+// openSecondChat runs acp open --new name, and returns the second chat on
+// session name for t.
+func (h *harness) openSecondChat(t *testing.T, name string) *chat {
 	t.Helper()
-	c := &chat{t: t, name: name, tab: h.wm.tab(t, name)}
+	require.NoError(t, h.run("open", "--new", name))
+	return h.chat(t, name, name+" (2)")
+}
+
+// chat returns the chat on session name in the tab labelled label.
+func (h *harness) chat(t *testing.T, name, label string) *chat {
+	t.Helper()
+	c := &chat{t: t, name: name, label: label, tab: h.wm.tab(t, label)}
 	var s acpapi.Session
 	waitUntil(t, startTimeout, "session "+name+" to start", func() bool {
 		var err error
@@ -180,7 +189,7 @@ func (h *harness) chat(t *testing.T, name string) *chat {
 // closeTab closes the tab of c, as the user would.
 func (h *harness) closeTab(c *chat) {
 	c.t.Helper()
-	h.wm.remove(c.name)
+	h.wm.remove(c.label)
 	require.NoError(c.t, c.tab.Close())
 }
 
@@ -228,10 +237,11 @@ func (h *harness) exists(name string) bool {
 // chat is a tab of the acp command, typed into and read off its screen,
 // and the log of its session.
 type chat struct {
-	t    *testing.T
-	name string
-	tab  browserapi.Handler
-	log  *transcript
+	t *testing.T
+	// name is the session's, and label the tab's.
+	name, label string
+	tab         browserapi.Handler
+	log         *transcript
 	// mu serializes drawing the tab.
 	mu sync.Mutex
 }

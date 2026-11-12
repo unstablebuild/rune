@@ -18,66 +18,10 @@ package ideupgrade
 
 import (
 	"errors"
-	"fmt"
-	"time"
 
 	"github.com/google/uuid"
-	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
-	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 )
-
-// notificationProgressWriter renders upgrade progress into a single
-// pinned notification. It is the fallback used when the upgrade was
-// started from the auto-check prompt rather than from the console,
-// where there is no REPL progress bar to write to.
-//
-// It is not safe for concurrent use: every sample originates from the
-// goroutine running the upgrade.
-type notificationProgressWriter struct {
-	n       browserapi.Notifications
-	message string
-
-	notifID  string
-	lastEmit time.Time
-	lastUnit string
-}
-
-var _ repl.ProgressWriter = (*notificationProgressWriter)(nil)
-
-func (w *notificationProgressWriter) Progress(progress, total int64, units string) {
-	if total <= 0 || progress > total {
-		return
-	}
-	final := progress == total
-	phaseChange := units != w.lastUnit
-	if !final && !phaseChange &&
-		time.Since(w.lastEmit) < upgradeProgressInterval {
-		return
-	}
-	w.lastEmit = time.Now()
-	w.lastUnit = units
-
-	if w.notifID == "" {
-		id, err := w.n.Notify(browserapi.LevelInfo, "%s", w.message)
-		if err != nil {
-			log.WithError(err).Warn("ideupgrade: notify upgrade start")
-			return
-		}
-		w.notifID = id
-	}
-	_ = w.n.UpdateNotificationProgress(
-		w.notifID, fmt.Sprintf("%s: %s", w.message, units), progress, total)
-}
-
-// close dismisses the pinned notification so a failed upgrade does not
-// leave a stalled progress entry behind.
-func (w *notificationProgressWriter) close() {
-	if w.notifID == "" {
-		return
-	}
-	_ = w.n.UpdateNotificationProgress(w.notifID, "", 1, 1)
-}
 
 type scheduledNotifications struct {
 	notifications browserapi.Notifications
