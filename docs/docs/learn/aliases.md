@@ -389,6 +389,11 @@ against the host environment (or the chain captures from earlier steps). The sam
 a `!` or `!!` typed at the prompt or bound to a key, such as `:! grep -n $WORD $FILE`, and to
 the arguments an alias appends to a `!`/`!!` step.
 
+Commands that start a program from a shell-style command line, `terminalnew`,
+`terminalnewtab`, `terminalneworsplit` and `console`, read their arguments the same way. A value
+substituted into their arguments, or appended to them by an alias, reaches the program as one
+argument, so `terminalnewtab terminal-browser $1` passes a link holding `&` or `;` intact.
+
 Some places in a shell line do not hold plain text, and Rune limits what it substitutes there:
 
 - Arithmetic, such as `$(( $1 + 1 ))`, `(( … ))`, `let` and the `-eq` family of `[[ … ]]`
