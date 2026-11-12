@@ -3227,6 +3227,57 @@ func TestComponentToolCallOrderings(t *testing.T) {
 		comptest.TestComponent(t, comp, w, tests)
 	})
 
+	t.Run("events of a nested sub-agent that overtake its call", func(t *testing.T) {
+		comp := NewComponent(ComponentConfig{StartCollapsed: true})
+		comp.Resize(W, H)
+		w := mkW()
+		tests := []comptest.TestCase{
+			{
+				Action: func() {
+					for _, ev := range []MessageEvent{
+						{Type: MessageEventToolCall, ToolCallID: "p1", ToolName: "skill", ToolSummary: "research"},
+						{Type: MessageEventToolCall, ParentToolCallID: "c1", ToolCallID: "g1",
+							ToolName: "bash", ToolSummary: "rm notes.txt"},
+						{Type: MessageEventToolResult, ParentToolCallID: "c1", ToolCallID: "g1",
+							ToolName: "bash", ToolSummary: "rm notes.txt", ToolOutput: "denied", IsError: true},
+						{Type: MessageEventChildResult, ParentToolCallID: "c1", ToolOutput: "found"},
+						{Type: MessageEventToolCall, ParentToolCallID: "p1", ToolCallID: "c1",
+							ToolName: "agent", ToolSummary: "scout"},
+						{Type: MessageEventToolResult, ParentToolCallID: "p1", ToolCallID: "c1",
+							ToolName: "agent", ToolSummary: "scout", ToolOutput: "found"},
+						{Type: MessageEventChildResult, ParentToolCallID: "p1", ToolOutput: "done"},
+						{Type: MessageEventToolResult, ToolCallID: "p1",
+							ToolName: "skill", ToolSummary: "research", ToolOutput: "done"},
+					} {
+						require.True(t, comp.ApplyEvent(ev))
+					}
+				},
+				Expected: "└─ ✓ skill research            \n" +
+					"   ├─ ✓ agent scout            \n" +
+					"   │  ├─ ✗ bash rm notes.txt   \n" +
+					"   │  └─ 󰆈  found              \n" +
+					"   └─ 󰆈  done                  \n" +
+					"Press <ctrl-o> to expand       \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"                               \n" +
+					"  ┌───────────────────────┐    \n" +
+					"  │                       │    \n" +
+					"  └───────────────────────┘    \n" +
+					"                               ",
+			},
+		}
+		comptest.TestComponent(t, comp, w, tests)
+	})
+
 	t.Run("child tool call error", func(t *testing.T) {
 		comp := NewComponent(ComponentConfig{})
 		comp.Resize(W, H)

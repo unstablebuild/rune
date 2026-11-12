@@ -213,6 +213,11 @@ type Component struct {
 	// tool call tracking via Turn
 	currentTurn *Turn
 	turnNode    *component.ListNode
+	// heldChildren are the events nested under a tool call that no turn
+	// shows yet, by the ID of that call. A sub-agent's events reach the
+	// chat on another goroutine than the call that runs it, so they can
+	// overtake it.
+	heldChildren map[string][]MessageEvent
 
 	// reasoning visibility toggle
 	reasoningVisible    bool                 // true = reasoning shown (default true)
@@ -2038,9 +2043,14 @@ func (c *Component) Reset() {
 
 // ApplyEvent shows ev as the Handler of c shows the events sent to it.
 // It reports false, changing nothing, for the events only a Handler acts
-// on: prompts, prompt dismissals, busy and command events. The caller
-// must hold the lock that guards c.
+// on: prompts, prompt dismissals, busy and command events. An event
+// nested under a tool call that is not shown yet is shown once that call
+// is, and not at all if it never is. The caller must hold the lock that
+// guards c.
 func (c *Component) ApplyEvent(ev MessageEvent) bool {
+	if c.holdChild(ev) {
+		return true
+	}
 	switch ev.Type {
 	case MessageEventReasoning:
 		c.AddReasoningChunk(ev.Text)
@@ -2059,6 +2069,11 @@ func (c *Component) ApplyEvent(ev MessageEvent) bool {
 		}
 		if !ev.ToolStartTime.IsZero() {
 			c.SetToolStartTime(ev.ToolCallID, ev.ToolStartTime)
+		}
+		held := c.heldChildren[ev.ToolCallID]
+		delete(c.heldChildren, ev.ToolCallID)
+		for _, child := range held {
+			c.ApplyEvent(child)
 		}
 	case MessageEventToolResult:
 		if IsTaskTool(ev.ToolName) {
@@ -2097,6 +2112,24 @@ func (c *Component) ApplyEvent(ev MessageEvent) bool {
 	return true
 }
 
+// holdChild holds ev back when it is nested under a tool call that no
+// turn shows yet, and reports whether it did.
+func (c *Component) holdChild(ev MessageEvent) bool {
+	switch ev.Type {
+	case MessageEventToolCall, MessageEventToolResult, MessageEventChildResult:
+	default:
+		return false
+	}
+	if ev.ParentToolCallID == "" || c.parentTurn(ev.ParentToolCallID) != nil {
+		return false
+	}
+	if c.heldChildren == nil {
+		c.heldChildren = make(map[string][]MessageEvent)
+	}
+	c.heldChildren[ev.ParentToolCallID] = append(c.heldChildren[ev.ParentToolCallID], ev)
+	return true
+}
+
 // Close releases the resources owned by this Component.
 func (c *Component) Close() error {
 	c.closeTranscript()
@@ -2117,6 +2150,7 @@ func (c *Component) resetContent() {
 	c.closeTranscript()
 	c.currentTurn = nil
 	c.turnNode = nil
+	clear(c.heldChildren)
 	c.hoveredToolTurn = nil
 	c.hoveredTool = nil
 	c.breakReasoning()
