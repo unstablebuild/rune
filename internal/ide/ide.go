@@ -25,7 +25,6 @@ import (
 	"os"
 	"os/user"
 	"path"
-	"path/filepath"
 	"slices"
 	"sync"
 	"time"
@@ -630,7 +629,7 @@ func (i *IDE) init(
 	err := workspaceManager.RegisterScheme(
 		workspacessh.Scheme,
 		workspacessh.New(newWorkspaceWindowManagerUI(i),
-			workspacessh.WithRemoteDataDir(filepath.Base(dataDir))),
+			workspacessh.WithRemoteDataDir(remoteDataDirGuess(dataDir))),
 	)
 	if err != nil {
 		return fmt.Errorf("register ssh scheme: %w", err)

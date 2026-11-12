@@ -212,6 +212,7 @@ func TestBootstrapAltModifierRoundTrip(t *testing.T) {
 				dir := t.TempDir()
 				b := &bootstrapHandler{
 					dataDir: dir, chosenEditor: editor, chosenAltModifier: modifier,
+					configPath: filepath.Join(dir, configFilename),
 				}
 				err := b.writePresetConfig()
 				if modifier != gui.AltModifierNone && runtime.GOOS != "darwin" {
@@ -588,6 +589,7 @@ func TestBootstrapCapsLockRoundTrip(t *testing.T) {
 				dir := t.TempDir()
 				b := &bootstrapHandler{
 					dataDir: dir, chosenEditor: editor, chosenCapsLockEsc: esc,
+					configPath: filepath.Join(dir, configFilename),
 				}
 				err := b.writePresetConfig()
 				if esc && editor != editorVim && editor != editorHelix {
@@ -637,6 +639,7 @@ func TestBootstrapMetaChoiceRoundTrip(t *testing.T) {
 				dir := t.TempDir()
 				b := &bootstrapHandler{
 					dataDir: dir, chosenEditor: editor, chosenMeta: meta,
+					configPath: filepath.Join(dir, configFilename),
 				}
 				require.NoError(t, b.writePresetConfig())
 				cfg := mustLoadConfig(t, filepath.Join(dir, configFilename))
@@ -670,6 +673,7 @@ func TestBootstrapTelemetryPersistenceRoundTrip(t *testing.T) {
 			prompter := &fakeBootstrapPrompter{}
 			b := &bootstrapHandler{
 				dataDir:      dir,
+				configPath:   filepath.Join(dir, configFilename),
 				chosenEditor: editorVim,
 				prompter:     prompter,
 				publishEvent: func(term.Event) bool { return true },

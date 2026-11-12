@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"time"
 
@@ -32,14 +33,16 @@ import (
 
 const zigResolutionTimeout = 5 * time.Second
 
+// $RUNE_INSTALLDIR is the data dir the workspace host provisions
+// package binaries under; the fs resolves it on the workspace host.
 var wellKnownZlsPaths = []string{
-	"~/.rune/bin/zls",
+	"$RUNE_INSTALLDIR/bin/zls",
 	"/opt/homebrew/bin/zls",
 	"/usr/local/bin/zls",
 }
 
 var wellKnownZigPaths = []string{
-	"~/.rune/bin/zig",
+	"$RUNE_INSTALLDIR/bin/zig",
 	"/opt/homebrew/bin/zig",
 	"/usr/local/bin/zig",
 }
@@ -175,7 +178,9 @@ func resolveBinary(
 
 func probeWellKnown(fs workspaceapi.FileSystem, candidates []string) (string, bool) {
 	for _, candidate := range candidates {
-		uri, err := fs.URI(candidate)
+		// Candidates may reference the workspace host's data dir through
+		// the environment the runner exports; fs.URI expands only ~.
+		uri, err := fs.URI(os.ExpandEnv(candidate))
 		if err != nil {
 			continue
 		}

@@ -67,16 +67,16 @@ var ErrSSHConnectionClosed = errors.New("ssh connection closed unexpectedly")
 // Option customizes the ssh scheme constructed by New.
 type Option func(*scheme)
 
-// WithRemoteDataDir forces the remote `rune -x` server to use ~/<name> as
+// WithRemoteDataDir forces the remote `rune -x` server to use ~/<rel> as
 // its data directory via an explicit `--datadir` flag, instead of relying
-// on the remote's default ($HOME/.rune). name is a bare directory name
-// (e.g. ".rune" or ".runedev"), taken from the local IDE's data-directory
-// basename so the local client and the remote server install packages
-// into the same well-known location by construction. Empty name leaves
-// the remote default untouched.
-func WithRemoteDataDir(name string) Option {
+// on the remote's own resolution. rel is the local data directory's path
+// relative to the local home (e.g. ".local/share/rune" or ".runedev"),
+// so the local client and the remote server install packages into the
+// same home-relative location by construction. Empty rel leaves the
+// remote default untouched.
+func WithRemoteDataDir(rel string) Option {
 	return func(s *scheme) {
-		s.remoteDataDir = name
+		s.remoteDataDir = rel
 	}
 }
 
@@ -378,7 +378,8 @@ func (s *scheme) connectScheme(
 	if s.remoteDataDir != "" {
 		// The arg runs through the remote shell (goSshSession.StartCommand
 		// joins Path+Args into one command string), so ~ is expanded on the
-		// remote host. remoteDataDir is a bare, shell-safe directory name.
+		// remote host. remoteDataDir is a shell-safe path relative to the
+		// remote home.
 		dataDirArgs = []string{"--datadir", "~/" + s.remoteDataDir}
 	}
 

@@ -21,12 +21,13 @@ the agent looks in, in order:
 | Directory | Scope |
 | --- | --- |
 | `.rune/skills` | this project |
-| `~/.rune/skills` | all your projects |
+| `$RUNE_DATADIR/skills` | all your projects |
 | `.agents/skills` | this project |
 | `~/.agents/skills` | all your projects |
 
 The project-local directories let a team ship skills alongside the
-repository, while the home directories hold skills you want everywhere.
+repository, while `$RUNE_DATADIR` (`~/.local/share/rune` by default) and
+the home directory hold skills you want everywhere.
 Drop a skill into any of these and the agent picks it up.
 
 You manage skills and their directories from the [`agent`

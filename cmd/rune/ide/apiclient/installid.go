@@ -62,8 +62,8 @@ func installIDTempFileName() string {
 // It returns the identifier, a tampered flag, and a diagnostic error string.
 // tampered is true only when the authoritative store was missing while the
 // backup survived, which is the signal of a naive attempt to reset the
-// identifier by wiping ~/.rune. A missing backup is never treated as tampering
-// because OS temp reaping is routine.
+// identifier by wiping the data directory. A missing backup is never treated
+// as tampering because OS temp reaping is routine.
 //
 // Resolution never blocks telemetry: on failure it degrades to whatever
 // identifier it could recover (possibly empty). The returned string is empty
