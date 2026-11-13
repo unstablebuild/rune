@@ -131,7 +131,22 @@ func wrapMarked(row []term.Cell, x1 int) bool {
 // Whatever drew the row filled its own pane and nothing beyond it, so
 // the written run bounds the pane the continuation resumes in.
 func paneStart(row []term.Cell, x int) int {
-	for x > 0 && row[x-1].Ch != 0 && !isFrameRune(row[x-1].Ch) {
+	for x > 0 {
+		prev := row[x-1]
+		if prev.Ch == 0 {
+			// A wide rune owns two cells and the second holds no rune,
+			// so the pane's content starts at the cell in front of it.
+			// A blank is also zero, and ends the run like any other
+			// cell the pane did not write.
+			if x >= 2 && row[x-2].Width > 1 {
+				x -= 2
+				continue
+			}
+			break
+		}
+		if isFrameRune(prev.Ch) {
+			break
+		}
 		x--
 	}
 	return x
@@ -291,6 +306,10 @@ func (s *rowScanner) joinPath(
 func (s *rowScanner) appendCells(row []term.Cell, x0, x1 int) {
 	for x := x0; x < x1; x++ {
 		s.offsets = append(s.offsets, len(s.wrapped))
+		if row[x].Ch == 0 {
+			// The second cell of a wide rune holds no text of its own.
+			continue
+		}
 		s.wrapped = appendCluster(s.wrapped, &row[x])
 	}
 }
@@ -406,8 +425,21 @@ func (s *rowScanner) scanPath(
 	y int, row []term.Cell, x int, dst []linkSpan,
 ) ([]linkSpan, int) {
 	start := x
-	for start > 0 && isPathRune(row[start-1].Ch) {
-		start--
+	for start > 0 {
+		cell := start - 1
+		if row[cell].Ch == 0 {
+			if cell == 0 || row[cell-1].Width <= 1 {
+				// A blank the pane did not write, so the path ends.
+				break
+			}
+			// The second cell of a wide rune: the rune in front of it
+			// decides whether the path continues past it.
+			cell--
+		}
+		if !isPathRune(row[cell].Ch) {
+			break
+		}
+		start = cell
 	}
 	if start == x {
 		// Nothing in front of the colon, so there is no path.
@@ -420,6 +452,10 @@ func (s *rowScanner) scanPath(
 
 	s.text = s.text[:0]
 	for i := start; i < x; i++ {
+		// The second cell of a wide rune holds no text of its own.
+		if row[i].Ch == 0 {
+			continue
+		}
 		s.text = appendCluster(s.text, &row[i])
 	}
 	path := string(s.text)
