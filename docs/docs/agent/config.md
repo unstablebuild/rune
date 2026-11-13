@@ -41,6 +41,7 @@ extensions:
 | `editor_modal_start_insert` | boolean | `true` | When the modal (vi-style) composer opens, start in insert mode so the first keystroke types instead of requiring `i`. Set to `false` to open in normal mode. Only affects the modal composer. |
 | `audit_enabled` | boolean | `false` | Record a per-request LLM token audit log you can review with `chatlog` or `agent chats export --audit`. |
 | `force_builtin_tools` | boolean | prompt | When set, decides up front whether bare `grep`-style shell commands are rejected in favor of the agent's built-in search tools. Left unset, the agent asks you the first time and remembers your choice. |
+| `web_search.provider` | string | unset | Gives the agent a `web_search` tool that sends its search queries to a search API instead of opening a search engine in headless Chrome. The only provider is `keenable` ([Keenable](https://docs.keenable.ai)), which needs no account; set `KEENABLE_API_KEY` in Rune's environment for higher rate limits. Left unset, the agent has no `web_search` tool. `web_browser` is not affected. |
 
 ## Too many permission prompts?
 

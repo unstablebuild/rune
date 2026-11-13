@@ -14,15 +14,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//go:build linux
+//go:build !unix
 
 package apiclient
 
-func utsnameToString(unameArray [65]byte) string {
-	var byteString [65]byte
-	var indexLength int
-	for ; unameArray[indexLength] != 0; indexLength++ {
-		byteString[indexLength] = uint8(unameArray[indexLength])
-	}
-	return string(byteString[:indexLength])
+import "runtime"
+
+// uname reports what the Go runtime knows on platforms without uname(2). Machine is the
+// Go architecture name (amd64), not the kernel's (x86_64).
+func uname() (sysinfo, error) {
+	return sysinfo{
+		Name:    runtime.GOOS,
+		Machine: runtime.GOARCH,
+		OS:      runtime.GOOS,
+	}, nil
 }

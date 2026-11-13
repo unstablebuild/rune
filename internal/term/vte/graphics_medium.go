@@ -124,7 +124,11 @@ func realPath(fs schemeapi.FileSystem, name string) (string, error) {
 // readGraphicsFile reads size bytes at offset, or the rest of the file
 // when size is 0. The open handle's mode is what rejects a FIFO, device
 // or socket, whose read could block the terminal or have side effects.
-func readGraphicsFile(f workspaceapi.File, offset, size int64) ([]byte, error) {
+// The bytes land in a buffer from pool, so a stream of same-sized frames
+// reads each into the buffer the frame before last was shown from.
+func readGraphicsFile(
+	f workspaceapi.File, offset, size int64, pool *vtegraphics.BufferPool,
+) ([]byte, error) {
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, errRefused
@@ -142,8 +146,9 @@ func readGraphicsFile(f workspaceapi.File, offset, size int64) ([]byte, error) {
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return nil, errRefused
 	}
-	data := make([]byte, size)
+	data := pool.Get(int(size))
 	if _, err := io.ReadFull(f, data); err != nil {
+		pool.Put(data)
 		return nil, errRefused
 	}
 	return data, nil

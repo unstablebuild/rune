@@ -941,6 +941,40 @@ func TestComponentResetWhileStreaming(t *testing.T) {
 	})
 }
 
+func TestComponentApplyEvent(t *testing.T) {
+	tests := []struct {
+		name    string
+		ev      MessageEvent
+		applied bool
+		shown   string
+	}{
+		{name: "text", ev: MessageEvent{Type: MessageEventText, Text: "streamed"}, applied: true, shown: "streamed"},
+		{name: "warning", ev: MessageEvent{Type: MessageEventWarning, Text: "careful"}, applied: true, shown: "careful"},
+		{name: "user message", ev: MessageEvent{Type: MessageEventUserMessage, Text: "asked"}, applied: true, shown: "asked"},
+		{name: "prompt", ev: MessageEvent{Type: MessageEventPrompt, PromptTitle: "pick"}},
+		{name: "prompt dismiss", ev: MessageEvent{Type: MessageEventPromptDismiss}},
+		{name: "busy", ev: MessageEvent{Type: MessageEventBusy, Busy: true}},
+		{name: "command", ev: MessageEvent{Type: MessageEventCommand, CommandName: "clear"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := NewComponent(ComponentConfig{})
+			comp.Resize(30, 10)
+
+			assert.Equal(t, tt.applied, comp.ApplyEvent(tt.ev))
+
+			w := term.NewStringWriter(30, 10)
+			comp.Draw(w)
+			require.NoError(t, w.Flush())
+			if tt.shown != "" {
+				assert.Contains(t, w.String(), tt.shown)
+			} else {
+				assert.False(t, comp.HasActivePrompt(), "a prompt is the handler's to show")
+			}
+		})
+	}
+}
+
 func TestComponentToolCall(t *testing.T) {
 	comp := NewComponent(ComponentConfig{})
 	comp.Resize(20, 10)

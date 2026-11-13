@@ -25,7 +25,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"unstable.build/rune/internal/debug"
 )
 
 const (
@@ -89,8 +88,7 @@ func (m *Manager) PromptChoice(
 
 // showPrompt renders the floating upgrade prompt for manifest without
 // blocking. The user's choice is persisted (remind / skip) and, when
-// "Upgrade Now" is chosen, the upgrade runs on a background goroutine
-// reporting through notifications.
+// "Upgrade Now" is chosen, the upgrade is started with Starter.
 func (m *Manager) showPrompt(ctx context.Context, manifest Manifest) {
 	if m.cfg.Prompter == nil {
 		_, _ = m.cfg.Notifications.Notify(browserapi.LevelInfo,
@@ -103,11 +101,20 @@ func (m *Manager) showPrompt(ctx context.Context, manifest Manifest) {
 			m.persistChoice(ctx, c, manifest)
 			return
 		}
-		go debug.CapturePanicReport(func() {
-			if err := m.upgradeWithNotifications(ctx, manifest); err != nil {
-				log.WithError(err).Warn("ideupgrade: run upgrade")
+		// On the next tick, so the prompt has closed before the
+		// upgrade takes over a window. Starting it here instead would
+		// dispatch from inside the prompt's own event handling.
+		scheduled := m.cfg.ScheduleNextTick(func() {
+			if err := m.cfg.Starter.StartUpgrade(); err != nil {
+				_, _ = m.cfg.Notifications.Notify(browserapi.LevelError,
+					"Could not start the upgrade to %s: %v", manifest.Version, err)
 			}
 		})
+		if !scheduled {
+			// The loop takes no more ticks, so neither would a
+			// notification.
+			log.Warnf("ideupgrade: could not schedule the upgrade to %s", manifest.Version)
+		}
 	})
 
 	m.cfg.ScheduleNextTick(func() {

@@ -503,11 +503,12 @@ available:
   run anything. `$URL` always expands to a single argument. In `$URL`,
   characters a URL may not contain, as well as `'` and `$`, are
   percent-encoded, which leaves the link pointing at the same page. Inside a
-  `!` or `!!` command, `$URL` is read as plain text whether you write it
-  unquoted, in double quotes or in single quotes, and Rune refuses to run the
-  command rather than let a link change it. A command that passes `$URL` on to
-  a second shell, such as `sh -c`, `eval` or `ssh`, must quote it again there,
-  since characters like `&` and `;` can appear in links.
+  `!` or `!!` command, or a terminal command such as `terminalnewtab`, `$URL`
+  is read as plain text whether you write it unquoted, in double quotes or in
+  single quotes, and Rune refuses to run the command rather than let a link
+  change it. A command that passes `$URL` on to a second shell, such as
+  `sh -c`, `eval` or `ssh`, must quote it again there, since characters like
+  `&` and `;` can appear in links.
 
   Clicking a link with another scheme with `<meta>` held in the GUI opens it
   in the system browser.

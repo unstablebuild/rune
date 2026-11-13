@@ -250,25 +250,30 @@ func TestSessions(t *testing.T) {
 	assert.Equal(t, []acpapi.AgentInfo{{Name: agent, Running: true}}, h.agents())
 	assert.Equal(t, []string{"first", "second"}, h.sessions())
 
+	another := h.openSecondChat(t, "first")
+	another.waitScreen("Remember the code word walrus. Reply with exactly: noted", tn.text())
 	h.closeTab(first)
-	assert.Equal(t, []string{"first", "second"}, h.sessions(), "closing a tab keeps its session")
+	assert.Equal(t, []string{"first", "second"}, h.sessions(), "closing one of its tabs keeps its session")
 
-	reopened := h.openChat(t, "first")
-	reopened.waitScreen("Remember the code word walrus. Reply with exactly: noted", tn.text())
-	tn = reopened.prompt("What was the code word? Reply with just the word.")
+	tn = another.prompt("What was the code word? Reply with just the word.")
 	assert.Contains(t, strings.ToLower(tn.text()), "walrus")
 
 	require.NoError(t, h.run("close", "first"))
-	reopened.waitScreen("Session closed.")
+	another.waitScreen("Session closed.")
 	waitUntil(t, uiTimeout, "session first to close", func() bool {
 		return len(h.sessions()) == 1
 	}, func() string { return strings.Join(h.sessions(), ", ") })
 	assert.Equal(t, []string{"second"}, h.sessions())
-	assert.Empty(t, h.notes.all())
 
 	tn = second.prompt("Reply with exactly: still serving")
 	assert.Equal(t, acp.StopReasonEndTurn, tn.done().StopReason)
 	assert.Contains(t, strings.ToLower(tn.text()), "still serving")
+
+	h.closeTab(second)
+	waitUntil(t, uiTimeout, "session second to close with its last tab", func() bool {
+		return len(h.sessions()) == 0
+	}, func() string { return strings.Join(h.sessions(), ", ") })
+	assert.Empty(t, h.notes.all())
 }
 
 func TestExtensionSession(t *testing.T) {

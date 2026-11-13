@@ -1343,6 +1343,140 @@ func TestBatchFallsBackWhenUnimplemented(t *testing.T) {
 		[]string{"mypkg.Gadget", "mypkg.Widget"}, listReferenced(t, p))
 }
 
+func TestScanWritesSharedSymbolsOnce(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	batching := newBatchingStorage(e.db)
+	e.db = batching
+	const files = 20
+	uris := make([]string, files)
+	for i := range files {
+		uri := e.writeFile(t, fmt.Sprintf("f%d.go", i))
+		e.fake.setGoFile(uri, goFile{
+			pkg:  "mypkg",
+			refs: [][2]string{{"iterator", "Iterator"}},
+			defs: []string{fmt.Sprintf("Widget%d", i)},
+		})
+		uris[i] = uri.String()
+	}
+	p := e.start(t)
+	require.NoError(t, p.Wait(ctx))
+
+	assert.Equal(t, int64(1), batching.callCount("/symbols"),
+		"the symbols of every file must cost a single batch")
+	assert.Equal(t, int64(files+1), batching.opCount("/symbols"),
+		"a name shared by every file is written once")
+	assert.Equal(t, int64(1), batching.callCount("/names"))
+	assert.Equal(t, int64(1), batching.callCount("/files"))
+	assert.Equal(t, int64(files), batching.opCount("/files"))
+
+	symbols, err := e.db.Partition(symbolsPartition)
+	require.NoError(t, err)
+	var doc symbolDoc
+	require.NoError(t, symbols.Get(ctx, "iterator.Iterator", &doc))
+	got := make([]string, 0, len(doc.Locs))
+	for _, l := range doc.Locs {
+		got = append(got, l.URI)
+	}
+	assert.ElementsMatch(t, uris, got)
+	assert.Len(t, listReferenced(t, p), files+1)
+}
+
+func TestBurstOfFlushesDrainsInOneWindow(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	batching := newBatchingStorage(e.db)
+	e.db = batching
+	const files = 10
+	uris := make([]workspaceapi.URI, files)
+	for i := range files {
+		uris[i] = e.writeFile(t, fmt.Sprintf("f%d.go", i))
+		e.fake.setGoFile(uris[i], goFile{pkg: "mypkg", defs: []string{"Widget"}})
+	}
+	p := e.start(t)
+	require.NoError(t, p.Wait(ctx))
+	paths := []string{"/symbols", "/names", "/files"}
+	before := map[string]int64{}
+	for _, path := range paths {
+		before[path] = batching.callCount(path)
+	}
+
+	want := []string{"mypkg.Widget"}
+	for i, uri := range uris {
+		gadget := fmt.Sprintf("Gadget%d", i)
+		want = append(want, "mypkg."+gadget)
+		e.fake.setGoFile(uri, goFile{pkg: "mypkg", defs: []string{"Widget", gadget}})
+		e.touch(t, fmt.Sprintf("f%d.go", i))
+	}
+	// Back to back, so that they land within the settle delay of the
+	// first, as the saves of a checkout do.
+	for _, uri := range uris {
+		p.Handle(ctx, textapi.Event{Type: textapi.EventTypeFlush, URI: uri})
+	}
+	require.NoError(t, p.Wait(ctx))
+
+	for _, path := range paths {
+		assert.Equalf(t, before[path]+1, batching.callCount(path),
+			"%s: a burst of saves must cost one batch", path)
+	}
+	sort.Strings(want)
+	assert.Equal(t, want, listReferenced(t, p))
+	symbols, err := e.db.Partition(symbolsPartition)
+	require.NoError(t, err)
+	var doc symbolDoc
+	require.NoError(t, symbols.Get(ctx, "mypkg.Widget", &doc))
+	assert.Len(t, doc.Locs, files, "the shared name keeps every file's location")
+}
+
+func TestMergeLocsReplacesSeveralFiles(t *testing.T) {
+	a1 := symbolLoc{URI: "a", Y: 1, Kind: kindRef}
+	a2 := symbolLoc{URI: "a", Y: 2, Kind: kindDef}
+	b1 := symbolLoc{URI: "b", Y: 1, Kind: kindRef}
+	c1 := symbolLoc{URI: "c", Y: 1, Kind: kindRef}
+	d1 := symbolLoc{URI: "d", Y: 1, Kind: kindRef}
+	tests := []struct {
+		name    string
+		stored  []symbolLoc
+		replace map[string][]symbolLoc
+		want    []symbolLoc
+	}{
+		{
+			name:    "nothing stored",
+			replace: map[string][]symbolLoc{"a": {a1}},
+			want:    []symbolLoc{a1},
+		},
+		{
+			name:    "one file replaced",
+			stored:  []symbolLoc{a1, b1},
+			replace: map[string][]symbolLoc{"a": {a2}},
+			want:    []symbolLoc{b1, a2},
+		},
+		{
+			name:    "one file dropped",
+			stored:  []symbolLoc{a1, b1},
+			replace: map[string][]symbolLoc{"a": nil},
+			want:    []symbolLoc{b1},
+		},
+		{
+			name:    "several files, in file order",
+			stored:  []symbolLoc{c1, a1, b1},
+			replace: map[string][]symbolLoc{"d": {d1}, "c": nil, "a": {a2}},
+			want:    []symbolLoc{b1, a2, d1},
+		},
+		{
+			name:    "every file dropped",
+			stored:  []symbolLoc{a1, b1},
+			replace: map[string][]symbolLoc{"a": nil, "b": nil},
+			want:    []symbolLoc{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, mergeLocs(tt.stored, tt.replace))
+		})
+	}
+}
+
 func TestUpsertMergesIntoVersionlessDoc(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
@@ -1432,49 +1566,99 @@ func (d *durabilityRecordingStorage) Delete(ctx context.Context, id string) erro
 	return d.Service.Delete(ctx, id)
 }
 
-func TestScanRelaxesDurabilityUntilMarker(t *testing.T) {
-	e := newEnv(t)
-	rec := newDurabilityRecordingStorage(e.db)
-	e.db = rec
-	uri := e.writeFile(t, "a.go")
-	e.fake.setGoFile(uri, goFile{
-		pkg:  "mypkg",
-		refs: [][2]string{{"iterator", "Iterator"}},
-		defs: []string{"Widget"},
-	})
-	p := e.start(t)
-	require.NoError(t, p.Wait(context.Background()))
+// batchDurabilityRecordingStorage is a durabilityRecordingStorage whose
+// partitions take batches, recording every operation of one.
+type batchDurabilityRecordingStorage struct{ *durabilityRecordingStorage }
 
-	ops := rec.snapshot()
-	require.NotEmpty(t, ops)
-	last := ops[len(ops)-1]
-	assert.Equal(t, metaScanID, last.id, "the marker must be the last scan write")
-	assert.Equal(t, "", last.path)
-	assert.False(t, last.noSync, "the marker is the durability barrier")
-	for _, op := range ops[:len(ops)-1] {
-		assert.Truef(t, op.noSync,
-			"scan write %s %q must request relaxed durability", op.path, op.id)
+func (d batchDurabilityRecordingStorage) Partition(name string) (storageapi.Service, error) {
+	child, err := d.durabilityRecordingStorage.Partition(name)
+	if err != nil {
+		return nil, err
 	}
+	return batchDurabilityRecordingStorage{child.(*durabilityRecordingStorage)}, nil
+}
 
-	e.fake.setGoFile(uri, goFile{pkg: "mypkg", defs: []string{"Gadget"}})
-	e.touch(t, "a.go")
-	before := len(ops)
-	p.Handle(context.Background(), textapi.Event{
-		Type: textapi.EventTypeFlush, URI: uri,
-	})
-	require.NoError(t, p.Wait(context.Background()))
-	ops = rec.snapshot()
-	require.Greater(t, len(ops), before, "the flush must write")
-	reindex := ops[before:]
-	fileRecord := reindex[len(reindex)-1]
-	assert.Equal(t, uri.String(), fileRecord.id,
-		"the file record must be the last write of a re-index")
-	assert.False(t, fileRecord.noSync,
-		"the file record is the durability barrier of a re-index")
-	for _, op := range reindex[:len(reindex)-1] {
-		assert.Truef(t, op.noSync,
-			"derived write %s %q must request relaxed durability",
-			op.path, op.id)
+func (d batchDurabilityRecordingStorage) ApplyBatch(
+	ctx context.Context, ops []storageapi.BatchOp,
+) ([]storageapi.BatchOpResult, error) {
+	for _, op := range ops {
+		d.record(ctx, op.ID)
+	}
+	return d.Service.(storageapi.BatchWriter).ApplyBatch(ctx, ops)
+}
+
+func TestScanRelaxesDurabilityUntilMarker(t *testing.T) {
+	tests := []struct {
+		name string
+		wrap func(*durabilityRecordingStorage) storageapi.Service
+	}{
+		{"one operation at a time", func(d *durabilityRecordingStorage) storageapi.Service { return d }},
+		{"in batches", func(d *durabilityRecordingStorage) storageapi.Service {
+			return batchDurabilityRecordingStorage{d}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			rec := newDurabilityRecordingStorage(e.db)
+			e.db = tt.wrap(rec)
+			uri := e.writeFile(t, "a.go")
+			e.fake.setGoFile(uri, goFile{
+				pkg:  "mypkg",
+				refs: [][2]string{{"iterator", "Iterator"}},
+				defs: []string{"Widget"},
+			})
+			p := e.start(t)
+			require.NoError(t, p.Wait(context.Background()))
+
+			ops := rec.snapshot()
+			require.NotEmpty(t, ops)
+			last := ops[len(ops)-1]
+			assert.Equal(t, metaScanID, last.id, "the marker must be the last scan write")
+			assert.Equal(t, "", last.path)
+			assert.False(t, last.noSync, "the marker is the durability barrier")
+			for _, op := range ops[:len(ops)-1] {
+				assert.Truef(t, op.noSync,
+					"scan write %s %q must request relaxed durability", op.path, op.id)
+			}
+
+			// A burst of saves is re-indexed together: the file records
+			// are the only synced writes, and come after the rest.
+			others := []workspaceapi.URI{e.writeFile(t, "b.go"), e.writeFile(t, "c.go")}
+			for i, other := range others {
+				e.fake.setGoFile(other, goFile{pkg: "mypkg", defs: []string{fmt.Sprintf("Other%d", i)}})
+			}
+			e.fake.setGoFile(uri, goFile{pkg: "mypkg", defs: []string{"Gadget"}})
+			e.touch(t, "a.go")
+			before := len(ops)
+			p.Handle(context.Background(), textapi.Event{
+				Type: textapi.EventTypeFlush, URI: uri,
+			})
+			for _, other := range others {
+				p.Handle(context.Background(), textapi.Event{
+					Type: textapi.EventTypeCreate, URI: other,
+				})
+			}
+			require.NoError(t, p.Wait(context.Background()))
+			ops = rec.snapshot()
+			require.Greater(t, len(ops), before, "the flush must write")
+			reindex := ops[before:]
+			var fileRecords []string
+			for _, op := range reindex {
+				if op.path == "/"+filesPartition {
+					fileRecords = append(fileRecords, op.id)
+					assert.Falsef(t, op.noSync,
+						"the file record %q is a durability barrier of a re-index", op.id)
+					continue
+				}
+				assert.Truef(t, op.noSync,
+					"derived write %s %q must request relaxed durability", op.path, op.id)
+			}
+			assert.ElementsMatch(t, []string{uri.String(), others[0].String(), others[1].String()}, fileRecords)
+			assert.Equal(t, "/"+filesPartition, reindex[len(reindex)-1].path,
+				"a file record must be the last write of a re-index")
+			assert.Equal(t, []string{"mypkg.Gadget", "mypkg.Other0", "mypkg.Other1"}, listReferenced(t, p))
+		})
 	}
 }
 

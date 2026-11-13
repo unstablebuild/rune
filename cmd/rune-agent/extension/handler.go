@@ -83,6 +83,9 @@ const (
 
 	// chatScheme is the scheme of the chat tab URIs, rune-agent://<model>/<id>.
 	chatScheme = "rune-agent"
+	// newViewFlag makes the chat command open another view of a chat a
+	// tab shows already, rather than show that tab.
+	newViewFlag = "--new"
 
 	commandEffort        = "chateffort"
 	commandMaxTokens     = "chatmaxtokens"
@@ -96,6 +99,8 @@ const (
 	commandExport        = "chatexport"
 	commandLog           = "chatlog"
 	commandAddSymbol     = "chataddsymbol"
+	commandAttach        = "chatattach"
+	commandClose         = "chatclose"
 )
 
 // Floating windows opened by the agent are capped rather than sized to
@@ -247,6 +252,9 @@ func newCommandEventHandler(
 	sessionsDir := filepath.Join(w.DataDir(ctx), "sessions")
 	dialogueStore := dialoguemanager.NewStore(db, sessionsDir)
 	tools = append(tools, agentools.ConversationTools(dialogueStore, fs, sessionsDir)...)
+	if webSearch := webSearchTool(pconfig, w.Notifications(ctx), os.Getenv); webSearch != nil {
+		tools = append(tools, webSearch)
+	}
 
 	mcpManager := runemcp.NewManager(executor, cwd.Path(),
 		runemcp.NewCredentialStore(w.DataDir(ctx), db))
@@ -678,21 +686,21 @@ type aiEditorHandler struct {
 	defaultEffort    llmapi.ReasoningEffort // global default applied to new chats/queries
 	defaultMaxTokens int                    // global default applied to new chats/queries
 
-	openChats      sync.Map
-	openChatAgents sync.Map
+	// openChats maps the dialogue ID of a running chat to its
+	// *chatSession, or to struct{} while it starts.
+	openChats sync.Map
 	// lastCursor and lastChatID mirror the caret position and the chat
 	// that last had focus. Workspace commands run once the prompt owns
 	// the caret and from outside any chat tab, so both have to be read
 	// back from state captured as the events happened.
 	lastCursor atomic.Value // *cursorLocation
 	lastChatID atomic.Value // *string
-	// openChatTx maps an open chat's dialogue ID to its dialoguetui event
-	// channel, letting workspace command-prompt commands inject in-chat
-	// commands into the focused chat. Stored and deleted alongside
-	// openChats / openChatAgents.
-	openChatTx sync.Map
-	ctx        context.Context
-	cancelCtx  func()
+	// focusedViews maps a running chat's dialogue ID to the chatSender
+	// of its view last focused, letting workspace command-prompt
+	// commands inject in-chat commands into it.
+	focusedViews sync.Map
+	ctx          context.Context
+	cancelCtx    func()
 
 	// hookRunner dispatches Claude-Code-style hooks. nil when no
 	// hooks are configured.
@@ -854,20 +862,16 @@ func (h *aiEditorHandler) warnChatsAboutMCPServer(name string) {
 	if text == "" {
 		return
 	}
-	// The warning goes straight to each chat's component rather than
-	// through its event channel, which its agent loop closes when the
-	// chat closes.
-	warned := false
+	// Logged rather than sent through the agent loop's event channel,
+	// which closes with the chat; a chat that ended ignores it.
 	h.openChats.Range(func(_, v any) bool {
-		if sc, ok := v.(syncComponent); ok {
-			sc.addWarning(text)
-			warned = true
+		if s, ok := v.(*chatSession); ok {
+			s.publish(messageEvent(dialoguetui.MessageEvent{
+				Type: dialoguetui.MessageEventWarning, Text: text,
+			}))
 		}
 		return true
 	})
-	if warned && h.p != nil {
-		_ = h.p.Interrupt(h.ctx)
-	}
 }
 
 // connectMCPServers brings up every configured MCP server concurrently,
@@ -1015,16 +1019,12 @@ func (h *aiEditorHandler) setDefaultMaxTokens(n int) {
 	h.defaultMaxTokens = n
 	h.defaultsMu.Unlock()
 	h.queryAgent.SetMaxOutputTokens(n)
-	h.openChatAgents.Range(func(id, v any) bool {
-		if ag, ok := v.(*agent.Agent); ok {
-			ag.SetMaxOutputTokens(n)
-		}
-		if sc, ok := h.openChats.Load(id); ok {
-			if sc, ok := sc.(syncComponent); ok {
-				sc.setStatusBarState(func(s *dialoguetui.StatusBarState) {
-					s.MaxTokens = n
-				})
-			}
+	h.openChats.Range(func(_, v any) bool {
+		if s, ok := v.(*chatSession); ok {
+			s.agent.SetMaxOutputTokens(n)
+			s.setStatusBarState(func(st *dialoguetui.StatusBarState) {
+				st.MaxTokens = n
+			})
 		}
 		return true
 	})
@@ -1074,10 +1074,8 @@ func (h *aiEditorHandler) reloadStyle(ctx context.Context, host config.Config) e
 	h.openChats.Range(func(_, v any) bool {
 		// Chats still opening hold no component yet; they read the
 		// config they open with afterwards.
-		if sc, ok := v.(syncComponent); ok {
-			sc.setStatusBarConfig(cfg.StatusBar)
-			sc.setInputBoxFrameCharSet(cfg.InputBox.FrameCharSet, frameImages)
-			sc.setInputBoxColors(cfg)
+		if s, ok := v.(*chatSession); ok {
+			s.restyle(cfg, frameImages)
 		}
 		return true
 	})
@@ -1156,6 +1154,10 @@ func (h *aiEditorHandler) HandleCommand(
 		return h.routeChatCommand(cmd)
 	case commandAddSymbol:
 		return h.handleChatAddSymbol(cmd)
+	case commandAttach:
+		return h.handleChatAttach(cmd)
+	case commandClose:
+		return h.handleChatClose(cmd)
 	}
 
 	return nil
@@ -1177,8 +1179,8 @@ func dialogueIDFromURI(uri workspaceapi.URI) (string, bool) {
 
 // OpenResource satisfies textapi.ResourceOpenHandler. It returns the chat
 // uri identifies, resumed with the model the dialogue was stored with when
-// that model is still available and the default model otherwise. It fails
-// when the chat is already open.
+// that model is still available and the default model otherwise. A chat
+// that is running gets a new view, shown at uri.
 func (h *aiEditorHandler) OpenResource(
 	ctx context.Context, uri workspaceapi.URI,
 ) (browserapi.Handler, error) {
@@ -1203,8 +1205,8 @@ func (h *aiEditorHandler) OpenResource(
 
 // CompleteResource satisfies textapi.ResourceOpenHandler. It yields the URIs
 // starting with prefix of the dialogues chat completes without --all, in the
-// order the store lists them. An open chat is offered as the URI of its tab,
-// so opening it shows that tab rather than failing as already open.
+// order the store lists them. A running chat is offered as the URI of its
+// tab last focused, so opening it shows that tab rather than another view.
 func (h *aiEditorHandler) CompleteResource(
 	ctx context.Context, prefix string,
 ) (iterator.Iterator[string], error) {
@@ -1222,10 +1224,8 @@ func (h *aiEditorHandler) CompleteResource(
 
 // chatURI returns the URI that opens the chat of d, or "" when it has none.
 func (h *aiEditorHandler) chatURI(d dialoguemanager.DialogueHeader) string {
-	if v, ok := h.openChats.Load(d.ID); ok {
-		if sc, ok := v.(syncComponent); ok && sc.tab.hasTab() {
-			return sc.tab.uri.String()
-		}
+	if s, ok := h.runningChat(d.ID); ok {
+		return s.shownURI().String()
 	}
 	uri, err := getModelUri(d.ID, cmp.Or(d.Model, h.defaultModel))
 	if err != nil {
@@ -1233,6 +1233,76 @@ func (h *aiEditorHandler) chatURI(d dialoguemanager.DialogueHeader) string {
 		return ""
 	}
 	return uri.String()
+}
+
+// runningChat returns the session of the chat id when it runs.
+func (h *aiEditorHandler) runningChat(id string) (*chatSession, bool) {
+	v, ok := h.openChats.Load(id)
+	if !ok {
+		return nil, false
+	}
+	s, ok := v.(*chatSession)
+	return s, ok
+}
+
+// runningChats returns the IDs of the running chats, those no tab shows
+// first, each lot sorted.
+func (h *aiEditorHandler) runningChats() []string {
+	var detached, shown []string
+	h.openChats.Range(func(_, v any) bool {
+		if s, ok := v.(*chatSession); ok {
+			if s.detached() {
+				detached = append(detached, s.id)
+			} else {
+				shown = append(shown, s.id)
+			}
+		}
+		return true
+	})
+	slices.Sort(detached)
+	slices.Sort(shown)
+	return append(detached, shown...)
+}
+
+// handleChatAttach shows another view of a running chat, such as one no
+// tab shows since its tab closed while it worked.
+func (h *aiEditorHandler) handleChatAttach(cmd textapi.Command) error {
+	if len(cmd.Args) != 1 {
+		return fmt.Errorf("usage: %s <dialogue_id>", cmd.Name)
+	}
+	id := parseDialogueID(cmd)
+	s, ok := h.runningChat(id)
+	if !ok {
+		return fmt.Errorf("agent chat %q is not running; open it with %s %s", id, commandChat, id)
+	}
+	c, err := s.attach(workspaceapi.URI{})
+	if err != nil {
+		return err
+	}
+	return h.showChat(cmd.Window, c)
+}
+
+// handleChatClose ends a running chat in every view: the chat cmd names,
+// or the one of the focused tab.
+func (h *aiEditorHandler) handleChatClose(cmd textapi.Command) error {
+	var id string
+	switch len(cmd.Args) {
+	case 0:
+		var ok bool
+		if id, ok = dialogueIDFromURI(cmd.URI); !ok {
+			return fmt.Errorf("%s takes a dialogue id outside of an agent chat tab", cmd.Name)
+		}
+	case 1:
+		id = parseDialogueID(cmd)
+	default:
+		return fmt.Errorf("usage: %s [<dialogue_id>]", cmd.Name)
+	}
+	s, ok := h.runningChat(id)
+	if !ok {
+		return fmt.Errorf("agent chat %q is not running", id)
+	}
+	s.end(sessionEndChatClose)
+	return nil
 }
 
 // routeChatCommand forwards a workspace command-prompt command (the
@@ -1244,11 +1314,11 @@ func (h *aiEditorHandler) routeChatCommand(cmd textapi.Command) error {
 	if !ok {
 		return fmt.Errorf("%s must be run from an open agent chat tab", cmd.Name)
 	}
-	v, ok := h.openChatTx.Load(id)
+	v, ok := h.focusedViews.Load(id)
 	if !ok {
 		return fmt.Errorf("%s must be run from an open agent chat tab", cmd.Name)
 	}
-	tx := v.(chan<- dialoguetui.MessageEvent)
+	view := v.(chatSender)
 
 	name, args := cmd.Name, cmd.Args
 	switch cmd.Name {
@@ -1310,14 +1380,9 @@ func (h *aiEditorHandler) routeChatCommand(cmd textapi.Command) error {
 		CommandName: name,
 		CommandArgs: args,
 	}
-	// Sending on tx must not block the event loop, so dispatch the send
-	// to a goroutine bounded by the handler context.
-	go debug.CapturePanicReport(func() {
-		select {
-		case tx <- ev:
-		case <-h.ctx.Done():
-		}
-	})
+	// The view takes ev when its handler gets to it, which must not
+	// hold the event loop.
+	go debug.CapturePanicReport(func() { view.send(ev) })
 	return nil
 }
 
@@ -1326,16 +1391,10 @@ func (h *aiEditorHandler) Complete(ctx context.Context, name string, args []stri
 ) {
 	slog.Debug("complete with", "name", name, "args", args)
 
-	// Strip --all flag from args for length checks, pass it through to the completer.
-	showAll := false
-	filtered := args
-	for i, a := range filtered {
-		if a == "--all" {
-			showAll = true
-			filtered = slices.Delete(filtered, i, i+1)
-			break
-		}
-	}
+	// Strip the flags from args for length checks, pass --all through
+	// to the completer.
+	filtered, showAll := withoutFlag(args, "--all")
+	filtered, _ = withoutFlag(filtered, newViewFlag)
 
 	switch name {
 	case commandChat:
@@ -1369,6 +1428,11 @@ func (h *aiEditorHandler) Complete(ctx context.Context, name string, args []stri
 		return iterator.FromSlice(names), nil
 	case commandAddSymbol:
 		return referencedSymbols(ctx, h.parser)
+	case commandAttach, commandClose:
+		if len(filtered) > 1 {
+			return iterator.FromSlice[string](nil), nil
+		}
+		return iterator.FromSlice(h.runningChats()), nil
 	default:
 		return iterator.FromSlice[string](nil), nil
 	}
@@ -1420,22 +1484,45 @@ func (h *aiEditorHandler) newAgentShell() textapi.REPLHandler {
 }
 
 func (h *aiEditorHandler) handleChat(cmd textapi.Command) error {
+	var another bool
+	cmd.Args, another = withoutFlag(cmd.Args, newViewFlag)
+	if s, ok := h.runningChat(parseDialogueID(cmd)); ok && !another && !s.detached() {
+		return h.focusChat(cmd.Window, s)
+	}
 	c, err := h.newChat(cmd, workspaceapi.URI{})
 	if err != nil {
 		return err
 	}
+	return h.showChat(cmd.Window, c)
+}
+
+// focusChat shows in win the tab of s last focused.
+func (h *aiEditorHandler) focusChat(win browserapi.Window, s *chatSession) error {
+	tab, err := h.o.Open(s.shownURI())
+	if err == nil {
+		err = h.wm.SetWindowContent(win, tab)
+	}
+	if err != nil {
+		return fmt.Errorf("show agent chat %q: %w; %s %s %s opens another view",
+			s.id, err, commandChat, newViewFlag, s.id)
+	}
+	return nil
+}
+
+// showChat shows c in a tab of its own in win.
+func (h *aiEditorHandler) showChat(win browserapi.Window, c *chat) error {
 	tab, err := openChatTab(h.wm, c.uri, c.id, c.content)
 	if err != nil {
 		_ = c.content.Close()
 		return err
 	}
-	if err := h.wm.SetWindowContent(cmd.Window, tab); err != nil {
+	if err := h.wm.SetWindowContent(win, tab); err != nil {
 		return fmt.Errorf("window set content: %v", err)
 	}
 	return nil
 }
 
-// chat is an open agent chat: its content, which owns the chat and ends it
+// chat is a view of an agent chat: its content, which closes the view
 // when closed, and the identity it goes by as a tab.
 type chat struct {
 	content browserapi.Handler
@@ -1443,8 +1530,10 @@ type chat struct {
 	uri     workspaceapi.URI
 }
 
-// newChat opens the chat cmd names, or a new one. The chat is known as uri,
-// or as the URI derived from the dialogue and its model when uri is zero.
+// newChat opens a view of the chat cmd names, or of a new one, shown at
+// uri, or at a URI derived from the dialogue and its model when uri is
+// zero. A chat that is not running starts with the model cmd names, or
+// the default one; a running one keeps its own.
 func (h *aiEditorHandler) newChat(
 	cmd textapi.Command, uri workspaceapi.URI,
 ) (*chat, error) {
@@ -1463,32 +1552,63 @@ func (h *aiEditorHandler) newChat(
 		}
 	}
 
+	d, err := h.getDialogue(h.ctx, h.dialogueStore, cmd)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		v, loaded := h.openChats.LoadOrStore(d.ID, struct{}{})
+		if !loaded {
+			break
+		}
+		s, ok := v.(*chatSession)
+		if !ok {
+			return nil, fmt.Errorf("agent chat %q is still opening", d.ID)
+		}
+		c, err := s.attach(uri)
+		if !errors.Is(err, errChatClosed) {
+			return c, err
+		}
+		select {
+		case <-s.done:
+		case <-h.ctx.Done():
+			return nil, h.ctx.Err()
+		}
+	}
+	s, err := h.startChat(d, model, uri)
+	if err != nil {
+		h.openChats.Delete(d.ID)
+		return nil, err
+	}
+	h.openChats.Store(d.ID, s)
+	c, err := s.attach(uri)
+	if err != nil {
+		s.end(sessionEndTabClose)
+		return nil, err
+	}
+	return c, nil
+}
+
+// startChat starts the session of the chat of d with model. Its views
+// are shown at uri, or at the URI derived from the dialogue and its
+// model when uri is zero.
+func (h *aiEditorHandler) startChat(
+	d dialoguemanager.Dialogue, model string, uri workspaceapi.URI,
+) (*chatSession, error) {
 	backendService, chatEntry, err := h.modelService(h.ctx, model)
 	if err != nil {
 		return nil, fmt.Errorf("new backend: %v", err)
 	}
-
-	mu := new(sync.Mutex)
-	ctx, cancel := context.WithCancel(h.ctx)
-
-	d, err := h.getDialogue(ctx, h.dialogueStore, cmd)
+	if uri == (workspaceapi.URI{}) {
+		uri, err = getModelUri(d.ID, model)
+	} else {
+		uri, err = chatBaseURI(uri)
+	}
 	if err != nil {
-		cancel()
 		return nil, err
 	}
-	if _, loaded := h.openChats.LoadOrStore(d.ID, struct{}{}); loaded {
-		cancel()
-		return nil, fmt.Errorf("agent chat %q is already open", d.ID)
-	}
-	opened := false
-	defer func() {
-		if !opened {
-			cancel()
-			h.openChatAgents.Delete(d.ID)
-			h.openChatTx.Delete(d.ID)
-			h.openChats.Delete(d.ID)
-		}
-	}()
+	s := newChatSession(h, d.ID, uri)
+	syncComp := syncComponent{h: h, tab: s.tab, session: s}
 
 	// Create per-session spawner for sub-agent support.
 	sessionKey := d.ID
@@ -1525,7 +1645,6 @@ func (h *aiEditorHandler) newChat(
 	)
 
 	// Build command adapter with session-aware overrides.
-	var comp *dialoguetui.Component
 	adapter := newCommandAdapter(commandAdapterDeps{
 		handler:       cmdShell,
 		dialogueID:    d.ID,
@@ -1545,36 +1664,12 @@ func (h *aiEditorHandler) newChat(
 		cwd:           h.cwd,
 		git:           h.git,
 		reviewContext: h.reviewContextLines,
-		mu:            mu,
-		comp:          &comp,
-		interrupter:   h.p,
+		session:       s,
 	})
+	s.commands = adapter
+	s.publish(chatEvent{Kind: chatEventHistory, History: d.Messages})
 
-	if uri == (workspaceapi.URI{}) {
-		uri, err = getModelUri(d.ID, model)
-		if err != nil {
-			return nil, err
-		}
-	}
-	comp = dialoguetui.NewComponent(h.dialogueConfig(mu))
-	syncComp := syncComponent{mu: mu, comp: comp, h: h, tab: newTabStatusReporter(h.wm, uri, h.n)}
-
-	// Replay dialogue history.
-	pendingTools := make(map[string]llmapi.ToolCall)
-	for _, msg := range d.Messages {
-		addMessage(comp, msg, pendingTools)
-	}
-
-	dhandler, tx, rx := dialoguetui.Handler(ctx, mu, comp, h.p,
-		dialoguetui.WithCommands(adapter),
-		dialoguetui.WithContextCompleter(newContextCompleter(h.fs, h.parser)),
-		dialoguetui.WithAttachmentOpener(attachmentPreviewer{h}),
-		dialoguetui.WithToolCallOpener(newToolCallPreviewer(h)),
-		dialoguetui.WithCloseFunc(cancel),
-	)
-
-	// Build the agent registry now that tx is available for ask_user.
-	prompter := &tuiPrompter{tx: tx, chat: syncComp}
+	prompter := &tuiPrompter{chat: syncComp}
 	askUser := agentools.NewAskUser(prompter)
 	requestSkill := agentools.NewRequestSkill(prompter)
 	exitPlan := agentools.NewExitPlan(h.plansDir, prompter)
@@ -1598,7 +1693,7 @@ func (h *aiEditorHandler) newChat(
 	sessionTools := agentools.SessionTools(spawner, spawner.ListAgents(), childEvents, h.skillRegistry)
 	skillTool := agentools.NewSkillTool(h.skillRegistry, spawner, childEvents)
 	taskStore := taskstore.New()
-	progressUpdater := newTUIProgressUpdater(tx, syncComp.tab)
+	progressUpdater := newTUIProgressUpdater(s.tx, s.tab)
 	taskTools := agentools.NewTaskTools(taskStore, progressUpdater)
 	allTools := make([]agent.Tool, 0, len(baseTools)+len(sessionTools)+len(taskTools)+5)
 	allTools = append(allTools, baseTools...)
@@ -1608,9 +1703,9 @@ func (h *aiEditorHandler) newChat(
 	allTools = append(allTools, exitPlan)
 	allTools = append(allTools, skillTool) // overrides nil-spawner skill tool from baseTools
 	allTools = append(allTools, taskTools...)
-	webBrowser := h.webBrowser(d.ID)
-	if webBrowser != nil {
-		allTools = append(allTools, webBrowser)
+	s.webBrowser = h.webBrowser(d.ID)
+	if s.webBrowser != nil {
+		allTools = append(allTools, s.webBrowser)
 	}
 	chatRegistry := agent.NewRegistry(allTools...)
 	chatRegistry.AddOverrides(h.toolRegistry.Overrides())
@@ -1636,8 +1731,6 @@ func (h *aiEditorHandler) newChat(
 	spawner.SetHooks(h.hookRunner)
 	spawner.SetAttribution(h.attribution)
 
-	h.openChats.Store(d.ID, syncComp)
-
 	chatAgent = agent.NewAgent(
 		backendService, chatRegistry, h.skillRegistry,
 		h.dialogueStore, memRecaller, agent.Config{
@@ -1662,6 +1755,7 @@ func (h *aiEditorHandler) newChat(
 		chatAgent.SetMaxOutputTokens(maxTokens)
 	}
 	adapter.agent = chatAgent
+	s.agent = chatAgent
 	syncComp.setStatusBarState(func(s *dialoguetui.StatusBarState) {
 		s.Conversation = d.ID
 	})
@@ -1670,44 +1764,19 @@ func (h *aiEditorHandler) newChat(
 	// the path that opens the tab.
 	go debug.CapturePanicReport(func() {
 		syncComp.seedContextTokens(h.llmSvc, chatAgent.ModelEntry(), d.Messages)
-		_ = h.p.Interrupt(ctx)
+		_ = h.p.Interrupt(s.ctx)
 	})
-	h.openChatAgents.Store(d.ID, chatAgent)
-	h.openChatTx.Store(d.ID, tx)
 	h.subscribeTools(d.ID, baseTools, chatRegistry, cmdRegistry)
-	h.warnUnavailableMCPServers(tx)
+	s.run()
+	h.warnUnavailableMCPServers(s.tx)
 
-	handler, msgRx := h.wrapDialogueHandler(ctx, syncComp, dhandler, rx, d.ID)
 	go debug.CapturePanicReport(func() {
-		createAgentCompletions(ctx, cancel, tx, msgRx, chatAgent, spawner, childEvents, h.skillRegistry, d.ID, syncComp,
+		createAgentCompletions(s.ctx, s.cancel, s.tx, s.requests, chatAgent, spawner, childEvents,
+			h.skillRegistry, d.ID, syncComp,
 			makeOnCompacted(h.dialogueStore, adapter.compactFn),
 			h.dialogueStore)
 	})
-
-	bhandler := browserapi.FuncHandler(handler, func() error {
-		cancel()
-		mu.Lock()
-		_ = comp.Close()
-		mu.Unlock()
-		if webBrowser != nil {
-			webBrowser.Close()
-		}
-		h.unsubscribeTools(d.ID)
-		h.openChatAgents.Delete(d.ID)
-		h.openChatTx.Delete(d.ID)
-		h.openChats.Delete(d.ID)
-		// SessionEnd hook (reason=tab_close): fire-and-forget.
-		// Purely observational; no result fields are honored.
-		h.hookRunner.Run(h.ctx, hooks.Payload{
-			SessionID:     d.ID,
-			Cwd:           h.cwd,
-			HookEventName: hooks.EventSessionEnd,
-			Reason:        "tab_close",
-		})
-		return nil
-	})
-	opened = true
-	return &chat{content: bhandler, id: d.ID, uri: uri}, nil
+	return s, nil
 }
 
 // openChatTab creates the rune-agent chat tab. The visible tab label is the
@@ -2016,16 +2085,8 @@ func (h *aiEditorHandler) wrapDialogueHandler(
 				mu.Lock()
 				cancel = cancelFn
 				mu.Unlock()
-				finalized := finalizeSubmitMessage(msg)
-				parts := h.attachmentContentParts(reqCtx, finalized.Attachments)
 				select {
-				case ret <- completionRequest{
-					displayText: finalized.DisplayText,
-					modelText:   finalized.ModelText,
-					skillName:   msg.SkillName,
-					attachments: parts,
-					ctx:         reqCtx,
-				}:
+				case ret <- h.newCompletionRequest(reqCtx, msg):
 				case <-ctx.Done():
 					return
 				}
@@ -2065,6 +2126,20 @@ func (h *aiEditorHandler) wrapDialogueHandler(
 	}), ret
 }
 
+// newCompletionRequest returns the request that answers msg within ctx.
+func (h *aiEditorHandler) newCompletionRequest(
+	ctx context.Context, msg dialoguetui.SubmitMessage,
+) completionRequest {
+	finalized := finalizeSubmitMessage(msg)
+	return completionRequest{
+		displayText: finalized.DisplayText,
+		modelText:   finalized.ModelText,
+		skillName:   msg.SkillName,
+		attachments: h.attachmentContentParts(ctx, finalized.Attachments),
+		ctx:         ctx,
+	}
+}
+
 // parseDialogueID extracts a user-provided dialogue ID from the
 // command args. Returns empty string when no ID was provided,
 // signaling that a new unique ID should be generated.
@@ -2095,6 +2170,12 @@ func filterAllFlag(args []string) (out []string) {
 		}
 	}
 	return out
+}
+
+// withoutFlag returns args with flag removed, and whether it was there.
+func withoutFlag(args []string, flag string) ([]string, bool) {
+	out := slices.DeleteFunc(slices.Clone(args), func(a string) bool { return a == flag })
+	return out, len(out) != len(args)
 }
 
 // baseDialogueID strips the archive suffix from an archived dialogue ID.
@@ -2515,6 +2596,16 @@ func createAgentCompletions(
 		case <-ctx.Done():
 			return
 		}
+		// Signal that the agent is idle; the handler will drain any
+		// queued follow-up messages at this point.
+		idle := func() bool {
+			select {
+			case tx <- dialoguetui.MessageEvent{Type: dialoguetui.MessageEventBusy, Busy: false}:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
 		turnStart := time.Now()
 		syncComp.beginTurn(turnStart)
 		endTurn := syncComp.endTurn
@@ -2546,6 +2637,9 @@ func createAgentCompletions(
 			}
 			syncComp.tab.failed(reason)
 			endTurn()
+			if !idle() {
+				return
+			}
 			continue
 		}
 
@@ -2581,6 +2675,9 @@ func createAgentCompletions(
 					}
 					syncComp.tab.failed(fmt.Sprintf("skill %s: %v", skill.Name, skillErr))
 					endTurn()
+					if !idle() {
+						return
+					}
 					continue
 				}
 				it = newAgentSkillEvents(skill, handle, tx, syncComp.tab,
@@ -2856,11 +2953,7 @@ func createAgentCompletions(
 			}
 		}()
 		endTurn()
-		// Signal that the agent is idle; the handler will drain
-		// any queued follow-up messages at this point.
-		select {
-		case tx <- dialoguetui.MessageEvent{Type: dialoguetui.MessageEventBusy, Busy: false}:
-		case <-ctx.Done():
+		if !idle() {
 			return
 		}
 	}

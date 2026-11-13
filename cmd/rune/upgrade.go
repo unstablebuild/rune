@@ -97,6 +97,7 @@ func scheduleUpgradeCheck(
 		Storage:          i.Storage(),
 		Notifications:    i.Notifications(),
 		Prompter:         i.Prompter(),
+		Starter:          consoleUpgradeStarter{ide: i},
 		ScheduleNextTick: scheduleNextTick,
 		CheckPeriod:      upCfg.checkPeriod,
 	})
@@ -113,6 +114,17 @@ func scheduleUpgradeCheck(
 		mgr.Start(ctx)
 	}
 	return mgr
+}
+
+// consoleUpgradeStarter runs the prompt's upgrade as the `upgrade`
+// console command, without asking again since the prompt already did.
+type consoleUpgradeStarter struct {
+	ide *ide.IDE
+}
+
+func (s consoleUpgradeStarter) StartUpgrade() error {
+	return s.ide.DispatchCommand("console",
+		upgradeconsole.CommandName, upgradeconsole.YesFlag)
 }
 
 // registerUpgradeCommand registers the `upgrade` console command

@@ -28,13 +28,16 @@ import (
 
 // expandTarget expands one alias target (a single step body) into an
 // argv. base provides FILE/WORD/builtin/user values; positional $1..$9
-// and chain captures overlay on top.
+// and chain captures overlay on top. When parsesLine, the command the
+// target runs parses the line its args join into, so they are expanded
+// as that line.
 func expandTarget(
 	ctx context.Context,
 	target string,
 	args []string,
 	base cmdenv.Source,
 	chain *Chain,
+	parsesLine bool,
 ) (argv []string, referenced map[int]struct{}, err error) {
 	env := overlay(args, base, chain)
 	if head, rest, ok := splitPluginPrefix(target); ok {
@@ -50,8 +53,22 @@ func expandTarget(
 		return []string{head, expanded}, referenced, nil
 	}
 	tokens := command.SplitCommandLine(target)
-	argv = make([]string, 0, len(tokens))
 	referenced = make(map[int]struct{})
+	if parsesLine && len(tokens) > 0 {
+		for _, tok := range tokens {
+			raw := command.UnquoteToken(tok)
+			if err := checkReferences(raw, len(args)); err != nil {
+				return nil, nil, err
+			}
+			recordReferences(raw, len(args), referenced)
+		}
+		rest, err := expandShellArgs(ctx, tokens[1:], env)
+		if err != nil {
+			return nil, nil, err
+		}
+		return append([]string{command.UnquoteToken(tokens[0])}, rest...), referenced, nil
+	}
+	argv = make([]string, 0, len(tokens))
 	for _, tok := range tokens {
 		raw := command.UnquoteToken(tok)
 		if err := checkReferences(raw, len(args)); err != nil {

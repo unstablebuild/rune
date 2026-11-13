@@ -2617,7 +2617,9 @@ func (h *workspaceManagerHandler) buildExtensions(
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("new command authorizer: %w", err)
 	}
 	var graphics thandlerrpc.GraphicsConfig
-	res := extension.BrowserResources(ex.Browser(), h.events.newPublisher(uri), graphics)
+	// The tab manager ex was created with, under its terminal aliases.
+	extBrowser := statusInboxBrowser{Browser: ex.Browser(), tm: ex.tabAliases.TabManager}
+	res := extension.BrowserResources(extBrowser, h.events.newPublisher(uri), graphics)
 	res = extension.MergeResourceMap(res,
 		extension.EditorResources(ex.Browser(), ed, h.events.newPublisher(uri), graphics))
 	res = extension.MergeResourceMap(res,
@@ -2757,6 +2759,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 		Parser:        parser,
 		OnLinkClick:   ex.onLinkClick,
 		Chat:          chat,
+		Status:        ex.tm,
 	})
 	if err := ex.editorObserver.SubscribeCommand(acpcmd.Manual(), ex.acpChats); err != nil {
 		log.Errorf("subscribe %s command: %v", acpcmd.Name, err)
@@ -4103,8 +4106,8 @@ const statusMinWidthPercent = 60
 // focusStatusEntry switches to the workspace at ws and shows the tab at
 // uri in the focused window, or focuses the window already showing it.
 // For what is no tab, it focuses the task or the window showing it, or
-// shows the hidden companion terminal. It fails when the workspace or
-// the tab is gone.
+// shows the hidden companion terminal, or opens it again in a tab when
+// an extension opens uri. It fails when the workspace or the tab is gone.
 func (h *workspaceManagerHandler) focusStatusEntry(ws, uri workspaceapi.URI) error {
 	slot, _, ok := statusWorkspaces{h}.Workspace(ws)
 	if !ok {
@@ -4125,10 +4128,9 @@ func (h *workspaceManagerHandler) focusStatusEntry(ws, uri workspaceapi.URI) err
 		b.SetFocus(win)
 		return nil
 	}
-	idx := slices.IndexFunc(b.Tabs(), func(t *browser.Tab) bool {
-		return t.URI().Equal(uri)
-	})
-	if !b.SetContentToTab(b.Focus(), idx) {
+	// Not by URI.Equal, which takes the views of a resource that differ
+	// in their query for one.
+	if !b.SetContentToTab(b.Focus(), slices.Index(b.Tabs(), tab)) {
 		return errors.New("show tab")
 	}
 	return nil
@@ -4297,6 +4299,16 @@ func focusStatusSource(e *ex, uri workspaceapi.URI) error {
 		// for open and closed again.
 		e.companionTerminalWin = nil
 		return e.toggleCompanionTerminal()
+	}
+	if e.acpChats != nil {
+		if ok, err := e.acpChats.ShowStatus(uri); ok {
+			return err
+		}
+	}
+	if opener, ok := e.comp.ResourceOpener(uri.Scheme()); ok {
+		// Such as an extension's program that goes on working once its
+		// tab closed.
+		return e.openResourceTab(opener, uri, e.invokeWindow())
 	}
 	return nil
 }
@@ -4475,6 +4487,11 @@ func (h *workspaceManagerHandler) closeStatusSource(ws, uri workspaceapi.URI) er
 	}
 	if _, ok := hiddenCompanionTerminal(e, uri); ok {
 		return nil
+	}
+	if e.acpChats != nil {
+		if ok, err := e.acpChats.CloseStatus(uri); ok {
+			return err
+		}
 	}
 	win, ok := statusWindowOf(e, uri)
 	if !ok {
@@ -5352,6 +5369,24 @@ func (f *workspaceTabManager) statusWorkspace() (workspaceapi.URI, bool) {
 		return workspaceapi.URI{}, false
 	}
 	return f.parent.homeURI, f.parent.empty != nil && !f.parent.empty.closed
+}
+
+// statusInboxBrowser is the browser.Browser extensions get, whose
+// program status reports go through tm, which keeps those for a uri that
+// is no tab for the status inbox: an extension's program can go on
+// working once its tab closes, and the inbox opens it again. Like tm's,
+// its SetTabStatus and EndTabStatus may be called from any goroutine.
+type statusInboxBrowser struct {
+	browser.Browser
+	tm browser.TabManager
+}
+
+func (b statusInboxBrowser) SetTabStatus(uri workspaceapi.URI, report programstatus.Report) error {
+	return b.tm.SetTabStatus(uri, report)
+}
+
+func (b statusInboxBrowser) EndTabStatus(uri workspaceapi.URI) error {
+	return b.tm.EndTabStatus(uri)
 }
 
 func lspCommandsConfig(

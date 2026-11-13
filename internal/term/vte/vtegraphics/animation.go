@@ -79,7 +79,7 @@ func (a *animation) changeGap(f *frame, gap int32) {
 // fillColor fills the canvas with a 0xRRGGBBAA straight-alpha colour.
 func fillColor(canvas *image.RGBA, rgba uint32) {
 	px := [4]byte{byte(rgba >> 24), byte(rgba >> 16), byte(rgba >> 8), byte(rgba)}
-	premultiply(px[:], px[:])
+	premultiply(px[:])
 	for i := 0; i+3 < len(canvas.Pix); i += 4 {
 		copy(canvas.Pix[i:i+4], px[:])
 	}

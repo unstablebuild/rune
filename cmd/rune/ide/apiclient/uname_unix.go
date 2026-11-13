@@ -14,15 +14,29 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//go:build darwin || freebsd || netbsd || openbsd
+//go:build unix
 
 package apiclient
 
-func utsnameToString(unameArray [256]byte) string {
-	var byteString [256]byte
-	var indexLength int
-	for ; unameArray[indexLength] != 0; indexLength++ {
-		byteString[indexLength] = uint8(unameArray[indexLength])
+import (
+	"fmt"
+	"runtime"
+
+	"golang.org/x/sys/unix"
+)
+
+func uname() (sysinfo, error) {
+	var data unix.Utsname
+	err := unix.Uname(&data)
+	if err != nil {
+		return sysinfo{}, fmt.Errorf("uname: %v", err)
 	}
-	return string(byteString[:indexLength])
+	return sysinfo{
+		Name:    utsnameToString(data.Sysname[:]),
+		Node:    utsnameToString(data.Nodename[:]),
+		Release: utsnameToString(data.Release[:]),
+		Version: utsnameToString(data.Version[:]),
+		Machine: utsnameToString(data.Machine[:]),
+		OS:      runtime.GOOS,
+	}, nil
 }

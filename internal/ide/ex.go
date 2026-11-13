@@ -133,8 +133,8 @@ type ex struct {
 	clip           clipboard.Register
 	ed             text.Editor
 	editorObserver *commandRegisterObserver
-	// rawArgsCommands holds the subscribed commands whose args the
-	// prompt dispatches as typed; see commandAll.rawArgs.
+	// rawArgsCommands holds the commands whose args the prompt
+	// dispatches as typed; see commandAll.rawArgs.
 	rawArgsCommands map[string]bool
 	parser          syntaxapi.Parser
 	svc             vctrl.Service
@@ -316,6 +316,7 @@ func newEx(
 ) (e *ex, err error) {
 	e = new(ex)
 	e.svc = svc
+	e.debugCommands = debugCommands
 	err = e.init(edFactory, m, storage, notifications, uri,
 		emulatorConfig, pluginBarConfig, publishEvent, initialVTECapacity, clip, macro,
 		dispatchOnPreview, tm, parser, promptEditor, nameGen, opts...)
@@ -326,7 +327,6 @@ func newEx(
 		return
 	}
 	e.commandObserver = commandObserver
-	e.debugCommands = debugCommands
 	e.commandPromptCfg = commandPromptCfg
 	e.container.Restyle(notificationsStyle)
 	e.editorModeModal = editorModeModal
@@ -484,12 +484,8 @@ func (e *ex) init(
 
 func (e *ex) subscribeCommands() error {
 	var ret error
-	e.rawArgsCommands = make(map[string]bool)
 	subscribe := func(name string, man commandAll) {
 		man.man.Name = name
-		if man.rawArgs {
-			e.rawArgsCommands[name] = true
-		}
 		err := e.editorObserver.SubscribeCommand(man.man, text.FuncCommandHandler(
 			func(ctx context.Context, cmd textapi.Command) error {
 				return man.handler(e, ctx, cmd.Args...)
@@ -641,8 +637,22 @@ func (e *ex) doInit(
 		cmdBrowserCfg.TabBarHeight = wmOriginY
 	}
 	e.cmdV.C = browser.NewComponent(cmdBrowserCfg)
+	e.rawArgsCommands = make(map[string]bool)
+	var rawArgs []string
+	tables := []map[string]commandAll{exCommands}
+	if e.debugCommands {
+		tables = append(tables, exDebugCommands)
+	}
+	for _, table := range tables {
+		for name, man := range table {
+			if man.rawArgs {
+				e.rawArgsCommands[name] = true
+				rawArgs = append(rawArgs, name)
+			}
+		}
+	}
 	e.aliasExpander = idecmd.NewExpander(
-		e.config.CommandAliases, e.comp.DispatchEnv(),
+		e.config.CommandAliases, e.comp.DispatchEnv(), rawArgs,
 	)
 	return
 }

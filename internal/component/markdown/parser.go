@@ -305,7 +305,11 @@ func (w *blockWalker) parseInlineContentSkipFirst(n ast.Node) textRun {
 func (w *blockWalker) walkInlineSingle(child ast.Node, style inlineStyle, run *textRun) {
 	switch node := child.(type) {
 	case *ast.Text:
-		text := string(node.Segment.Value(w.source))
+		value := node.Segment.Value(w.source)
+		if !node.IsRaw() {
+			value = util.UnescapePunctuations(value)
+		}
+		text := string(value)
 		if node.SoftLineBreak() || node.HardLineBreak() {
 			text += " "
 		}

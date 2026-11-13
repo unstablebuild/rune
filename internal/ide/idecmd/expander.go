@@ -43,6 +43,7 @@ import (
 type Expander struct {
 	aliases map[string]text.CommandAlias
 	env     cmdenv.Source
+	rawArgs map[string]bool
 }
 
 // NewExpander builds an Expander backed by aliases. env is the
@@ -52,10 +53,20 @@ type Expander struct {
 // fresh across alias steps. Both arguments may be nil: a nil map
 // disables alias resolution (every command is treated as a leaf),
 // and a nil env disables shell-style variable expansion.
+//
+// rawArgs names the commands besides ! and !! that parse the line their
+// args join into, as a shell does (see command.Manual.RawArgs). Their
+// args are expanded as that line, like the body of ! and !!, so a
+// substituted value lands in it as data.
 func NewExpander(
 	aliases map[string]text.CommandAlias, env cmdenv.Source,
+	rawArgs []string,
 ) *Expander {
-	return &Expander{aliases: aliases, env: env}
+	set := make(map[string]bool, len(rawArgs))
+	for _, name := range rawArgs {
+		set[name] = true
+	}
+	return &Expander{aliases: aliases, env: env, rawArgs: set}
 }
 
 // ResolveAlias returns the alias registered under name, if any.
@@ -162,8 +173,8 @@ func (e *Expander) expandLeaf(
 		out []string
 		err error
 	)
-	if isPluginName(cmd.Name) {
-		out, err = e.expandPluginArgs(ctx, cmd.Args)
+	if isPluginName(cmd.Name) || e.rawArgs[cmd.Name] {
+		out, err = expandShellArgs(ctx, cmd.Args, overlay(nil, e.env, ChainFromContext(ctx)))
 	} else {
 		out, err = e.expandArgs(ctx, cmd.Args)
 	}
@@ -174,19 +185,29 @@ func (e *Expander) expandLeaf(
 	return iterator.FromSlice([]textapi.Command{cmd}), nil
 }
 
-// expandPluginArgs expands the args of a ! or !! command, which the
-// handler joins into one shell line, as that line. It yields the args
-// as given when no value is substituted, the words of the line when
-// the shell would pass them as written so the handler can still exec
-// the program directly, and otherwise the line as a single arg.
-func (e *Expander) expandPluginArgs(
-	ctx context.Context, args []string,
+// parsesLine reports whether the alias step target runs a command that
+// parses the line its args join into.
+func (e *Expander) parsesLine(target string) bool {
+	if isPluginTarget(target) {
+		return true
+	}
+	tokens := command.SplitCommandLine(target)
+	return len(tokens) > 0 && e.rawArgs[command.UnquoteToken(tokens[0])]
+}
+
+// expandShellArgs expands args, which their command joins into one
+// shell line, as that line against env. It yields the args as given
+// when no value is substituted, the words of the line when the shell
+// would pass them as written so the handler can still exec the program
+// directly, and otherwise the line as a single arg.
+func expandShellArgs(
+	ctx context.Context, args []string, env cmdenv.Source,
 ) ([]string, error) {
 	if len(args) == 0 {
 		return args, nil
 	}
 	line := strings.Join(args, " ")
-	expanded, err := expandPluginBody(ctx, line, overlay(nil, e.env, ChainFromContext(ctx)))
+	expanded, err := expandPluginBody(ctx, line, env)
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +266,8 @@ func (it *aliasIterator) Next(ctx context.Context) (textapi.Command, bool) {
 		if isPluginTarget(target) {
 			stepCtx = cmdenv.WithCommandSubstitution(stepCtx)
 		}
-		argv, _, err := expandTarget(stepCtx, target, it.args, it.exp.env, it.chain)
+		parsesLine := it.exp.parsesLine(target)
+		argv, _, err := expandTarget(stepCtx, target, it.args, it.exp.env, it.chain, parsesLine)
 		if err != nil {
 			it.err = fmt.Errorf("%s: %s", target, err)
 			return textapi.Command{}, false
@@ -256,7 +278,7 @@ func (it *aliasIterator) Next(ctx context.Context) (textapi.Command, bool) {
 		out := it.template
 		out.Name = argv[0]
 		remaining := it.remaining
-		if isPluginTarget(target) {
+		if parsesLine {
 			// The handler joins these into the shell line after
 			// the body, where they must be data as the body's
 			// substituted values are.
