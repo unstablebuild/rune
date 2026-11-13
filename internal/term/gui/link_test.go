@@ -2182,23 +2182,27 @@ func TestSchemeLinkPositions(t *testing.T) {
 		description string
 		text        string
 		wantPath    string
+		wantURL     string
 		wantLine    int
 		wantCol     int
 	}{
 		{description: "a file url with no position", text: "file:///x/y.go",
-			wantPath: "/x/y.go"},
+			wantPath: "/x/y.go", wantURL: "file:///x/y.go"},
 		{description: "a file url with a line", text: "file:///x/y.go:7",
-			wantPath: "/x/y.go", wantLine: 7, wantCol: 1},
+			wantPath: "/x/y.go", wantURL: "file:///x/y.go", wantLine: 7, wantCol: 1},
 		{description: "a file url with a line and a column",
-			text: "file:///x/y.go:7:2", wantPath: "/x/y.go", wantLine: 7, wantCol: 2},
+			text: "file:///x/y.go:7:2", wantPath: "/x/y.go",
+			wantURL: "file:///x/y.go", wantLine: 7, wantCol: 2},
 		{description: "a fragment names a line and a column",
-			text: "file:///x/y.go#42:5", wantPath: "/x/y.go", wantLine: 42, wantCol: 5},
+			text: "file:///x/y.go#42:5", wantPath: "/x/y.go",
+			wantURL: "file:///x/y.go", wantLine: 42, wantCol: 5},
 		{description: "a fragment names a line", text: "file:///x/y.go#42",
-			wantPath: "/x/y.go", wantLine: 42, wantCol: 1},
+			wantPath: "/x/y.go", wantURL: "file:///x/y.go", wantLine: 42, wantCol: 1},
 		{description: "an ambiguous suffix stays in the path",
-			text: "file:///x/y.go:7:2:4", wantPath: "/x/y.go:7:2:4"},
+			text: "file:///x/y.go:7:2:4", wantPath: "/x/y.go:7:2:4",
+			wantURL: "file:///x/y.go:7:2:4"},
 		{description: "a non-file url carries no position",
-			text: "https://example.com/#42"},
+			text: "https://example.com/#42", wantURL: "https://example.com/#42"},
 	}
 
 	for _, tc := range suite {
@@ -2206,6 +2210,10 @@ func TestSchemeLinkPositions(t *testing.T) {
 			link, ok := schemeLink(tc.text)
 			require.True(t, ok)
 			assert.Equal(t, tc.wantPath, link.Path)
+			// The position is not part of the file's address: a tab
+			// whose URI still carried it would open a second copy of a
+			// file that is already open.
+			assert.Equal(t, tc.wantURL, link.URL.String())
 			assert.Equal(t, tc.wantLine, link.Line)
 			assert.Equal(t, tc.wantCol, link.Col)
 		})
