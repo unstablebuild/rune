@@ -51,6 +51,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	yaml "gopkg.in/yaml.v3"
 	"unstable.build/rune/internal/browser"
+	"unstable.build/rune/internal/clipboardimg"
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/asciiart"
 	"unstable.build/rune/internal/component/imagecomp"
@@ -4437,6 +4438,18 @@ func (c ideConfig) clipboard() clipboard.Register {
 		ret = clipboard.NewInMemory()
 	}
 	return registerhistory.NewClipboard(registerset.New(ret))
+}
+
+// clipboardImage returns the detector for an image on the operating system
+// clipboard, or nil unless the clipboard config is "system". With any other
+// mode Rune's register is not the system clipboard, so an image found there
+// need not be anything the user copied for Rune.
+func (c ideConfig) clipboardImage() clipboardimg.Detector {
+	mode, err := config.MapConfig(c.cfg).GetString("clipboard")
+	if err == nil && mode == "system" {
+		return clipboardimg.System{}
+	}
+	return nil
 }
 
 // metaOpenURLConfig is how a clicked URL is opened.

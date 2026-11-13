@@ -830,6 +830,7 @@ func (h *workspaceManagerHandler) init(
 	if err != nil {
 		return fmt.Errorf("new ex: %w", err)
 	}
+	h.empty.clipImage = cfg.clipboardImage()
 	h.empty.sponsorsURL = h.sponsorsURL
 	h.empty.statusBars = homeStatusBars
 	tm.tm = h.empty.Browser()
@@ -2098,6 +2099,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		}
 		return nil, fmt.Errorf("new ex: %w", err)
 	}
+	ex.clipImage = cfg.clipboardImage()
 	ex.sponsorsURL = h.sponsorsURL
 	ex.statusBars = statusBars
 	if symbolDB != nil {

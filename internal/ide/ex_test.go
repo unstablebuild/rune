@@ -35,6 +35,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -9621,6 +9622,85 @@ func newExForTestingFileWorkspace(
 	return e, fileScheme, tempDir
 }
 
+type fakeImageDetector bool
+
+func (f fakeImageDetector) HasImage() bool { return bool(f) }
+
+func TestPasteFromClipboardImage(t *testing.T) {
+	ctrlV := term.Event{Type: term.EventKey, Ch: 'v', Mod: term.ModCtrl, Raw: []byte{0x16}}
+
+	tests := []struct {
+		name       string
+		text       string
+		hasImage   bool
+		noDetector bool
+		terminal   bool
+		prompt     bool
+		want       []term.Event
+		wantNotice bool
+	}{
+		{name: "terminal with image and no text forwards ctrl-v",
+			hasImage: true, terminal: true, want: []term.Event{ctrlV}},
+		{name: "terminal with image but no detector notifies",
+			hasImage: true, noDetector: true, terminal: true, wantNotice: true},
+		{name: "terminal with no text and no image notifies",
+			terminal: true, wantNotice: true},
+		{name: "terminal with text and image pastes the text",
+			text: "a", hasImage: true, terminal: true,
+			want: []term.Event{
+				{Type: term.EventPasteStart},
+				{Type: term.EventKey, Ch: 'a', Raw: []byte("a")},
+				{Type: term.EventPasteEnd},
+			}},
+		{name: "terminal under the prompt with image does not forward",
+			hasImage: true, terminal: true, prompt: true, wantNotice: true},
+		{name: "editor with image and no text notifies",
+			hasImage: true, wantNotice: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
+			defer b.Close()
+			b.Resize(80, 20)
+			clip := clipboard.NewInMemory()
+			require.NoError(t, clip.Copy(clipboard.DefaultRegisterID,
+				clipboard.Data{Text: tc.text}))
+			b.ex.clip = clip
+			if !tc.noDetector {
+				b.ex.clipImage = fakeImageDetector(tc.hasImage)
+			}
+
+			var session *testVte
+			if tc.terminal {
+				require.NoError(t, b.ex.terminalnewtab(bgctx, "terminal output"))
+				content, err := b.ex.invokeWindow().Content()
+				require.NoError(t, err)
+				tab, ok := content.(*browser.Tab)
+				require.True(t, ok)
+				session, ok = tab.Handler().(*testVte)
+				require.True(t, ok)
+			}
+			if tc.prompt {
+				b.ex.Handle(term.Event{Type: term.EventKey, Ch: testCommandKey.Ch,
+					Mod: testCommandKey.Mod})
+				require.True(t, b.ex.promptFocused())
+			}
+
+			require.NoError(t, b.ex.pasteFromClipboard(bgctx))
+
+			if session != nil {
+				assert.Equal(t, tc.want, session.handledEvents())
+			}
+			w := newCoveringImageWriter(80, 20)
+			b.ex.container.Draw(w)
+			require.NoError(t, w.Flush())
+			// the notification wraps inside its frame
+			words := regexp.MustCompile(`[^a-z]+`).ReplaceAllString(w.String(), " ")
+			assert.Equal(t, tc.wantNotice, strings.Contains(words, "nothing to paste"))
+		})
+	}
+}
+
 func TestCopyToClipboard(t *testing.T) {
 	clip := clipboard.NewInMemory()
 	testCopyToClipboard(t, clip, func(ed text.Editor, opts ...text.Option) (
@@ -9767,6 +9847,9 @@ type testVte struct {
 	isComplete bool
 	uri        workspaceapi.URI
 	title      string
+
+	handledMu sync.Mutex
+	handled   []term.Event
 }
 
 func newTestVte() *testVte {
@@ -9781,7 +9864,16 @@ func newTestVteWithConfig(initialCmd []string) *testVte {
 }
 
 func (t *testVte) Handle(ev term.Event) (bool, bool) {
+	t.handledMu.Lock()
+	defer t.handledMu.Unlock()
+	t.handled = append(t.handled, ev)
 	return false, false
+}
+
+func (t *testVte) handledEvents() []term.Event {
+	t.handledMu.Lock()
+	defer t.handledMu.Unlock()
+	return slices.Clone(t.handled)
 }
 
 func (t *testVte) SeekUp() bool {
