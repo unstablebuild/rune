@@ -1936,6 +1936,69 @@ func TestRowScannerKeepsTheChromeOutOfABarePath(t *testing.T) {
 	}, got)
 }
 
+func TestRowScannerReadsAWideRunePath(t *testing.T) {
+	// A wide rune owns two cells, and the second carries no rune of its
+	// own. The run must reach back past it, or the path appears to
+	// begin at its own extension.
+	suite := []struct {
+		description string
+		row         string
+		expected    []linkSpan
+	}{
+		{
+			description: "a wide rune in the name",
+			row:         "日本.go:12",
+			expected: []linkSpan{
+				{y: 0, x0: 0, x1: 10, kind: linkPath, link: Link{
+					Path: "日本.go", Line: 12, Col: 1,
+				}},
+			},
+		},
+		{
+			description: "a wide rune with a line and a column",
+			row:         "日本.go:3:4",
+			expected: []linkSpan{
+				{y: 0, x0: 0, x1: 11, kind: linkPath, link: Link{
+					Path: "日本.go", Line: 3, Col: 4,
+				}},
+			},
+		},
+		{
+			description: "a wide rune against the chrome",
+			row:         "╭日本.go:12",
+			expected: []linkSpan{
+				{y: 0, x0: 2, x1: 12, kind: linkPath, link: Link{
+					Path: "日本.go", Line: 12, Col: 1,
+				}},
+			},
+		},
+	}
+
+	for _, tc := range suite {
+		t.Run(tc.description, func(t *testing.T) {
+			got := new(rowScanner).scanRow(0, cellRow(tc.row), nil)
+			assert.Equal(t, tc.expected, got)
+		})
+	}
+}
+
+func TestRowScannerJoinsAWideRunePositionAcrossRows(t *testing.T) {
+	// The position the terminal broke at the margin is read from the
+	// joined text, which must not carry the empty cell a wide rune
+	// occupies.
+	grid := markWrapped(linkGrid("日本.go:7", "6:7 more"), 0)
+
+	got := new(rowScanner).scan(grid, nil)
+	assert.Equal(t, []linkSpan{
+		{y: 0, x0: 0, x1: 9, kind: linkPath, link: Link{
+			Path: "日本.go", Line: 76, Col: 7,
+		}},
+		{y: 1, x0: 0, x1: 3, kind: linkPath, link: Link{
+			Path: "日本.go", Line: 76, Col: 7,
+		}},
+	}, got)
+}
+
 func TestRowScannerStopsAtTheMarkerBesideAnotherPane(t *testing.T) {
 	const width, paneWidth = 40, 21
 	cells := pane(width, 0, "https://rune.build/aa", "bb")
