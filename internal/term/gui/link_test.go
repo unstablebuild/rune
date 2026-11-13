@@ -945,6 +945,65 @@ func TestRowScannerScanAllRows(t *testing.T) {
 	}, got)
 }
 
+func TestRowScannerDoesNotLinkAHalfPathFromTheRowAbove(t *testing.T) {
+	// A path broken in the middle of its name is not a path relative to
+	// the workspace root. Reading only the second half would open the
+	// wrong file, so it is left unlinked.
+	grid := markWrapped(linkGrid("error in cmd/rune/", "main.go:12:3: boom"), 0)
+
+	got := new(rowScanner).scan(grid, nil)
+	assert.Empty(t, got)
+}
+
+func TestRowScannerStillLinksAPathThatStartsTheRow(t *testing.T) {
+	// The row above ended in ordinary prose, so the path on this row
+	// does start here and must still be linked.
+	grid := markWrapped(linkGrid("plain text here", "main.go:12:3"), 0)
+
+	got := new(rowScanner).scan(grid, nil)
+	assert.Equal(t, []linkSpan{
+		{y: 1, x0: 0, x1: 12, kind: linkPath, link: Link{
+			Path: "main.go", Line: 12, Col: 3,
+		}},
+	}, got)
+}
+
+func TestRowScannerKeepsANeighbouringPaneWhenJoiningAWrappedPath(t *testing.T) {
+	// A wrapped link need not be the last one on its row. Joining it must
+	// not touch the spans a neighbouring pane put after it.
+	const width, paneWidth = 50, 24
+	grid := markWrapped(pane(width, 0, "see a/b.go:1", "2 more"), 0)
+	copy(grid[0][paneWidth:], cellRow("c/d.go:5"))
+
+	got := new(rowScanner).scan(grid, nil)
+	assert.Equal(t, []linkSpan{
+		{y: 0, x0: 4, x1: 12, kind: linkPath, link: Link{
+			Path: "a/b.go", Line: 12, Col: 1,
+		}},
+		{y: 0, x0: paneWidth, x1: paneWidth + 8, kind: linkPath, link: Link{
+			Path: "c/d.go", Line: 5, Col: 1,
+		}},
+		{y: 1, x0: 0, x1: 1, kind: linkPath, link: Link{
+			Path: "a/b.go", Line: 12, Col: 1,
+		}},
+	}, got)
+}
+
+func TestRowScannerKeepsANeighbouringPaneWhenAWrappedURLFails(t *testing.T) {
+	// The wrapped URL never reaches a host, so it is dropped, but the
+	// neighbour's bare path on the same row must survive.
+	const width, paneWidth = 50, 24
+	grid := markWrapped(pane(width, 0, "see https://", ""), 0)
+	copy(grid[0][paneWidth:], cellRow("x a/b.go:12"))
+
+	got := new(rowScanner).scan(grid, nil)
+	assert.Equal(t, []linkSpan{
+		{y: 0, x0: paneWidth + 2, x1: paneWidth + 11, kind: linkPath, link: Link{
+			Path: "a/b.go", Line: 12, Col: 1,
+		}},
+	}, got)
+}
+
 func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 	suite := []struct {
 		description string
@@ -2149,6 +2208,35 @@ func TestSchemeLinkPositions(t *testing.T) {
 			assert.Equal(t, tc.wantPath, link.Path)
 			assert.Equal(t, tc.wantLine, link.Line)
 			assert.Equal(t, tc.wantCol, link.Col)
+		})
+	}
+}
+
+// benchLogGrid builds a frame of log output, which is mostly colons that
+// do not start a position.
+func benchLogGrid(rows, cols int) [][]term.Cell {
+	const line = "2026-11-12T13:51:05Z level=info note: key: value"
+	grid := make([][]term.Cell, rows)
+	for y := range grid {
+		row := cellRow(line)
+		if len(row) > cols {
+			row = row[:cols]
+		}
+		grid[y] = row
+	}
+	return grid
+}
+
+func BenchmarkRowScannerScanLogs(b *testing.B) {
+	for _, frame := range benchFrames {
+		cells := benchLogGrid(frame.rows, frame.cols)
+		b.Run(frame.name, func(b *testing.B) {
+			var s rowScanner
+			var spans []linkSpan
+			b.ReportAllocs()
+			for b.Loop() {
+				spans = s.scan(cells, spans[:0])
+			}
 		})
 	}
 }
