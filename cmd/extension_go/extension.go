@@ -274,9 +274,8 @@ func readGoplsLspPath(cfg config.Config, notify browserapi.Notifications) (strin
 }
 
 // readGoplsSettings reads user-supplied gopls settings from
-// extensions.go.config.gopls and returns them as a map. A nil map is
-// returned when the key is absent so callers can always pass it through
-// to goplsInitializeParams without extra nil checks.
+// extensions.go.config.gopls. It returns nil when the extension has no
+// config or the key is absent, which leaves Rune's defaults in place.
 func readGoplsSettings(cfg config.Config) map[string]any {
 	if cfg == nil {
 		return nil
