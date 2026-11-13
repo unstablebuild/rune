@@ -454,6 +454,151 @@ func TestFileExplorerOpenFile(t *testing.T) {
 	t.Fatalf("expected alpha.go to be opened in a tab")
 }
 
+func TestFileExplorerOpenDirectory(t *testing.T) {
+	newEx := func(t *testing.T) testEx {
+		uri, err := workspaceapi.ParseURI("memory:///")
+		require.NoError(t, err)
+		scheme, err := workspace.NewMemoryScheme(context.Background(), config.NopConfig(), uri)
+		require.NoError(t, err)
+		require.NoError(t, scheme.MkdirAll("/z/b", 0o755))
+		touchTestFile(t, scheme, "/z/b/c.go")
+		for i := range 20 {
+			require.NoError(t, scheme.MkdirAll(fmt.Sprintf("/d%02d", i), 0o755))
+			touchTestFile(t, scheme, fmt.Sprintf("/d%02d/e.go", i))
+			touchTestFile(t, scheme, fmt.Sprintf("/f%02d.go", i))
+		}
+		// A real editor, since the test asserts on scrolling.
+		ed := vi.Editor(vi.WithWorkspaceCommandRegistry(uri, texttest.NopWorkspaceRegistry()))
+		b := newExForTestingWithWorkspace(t, workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule),
+			ed, vte.DefaultConfig(), nopPublishEvent, clipboard.NewInMemory())
+		t.Cleanup(func() { _ = b.Close() })
+		b.Resize(100, 30)
+		return b
+	}
+	// Rows: d00..d19 (0-19), z/ (20), b/ (21), c.go (22), f00.go..f19.go.
+	const bRow = 21
+	requireRevealed := func(t *testing.T, b testEx) {
+		t.Helper()
+		focus, _ := b.comp.Focus()
+		require.Equal(t, b.fileExplorerWin, focus)
+		h := b.fileExplorerHandler
+		var expanded []string
+		for _, uri := range h.comp.ExpandedDirectories() {
+			expanded = append(expanded, uri.String())
+		}
+		require.Equal(t, []string{"memory:///z", "memory:///z/b"}, expanded)
+		require.Equal(t, bRow, h.ed.CursorAtScroll().Y)
+		want := min(bRow-h.contentHeight()/2, h.ed.MaxSeekOffset())
+		require.Positive(t, want)
+		require.Equal(t, want, h.ed.SeekOffset())
+	}
+
+	entries := []struct {
+		name string
+		open func(b testEx, path string) error
+	}{
+		{":e", func(b testEx, path string) error { return b.editFiles(context.Background(), path) }},
+		{"extension Show", func(b testEx, path string) error {
+			uri, err := b.parseURIOrWorkspaceURI(path)
+			if err != nil {
+				return err
+			}
+			return newExtensionBrowser(b.ex).Show(uri)
+		}},
+	}
+	for _, entry := range entries {
+		t.Run(entry.name, func(t *testing.T) {
+			t.Run("opens the explorer centered on the directory", func(t *testing.T) {
+				b := newEx(t)
+				require.NoError(t, entry.open(b, "z/b"))
+				requireRevealed(t, b)
+				for _, tab := range b.comp.Browser().Tabs() {
+					require.NotEqual(t, "memory:///z/b", tab.URI().String())
+				}
+			})
+
+			t.Run("recenters after the explorer scrolled elsewhere", func(t *testing.T) {
+				b := newEx(t)
+				require.NoError(t, entry.open(b, "z/b"))
+				require.NoError(t, b.fexplorer(context.Background()))
+				require.Nil(t, b.fileExplorerWin)
+				require.NoError(t, b.fexplorer(context.Background()))
+				for b.fileExplorerHandler.ed.SeekDown() {
+				}
+				require.NoError(t, b.fexplorer(context.Background()))
+				require.Nil(t, b.fileExplorerWin)
+
+				require.NoError(t, entry.open(b, "z/b"))
+				requireRevealed(t, b)
+			})
+
+			t.Run("the root only opens the explorer", func(t *testing.T) {
+				b := newEx(t)
+				require.NoError(t, entry.open(b, "."))
+				focus, _ := b.comp.Focus()
+				require.Equal(t, b.fileExplorerWin, focus)
+				require.Empty(t, b.fileExplorerHandler.comp.ExpandedDirectories())
+				require.Zero(t, b.fileExplorerHandler.ed.CursorAtScroll().Y)
+			})
+
+			t.Run("a directory outside the workspace fails", func(t *testing.T) {
+				b := newEx(t)
+				require.Error(t, entry.open(b, "file:///z/b"))
+				require.Nil(t, b.fileExplorerWin)
+			})
+		})
+	}
+}
+
+func TestFileExplorerFocusedFromAnotherWindowOpensFilesThere(t *testing.T) {
+	tests := []struct {
+		name  string
+		focus func(b testEx) error
+	}{
+		{"fexplorer", func(b testEx) error { return b.fexplorer(context.Background()) }},
+		{"edit a directory", func(b testEx) error { return b.editFiles(context.Background(), "src") }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			uri, err := workspaceapi.ParseURI("memory:///")
+			require.NoError(t, err)
+			scheme, err := workspace.NewMemoryScheme(context.Background(), config.NopConfig(), uri)
+			require.NoError(t, err)
+			require.NoError(t, scheme.MkdirAll("/src", 0o755))
+			touchTestFile(t, scheme, "/src/inner.go")
+			touchTestFile(t, scheme, "alpha.go")
+			touchTestFile(t, scheme, "beta.go")
+			ed := vi.Editor(vi.WithWorkspaceCommandRegistry(uri, texttest.NopWorkspaceRegistry()))
+			b := newExForTestingWithWorkspace(t, workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule),
+				ed, vte.DefaultConfig(), nopPublishEvent, clipboard.NewInMemory())
+			defer b.Close()
+			b.Resize(100, 30)
+
+			require.NoError(t, b.editFiles(context.Background(), "alpha.go"))
+			origin, _ := b.comp.Focus()
+			require.NoError(t, b.dispatchCommand("windowsplit", "down"))
+			require.NoError(t, b.fexplorer(context.Background()))
+			_, err = b.comp.SetFocus(origin)
+			require.NoError(t, err)
+
+			require.NoError(t, tc.focus(b))
+			focus, _ := b.comp.Focus()
+			require.Equal(t, b.fileExplorerWin, focus)
+			h := b.fileExplorerHandler
+			y := slices.IndexFunc(strings.Split(h.buf.String(), "\n"), func(line string) bool {
+				return strings.HasSuffix(line, "beta.go")
+			})
+			require.GreaterOrEqual(t, y, 0)
+			require.True(t, h.ed.SetCursorAtScroll(term.Coordinates{Y: y}))
+			_, handled := b.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+			require.True(t, handled)
+			content, err := origin.Content()
+			require.NoError(t, err)
+			require.Equal(t, "memory:///beta.go", content.(*browser.Tab).URI().String())
+		})
+	}
+}
+
 func TestFileExplorerPreservesWindowSize(t *testing.T) {
 	actions := []struct {
 		name string

@@ -374,7 +374,8 @@ func (i *IDE) RightInset() int {
 	return i.tutorial.inset
 }
 
-// Open opens the given file, in the currently active workspace.
+// Open opens the given file, in the currently active workspace. A
+// directory of the workspace opens in its file explorer.
 func (i *IDE) Open(file workspaceapi.URI) error {
 	return i.workspaceHandler.openURI(file, true /* focus */)
 }
@@ -387,10 +388,11 @@ func (i *IDE) DispatchCommand(cmd string, args ...string) error {
 	return i.workspaceHandler.focusEx().dispatchCommand(cmd, args...)
 }
 
-// Show shows uri in the focused workspace as browser.Browser.Show does.
+// Show shows uri in the focused workspace as browser.Browser.Show does,
+// except that a directory of the workspace opens in its file explorer.
 // It must run on the event loop.
 func (i *IDE) Show(uri workspaceapi.URI) error {
-	return i.workspaceHandler.focusEx().comp.Show(uri)
+	return i.workspaceHandler.focusEx().Show(uri)
 }
 
 // Models returns the models available through the IDE's host-side LLM

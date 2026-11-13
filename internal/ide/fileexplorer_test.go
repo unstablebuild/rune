@@ -1182,6 +1182,90 @@ func TestFileExplorerHandlerPointerLeaves(t *testing.T) {
 	})
 }
 
+func TestFileExplorerHandlerReveal(t *testing.T) {
+	t.Parallel()
+	dirs := map[string][]explorerMockEntry{"/project": nil}
+	for i := range 30 {
+		name := fmt.Sprintf("d%02d", i)
+		dirs["/project"] = append(dirs["/project"], explorerMockEntry{name: name, isDir: true})
+		dirs["/project/"+name] = []explorerMockEntry{{name: "f.go"}}
+	}
+	dirs["/project/d15"] = append(dirs["/project/d15"], explorerMockEntry{name: "sub", isDir: true})
+	dirs["/project/d15/sub"] = []explorerMockEntry{{name: "x.go"}}
+	scrollToEnd := func(h *fileExplorerHandler) {
+		for h.ed.SeekDown() {
+		}
+	}
+
+	tests := []struct {
+		name    string
+		setup   func(h *fileExplorerHandler)
+		dir     string
+		wantRow int
+		// wantOffset computes the expected offset from the handler's
+		// content height and maximum offset after the reveal.
+		wantOffset func(contentHeight, maxOffset int) int
+	}{
+		{
+			name:    "deep row is centered",
+			dir:     "file:///project/d15/sub",
+			wantRow: 16,
+			wantOffset: func(ch, _ int) int {
+				return 16 - ch/2
+			},
+		},
+		{
+			name:       "row near the top scrolls to the top",
+			dir:        "file:///project/d01",
+			wantRow:    1,
+			wantOffset: func(int, int) int { return 0 },
+		},
+		{
+			name:       "row near the end stops at the last offset",
+			dir:        "file:///project/d28",
+			wantRow:    28,
+			wantOffset: func(_, maxOffset int) int { return maxOffset },
+		},
+		{
+			name:    "stale offset is recomputed",
+			setup:   scrollToEnd,
+			dir:     "file:///project/d15/sub",
+			wantRow: 16,
+			wantOffset: func(ch, _ int) int {
+				return 16 - ch/2
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := newTestFileExplorerHandler(t, dirs)
+			if tc.setup != nil {
+				tc.setup(h)
+			}
+			require.NoError(t, h.reveal(mustURI(t, tc.dir)))
+			require.Equal(t, tc.wantRow, h.ed.CursorAtScroll().Y)
+			ch, maxOffset := h.contentHeight(), h.ed.MaxSeekOffset()
+			require.Positive(t, ch)
+			want := tc.wantOffset(ch, maxOffset)
+			require.Equal(t, want, h.ed.SeekOffset())
+			if tc.dir == "file:///project/d28" {
+				require.Greater(t, tc.wantRow-ch/2, maxOffset,
+					"the row must be close enough to the end to be clamped")
+			}
+		})
+	}
+
+	t.Run("unknown dir fails and moves nothing", func(t *testing.T) {
+		h, _ := newTestFileExplorerHandler(t, dirs)
+		scrollToEnd(h)
+		cursor, offset, tree := h.ed.CursorAtScroll(), h.ed.SeekOffset(), h.buf.String()
+		require.Error(t, h.reveal(mustURI(t, "file:///project/missing")))
+		require.Equal(t, cursor, h.ed.CursorAtScroll())
+		require.Equal(t, offset, h.ed.SeekOffset())
+		require.Equal(t, tree, h.buf.String())
+	})
+}
+
 func sendExplorerKeys(
 	t *testing.T, h interface{ Handle(term.Event) (bool, bool) }, seq string,
 ) {
