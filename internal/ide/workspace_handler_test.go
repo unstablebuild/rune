@@ -1809,7 +1809,7 @@ func TestStatusInboxReopensExtensionProgramWithoutTab(t *testing.T) {
 	m.Resize(80, 24)
 	ws := m.workspaces[m.focus].uri
 	e := m.exHandler(m.focusHandler())
-	b := statusInboxBrowser{Browser: e.Browser(), tm: e.tabAliases.TabManager}
+	b := newExtensionBrowser(e)
 	_, err = e.comp.Tab(other, 'x', "chat", browsertest.NewTestHandler())
 	require.NoError(t, err)
 	// As an extension whose program goes on working once its tab closed.
@@ -3128,6 +3128,44 @@ func TestOpenFilesinEmptyWorkspace(t *testing.T) {
 	handlertest.RunHandlerSequence(t, h, 30, 9, cases)
 
 	require.NoError(t, m.Close())
+}
+
+func TestIDEOpensDirectoryInFileExplorer(t *testing.T) {
+	tests := []struct {
+		name string
+		open func(*IDE, workspaceapi.URI) error
+	}{
+		{"Show", (*IDE).Show},
+		{"Open", (*IDE).Open},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			require.NoError(t, os.Mkdir(filepath.Join(tmp, "pkg"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(tmp, "pkg", "a.go"), nil, 0o644))
+			m := newTestWorkspaceManagerHandlerWithDir(t, defaultConfigWithWrap(false), "",
+				nopShutdownShaderConfig())
+			defer func() {
+				require.NoError(t, m.Close())
+			}()
+			root, err := workspaceapi.ParseURI("file://" + tmp)
+			require.NoError(t, err)
+			require.NoError(t, m.addOrCreateWorkspace(root))
+			m.quiesce()
+			dir := workspaceapi.Join(root, "pkg")
+
+			require.NoError(t, tc.open(&IDE{workspaceHandler: m.workspaceManagerHandler}, dir))
+
+			ex := m.focusEx()
+			focus, _ := ex.comp.Focus()
+			require.Equal(t, ex.fileExplorerWin, focus)
+			var expanded []string
+			for _, uri := range ex.fileExplorerHandler.comp.ExpandedDirectories() {
+				expanded = append(expanded, uri.String())
+			}
+			assert.Equal(t, []string{dir.String()}, expanded)
+		})
+	}
 }
 
 func TestEditFileURIRedirectsToWorkspaceWithOpenFile(t *testing.T) {

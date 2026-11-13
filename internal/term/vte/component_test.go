@@ -976,6 +976,79 @@ func TestComponentSelectionUnwrapsSoftWrappedLines(t *testing.T) {
 	}
 }
 
+func TestComponentSelectionKeepsSpacesFromCursorMoves(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		desc  string
+		width int
+		input string
+		end   term.Coordinates
+		want  string
+	}{
+		{
+			desc:  "one cell forward",
+			input: "foo\033[Cbar",
+			end:   term.Coordinates{X: 6},
+			want:  "foo bar",
+		},
+		{
+			desc:  "three cells forward",
+			input: "foo\033[3Cbar",
+			end:   term.Coordinates{X: 8},
+			want:  "foo   bar",
+		},
+		{
+			desc:  "cursor address into the same row",
+			input: "foo\033[1;6Hbar",
+			end:   term.Coordinates{X: 7},
+			want:  "foo  bar",
+		},
+		{
+			desc:  "leading gap",
+			input: "\033[3Cfoo",
+			end:   term.Coordinates{X: 5},
+			want:  "   foo",
+		},
+		{
+			desc:  "trailing cells of the first row are trimmed",
+			input: "foo\r\nbar",
+			end:   term.Coordinates{X: 2, Y: 1},
+			want:  "foo\nbar",
+		},
+		{
+			desc:  "soft wrap early on a wide glyph",
+			width: 5,
+			input: "abcd漢字",
+			end:   term.Coordinates{X: 3, Y: 1},
+			want:  "abcd漢字",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+
+			comp, err := NewComponent(&testExecutor{}, &testExecutor{},
+				&mockTabManager{}, DefaultConfig())
+			require.NoError(t, err)
+			width := tc.width
+			if width == 0 {
+				width = 20
+			}
+			require.NoError(t, comp.Resize(width, 3))
+
+			comp.parser.AdvanceBytes([]byte(tc.input))
+
+			comp.Select(term.Coordinates{})
+			comp.SelectEnd(tc.end)
+			got, ok := comp.Selection()
+			require.True(t, ok)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestComponentWidenWhileScrolledUpKeepsContentVisible(t *testing.T) {
 	t.Parallel()
 

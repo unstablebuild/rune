@@ -244,7 +244,7 @@ func TestRPCShow(t *testing.T) {
 		return nil
 	}}
 	var interrupts atomic.Int32
-	res := extension.BrowserResources(b.Browser(), func(ev term.Event) bool {
+	res := extension.BrowserResources(newExtensionBrowser(b.ex), func(ev term.Event) bool {
 		if ev.Type == term.EventInterrupt {
 			interrupts.Add(1)
 		}

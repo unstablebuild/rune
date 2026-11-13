@@ -516,6 +516,60 @@ func TestStringWriterComposesAfterClear(t *testing.T) {
 	assert.Equal(t, "6666", w.String())
 }
 
+func TestStringWriterTile(t *testing.T) {
+	// stripes is a cell of gray 128, 'a', then a cell of gray 200, '6'.
+	stripes := image.NewNRGBA(image.Rect(0, 0, 2*nominalCellWidth, nominalCellHeight))
+	for y := range nominalCellHeight {
+		for x := range 2 * nominalCellWidth {
+			v := uint8(128)
+			if x >= nominalCellWidth {
+				v = 200
+			}
+			stripes.SetNRGBA(x, y, color.NRGBA{R: v, G: v, B: v, A: 255})
+		}
+	}
+	tile := func(x, width int, clip, crop image.Rectangle) term.Image {
+		return term.Image{
+			Src: stripes, Pos: term.Coordinates{X: x}, Width: width, Height: 1,
+			Fit: term.ImageFitTile, Clip: clip, Crop: crop,
+		}
+	}
+	tests := []struct {
+		name     string
+		img      term.Image
+		expected string
+	}{
+		{
+			name:     "repeats the raster a nominal cell to a cell",
+			img:      tile(0, 12, image.Rectangle{}, image.Rectangle{}),
+			expected: "a6a6a6a6a6a6",
+		},
+		{
+			name:     "starts the first tile at the placement",
+			img:      tile(3, 6, image.Rectangle{}, image.Rectangle{}),
+			expected: "   a6a6a6   ",
+		},
+		{
+			name:     "cuts the tiles at the clip without moving them",
+			img:      tile(0, 12, image.Rect(3, 0, 12, 1), image.Rectangle{}),
+			expected: "   6a6a6a6a6",
+		},
+		{
+			name:     "repeats only the crop",
+			img:      tile(0, 12, image.Rectangle{}, image.Rect(nominalCellWidth, 0, 2*nominalCellWidth, nominalCellHeight)),
+			expected: "666666666666",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &scene{under: "            ", imgs: []term.Image{tt.img}}
+			s.Resize(12, 1)
+			w := NewStringWriter(12, 1, DefaultConfig())
+			comptest.TestComponent(t, s, w, []comptest.TestCase{{Expected: "\n" + tt.expected}})
+		})
+	}
+}
+
 func solidGray(v uint8) *image.NRGBA {
 	img := image.NewNRGBA(image.Rect(0, 0, 4, 1))
 	for x := range 4 {

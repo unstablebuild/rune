@@ -252,6 +252,9 @@ func newCommandEventHandler(
 	sessionsDir := filepath.Join(w.DataDir(ctx), "sessions")
 	dialogueStore := dialoguemanager.NewStore(db, sessionsDir)
 	tools = append(tools, agentools.ConversationTools(dialogueStore, fs, sessionsDir)...)
+	if webSearch := webSearchTool(pconfig, w.Notifications(ctx), os.Getenv); webSearch != nil {
+		tools = append(tools, webSearch)
+	}
 
 	mcpManager := runemcp.NewManager(executor, cwd.Path(),
 		runemcp.NewCredentialStore(w.DataDir(ctx), db))

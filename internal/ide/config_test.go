@@ -4482,6 +4482,64 @@ func TestFileExplorerMinWidthConfig(t *testing.T) {
 	assert.Empty(t, set.errors)
 }
 
+func TestEOFHatchConfig(t *testing.T) {
+	t.Parallel()
+	def := tcomponent.HatchStyle{Color: term.ColorSilver, Period: 0.5}
+	tests := []struct {
+		name       string
+		src        string
+		want       tcomponent.HatchStyle
+		wantErrors []string
+	}{
+		{name: "defaults without a setting", src: `config = {}`, want: def},
+		{
+			name: "named color and fractional period",
+			src:  `config = {"editor": {"eof_hatch": {"color": "gray", "period": 0.75}}}`,
+			want: tcomponent.HatchStyle{Color: term.ColorGray, Period: 0.75},
+		},
+		{
+			name: "hex color and whole period",
+			src:  `config = {"editor": {"eof_hatch": {"color": "#8a8a8a", "period": 1}}}`,
+			want: tcomponent.HatchStyle{Color: term.GetColor("#8a8a8a"), Period: 1},
+		},
+		{
+			name: "one setting keeps the other's default",
+			src:  `config = {"editor": {"eof_hatch": {"period": 0.25}}}`,
+			want: tcomponent.HatchStyle{Color: term.ColorSilver, Period: 0.25},
+		},
+		{
+			name:       "invalid settings keep their defaults",
+			src:        `config = {"editor": {"eof_hatch": {"color": ["silver"], "period": "wide"}}}`,
+			want:       def,
+			wantErrors: []string{"editor.eof_hatch.color", "editor.eof_hatch.period"},
+		},
+		{
+			name:       "a period that is not positive keeps the default",
+			src:        `config = {"editor": {"eof_hatch": {"period": 0}}}`,
+			want:       def,
+			wantErrors: []string{"editor.eof_hatch.period"},
+		},
+		{
+			name:       "a section that is not a dict",
+			src:        `config = {"editor": {"eof_hatch": "silver"}}`,
+			want:       def,
+			wantErrors: []string{"editor.eof_hatch"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := newAnimConfig(t, tt.src)
+			assert.Equal(t, tt.want, c.eofHatch())
+			var keys []string
+			for k := range c.errors {
+				keys = append(keys, k)
+			}
+			assert.ElementsMatch(t, tt.wantErrors, keys)
+		})
+	}
+}
+
 func TestFileExplorerReadOnlyConfigDefaults(t *testing.T) {
 	t.Parallel()
 	c := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}

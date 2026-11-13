@@ -40,7 +40,7 @@ const claimedSourceHistory = 64
 type input struct {
 	fontManager *font.Manager
 	events      []ebiten.InputEvent
-	claimed     map[ebiten.InputSource]struct{}
+	claimed     map[ebiten.InputSource]term.Key
 	claimOrder  []ebiten.InputSource
 	input       keysManager
 	keyMapping  map[ebiten.KeyEvent]ebiten.KeyEvent
@@ -148,17 +148,16 @@ func (i *input) remapMods(mods ebiten.KeyModifier) ebiten.KeyModifier {
 //
 // Ebiten reports key transitions and committed text as one ordered sequence of
 // observations in which everything a single physical key action produced
-// carries that action's source. Rune claims the source of every key action it
-// turns into a terminal event, so the text that action produced is recognized
-// as an echo of an event already emitted and dropped. Text with any other
-// source, and text the platform could not attribute to a key action at all, is
-// forwarded untouched.
+// carries that action's source. Shortcut and remap actions own their text;
+// ordinary named keys own only their textual echo, since they can also commit
+// pending IME text. Text without an originating key action is forwarded untouched.
 func (i *input) processEvents(dst []term.Event) []term.Event {
 	i.events = i.input.AppendInputEvents(i.events[:0])
 
-	for _, ev := range i.events {
+	for n := 0; n < len(i.events); n++ {
+		ev := i.events[n]
 		if ev.Kind == ebiten.InputEventKindText {
-			if i.isClaimed(ev.Source) {
+			if i.isClaimed(ev) {
 				continue
 			}
 			dst = append(dst, term.Event{
@@ -234,13 +233,33 @@ func (i *input) processEvents(dst []term.Event) []term.Event {
 				Ch:   ch,
 				Raw:  getCharEscapeSequence(ch, mod),
 			})
-			i.claim(ev.Source)
+			i.claim(ev.Source, 0)
 			continue
 		}
 
 		if e, ok := mapEbitenKey(key, mod); ok {
+			var echo term.Key
+			if !remapped {
+				echo = e.Key
+				// Native key transitions precede the text they commit. Insert
+				// that text first so Enter cannot submit an incomplete line.
+				for ev.Source != 0 && n+1 < len(i.events) {
+					text := i.events[n+1]
+					if text.Kind != ebiten.InputEventKindText || text.Source != ev.Source {
+						break
+					}
+					n++
+					if !isKeyTextEcho(echo, text.Rune) {
+						dst = append(dst, term.Event{
+							Type: term.EventKey,
+							Ch:   text.Rune,
+							Raw:  getCharEscapeSequence(text.Rune, 0),
+						})
+					}
+				}
+			}
 			dst = append(dst, e)
-			i.claim(ev.Source)
+			i.claim(ev.Source, echo)
 		}
 	}
 
@@ -306,9 +325,9 @@ func (i *input) metaHeld() bool {
 	return i.metaDown
 }
 
-// claim records that a key action has already been turned into a terminal
-// event, so the text the platform commits for it must not be inserted again.
-func (i *input) claim(source ebiten.InputSource) {
+// claim suppresses a key action's textual echo. A zero key claims all of its
+// text, as shortcuts and remaps must not also insert their layout characters.
+func (i *input) claim(source ebiten.InputSource, key term.Key) {
 	if source == 0 {
 		return
 	}
@@ -316,9 +335,9 @@ func (i *input) claim(source ebiten.InputSource) {
 		return
 	}
 	if i.claimed == nil {
-		i.claimed = make(map[ebiten.InputSource]struct{}, claimedSourceHistory)
+		i.claimed = make(map[ebiten.InputSource]term.Key, claimedSourceHistory)
 	}
-	i.claimed[source] = struct{}{}
+	i.claimed[source] = key
 	i.claimOrder = append(i.claimOrder, source)
 	if len(i.claimOrder) > claimedSourceHistory {
 		delete(i.claimed, i.claimOrder[0])
@@ -326,12 +345,16 @@ func (i *input) claim(source ebiten.InputSource) {
 	}
 }
 
-func (i *input) isClaimed(source ebiten.InputSource) bool {
-	if source == 0 {
+func (i *input) isClaimed(ev ebiten.InputEvent) bool {
+	if ev.Source == 0 {
 		return false
 	}
-	_, ok := i.claimed[source]
-	return ok
+	key, ok := i.claimed[ev.Source]
+	return ok && (key == 0 || isKeyTextEcho(key, ev.Rune))
+}
+
+func isKeyTextEcho(key term.Key, ch rune) bool {
+	return key == term.KeySpace && ch == ' '
 }
 
 // ebitenModToTermMod converts an Ebiten modifier bitmask to a term.Modifier.

@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"runtime"
 	rtdebug "runtime/debug"
 	"slices"
@@ -1467,9 +1468,12 @@ func (e *ex) editFilesReadOnly(readOnly bool, args ...string) error {
 		if err != nil {
 			return err
 		}
-		if opener, ok := e.comp.ResourceOpener(uri.Scheme()); ok {
+		switch opener, ok := e.comp.ResourceOpener(uri.Scheme()); {
+		case ok:
 			err = e.openResourceTab(opener, uri, e.invokeWindow())
-		} else {
+		case e.isDirectory(uri):
+			err = e.openDirectory(uri)
+		default:
 			_, err = e.editFileURI(uri, e.invokeWindow(), readOnly)
 		}
 		if err != nil {
@@ -1478,6 +1482,37 @@ func (e *ex) editFilesReadOnly(readOnly bool, args ...string) error {
 	}
 
 	return nil
+}
+
+var _ browser.ResourceOpener = (*ex)(nil)
+
+// Open opens uri as a tab, as its text.Component does.
+func (e *ex) Open(uri workspaceapi.URI) (browserapi.Handler, error) {
+	return e.comp.Open(uri)
+}
+
+// Show shows uri as its text.Component does, except that a directory
+// of this workspace opens in the file explorer.
+func (e *ex) Show(uri workspaceapi.URI) error {
+	if e.isDirectory(uri) {
+		return e.openDirectory(uri)
+	}
+	return e.comp.Show(uri)
+}
+
+// Resource returns the tab of uri, as its text.Component does.
+func (e *ex) Resource(uri workspaceapi.URI) (browserapi.Handler, bool) {
+	return e.comp.Resource(uri)
+}
+
+// isDirectory reports whether uri is a directory of this workspace,
+// which opens in the file explorer rather than in a tab.
+func (e *ex) isDirectory(uri workspaceapi.URI) bool {
+	if ok, err := workspace.IsWorkspaceURI(e.workspace, uri); err != nil || !ok {
+		return false
+	}
+	fi, err := e.workspace.Stat(uri.Path())
+	return err == nil && fi.IsDir()
 }
 
 // openResourceTab shows the tab of uri in win, or in the window in focus
@@ -2354,6 +2389,26 @@ func (e *ex) fileExplorerSaveKey() string {
 }
 
 func (e *ex) fexplorer(_ context.Context, args ...string) error {
+	if focus, _ := e.comp.Focus(); e.fileExplorerWin != nil &&
+		!e.fileExplorerWin.Closed() && focus == e.fileExplorerWin {
+		// Closing the explorer with unflushed buffer edits
+		// implicitly discards them. If an FS event arrived
+		// while the user was editing, replay it now so the
+		// next open shows the up-to-date tree.
+		e.closeFileExplorerWindow()
+		return nil
+	}
+	if err := e.openFileExplorer(); err != nil {
+		return err
+	}
+	_, _ = e.comp.SetFocus(e.fileExplorerWin)
+	return nil
+}
+
+// openFileExplorer opens the file explorer window unless it is open,
+// without focusing it. Either way, the window in focus, unless that is
+// the explorer, becomes the one the explorer opens files in.
+func (e *ex) openFileExplorer() error {
 	if e.fileExplorerWin == nil || e.fileExplorerWin.Closed() {
 		e.fileExplorerWin = nil
 		if err := e.initFileExplorer(); err != nil {
@@ -2362,23 +2417,33 @@ func (e *ex) fexplorer(_ context.Context, args ...string) error {
 		if e.fileExplorerWin == nil || e.fileExplorerWin.Closed() {
 			return errors.New("file explorer is not available")
 		}
-		_, _ = e.comp.SetFocus(e.fileExplorerWin)
 		return nil
 	}
-	focus, _ := e.comp.Focus()
-	if focus != e.fileExplorerWin {
-		if !focus.Closed() {
-			e.fileExplorerTarget = focus
-		}
-		_, _ = e.comp.SetFocus(e.fileExplorerWin)
-	} else {
-		// Closing the explorer with unflushed buffer edits
-		// implicitly discards them. If an FS event arrived
-		// while the user was editing, replay it now so the
-		// next open shows the up-to-date tree.
-		e.closeFileExplorerWindow()
+	if focus, _ := e.comp.Focus(); focus != e.fileExplorerWin && !focus.Closed() {
+		e.fileExplorerTarget = focus
+		e.fileExplorerHandler.SetTargetWindow(focus)
 	}
 	return nil
+}
+
+// openDirectory opens the file explorer, or focuses it when it is
+// already open, with dir, a directory of this workspace, expanded and
+// centered.
+func (e *ex) openDirectory(dir workspaceapi.URI) error {
+	if err := e.openFileExplorer(); err != nil {
+		return err
+	}
+	root, err := e.workspace.URI(".")
+	if err != nil {
+		return err
+	}
+	if path.Clean(dir.Path()) != path.Clean(root.Path()) {
+		if err := e.fileExplorerHandler.reveal(dir); err != nil {
+			return err
+		}
+	}
+	_, err = e.comp.SetFocus(e.fileExplorerWin)
+	return err
 }
 
 func (e *ex) closeFileExplorerWindow() {

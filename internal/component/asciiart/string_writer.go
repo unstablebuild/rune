@@ -47,9 +47,10 @@ const (
 // the last drawn of those on the same layer. Fully transparent pixels
 // show whatever is under them, and a cell written after the placements
 // covers all of them. Offset moves a placement by the whole cells it
-// rounds to, taking a cell to span 10x23 pixels. RasterOffset is ignored
-// because it moves the raster by less than a cell. Placements outside
-// the writer are clipped rather than panicking like SetCell.
+// rounds to, taking a cell to span 10x23 pixels, and ImageFitTile repeats
+// the raster over cells of that size. RasterOffset is ignored because it
+// moves the raster by less than a cell. Placements outside the writer are
+// clipped rather than panicking like SetCell.
 type StringWriter struct {
 	*term.StringWriter
 	config        Config
@@ -122,11 +123,14 @@ func (w *StringWriter) DrawImage(img term.Image) bool {
 	}
 
 	raster := img.Bounds()
-	if img.Fit == term.ImageFitContain {
+	switch img.Fit {
+	case term.ImageFitContain:
 		width, height := ResizeMaintainAspectRatio(
 			srcSize.X, srcSize.Y, raster.Dx(), raster.Dy())
 		raster = image.Rect(0, 0, width, height).Add(raster.Min).Add(image.Pt(
 			(raster.Dx()-width)/2, (raster.Dy()-height)/2))
+	case term.ImageFitTile:
+		src = tiled(src, raster.Dx()*nominalCellWidth, raster.Dy()*nominalCellHeight)
 	}
 	visible = visible.Intersect(raster)
 	if visible.Empty() {
@@ -162,6 +166,19 @@ func (w *StringWriter) DrawImage(img term.Image) bool {
 		}
 	}
 	return true
+}
+
+// tiled returns src repeated from its top-left corner over a width by
+// height raster.
+func tiled(src image.Image, width, height int) *image.RGBA {
+	dst := image.NewRGBA(image.Rect(0, 0, width, height))
+	b := src.Bounds()
+	for y := 0; y < height; y += b.Dy() {
+		for x := 0; x < width; x += b.Dx() {
+			draw.Draw(dst, image.Rect(x, y, x+b.Dx(), y+b.Dy()), src, b.Min, draw.Src)
+		}
+	}
+	return dst
 }
 
 // depth orders the layers from the bottom up.

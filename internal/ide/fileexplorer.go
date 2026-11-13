@@ -19,6 +19,7 @@ package ide
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 
@@ -530,6 +531,24 @@ func (h *fileExplorerHandler) restoreOffset(offset int) {
 	}
 	for h.ed.SeekOffset() < offset && h.ed.SeekDown() {
 	}
+}
+
+// reveal expands the tree down to dir and puts the cursor on its row,
+// centered in the viewport.
+func (h *fileExplorerHandler) reveal(dir workspaceapi.URI) error {
+	row, ok := h.comp.Reveal(dir)
+	if !ok {
+		return fmt.Errorf("file explorer: %s is not in the tree", dir)
+	}
+	// The handler outlives the explorer window, so the editor's scroll
+	// offset may be left over from earlier use: compute it afresh.
+	// Seeking drags the cursor along, so seek first; the row is then
+	// in view and placing the cursor on it does not scroll.
+	offset := min(max(0, row-h.contentHeight()/2), h.ed.MaxSeekOffset())
+	h.restoreOffset(offset)
+	_ = h.ed.SetCursorAtScroll(term.Coordinates{Y: row})
+	h.syncWidth()
+	return nil
 }
 
 func (h *fileExplorerHandler) enterAt(pos term.Coordinates) bool {

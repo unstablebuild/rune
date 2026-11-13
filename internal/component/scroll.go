@@ -19,6 +19,7 @@ package component
 import (
 	"context"
 	"fmt"
+	"image"
 	"sort"
 	"unicode"
 
@@ -76,6 +77,9 @@ type Scroll struct {
 	// thus the default offset is the maximum offset. This is incompatible
 	// with hidden lines, so calls to MarkHidden will panic.
 	InvertOffset bool
+
+	// Hatch, when set, draws its stripes over the rows below the content.
+	Hatch *Hatch
 }
 
 var _ component.Scrollable = (*Scroll)(nil)
@@ -715,9 +719,14 @@ func (s *Scroll) Draw(writer term.Writer) {
 	if s.width <= 0 || s.height <= 0 {
 		return
 	}
+	s.drawContent(writer)
+	if s.Hatch != nil {
+		s.Hatch.Draw(writer, image.Rect(0, s.EndRow(), s.width, s.height))
+	}
+	s.drawSearchResults(writer)
+}
 
-	defer s.drawSearchResults(writer)
-
+func (s *Scroll) drawContent(writer term.Writer) {
 	if s.Attributes == (term.Attributes{}) {
 		if s.Wrap {
 			s.wrapdrawNoAttr(writer)
@@ -751,6 +760,21 @@ func (s *Scroll) Draw(writer term.Writer) {
 	}
 
 	s.draw(writer)
+}
+
+// EndRow returns the row below the last one the content is drawn on, from
+// 0 when the content is scrolled out of view to the height of the scroll
+// when it reaches the bottom. With Wrap set, it counts the rows that the
+// last Draw wrapped.
+func (s *Scroll) EndRow() int {
+	var end int
+	if s.Wrap {
+		end = s.RowsWithWraps() - s.offset.Y
+	} else {
+		// A hidden block is drawn on a single row.
+		end = s.buf.Rows() - s.hidden - s.convertedOffset().Y
+	}
+	return max(0, min(end, s.height))
 }
 
 // WordAt returns the word at the given position or an empty string if token
