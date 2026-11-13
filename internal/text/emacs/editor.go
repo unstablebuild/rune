@@ -24,6 +24,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/ide/vctrl/vctrlcmd"
 	"unstable.build/rune/internal/text"
 )
@@ -121,6 +122,8 @@ func (e *editor) Edit(
 	if !ok {
 		return ret, nil
 	}
+	// Windows given bars show files, whose end the stripes mark.
+	scroll.Hatch = &component.Hatch{Style: e.hatch}
 	auxBarConfig := e.auxBarConfig
 	auxBarConfig.CommandRegistry = e.fileRegistry
 	iconsBarConfig := e.iconsBarConfig

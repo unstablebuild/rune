@@ -4125,6 +4125,43 @@ func (c ideConfig) fileExplorerHintAttr() term.Attributes {
 	return attrs
 }
 
+// eofHatch returns the stripes editors draw over the rows past the end of
+// a file, from editor.eof_hatch: color takes named or hex colors, and
+// period is the distance between stripes in line heights. A setting left
+// out or invalid keeps its default.
+func (c ideConfig) eofHatch() tcomponent.HatchStyle {
+	style := tcomponent.HatchStyle{
+		Color: tcomponent.DefaultHatchColor, Period: tcomponent.DefaultHatchPeriod,
+	}
+	cfg, ok := c.editor()
+	if !ok {
+		return style
+	}
+	cfg, err := cfg.GetConfig("eof_hatch")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors["editor.eof_hatch"] = err
+		}
+		return style
+	}
+	if col, err := cfg.GetColor("color"); err == nil {
+		style.Color = col
+	} else if err != config.ErrNotFound {
+		c.errors["editor.eof_hatch.color"] = err
+	}
+	period, err := cfg.GetFloat("period")
+	switch {
+	case err == config.ErrNotFound:
+	case err != nil:
+		c.errors["editor.eof_hatch.period"] = err
+	case period <= 0:
+		c.errors["editor.eof_hatch.period"] = fmt.Errorf("must be positive, got %v", period)
+	default:
+		style.Period = period
+	}
+	return style
+}
+
 func (c ideConfig) auxiliaryBarEnabled() bool {
 	cfg, ok := c.auxiliaryBar()
 	if !ok {
