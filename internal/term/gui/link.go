@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"net/url"
 	"sort"
-	"strings"
 	"unicode"
 	"unicode/utf8"
 
@@ -39,8 +38,9 @@ import (
 //     or the path of a bare reference as it was written. It is empty
 //     for a link that does not point at a file.
 //   - Line and Col are the 1-based position of a file link. Line zero
-//     means the text carried no position, and a link with a line but no
-//     column starts at column one.
+//     means the text carried no position, and column zero means the
+//     text named a line but no column. linecol.Coord turns either into
+//     the zero-based coordinates the editor cursor uses.
 type Link struct {
 	URL       *url.URL
 	Path      string
@@ -600,26 +600,24 @@ func (s *rowScanner) scanPath(
 
 // parsePosition reads the position that starts at the given cell of the
 // row and returns the 1-based line and column with the cell one past
-// the position.
+// the position. The rules live in linecol: the cells are copied into a
+// byte slice, Parse decides what is a position, and its byte count is
+// the number of cells the position covers, since every cell in the run
+// is one ASCII byte.
 func (s *rowScanner) parsePosition(row []term.Cell, x int) (line, col, end int, ok bool) {
 	s.pos = s.pos[:0]
-	for x < len(row) && isDigit(row[x].Ch) {
-		s.pos = append(s.pos, byte(row[x].Ch))
-		x++
-	}
-	if x+1 < len(row) && row[x].Ch == ':' && isDigit(row[x+1].Ch) {
-		s.pos = append(s.pos, ':')
-		x++
-		for x < len(row) && isDigit(row[x].Ch) {
-			s.pos = append(s.pos, byte(row[x].Ch))
-			x++
+	for i := x; i < len(row); i++ {
+		c := row[i].Ch
+		if c != ':' && !isDigit(c) {
+			break
 		}
+		s.pos = append(s.pos, byte(c))
 	}
-	line, col, _, ok = linecol.Parse(string(s.pos))
+	line, col, n, ok := linecol.Parse(string(s.pos))
 	if !ok {
 		return 0, 0, 0, false
 	}
-	return line, col, x, true
+	return line, col, x + n, true
 }
 
 // coveredBySpan reports whether the cells of the row between x0 and x1
@@ -868,8 +866,10 @@ func schemeLink(text string) (Link, bool) {
 		if l, c, _, ok := linecol.Parse(frag); ok {
 			line, col = l, c
 		}
-	} else if p, l, c, ok := splitPosition(path); ok {
-		path, line, col = p, l, c
+	} else if p, pos, rest, ok := linecol.Cut(path); ok && rest == "" {
+		// A file path is only a reference when the position ends it: an
+		// ambiguous suffix such as y.go:7:2:4 stays in the path.
+		path, line, col = p, pos.Line, pos.Col
 	}
 	// A position that came from either the fragment or the path is not
 	// part of the file's address. Leaving it in the URL would open a
@@ -885,56 +885,6 @@ func schemeLink(text string) (Link, bool) {
 	return Link{URL: u, Path: path, Line: line, Col: col}, true
 }
 
-// splitPosition splits a trailing position off a file path, as in
-// /x/y.go:76:7. The longest position the path ends in wins, so that
-// /x/y.go:76:7 reads as line 76 and column 7. A path that ends in a
-// number the caller could not have meant is left whole rather than
-// guessed at.
-func splitPosition(path string) (string, int, int, bool) {
-	i := strings.LastIndex(path, ":")
-	if i < 0 {
-		return path, 0, 0, false
-	}
-	head, tail := path[:i], path[i+1:]
-	// A position may name a line and a column, in which case the line
-	// sits in front of the last colon.
-	if j := strings.LastIndex(head, ":"); j >= 0 {
-		synth := head[j+1:] + ":" + tail
-		if line, col, n, ok := linecol.Parse(synth); ok && n == len(synth) &&
-			!endsWithNumber(head[:j]) {
-			return head[:j], line, col, true
-		}
-	}
-	if line, col, n, ok := linecol.Parse(tail); ok && i+1+n == len(path) &&
-		!endsWithNumber(head) {
-		return head, line, col, true
-	}
-	return path, 0, 0, false
-}
-
-// endsWithNumber reports whether s ends in a colon and a number, or in
-// a bare colon. A position in front of one of those would be
-// ambiguous, so the path is left whole rather than guessed at.
-func endsWithNumber(s string) bool {
-	if strings.HasSuffix(s, ":") {
-		return true
-	}
-	i := strings.LastIndex(s, ":")
-	if i < 0 {
-		return false
-	}
-	for _, r := range s[i+1:] {
-		if !isDigit(r) {
-			return false
-		}
-	}
-	return true
-}
-
-// linkScanner gives every URL rendered as plain text a link affordance:
-// it underlines the spans while the meta modifier is held and turns a
-// meta-click on one into an observer call. It works off the composited
-// frame, so it is agnostic to which handler drew the text.
 type linkScanner struct {
 	observer func(Link)
 	pointer  *pointer
