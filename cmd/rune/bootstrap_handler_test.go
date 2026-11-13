@@ -48,6 +48,7 @@ import (
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/gui"
 	"unstable.build/rune/internal/term/gui/glassbar"
+	"unstable.build/rune/internal/text"
 )
 
 // fakeHandler counts calls to each tui.Handler method so tests can
@@ -1028,6 +1029,24 @@ func tabsOf(t *testing.T, b *bootstrapHandler) []workspaceapi.URI {
 	return uris
 }
 
+// cursorOf returns the editor cursor of the tab holding the given URI.
+// It fails when no tab holds the URI or when the tab is not an editor.
+func cursorOf(t *testing.T, b *bootstrapHandler, uri workspaceapi.URI) term.Coordinates {
+	t.Helper()
+	lister, ok := b.browser().(tabLister)
+	require.True(t, ok, "the browser must list its tabs")
+	for _, tab := range lister.Tabs() {
+		if tab.URI() != uri {
+			continue
+		}
+		h, ok := tab.Handler().(text.Handler)
+		require.True(t, ok, "the tab must hold an editor")
+		return h.CursorAtScroll()
+	}
+	t.Fatalf("no tab holds %s", uri)
+	return term.Coordinates{}
+}
+
 func TestBootstrapLinkObserverOpensBarePaths(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "a"), 0o755))
@@ -1047,6 +1066,20 @@ func TestBootstrapLinkObserverOpensBarePaths(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, tabsOf(t, b), uri,
 		"the linked file must be open in a tab")
+	// The position is 1-based, so line 3 and column 2 land the cursor on
+	// row 2, column 1.
+	assert.Equal(t, term.Coordinates{Y: 2, X: 1}, cursorOf(t, b, uri),
+		"the link's line and column must place the cursor")
+
+	// A link with a line but no column starts at the first column.
+	require.NoError(t, b.openLink(gui.Link{Path: "a/b.go", Line: 2}))
+	assert.Equal(t, term.Coordinates{Y: 1, X: 0}, cursorOf(t, b, uri),
+		"a link with no column must start at the first column")
+
+	// A link with no position leaves the cursor where it was.
+	require.NoError(t, b.openLink(gui.Link{Path: "a/b.go"}))
+	assert.Equal(t, term.Coordinates{Y: 1, X: 0}, cursorOf(t, b, uri),
+		"a link with no position must not move the cursor")
 
 	// A path that names no file is reported and opens no tab.
 	err = b.openLink(gui.Link{Path: "missing.go", Line: 1})

@@ -7742,6 +7742,16 @@ func TestOnLinkClickFile(t *testing.T) {
 	// an empty buffer for it.
 	missing := "file://" + filepath.Join(tempDir, "missing.go")
 	assert.True(t, e.onLinkClick(parse(missing)))
+
+	// A link that cannot be opened raises an error notification rather
+	// than failing silently.
+	rec := &pluginWaitNotifications{inner: e.notifications}
+	e.notifications = rec
+	broken := "file://" + filepath.Join(tempDir, "nodir", "x.go")
+	assert.True(t, e.onLinkClick(parse(broken)),
+		"an unopenable link must still be handled")
+	assert.NotEmpty(t, rec.errorMessages(),
+		"an unopenable link must raise an error notification")
 }
 
 // TestOpenFileAtPositions pins the cursor contract of openFileAt, which
