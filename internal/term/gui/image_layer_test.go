@@ -186,12 +186,13 @@ func TestImageLayerTextureReuse(t *testing.T) {
 	img.Version++
 	second := l.texture(img)
 	require.NotNil(t, second)
-	assert.NotSame(t, first, second, "a new version must re-upload")
+	assert.Same(t, first, second, "a new version of the same size reuses the GPU image")
+	assert.Equal(t, img.Version, l.textures[img.ID].version, "the new version was uploaded")
 
 	img.Src = solidRGBA(8, 8, color.RGBA{B: 255, A: 255})
 	third := l.texture(img)
 	require.NotNil(t, third)
-	assert.NotSame(t, second, third, "new source bounds must re-upload")
+	assert.NotSame(t, second, third, "new source bounds need a new GPU image")
 	assert.Equal(t, image.Rect(0, 0, 8, 8), third.Bounds())
 }
 
@@ -362,6 +363,16 @@ func TestResolvePlacement(t *testing.T) {
 			wantArea: cellRect(1, 1, 5, 4).Add(image.Pt(0, 7)),
 			wantClip: cellRect(1, 1, 5, 4).Add(image.Pt(0, 7)),
 		},
+		{
+			name: "tiles repeat across the whole cell rectangle",
+			img: term.Image{
+				Src: src, Pos: term.Coordinates{X: 1, Y: 1},
+				Width: 10, Height: 2, Fit: term.ImageFitTile,
+			},
+			wantSrc:  image.Rect(0, 0, 8, 4),
+			wantArea: cellRect(1, 1, 11, 3),
+			wantClip: cellRect(1, 1, 11, 3),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -411,6 +422,87 @@ func TestResolvePlacementContainPreservesAspect(t *testing.T) {
 	assert.Equal(t,
 		area.Min.X+area.Max.X, p.area.Min.X+p.area.Max.X,
 		"the fitted rectangle is centred horizontally")
+}
+
+func TestTileQuad(t *testing.T) {
+	area := image.Rect(10, 20, 110, 70)
+	tests := []struct {
+		name string
+		p    placement
+		// wantSrc spans the texels the quad samples from its top-left to
+		// its bottom-right corner, before the sampler wraps them.
+		wantSrc image.Rectangle
+	}{
+		{
+			name:    "the first tile starts at the area's top-left corner",
+			p:       placement{src: image.Rect(0, 0, 8, 4), area: area, clip: area},
+			wantSrc: image.Rect(0, 0, 100, 50),
+		},
+		{
+			name:    "a clip below the top continues the tiles above it",
+			p:       placement{src: image.Rect(0, 0, 8, 4), area: area, clip: image.Rect(10, 45, 110, 70)},
+			wantSrc: image.Rect(0, 25, 100, 50),
+		},
+		{
+			name:    "a clip right of the left edge continues the tiles left of it",
+			p:       placement{src: image.Rect(0, 0, 8, 4), area: area, clip: image.Rect(37, 20, 110, 45)},
+			wantSrc: image.Rect(27, 0, 100, 25),
+		},
+		{
+			name:    "a crop repeats only its texels",
+			p:       placement{src: image.Rect(2, 1, 6, 3), area: area, clip: area},
+			wantSrc: image.Rect(2, 1, 102, 51),
+		},
+		{
+			name: "the area moved by a pixel offset moves the tiles",
+			p: placement{
+				src: image.Rect(0, 0, 8, 4), area: area.Add(image.Pt(3, -5)),
+				clip: image.Rect(10, 20, 113, 65),
+			},
+			wantSrc: image.Rect(-3, 5, 100, 50),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			quad := tileQuad(tt.p)
+			corner := func(r image.Rectangle) [4]image.Point {
+				return [4]image.Point{r.Min, {X: r.Max.X, Y: r.Min.Y}, {X: r.Min.X, Y: r.Max.Y}, r.Max}
+			}
+			dst, src := corner(tt.p.clip), corner(tt.wantSrc)
+			for i, v := range quad {
+				assert.Equal(t, dst[i], image.Pt(int(v.DstX), int(v.DstY)), "corner %d covers the clip", i)
+				assert.Equal(t, src[i], image.Pt(int(v.SrcX), int(v.SrcY)), "corner %d samples", i)
+				assert.Equal(t, [4]float32{1, 1, 1, 1}, [4]float32{v.ColorR, v.ColorG, v.ColorB, v.ColorA},
+					"corner %d keeps the texels' colors", i)
+			}
+		})
+	}
+}
+
+func TestDrawImageLayerTiles(t *testing.T) {
+	r, cols, rows := newTestRenderer(t, 16, 10)
+	screen := ebiten.NewImage(r.frame.Bounds().Dx(), r.frame.Bounds().Dy())
+	t.Cleanup(screen.Deallocate)
+
+	w := cell.NewBufferWriter(frameContext(t.Context(), r.fontManager), cols, rows)
+	require.True(t, w.DrawImage(term.Image{
+		Src: solidRGBA(3, 3, color.RGBA{B: 255, A: 255}), ID: term.NewImageID(),
+		Width: cols, Height: rows, Fit: term.ImageFitTile, Layer: term.ImageLayerBelowText,
+		Clip: image.Rect(0, 4, cols, rows),
+	}))
+	w.SetCell(term.Coordinates{X: 2, Y: 6}, term.NewCell('x', 1, term.Attributes{}))
+	images := w.Images()
+	require.Greater(t, len(images), 1, "the cell cuts the placement")
+	var want []image.Rectangle
+	for _, piece := range images {
+		want = append(want, cellRectToPixels(piece.Visible(), r.fontManager))
+	}
+
+	benchdraw.BeginFrame(t)
+	defer benchdraw.EndFrame(t)
+	assert.Equal(t, want, r.drawImageLayer(screen, images, term.ImageLayerBelowText),
+		"each piece paints the cells it still covers")
+	assert.Len(t, r.images.textures, 1, "the pieces share one upload")
 }
 
 func TestImageLayerDeallocateReleasesTextures(t *testing.T) {

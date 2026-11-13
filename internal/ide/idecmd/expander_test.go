@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"mvdan.cc/sh/v3/shell"
 
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/cmdenv"
@@ -91,6 +92,31 @@ func TestExpanderExpandAliasBindsArgsVerbatim(t *testing.T) {
 		{"edit", []string{"$RUNE_TEST_SECRET"}},
 		{"!", []string{"open '$RUNE_TEST_SECRET'"}},
 	}, got)
+}
+
+func TestExpanderLineParsingCommandGetsValuesAsData(t *testing.T) {
+	const file = "notes & todo; $(id).md"
+	exp := NewExpander(map[string]text.CommandAlias{
+		"view":   {Commands: []string{"term less $1"}},
+		"append": {Commands: []string{"term less"}},
+	}, mapEnv(map[string]string{"FILE": file}), []string{"term"})
+	for _, cmd := range []textapi.Command{
+		{Name: "term", Args: []string{"less", "$FILE"}},
+		{Name: "view", Args: []string{"$FILE"}},
+		{Name: "append", Args: []string{"$FILE"}},
+	} {
+		t.Run(cmd.Name, func(t *testing.T) {
+			it, err := exp.Expand(context.Background(), cmd)
+			require.NoError(t, err)
+			got, err := collect(context.Background(), it, nil)
+			require.NoError(t, err)
+			require.Len(t, got, 1)
+			assert.Equal(t, "term", got[0].Name)
+			argv, err := shell.Fields(strings.Join(got[0].Args, " "), nil)
+			require.NoError(t, err, "args: %q", got[0].Args)
+			assert.Equal(t, []string{"less", file}, argv)
+		})
+	}
 }
 
 func TestExpanderChainCaptureFlowsAcrossSteps(t *testing.T) {
@@ -494,7 +520,7 @@ func newExpander(
 	if env == nil {
 		env = func(string) (string, bool) { return "", false }
 	}
-	return NewExpander(aliases, env)
+	return NewExpander(aliases, env, nil)
 }
 
 func mapEnv(m map[string]string) cmdenv.Source {

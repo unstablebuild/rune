@@ -23,46 +23,30 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 )
 
-// progressSample records one UpdateNotificationProgress call.
-type progressSample struct {
-	progress int64
-	total    int64
-}
-
-// recordingNotifications is a browserapi.Notifications that records the
-// number of Notify calls and every UpdateNotificationProgress sample so
-// tests can assert the download notification is anchored once and gets
-// live progress.
+// recordingNotifications is a browserapi.Notifications that counts the
+// notifications posted.
 type recordingNotifications struct {
-	mu         sync.Mutex
-	notifyN    int
-	nextID     int
-	progresses []progressSample
+	mu      sync.Mutex
+	notifyN int
 }
 
 func (n *recordingNotifications) Notify(_ browserapi.NotificationLevel, _ string, _ ...any) (string, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.notifyN++
-	n.nextID++
-	return "noti-" + strconv.Itoa(n.nextID), nil
+	return "noti-" + strconv.Itoa(n.notifyN), nil
 }
 
 func (n *recordingNotifications) NotifyOnce(level browserapi.NotificationLevel, msg string, args ...any) (string, error) {
 	return n.Notify(level, msg, args...)
 }
 
-func (n *recordingNotifications) UpdateNotificationProgress(_, _ string, progress, total int64) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.progresses = append(n.progresses, progressSample{progress: progress, total: total})
+func (n *recordingNotifications) UpdateNotificationProgress(string, string, int64, int64) error {
 	return nil
 }
 
-func (n *recordingNotifications) snapshot() (notifyN int, samples []progressSample) {
+func (n *recordingNotifications) count() int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	out := make([]progressSample, len(n.progresses))
-	copy(out, n.progresses)
-	return n.notifyN, out
+	return n.notifyN
 }

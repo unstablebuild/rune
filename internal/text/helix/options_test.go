@@ -26,6 +26,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/text"
 )
@@ -82,6 +83,10 @@ func TestOptions(t *testing.T) {
 			}},
 		{name: "WithAuxiliaryBar", opt: WithAuxiliaryBar(true, text.AuxBarConfig{}),
 			want: func(t *testing.T, c helixConfig) { assert.True(t, c.enableAuxBar) }},
+		{name: "WithHatch", opt: WithHatch(component.HatchStyle{Color: term.ColorBlue, Period: 1}),
+			want: func(t *testing.T, c helixConfig) {
+				assert.Equal(t, component.HatchStyle{Color: term.ColorBlue, Period: 1}, c.hatch)
+			}},
 		{name: "WithStatusBarConfig", opt: WithStatusBarConfig(true, text.StatusBarConfig{}),
 			want: func(t *testing.T, c helixConfig) { assert.True(t, c.statusBarEnabled) }},
 		{name: "WithIconsBar", opt: WithIconsBar(true, text.IconsBarConfig{}),

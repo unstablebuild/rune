@@ -14,9 +14,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//go:build linux
+//go:build !darwin
 
 package main
+
+// Platforms without presets of their own use the Linux ones: their modifier conventions
+// are closer to Linux than to macOS.
 
 import _ "embed"
 

@@ -18,8 +18,10 @@ package vte
 
 import (
 	"context"
+	"image"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -33,7 +35,7 @@ import (
 
 // localFS returns a scheme rooted at a temporary directory, so the
 // medium tests exercise the real filesystem including symlinks.
-func localFS(t *testing.T) (schemeapi.FileSystem, string) {
+func localFS(t testing.TB) (schemeapi.FileSystem, string) {
 	t.Helper()
 	dir := t.TempDir()
 	uri, err := workspaceapi.CurrentUserHostURI(dir)
@@ -201,6 +203,42 @@ func TestGraphicsMediumReadOutsideLock(t *testing.T) {
 	assert.Zero(t, probe.locked, "the filesystem was used under the terminal lock")
 }
 
+func TestGraphicsFileStreamReusesBuffers(t *testing.T) {
+	fs, dir := localFS(t)
+	h := newGraphicsHarnessFS(t, testCell, fs)
+	p := filepath.Join(dir, "frame.rgba")
+	frame := func(v byte) []byte {
+		out := make([]byte, 0, 16)
+		for range 4 {
+			out = append(out, v, v, v, 0xff)
+		}
+		return out
+	}
+	show := func(v byte) *image.RGBA {
+		t.Helper()
+		require.NoError(t, os.WriteFile(p, frame(v), 0o600))
+		h.apc("a=T,i=1,s=2,v=2,t=f,q=2", []byte(p))
+		images := h.visible(0)
+		require.Len(t, images, 1)
+		return images[0].Src.(*image.RGBA)
+	}
+
+	a := show(1)
+	b := show(2)
+	assert.NotSame(t, &a.Pix[0], &b.Pix[0], "a was on screen while b was read")
+	assert.Equal(t, frame(1), a.Pix, "a is left alone until the draw that shows b")
+	c := show(3)
+	assert.Same(t, &a.Pix[0], &c.Pix[0], "the frame before last is read into again")
+	assert.Equal(t, frame(3), c.Pix)
+	assert.Same(t, &b.Pix[0], &show(4).Pix[0])
+
+	t.Run("across screens", func(t *testing.T) {
+		h.write("\x1b[?1049h")
+		d := show(5)
+		assert.Same(t, &a.Pix[0], &d.Pix[0], "the pool is shared with the alternate screen")
+	})
+}
+
 func TestGraphicsMediumRealPath(t *testing.T) {
 	fs, dir := localFS(t)
 	target := filepath.Join(dir, "target")
@@ -318,5 +356,39 @@ func TestGraphicsSharedMemoryName(t *testing.T) {
 		}
 		require.NoError(t, err, tt.name)
 		assert.Equal(t, "/dev/shm/kitty-shm", p)
+	}
+}
+
+func BenchmarkGraphicsFrameStream(b *testing.B) {
+	const w, h = 1600, 1500
+	frame := make([]byte, w*h*4)
+	for i := 0; i < len(frame); i += 4 {
+		frame[i], frame[i+1], frame[i+2], frame[i+3] = byte(i), byte(i>>8), byte(i>>16), 0xff
+	}
+	for _, drawn := range []bool{true, false} {
+		name := "hidden"
+		if drawn {
+			name = "drawn"
+		}
+		b.Run(name, func(b *testing.B) {
+			fs, _ := localFS(b)
+			hs := newGraphicsHarnessFS(b, testCell, fs)
+			hs.ph.tempDir = os.TempDir()
+			ctl := "a=T,i=1,f=32,s=" + strconv.Itoa(w) + ",v=" + strconv.Itoa(h) + ",t=t,q=2"
+			tmp := filepath.Join(os.TempDir(), "tty-graphics-protocol-bench.rgba")
+			b.SetBytes(int64(len(frame)))
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := os.WriteFile(tmp, frame, 0o600); err != nil {
+					b.Fatal(err)
+				}
+				hs.apc(ctl, []byte(tmp))
+				if drawn {
+					if images := hs.visible(0); len(images) != 1 {
+						b.Fatalf("drew %d images", len(images))
+					}
+				}
+			}
+		})
 	}
 }

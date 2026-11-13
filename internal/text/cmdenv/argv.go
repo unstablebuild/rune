@@ -31,13 +31,27 @@ import (
 // wrapped in `sh -c <quoted line>` so that the shell interprets pipes,
 // redirections, command substitutions, globs, and the like.
 //
+// Args are shell text rather than literal argv: an arg containing
+// whitespace splits into several words. An empty arg is the exception
+// and is always kept as an empty parameter, spelled `""`.
+//
 // An empty args slice is returned unchanged; callers are expected to
 // guard against the empty case before invoking the executor.
 func BuildPluginArgv(args []string) []string {
 	if IsPlainArgv(args) {
 		return args
 	}
-	line := strings.Join(args, " ")
+	parts := make([]string, len(args))
+	for i, a := range args {
+		if a == "" {
+			// Join renders an empty arg as bare whitespace, which sh
+			// -c's word splitting drops. Spell it `""` so it survives
+			// as a positional parameter.
+			a = `""`
+		}
+		parts[i] = a
+	}
+	line := strings.Join(parts, " ")
 	return []string{"sh", "-c", Quote(line)}
 }
 

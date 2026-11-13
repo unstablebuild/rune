@@ -16,12 +16,7 @@
 
 package apiclient
 
-import (
-	"fmt"
-	"runtime"
-
-	"golang.org/x/sys/unix"
-)
+import "bytes"
 
 type sysinfo struct {
 	Name    string
@@ -32,18 +27,13 @@ type sysinfo struct {
 	OS      string
 }
 
-func uname() (sysinfo, error) {
-	var data unix.Utsname
-	err := unix.Uname(&data)
-	if err != nil {
-		return sysinfo{}, fmt.Errorf("uname: %v", err)
+// utsnameToString returns the NUL-terminated string at the start of a utsname field, or
+// the whole field when it has no terminator. The field length differs between kernels
+// (65 bytes on Linux, 256 on Darwin and most BSDs, others elsewhere), which is why it
+// takes a slice.
+func utsnameToString(field []byte) string {
+	if i := bytes.IndexByte(field, 0); i >= 0 {
+		field = field[:i]
 	}
-	return sysinfo{
-		Name:    utsnameToString(data.Sysname),
-		Node:    utsnameToString(data.Nodename),
-		Release: utsnameToString(data.Release),
-		Version: utsnameToString(data.Version),
-		Machine: utsnameToString(data.Machine),
-		OS:      runtime.GOOS,
-	}, nil
+	return string(field)
 }

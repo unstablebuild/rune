@@ -796,6 +796,14 @@ config = {
             "hint":        True,
             "hint_attr":   attr(fg = "gray"),
         },
+        # eof_hatch configures the faint diagonal stripes drawn over the rows
+        # past the end of a file, in the GUI only.
+        "eof_hatch": {
+            # Named or hex color, drawn at low opacity.
+            "color":  "silver",
+            # Distance between stripes, in line heights.
+            "period": 0.5,
+        },
     },
     # This maps extension ID to extension configuration.
     # New extensions are added when installed via the shell's

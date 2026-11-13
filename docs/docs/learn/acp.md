@@ -86,14 +86,21 @@ acp open brave-otter
 
 opens a running session in a tab, or focuses its tab when it is already
 open. The tab replays the whole conversation, then follows along.
+`acp open --new brave-otter` opens another tab on the same session, to
+watch it from a second window, say. Every tab on a session shows the same
+conversation, at its own size, and sends to it.
 
 ```
 acp close brave-otter
 ```
 
-ends the session. Closing its tab only detaches from it: the session
-keeps running, and `acp open` brings it back. Press `<tab>` to complete
-agent and session names.
+ends the session, even with its tabs open. Closing the last tab of a
+session ends it too, unless the agent is in the middle of a turn or waits
+for your permission. The session then keeps running and shows in the
+[status inbox](./terminal/program-status.md#the-status-inbox) under its
+name, as working or blocked, and as done once the turn ends. Choose it
+there, or run `acp open`, to bring its tab back; close it there to end it.
+Press `<tab>` to complete agent and session names.
 
 In the chat, type a message and press `<enter>` to send it. Attached files
 are sent to the agent as links. While the agent works, `<ctrl-c>` stops

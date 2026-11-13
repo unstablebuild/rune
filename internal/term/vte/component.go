@@ -818,9 +818,26 @@ func (t *Component) Selection() (data string, ok bool) {
 	if !ok {
 		return
 	}
-	data = cell.RowsToString(cells)
-	data = strings.ReplaceAll(data, "\x00", "")
+	data = selectionText(cells)
 	return data, ok
+}
+
+// selectionText renders selected rows like cell.RowsToString, but
+// handles unused (NUL) cells one row at a time: NULs that pad the end of
+// a row are dropped, while NULs inside a row (gaps left by cursor moves)
+// copy as the spaces the pane shows. Trimming per row, before rows are
+// joined, also drops the padding cell a soft wrap leaves when a wide
+// glyph does not fit at the right margin.
+func selectionText(rows [][]term.Cell) string {
+	var b strings.Builder
+	for i, row := range rows {
+		if i != 0 && (len(row) == 0 || !cell.IsRowWrapped(rows[i-1])) {
+			b.WriteByte('\n')
+		}
+		text := strings.TrimRight(cell.RowsToString(rows[i:i+1]), "\x00")
+		b.WriteString(strings.ReplaceAll(text, "\x00", " "))
+	}
+	return b.String()
 }
 
 // OnFocusChange allows clients to report whether this vte.Component is on focus or not.

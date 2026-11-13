@@ -43,6 +43,7 @@ type emacsConfig struct {
 	enableInitialFolds bool
 	enableAuxBar       bool
 	auxBarConfig       text.AuxBarConfig
+	hatch              component.HatchStyle
 	enableIconsBar     bool
 	enableGitIcons     bool
 	commandBar         bool
@@ -212,6 +213,13 @@ func WithIconsBar(enabled bool, config text.IconsBarConfig) Option {
 	return func(cfg *emacsConfig) {
 		cfg.enableIconsBar = enabled
 		cfg.iconsBarConfig = config
+	}
+}
+
+// WithHatch sets the stripes drawn over the rows past the end of a file.
+func WithHatch(style component.HatchStyle) Option {
+	return func(cfg *emacsConfig) {
+		cfg.hatch = style
 	}
 }
 

@@ -223,6 +223,20 @@ func TestPaintPictures(t *testing.T) {
 	cropped.Crop = image.Rect(1, 0, 2, 2)
 	contained := picture(pixels(1, 4, red, red, red, red), image.Rect(0, 0, 3, 1))
 	contained.Fit = term.ImageFitContain
+	// stripes is a cell of red then a cell of blue, so tiling it alternates
+	// them cell by cell where stretching would paint two cells of each.
+	cellWidth := int(sampleCell.Width)
+	stripes := pixels(2*cellWidth, 1)
+	for x := range 2 * cellWidth {
+		stripes.SetRGBA(x, 0, red)
+		if x >= cellWidth {
+			stripes.SetRGBA(x, 0, blue)
+		}
+	}
+	tiled := picture(stripes, image.Rect(0, 0, 4, 2))
+	tiled.Fit = term.ImageFitTile
+	tiledClipped := tiled
+	tiledClipped.Clip = image.Rect(1, 1, 4, 2)
 	wide := screen(text)
 	wide[1][0] = term.NewCell('世', 2, text)
 	wide[1][1] = term.Cell{Fg: term.ColorWhite}
@@ -287,6 +301,26 @@ func TestPaintPictures(t *testing.T) {
 			cells:  screen(text),
 			images: []term.Image{contained},
 			want:   painted(screen(text), rgb(red), image.Pt(1, 0)),
+		},
+		{
+			name:   "repeats a tiled picture unscaled from its top-left corner",
+			cells:  screen(text),
+			images: []term.Image{tiled},
+			want: func() [][]term.Cell {
+				c := screen(text)
+				painted(c, rgb(red), image.Pt(0, 0), image.Pt(2, 0), image.Pt(0, 1), image.Pt(2, 1))
+				return painted(c, rgb(blue), image.Pt(1, 0), image.Pt(3, 0), image.Pt(1, 1), image.Pt(3, 1))
+			}(),
+		},
+		{
+			name:   "cuts the tiles of a clipped picture without moving them",
+			cells:  screen(text),
+			images: []term.Image{tiledClipped},
+			want: func() [][]term.Cell {
+				c := screen(text)
+				painted(c, rgb(red), image.Pt(2, 1))
+				return painted(c, rgb(blue), image.Pt(1, 1), image.Pt(3, 1))
+			}(),
 		},
 		{
 			name:   "keeps the text over a picture below it",

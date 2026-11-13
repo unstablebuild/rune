@@ -48,13 +48,13 @@ type graphicsHarness struct {
 	parser *vteparser.Parser
 }
 
-func newGraphicsHarness(t *testing.T, cellPixelSize func() (int, int)) *graphicsHarness {
+func newGraphicsHarness(t testing.TB, cellPixelSize func() (int, int)) *graphicsHarness {
 	t.Helper()
 	return newGraphicsHarnessFS(t, cellPixelSize, nil)
 }
 
 func newGraphicsHarnessFS(
-	t *testing.T, cellPixelSize func() (int, int), fs schemeapi.FileSystem,
+	t testing.TB, cellPixelSize func() (int, int), fs schemeapi.FileSystem,
 ) *graphicsHarness {
 	t.Helper()
 	testURI, err := workspaceapi.ParseURI("memory:///radical")

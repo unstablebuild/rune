@@ -173,7 +173,7 @@ func TestHandleChatAddSymbolDeliversExactCursorContext(t *testing.T) {
 			rows: cellRows(strings.Split(source, "\n")...),
 		}},
 	}
-	h.openChatTx.Store("rolling-fox", (chan<- dialoguetui.MessageEvent)(ch))
+	h.focusedViews.Store("rolling-fox", channelSender(ch))
 	h.recordFocusedChat("rolling-fox")
 	h.recordCursor(textapi.Event{URI: uri, Start: windowPos, From: contentPos})
 
@@ -204,7 +204,7 @@ func TestHandleChatAddSymbolDeliversExactCursorContext(t *testing.T) {
 func TestHandleChatAddSymbolWithNameUsesNameBasedAttachment(t *testing.T) {
 	ch := make(chan dialoguetui.MessageEvent, 1)
 	h := &aiEditorHandler{ctx: t.Context()}
-	h.openChatTx.Store("rolling-fox", (chan<- dialoguetui.MessageEvent)(ch))
+	h.focusedViews.Store("rolling-fox", channelSender(ch))
 	h.recordFocusedChat("rolling-fox")
 
 	require.NoError(t, h.handleChatAddSymbol(textapi.Command{
@@ -230,8 +230,7 @@ func TestHandleChatAddSymbolErrors(t *testing.T) {
 	}))
 
 	// A cursor is required before chat lookup or semantic resolution.
-	h.openChatTx.Store("rolling-fox",
-		(chan<- dialoguetui.MessageEvent)(make(chan dialoguetui.MessageEvent, 1)))
+	h.focusedViews.Store("rolling-fox", channelSender(make(chan dialoguetui.MessageEvent, 1)))
 	require.Error(t, h.handleChatAddSymbol(textapi.Command{Name: commandAddSymbol}))
 }
 

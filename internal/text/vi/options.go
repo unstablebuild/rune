@@ -51,6 +51,7 @@ type viConfig struct {
 	disableSearch      bool
 	enableAuxBar       bool
 	auxBarConfig       text.AuxBarConfig
+	hatch              component.HatchStyle
 	statusBarConfig    text.StatusBarConfig
 	statusBarEnabled   bool
 	iconsBarConfig     text.IconsBarConfig
@@ -203,6 +204,13 @@ func WithStatusBarConfig(enabled bool, config text.StatusBarConfig) Option {
 	return func(cfg *viConfig) {
 		cfg.statusBarConfig = config
 		cfg.statusBarEnabled = enabled
+	}
+}
+
+// WithHatch sets the stripes drawn over the rows past the end of a file.
+func WithHatch(style component.HatchStyle) Option {
+	return func(cfg *viConfig) {
+		cfg.hatch = style
 	}
 }
 

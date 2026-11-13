@@ -32,6 +32,15 @@ func TestBuildPluginArgv(t *testing.T) {
 		name     string
 		args     []string
 		wantArgv []string
+		// wantScript is the line sh -c should see once the produced
+		// argv is re-tokenised. Defaults to strings.Join(args, " ")
+		// when empty, which holds for every case except an empty arg,
+		// where Join alone cannot represent the "" literal.
+		wantScript string
+		// recoverable marks a wantScript with no shell operators, so
+		// shell.Fields (a word-splitter, not a shell parser) can
+		// re-tokenise it a second time and recover tc.args exactly.
+		recoverable bool
 	}{
 		// --- plain argv: passes through unchanged ----------------
 		{
@@ -187,19 +196,52 @@ func TestBuildPluginArgv(t *testing.T) {
 		},
 		// --- empty / boundary cases ------------------------------
 		//
-		// Callers in ide/ex.go guard the empty case before
-		// invoking BuildPluginArgv. Pin the behavior for safety:
-		// empty input falls through the !IsPlainArgv branch and
-		// produces a harmless `sh -c ''` invocation.
+		// Callers in ide/ex.go guard the empty case before invoking
+		// BuildPluginArgv. Pin the behavior for safety.
 		{
 			name:     "empty argv yields sh -c with empty line",
 			args:     nil,
 			wantArgv: []string{"sh", "-c", "''"},
 		},
 		{
-			name:     "single empty arg yields sh -c with empty line",
-			args:     []string{""},
-			wantArgv: []string{"sh", "-c", "''"},
+			name:        "single empty arg",
+			args:        []string{""},
+			wantArgv:    []string{"sh", "-c", `'""'`},
+			wantScript:  `""`,
+			recoverable: true,
+		},
+		{
+			name:        "trailing empty arg",
+			args:        []string{"echo", ""},
+			wantArgv:    []string{"sh", "-c", `'echo ""'`},
+			wantScript:  `echo ""`,
+			recoverable: true,
+		},
+		{
+			// shell.Fields cannot re-tokenise a line with a real
+			// operator (see the comment on the "recoverable" field),
+			// so the pinned wantArgv is this case's only check.
+			name:       "empty arg before pipe",
+			args:       []string{"echo", "", "|", "cat"},
+			wantArgv:   []string{"sh", "-c", `'echo "" | cat'`},
+			wantScript: `echo "" | cat`,
+		},
+		{
+			name:        "consecutive empty args",
+			args:        []string{"printf", "%s", "", "", "tail"},
+			wantArgv:    []string{"sh", "-c", `'printf %s "" "" tail'`},
+			wantScript:  `printf %s "" "" tail`,
+			recoverable: true,
+		},
+		{
+			// The single quotes are literal characters in the arg
+			// value, which a real shell reinterprets as quoting
+			// syntax, same as the operator case above, so this one
+			// is only checked against the pinned wantArgv too.
+			name:       "empty arg next to single quotes",
+			args:       []string{"echo", "'a'", ""},
+			wantArgv:   []string{"sh", "-c", `"echo 'a' \"\""`},
+			wantScript: `echo 'a' ""`,
 		},
 	}
 	for _, tc := range cases {
@@ -207,18 +249,30 @@ func TestBuildPluginArgv(t *testing.T) {
 			got := cmdenv.BuildPluginArgv(tc.args)
 			assert.Equal(t, tc.wantArgv, got)
 
-			// For wrapped forms, verify that the quoted line
-			// survives the shell.Fields re-tokenisation that
-			// vte.Component.startCommand performs before calling
-			// the underlying executor: the joined argv must split
-			// back into exactly {"sh", "-c", original-line}.
+			wantScript := tc.wantScript
+			if wantScript == "" {
+				wantScript = strings.Join(tc.args, " ")
+			}
+
+			// For wrapped forms, verify that the quoted line survives
+			// the shell.Fields re-tokenisation that
+			// vte.Component.startCommand performs before calling the
+			// underlying executor: the joined argv must split back
+			// into exactly {"sh", "-c", original-line}.
 			if len(got) == 3 && got[0] == "sh" && got[1] == "-c" {
 				joined := strings.Join(got, " ")
 				fields, err := shell.Fields(joined, nil)
 				require.NoError(t, err)
-				require.Equal(t, []string{
-					"sh", "-c", strings.Join(tc.args, " "),
-				}, fields)
+				require.Equal(t, []string{"sh", "-c", wantScript}, fields)
+
+				// For scripts with no shell operators, a second round
+				// of splitting (mirroring sh -c's own parse) must
+				// recover the original args exactly.
+				if tc.recoverable {
+					finalArgs, err := shell.Fields(wantScript, nil)
+					require.NoError(t, err)
+					assert.Equal(t, tc.args, finalArgs)
+				}
 			}
 		})
 	}

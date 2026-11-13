@@ -36,6 +36,13 @@ chat input is itself a
 [vim editor](../learn/vim-editor.md), so you get the same motions and
 text objects you use everywhere else while composing messages.
 
+### Chats that keep running
+
+A chat runs apart from the tab that shows it. Closing an agent tab while the agent is
+still working, running tools or waiting on you to answer a question leaves the chat
+running: the [status inbox](../learn/terminal/program-status.md#the-status-inbox) lists it
+as working, blocked or done, and showing it from there opens its tab again.
+
 ### Quick questions with `?`
 
 `? <message>` asks a one-off question and shows the answer in a floating
@@ -132,6 +139,8 @@ conversation:
 | `chatexport [--audit]` | Export the focused chat or its audit log. |
 | `chatlog` | Show the focused chat's LLM token audit log. |
 | `chataddsymbol [<symbol>]` | Attach a named symbol, or the symbol under the editor cursor, to the last focused chat. |
+| `chatattach <id>` | Open another tab that shows a running chat, such as one whose tab closed while it worked. |
+| `chatclose [<id>]` | End a running chat, the focused one without an id, in every tab that shows it. |
 
 These are command-prompt commands, not `agent` console command subcommands and not
 chat-message slash commands. They are useful when you want completion, history,

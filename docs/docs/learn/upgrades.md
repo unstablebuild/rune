@@ -10,8 +10,8 @@ Rune checks for a new version shortly after startup and once every 24
 hours after that. When a new version is available, a floating prompt
 offers three choices:
 
-- **Upgrade Now** (`y`): download and install the new version, then
-  ask you to restart Rune.
+- **Upgrade Now** (`y`): run `upgrade -y` in the console, which
+  downloads and installs the new version, then asks you to restart Rune.
 - **Remind Me Later** (`l`): dismiss the prompt and stay quiet until
   the next scheduled check.
 - **Skip This Version** (`s`): never remind me about this specific
@@ -20,6 +20,10 @@ offers three choices:
 To check immediately, regardless of the schedule, open the command
 prompt and run the `upgrade` command. If you are already on the latest
 version, Rune confirms it with a notification.
+Run `upgrade -y` to install an available version without the prompt.
+
+Once Rune has installed an upgrade, it stops offering new ones until
+you restart it.
 
 ## Configuration
 

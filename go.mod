@@ -1,6 +1,6 @@
 module unstable.build/rune
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown v1.6.0
@@ -26,7 +26,7 @@ require (
 	github.com/gliderlabs/ssh v0.3.8
 	github.com/go-git/go-billy/v6 v6.0.0-20251022185412-61e52df296a5
 	github.com/go-git/go-git/v6 v6.0.0-20250819122726-39261590f7f3
-	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/go-text/typesetting v0.3.4
 	github.com/google/codesearch v1.3.0-rc.1.0.20260830194954-74a12a911a79
 	github.com/google/go-dap v0.12.0
@@ -52,7 +52,7 @@ require (
 	github.com/unstablebuild/blue v1.85.2
 	github.com/unstablebuild/notify v0.10.4
 	github.com/unstablebuild/pty v1.3.1
-	github.com/unstablebuild/rune-go-sdk v0.25.1
+	github.com/unstablebuild/rune-go-sdk v0.25.4
 	github.com/unstablebuild/tcell/v3 v3.6.5
 	github.com/yuin/goldmark v1.7.17
 	github.com/zalando/go-keyring v0.2.8
@@ -164,7 +164,7 @@ require (
 	github.com/jsimonetti/rtnetlink v1.4.1 // indirect
 	github.com/junegunn/go-shellwords v0.0.0-20250127100254-2aa3b3277741 // indirect
 	github.com/kevinburke/ssh_config v1.4.0 // indirect
-	github.com/klauspost/compress v1.19.1 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/kortschak/wol v0.0.0-20200729010619-da482cc4850a // indirect
 	github.com/kr/fs v0.1.0 // indirect

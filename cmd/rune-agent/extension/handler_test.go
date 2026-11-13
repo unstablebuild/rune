@@ -571,76 +571,48 @@ func TestOpenChatTabUsesDialogueIDAsLabel(t *testing.T) {
 	assert.Equal(t, uri, wm.gotURI, "URI must still be passed unchanged as tab identity")
 }
 
-func TestHandleChatRejectsAlreadyOpenDialogue(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
+func TestHandleChatShowsRunningChat(t *testing.T) {
 	const dialogueID = "RUNE-256"
 	svc := llmtest.New([]llmapi.ModelEntry{{Provider: "test", Name: "test-model"}})
-	wm := &recordingWindowManager{}
-	fs := nopFileSystem{}
-	h := &aiEditorHandler{
-		ctx:            ctx,
-		llmSvc:         svc,
-		defaultModel:   "test-model",
-		dialogueStore:  newMemDialogueStore(),
-		wm:             wm,
-		n:              stubNotifications{},
-		p:              term.NopInterrupter(),
-		config:         configedit.NopConfig(),
-		skillRegistry:  skills.NewRegistry(fs, dirURI(""), nil, nil),
-		toolRegistry:   agent.NewRegistry(),
-		agentsConfig:   agent.NewConfig([]agent.Definition{{ID: "default", AllowAny: true}}),
-		cwd:            dirURI(""),
-		fs:             fs,
-		memoryDataPath: t.TempDir(),
-	}
+	h, wm := newChatTestHandler(t, svc, newMemDialogueStore())
+	opener := h.o.(*recordingOpener)
 
 	require.NoError(t, h.handleChat(textapi.Command{Args: []string{dialogueID}}))
-	require.NotNil(t, wm.gotHandler)
-	t.Cleanup(func() {
-		require.NoError(t, wm.gotHandler.Close())
-		wm.gotHandler = nil
-	})
+	first, firstURI := wm.gotHandler, wm.gotURI
+	require.NotNil(t, first)
+	t.Cleanup(func() { require.NoError(t, first.Close()) })
 	assert.Equal(t, dialogueID, wm.gotName)
+	assert.Equal(t, 1, wm.setContentCalls)
 
-	err := h.handleChat(textapi.Command{Args: []string{dialogueID}})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), `agent chat "RUNE-256" is already open`)
+	require.NoError(t, h.handleChat(textapi.Command{Args: []string{dialogueID}}))
+	assert.Equal(t, []workspaceapi.URI{firstURI}, opener.openedURIs(), "the tab showing it is shown")
+	assert.Same(t, first, wm.gotHandler, "no other tab opens")
+	assert.Equal(t, 2, wm.setContentCalls)
+
+	require.NoError(t, h.handleChat(textapi.Command{Args: []string{newViewFlag, dialogueID}}))
+	second := wm.gotHandler
+	require.NotSame(t, first, second)
+	t.Cleanup(func() { require.NoError(t, second.Close()) })
+	assert.Equal(t, firstURI.String()+"?view=2", wm.gotURI.String())
+	assert.Equal(t, dialogueID, wm.gotName)
+	s, ok := h.runningChat(dialogueID)
+	require.True(t, ok)
+	assert.Len(t, s.shownIn(), 2)
 }
 
 func TestHandleChatTracksTabURIForActivity(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
 	const dialogueID = "rolling-fox"
 	svc := llmtest.New([]llmapi.ModelEntry{{Provider: "test", Name: "test-model"}})
-	wm := &recordingWindowManager{}
-	fs := nopFileSystem{}
-	h := &aiEditorHandler{
-		ctx:            ctx,
-		llmSvc:         svc,
-		defaultModel:   "test-model",
-		dialogueStore:  newMemDialogueStore(),
-		wm:             wm,
-		n:              stubNotifications{},
-		p:              term.NopInterrupter(),
-		config:         configedit.NopConfig(),
-		skillRegistry:  skills.NewRegistry(fs, dirURI(""), nil, nil),
-		toolRegistry:   agent.NewRegistry(),
-		agentsConfig:   agent.NewConfig([]agent.Definition{{ID: "default", AllowAny: true}}),
-		cwd:            dirURI(""),
-		fs:             fs,
-		memoryDataPath: t.TempDir(),
-	}
+	h, wm := newChatTestHandler(t, svc, newMemDialogueStore())
 
 	require.NoError(t, h.handleChat(textapi.Command{Args: []string{dialogueID}}))
 	require.NotNil(t, wm.gotHandler)
 	t.Cleanup(func() { require.NoError(t, wm.gotHandler.Close()) })
 
-	v, ok := h.openChats.Load(dialogueID)
+	s, ok := h.runningChat(dialogueID)
 	require.True(t, ok)
-	assert.Equal(t, wm.gotURI, v.(syncComponent).tab.uri)
+	assert.Equal(t, wm.gotURI, s.tab.uri)
+	assert.Equal(t, wm.gotURI, s.shownURI())
 }
 
 func TestOpenResourceResumesChat(t *testing.T) {
@@ -729,20 +701,18 @@ func TestOpenResourceResumesChat(t *testing.T) {
 			require.NotNil(t, content)
 			assert.Nil(t, wm.gotHandler, "the tab is the host's, not the extension's")
 			assert.Zero(t, wm.setContentCalls, "placement is the host's")
-			v, ok := h.openChats.Load(dialogueID)
+			s, ok := h.runningChat(dialogueID)
 			require.True(t, ok)
-			assert.Equal(t, uri, v.(syncComponent).tab.uri,
+			assert.Equal(t, uri, s.shownURI(),
 				"the chat must go by the URI the host asked for, whatever the model")
-			a, ok := h.openChatAgents.Load(dialogueID)
-			require.True(t, ok)
-			assert.Equal(t, tt.wantModel, a.(*agent.Agent).Model())
+			assert.Equal(t, tt.wantModel, s.agent.Model())
 
 			_, err = h.OpenResource(ctx, uri)
-			require.ErrorContains(t, err, "is already open")
+			require.ErrorContains(t, err, "is already shown at")
 
 			require.NoError(t, content.Close())
-			_, ok = h.openChats.Load(dialogueID)
-			assert.False(t, ok, "closing the content must end the chat")
+			_, ok = h.runningChat(dialogueID)
+			assert.False(t, ok, "closing the content of an idle chat must end it")
 		})
 	}
 }
@@ -759,7 +729,7 @@ func newCompleteResourceHandler(t *testing.T, store dialoguemanager.Store) *aiEd
 	h.cwd, _ = workspaceapi.ParseURI("file:///my/workspace")
 	tabURI, err := workspaceapi.ParseURI("rune-agent://test-model/open-chat")
 	require.NoError(t, err)
-	h.openChats.Store("open-chat", syncComponent{tab: newTabStatusReporter(nil, tabURI, nil)})
+	h.openChats.Store("open-chat", &chatSession{id: "open-chat", uri: tabURI})
 	h.openChats.Store("opening-chat", struct{}{})
 	return h
 }
@@ -885,9 +855,9 @@ func TestChatCompactUsesChatMaxOutputTokens(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, c.content.Close()) })
 
-	ag, ok := h.openChatAgents.Load(dialogueID)
+	s, ok := h.runningChat(dialogueID)
 	require.True(t, ok)
-	ag.(*agent.Agent).SetMaxOutputTokens(50_000)
+	s.agent.SetMaxOutputTokens(50_000)
 
 	c.content.Resize(frameWidth, frameHeight)
 	keys, err := term.ParseKeys("/compact<space>test/test-model<enter>")
@@ -964,9 +934,9 @@ func TestConsoleMaxTokensUpdatesOpenChats(t *testing.T) {
 	}})
 
 	assert.Equal(t, 64000, h.queryAgent.MaxOutputTokens())
-	ag, ok := h.openChatAgents.Load(dialogueID)
+	s, ok := h.runningChat(dialogueID)
 	require.True(t, ok)
-	assert.Equal(t, 64000, ag.(*agent.Agent).MaxOutputTokens())
+	assert.Equal(t, 64000, s.agent.MaxOutputTokens())
 }
 
 func TestResolveMaxTokens(t *testing.T) {
@@ -2859,22 +2829,26 @@ func newMCPHandlerInEveryState(t *testing.T) (*aiEditorHandler, *capturingNotifi
 	return h, noti
 }
 
-// openTestChat registers an open chat with h, as opening a chat tab does.
-func openTestChat(h *aiEditorHandler, id string) syncComponent {
-	sc := syncComponent{mu: new(sync.Mutex), comp: dialoguetui.NewComponent(dialoguetui.ComponentConfig{}), h: h}
-	h.openChats.Store(id, sc)
-	return sc
+// openTestChat opens a view of a running chat id of h, as opening a chat
+// tab does.
+func openTestChat(t *testing.T, h *aiEditorHandler, id string) *chatView {
+	t.Helper()
+	if h.p == nil {
+		h.p = term.NopInterrupter()
+	}
+	s, _ := openBareChat(t, h, id)
+	return s.shownIn()[0]
 }
 
-// chatText returns the words a chat shows.
-func chatText(t *testing.T, sc syncComponent) string {
+// chatText returns the words v shows.
+func chatText(t *testing.T, v *chatView) string {
 	t.Helper()
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	const width, height = 200, 60
-	sc.comp.Resize(width, height)
+	v.comp.Resize(width, height)
 	w := term.NewStringWriter(width, height)
-	sc.comp.Draw(w)
+	v.comp.Draw(w)
 	require.NoError(t, w.Flush())
 	return strings.Join(strings.Fields(w.String()), " ")
 }
@@ -2934,8 +2908,8 @@ func TestConnectMCPServersWarnsOpenChats(t *testing.T) {
 	})
 	// Both chats open while the servers start, as chats restored at
 	// launch do; one closes before the servers settle.
-	open := openTestChat(h, "rolling-fox")
-	closed := openTestChat(h, "quiet-owl")
+	open := openTestChat(t, h, "rolling-fox")
+	closed := openTestChat(t, h, "quiet-owl")
 	h.openChats.Delete("quiet-owl")
 
 	h.connectMCPServers(servers)
@@ -2954,7 +2928,7 @@ func TestMCPServerLaterTroubleWarnsOpenChats(t *testing.T) {
 	t.Parallel()
 
 	h, noti := newMCPHandlerInEveryState(t)
-	chat := openTestChat(h, "rolling-fox")
+	chat := openTestChat(t, h, "rolling-fox")
 
 	h.mcpManager.OnNeedsAuth("linear")
 	h.mcpManager.OnServerExit("broken", "disconnected after 5 reconnect attempts: EOF")
@@ -2976,19 +2950,17 @@ func TestWarnChatsAboutMCPServerRacesChatEvents(t *testing.T) {
 	h, _, _ := newMCPTestHandler(t, "file:///work/repo", nil)
 	h.mcpManager.Register("untrusted", runemcp.ServerConfig{URL: "https://mcp.example.com/mcp"}, nil,
 		errors.New("not trusted: run `agent mcp trust untrusted`"))
-	chat := openTestChat(h, "rolling-fox")
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	_, tx, _ := dialoguetui.Handler(ctx, chat.mu, chat.comp, term.FuncInterrupter(func(context.Context) error {
-		return nil
-	}))
+	chat := openTestChat(t, h, "rolling-fox")
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go debug.CapturePanicReport(func() {
 		defer wg.Done()
+		// As the session logs what its agent loop shows.
 		for range 50 {
-			tx <- dialoguetui.MessageEvent{Type: dialoguetui.MessageEventWarning, Text: "from the agent"}
+			chat.s.publish(messageEvent(dialoguetui.MessageEvent{
+				Type: dialoguetui.MessageEventWarning, Text: "from the agent",
+			}))
 		}
 	})
 	go debug.CapturePanicReport(func() {
@@ -2998,7 +2970,6 @@ func TestWarnChatsAboutMCPServerRacesChatEvents(t *testing.T) {
 		}
 	})
 	wg.Wait()
-	close(tx)
 	assert.Contains(t, chatText(t, chat), `MCP server "untrusted" is unavailable`)
 }
 
@@ -3980,15 +3951,15 @@ func cellOf(w *term.StringWriter, width int, text string) (term.Coordinates, boo
 	return term.Coordinates{}, false
 }
 
-// statusBarRow draws comp and returns its bottom row, the status bar.
-func statusBarRow(t *testing.T, sc syncComponent) string {
+// statusBarRow draws v and returns its bottom row, the status bar.
+func statusBarRow(t *testing.T, v *chatView) string {
 	t.Helper()
 	const width, height = 40, 8
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	sc.comp.Resize(width, height)
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.comp.Resize(width, height)
 	w := term.NewStringWriter(width, height)
-	sc.comp.Draw(w)
+	v.comp.Draw(w)
 	require.NoError(t, w.Flush())
 	lines := strings.Split(w.String(), "\n")
 	return strings.TrimSpace(lines[height-1])
@@ -4045,13 +4016,9 @@ func TestReloadStatusBar(t *testing.T) {
 			}
 			h := &aiEditorHandler{n: stubNotifications{}, p: term.NopInterrupter()}
 			h.cfg.StatusBar = initial
-			open := syncComponent{
-				mu:   new(sync.Mutex),
-				comp: dialoguetui.NewComponent(dialoguetui.ComponentConfig{StatusBar: initial}),
-			}
-			t.Cleanup(func() { assert.NoError(t, open.comp.Close()) })
-			open.setStatusBarState(func(s *dialoguetui.StatusBarState) { s.Model, s.Effort = "opus", "high" })
-			h.openChats.Store("open", open)
+			s, _ := openBareChat(t, h, "open")
+			s.setStatusBarState(func(s *dialoguetui.StatusBarState) { s.Model, s.Effort = "opus", "high" })
+			open := s.shownIn()[0]
 			h.openChats.Store("opening", struct{}{})
 
 			err := h.reloadStyle(context.Background(), tt.host)
@@ -4061,7 +4028,9 @@ func TestReloadStatusBar(t *testing.T) {
 				require.NoError(t, err)
 			}
 			if tt.wantRow == "" {
+				open.mu.Lock()
 				assert.Zero(t, open.comp.StatusBarState(), "the open chat has no bar")
+				open.mu.Unlock()
 			} else {
 				assert.Contains(t, statusBarRow(t, open), tt.wantRow)
 			}
@@ -4182,12 +4151,8 @@ func TestReloadStyleInputBoxFrame(t *testing.T) {
 			h.cfg = dialoguetui.DefaultComponentConfig()
 			h.cfg.InputBox.GraphicsStorage = storagestub.NewInMemoryService()
 			h.cfg, _ = dialoguetui.ReadStyle(context.Background(), h.cfg, own, config.NopConfig(), stubNotifications{})
-			mu := new(sync.Mutex)
-			comp := dialoguetui.NewComponent(h.dialogueConfig(mu))
-			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
-			dh, tx, _ := dialoguetui.Handler(context.Background(), mu, comp, p)
-			defer close(tx)
-			h.openChats.Store("open", syncComponent{mu: mu, comp: comp})
+			_, c := openBareChat(t, h, "open")
+			dh := c.content
 			dh.Resize(width, height)
 			awaitChat(t, dh, width, height, interrupts, opened)
 
@@ -4266,18 +4231,13 @@ func TestReloadStyleInputBoxColors(t *testing.T) {
 			h := &aiEditorHandler{n: stubNotifications{}, p: term.NopInterrupter()}
 			h.cfg = dialoguetui.DefaultComponentConfig()
 			h.cfg.InputBackgroundColor = term.ColorRed
-			mu := new(sync.Mutex)
-			comp := dialoguetui.NewComponent(h.dialogueConfig(mu))
-			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
-			dh, tx, _ := dialoguetui.Handler(context.Background(), mu, comp, h.p)
-			defer close(tx)
-			h.openChats.Store("open", syncComponent{mu: mu, comp: comp})
-			frame, input := colors(t, dh)
+			_, c := openBareChat(t, h, "open")
+			frame, input := colors(t, c.content)
 			require.Equal(t, term.ColorRed, frame, "opened")
 			require.Equal(t, term.ColorRed, input, "opened")
 
 			require.NoError(t, h.reloadStyle(context.Background(), host(tt.reloaded)))
-			frame, input = colors(t, dh)
+			frame, input = colors(t, c.content)
 			assert.Equal(t, tt.wantFrame, frame, "the open chat's frame")
 			assert.Equal(t, tt.wantInput, input, "the open chat's input")
 
