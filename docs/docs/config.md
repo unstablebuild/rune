@@ -535,3 +535,28 @@ available:
   ```python tab
   config["telemetry"]["enabled"] = False
   ```
+
+## Language server settings
+
+- `lsp.servers.<section>`: settings a language server asks for with a
+  `workspace/configuration` request. Rune answers that request from this map,
+  so a key here reaches the server the way it would in the server's own
+  config file. gopls asks for the section `gopls`; see
+  [Go](./languages/go.md#gopls-server-settings) for the settings it reads.
+
+  ```yaml tab
+  lsp:
+    servers:
+      gopls:
+        analyses:
+          fieldalignment: true
+        renameMovesSubpackages: true
+  ```
+
+  ```python tab
+  config["lsp"]["servers"]["gopls"]["analyses"]["fieldalignment"] = True
+  ```
+
+  A server that only reads its settings from `initializationOptions` takes
+  them at startup, so changing this needs `:workspacereload` before it takes
+  effect.

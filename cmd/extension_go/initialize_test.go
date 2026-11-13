@@ -155,7 +155,7 @@ func TestGoplsInitializeParamsUserSettings(t *testing.T) {
 
 	t.Run("langID and command routing fields are not clobbered", func(t *testing.T) {
 		params, err := goplsInitializeParams("file:///tmp/repo", goplsDebugOptions{}, "", map[string]any{
-			"langID": "rust",
+			"langID":  "rust",
 			"command": "not-a-gopls-command",
 		})
 		require.NoError(t, err)
@@ -276,4 +276,28 @@ func TestReadGoplsDebugOptionsLogFileTildeExpansion(t *testing.T) {
 	assert.Equal(t,
 		filepath.Join(tmp, ".rune", "logs", "lsp", "gopls.log"),
 		got.LogFile)
+}
+
+func TestReadGoplsSettings(t *testing.T) {
+	t.Run("nil config", func(t *testing.T) {
+		assert.Nil(t, readGoplsSettings(nil))
+	})
+
+	t.Run("missing gopls key", func(t *testing.T) {
+		cfg := config.JSONFromMap(map[string]any{"other": "value"})
+		assert.Empty(t, readGoplsSettings(cfg))
+	})
+
+	t.Run("user settings are read from the gopls key", func(t *testing.T) {
+		cfg := config.JSONFromMap(map[string]any{
+			"gopls": map[string]any{
+				"fileWatcher": "poll",
+				"vulncheck":   "Off",
+			},
+		})
+		assert.Equal(t, map[string]any{
+			"fileWatcher": "poll",
+			"vulncheck":   "Off",
+		}, readGoplsSettings(cfg))
+	})
 }

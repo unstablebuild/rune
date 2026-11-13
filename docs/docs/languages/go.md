@@ -118,7 +118,7 @@ stderr, so those logs do not appear in `process stdio`.
 
 ### gopls server settings
 
-gopls v0.23 and later opt many behaviors into initialization settings that
+gopls v0.22 and later opt many behaviors into initialization settings that
 Rune forwards to the server. You can supply any gopls setting under
 `extensions.go.config.gopls` in your `config.yaml`:
 
@@ -240,6 +240,12 @@ what to do when nothing applicable is under the cursor.
 | `go organize-imports` | Remove unused imports, add missing ones, and sort them. |
 | `go add-import` | Add a package import to the current file. |
 | `go eliminate-dot-import` | Remove a dot import and qualify all references with the package name. |
+
+### REPL
+
+| Command | What it does |
+| --- | --- |
+| `go repl` | Open an interactive Go REPL that runs via `go run` in the project's module. |
 
 ### Tests and benchmarks
 
