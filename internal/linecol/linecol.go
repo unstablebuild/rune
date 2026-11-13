@@ -27,8 +27,9 @@ import (
 // Parse reads the position at the start of s and returns the 1-based
 // line and column it names, together with the number of bytes it
 // spans. A position names a line, or a line and a column, and a
-// position without a column starts at column one. ok is false when s
-// does not start with a position.
+// position without a column starts at column one. A column of zero is
+// read as a line with no column, so that a tool printing "42:0" still
+// names line 42. ok is false when s does not start with a position.
 func Parse(s string) (line, col, n int, ok bool) {
 	i := 0
 	for i < len(s) && isDigit(s[i]) {
@@ -50,9 +51,11 @@ func Parse(s string) (line, col, n int, ok bool) {
 			j++
 		}
 		c, err := strconv.Atoi(s[i+1 : j])
-		if err != nil || c <= 0 {
+		if err != nil {
 			return 0, 0, 0, false
 		}
+		// A column of zero is no column rather than a bad one, so it
+		// stays zero and Coord turns it into the first column.
 		col = c
 		i = j
 	}
@@ -60,8 +63,9 @@ func Parse(s string) (line, col, n int, ok bool) {
 }
 
 // Coord converts a 1-based position to the 0-based coordinates an
-// editor cursor uses. A line of zero leaves the cursor alone, and a
-// column of zero starts at the first column.
+// editor cursor uses. A line of zero becomes row zero and a column of
+// zero becomes column zero; whether to move the cursor at all is the
+// caller's decision, not this function's.
 func Coord(line, col int) term.Coordinates {
 	y := line - 1
 	if y < 0 {
