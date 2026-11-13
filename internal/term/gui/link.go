@@ -107,6 +107,14 @@ func (s *rowScanner) scan(cells [][]term.Cell, dst []linkSpan) []linkSpan {
 		if len(dst) == before {
 			continue
 		}
+		// A path that begins on the first cell of a row the terminal
+		// broke may be the second half of a path the row above started.
+		// Reading it on its own would name a different file, so it is
+		// not offered as a link.
+		dst = dropContinuedPaths(cells, y, before, dst)
+		if len(dst) == before {
+			continue
+		}
 		// A link that ends on the wrap marker continues on the next row.
 		for i := len(dst) - 1; i >= before; i-- {
 			if !wrapMarked(cells[y], dst[i].x1) {
@@ -117,6 +125,86 @@ func (s *rowScanner) scan(cells [][]term.Cell, dst []linkSpan) []linkSpan {
 		}
 	}
 	return dst
+}
+
+// dropContinuedPaths removes the path spans of a row that starts in the
+// middle of a reference the row above broke. The row above carries the
+// wrap marker on the last cell the pane wrote, and a path that ends on a
+// path rune there says the reference ran to the margin rather than
+// ending in ordinary prose.
+func dropContinuedPaths(
+	cells [][]term.Cell, y, before int, dst []linkSpan,
+) []linkSpan {
+	if y == 0 || len(dst) == before {
+		return dst
+	}
+	above := cells[y-1]
+	end := len(above)
+	for end > 0 && above[end-1].Ch == 0 {
+		end--
+	}
+	if end < 2 || !wrapMarked(above, end) || !isPathRune(above[end-2].Ch) {
+		return dst
+	}
+	// A name that reached the margin without a position is not half a
+	// reference, and neither is ordinary prose that happens to end in a
+	// path rune. Only a name that looks like a path is worth dropping.
+	if !rowEndsInPath(above[:end-1]) {
+		return dst
+	}
+	kept := dst[:before]
+	for _, span := range dst[before:] {
+		if span.kind == linkPath && span.x0 == 0 {
+			continue
+		}
+		kept = append(kept, span)
+	}
+	return kept
+}
+
+// rowEndsInPath reports whether the cells end in something shaped like
+// a path, by checking the last run of path runes without building a
+// string. A row that ends mid-word is prose; one that ends in a
+// directory or an extension is a path.
+func rowEndsInPath(row []term.Cell) bool {
+	// Walk back over the path runes.
+	end := len(row)
+	for end > 0 {
+		c := row[end-1].Ch
+		if c == 0 {
+			end--
+			continue
+		}
+		if !isPathRune(c) {
+			break
+		}
+		end--
+	}
+	if end == len(row) {
+		return false
+	}
+	// The run is row[end:]. It is a path when it holds a separator, or
+	// an extension that starts with a letter.
+	hasDot := false
+	for i := end; i < len(row); i++ {
+		switch row[i].Ch {
+		case '/':
+			return true
+		case '.':
+			hasDot = true
+		}
+	}
+	if !hasDot {
+		return false
+	}
+	last := rune(0)
+	for i := len(row) - 1; i >= end; i-- {
+		if row[i].Ch != 0 {
+			last = row[i].Ch
+			break
+		}
+	}
+	return last >= 'a' && last <= 'z' || last >= 'A' && last <= 'Z'
 }
 
 // wrapMarked reports whether the cell a link ends on records that its
@@ -218,7 +306,10 @@ func (s *rowScanner) joinWrapped(
 	for _, b := range s.wrapped {
 		open.admit(rune(b))
 	}
-	last := first
+	// A wrapped link need not be the last one on its row: the row may
+	// carry spans from a neighbouring pane. Those are not this link's,
+	// so the join works on its own indices and leaves the rest alone.
+	joined := []int{first}
 	for y+1 < len(cells) {
 		row := cells[y+1]
 		if left >= len(row) {
@@ -232,57 +323,81 @@ func (s *rowScanner) joinWrapped(
 		s.segs = append(s.segs, joinSegment{row: y + 1, x0: left, count: end - left})
 		y++
 		dst = append(dst, linkSpan{y: y, x0: left, x1: end, kind: span.kind})
-		last = len(dst) - 1
+		joined = append(joined, len(dst)-1)
 		if !wrapMarked(row, end) {
 			break
 		}
 	}
 	if span.kind == linkPath {
-		return s.joinPath(cells, y, first, last, dst)
+		return s.joinPath(cells, y, dst, joined)
 	}
 	trimmed := trimURL(s.wrapped)
 	if !hasHost(trimmed) {
 		// The run reached the margin on nothing but its scheme and the
 		// rows below it did not carry a host after all.
-		return dst[:first], y
+		return dropSpans(dst, joined), y
 	}
 	// Trimming drops nothing but ASCII punctuation, which never
 	// continues a cluster and so always had a cell to itself.
+	last := joined[len(joined)-1]
 	dst[last].x1 -= len(s.wrapped) - len(trimmed)
-	for last > first && dst[last].x1 <= dst[last].x0 {
-		dst = dst[:last]
-		last--
+	for len(joined) > 1 && dst[last].x1 <= dst[last].x0 {
+		dst = dropSpans(dst, joined[len(joined)-1:])
+		joined = joined[:len(joined)-1]
+		last = joined[len(joined)-1]
 	}
 	text := string(trimmed)
-	for i := first; i <= last; i++ {
+	for _, i := range joined {
 		dst[i].text = text
 	}
 	return dst, y
+}
+
+// dropSpans removes the spans at the given indices, leaving the order
+// of the rest alone.
+func dropSpans(dst []linkSpan, drop []int) []linkSpan {
+	if len(drop) == 0 {
+		return dst
+	}
+	skip := make(map[int]bool, len(drop))
+	for _, i := range drop {
+		skip[i] = true
+	}
+	out := dst[:0]
+	for i, span := range dst {
+		if skip[i] {
+			continue
+		}
+		out = append(out, span)
+	}
+	return out
 }
 
 // joinPath finishes a bare path reference that wrapped onto the rows
 // below it. The reference is read from the joined text, so that a
 // position the terminal broke across the margin is read whole.
 func (s *rowScanner) joinPath(
-	cells [][]term.Cell, y, first, last int, dst []linkSpan,
+	cells [][]term.Cell, y int, dst []linkSpan, joined []int,
 ) ([]linkSpan, int) {
 	path, line, col, start, end, ok := parsePathRef(string(s.wrapped))
 	if !ok {
 		// The rows below the margin do not continue the reference, so
 		// the first row keeps the reference it found on its own.
-		return dst[:first+1], y
+		return dropSpans(dst, joined[1:]), y
 	}
+	first := joined[0]
 	// The reference ends in the cell the joined text ends in.
-	count := s.cellsBefore(end)
-	if count > 0 {
+	if count := s.cellsBefore(end); count > 0 {
 		row, x := s.locate(count - 1)
-		for i := first; i <= last; i++ {
+		for n, i := range joined {
 			if dst[i].y != row {
 				continue
 			}
 			dst[i].x1 = x + 1
-			dst = dst[:i+1]
-			last = i
+			// A reference that ends on an earlier row ends the join
+			// there: the rows below it belong to something else.
+			dst = dropSpans(dst, joined[n+1:])
+			joined = joined[:n+1]
 			break
 		}
 	}
@@ -294,7 +409,7 @@ func (s *rowScanner) joinPath(
 		}
 	}
 	link := Link{Path: path, Line: line, Col: col}
-	for i := first; i <= last; i++ {
+	for _, i := range joined {
 		dst[i].link = link
 	}
 	return dst, y
@@ -424,6 +539,12 @@ func (s *rowScanner) settle(row []term.Cell, dst []linkSpan, i int) []linkSpan {
 func (s *rowScanner) scanPath(
 	y int, row []term.Cell, x int, dst []linkSpan,
 ) ([]linkSpan, int) {
+	// A colon only starts a position when a digit follows it. Log output
+	// is full of colons that do not, so this is settled before the run
+	// in front of the colon is walked.
+	if x+1 >= len(row) || !isDigit(row[x+1].Ch) {
+		return dst, x + 1
+	}
 	start := x
 	for start > 0 {
 		cell := start - 1
@@ -458,8 +579,7 @@ func (s *rowScanner) scanPath(
 		}
 		s.text = appendCluster(s.text, &row[i])
 	}
-	path := string(s.text)
-	if !isFilePath(path) {
+	if !isFilePathBytes(s.text) {
 		return dst, x + 1
 	}
 
@@ -472,7 +592,7 @@ func (s *rowScanner) scanPath(
 		y:    y,
 		x0:   start,
 		x1:   end,
-		link: Link{Path: path, Line: line, Col: col},
+		link: Link{Path: string(s.text), Line: line, Col: col},
 		kind: linkPath,
 	})
 	return dst, end
@@ -544,10 +664,19 @@ func isPathRune(r rune) bool {
 // bare name must carry an extension that starts with a letter, so that
 // "127.0.0.1:8080" and "1.5:1" are not paths.
 func isFilePath(path string) bool {
-	if strings.Contains(path, "/") {
-		return true
+	return isFilePathBytes([]byte(path))
+}
+
+// isFilePathBytes reports whether the bytes name a file rather than
+// prose. It takes bytes so the scanner can decide before it builds a
+// string for every colon it passes.
+func isFilePathBytes(path []byte) bool {
+	for _, b := range path {
+		if b == '/' {
+			return true
+		}
 	}
-	dot := strings.LastIndex(path, ".")
+	dot := bytes.LastIndexByte(path, '.')
 	if dot <= 0 || dot == len(path)-1 {
 		return false
 	}
@@ -734,6 +863,7 @@ func schemeLink(text string) (Link, bool) {
 		return Link{URL: u}, true
 	}
 	path, line, col := u.Path, 0, 0
+	fragment := u.Fragment != ""
 	if frag := u.Fragment; frag != "" {
 		if l, c, _, ok := linecol.Parse(frag); ok {
 			line, col = l, c
@@ -741,10 +871,15 @@ func schemeLink(text string) (Link, bool) {
 	} else if p, l, c, ok := splitPosition(path); ok {
 		path, line, col = p, l, c
 	}
-	if path != u.Path {
+	// A position that came from either the fragment or the path is not
+	// part of the file's address. Leaving it in the URL would open a
+	// second tab for the same file, which the workspace refuses.
+	if path != u.Path || fragment {
 		clean := *u
 		clean.Path = path
 		clean.RawPath = ""
+		clean.Fragment = ""
+		clean.RawFragment = ""
 		u = &clean
 	}
 	return Link{URL: u, Path: path, Line: line, Col: col}, true
