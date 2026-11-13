@@ -2305,3 +2305,13 @@ func TestComponentClipboardAccess(t *testing.T) {
 	reply := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte("secret")) + "\x07"
 	assert.Equal(t, reply+reply, ptyOutput(pty), "a reset must keep the access")
 }
+
+func TestIsShell(t *testing.T) {
+	t.Parallel()
+	for path, want := range map[string]bool{
+		"sh": true, "/bin/bash": true, "/opt/homebrew/bin/zsh": true, "fish": true,
+		"/home/me/.rune/bin/rune-claude": false, "claude": false, "cat": false,
+	} {
+		assert.Equal(t, want, isShell(path), path)
+	}
+}
