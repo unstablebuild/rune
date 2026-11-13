@@ -9633,6 +9633,7 @@ func TestPasteFromClipboardImage(t *testing.T) {
 		name       string
 		text       string
 		hasImage   bool
+		noDetector bool
 		terminal   bool
 		prompt     bool
 		want       []term.Event
@@ -9640,6 +9641,8 @@ func TestPasteFromClipboardImage(t *testing.T) {
 	}{
 		{name: "terminal with image and no text forwards ctrl-v",
 			hasImage: true, terminal: true, want: []term.Event{ctrlV}},
+		{name: "terminal with image but no detector notifies",
+			hasImage: true, noDetector: true, terminal: true, wantNotice: true},
 		{name: "terminal with no text and no image notifies",
 			terminal: true, wantNotice: true},
 		{name: "terminal with text and image pastes the text",
@@ -9663,7 +9666,9 @@ func TestPasteFromClipboardImage(t *testing.T) {
 			require.NoError(t, clip.Copy(clipboard.DefaultRegisterID,
 				clipboard.Data{Text: tc.text}))
 			b.ex.clip = clip
-			b.ex.clipImage = fakeImageDetector(tc.hasImage)
+			if !tc.noDetector {
+				b.ex.clipImage = fakeImageDetector(tc.hasImage)
+			}
 
 			var session *testVte
 			if tc.terminal {
