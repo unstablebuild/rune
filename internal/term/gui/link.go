@@ -26,7 +26,7 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
-	"unstable.build/rune/internal/linecol"
+	"unstable.build/rune/internal/workspace/linecol"
 )
 
 // Link describes a clickable link rendered in the composited frame.

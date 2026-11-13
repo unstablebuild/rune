@@ -16,6 +16,11 @@
 
 // Package linecol reads the line and column positions that compilers,
 // stack traces and link fragments spell out.
+//
+// Positions are 1-based, the way compilers report them. Zero means the
+// text did not give one: a line of zero is no line, and a column of zero
+// is a line with no column. Coord turns either into the zero-based
+// coordinates an editor cursor uses.
 package linecol
 
 import (

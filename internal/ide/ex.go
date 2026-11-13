@@ -72,7 +72,6 @@ import (
 	"unstable.build/rune/internal/ide/keymeta"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/ide/vctrl"
-	"unstable.build/rune/internal/linecol"
 	tterm "unstable.build/rune/internal/term"
 	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
@@ -82,6 +81,7 @@ import (
 	"unstable.build/rune/internal/text/exoeditor"
 	"unstable.build/rune/internal/text/textrpc"
 	"unstable.build/rune/internal/workspace"
+	"unstable.build/rune/internal/workspace/linecol"
 )
 
 const (
