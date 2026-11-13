@@ -52,12 +52,23 @@ type imageLayer struct {
 	// tightly packed RGBA. It is reused across frames and across
 	// pictures within a frame.
 	scratch *image.RGBA
+
+	// quad backs the vertices of tiled placements, which would
+	// otherwise be allocated for every one drawn.
+	quad [4]ebiten.Vertex
 }
+
+var (
+	// quadIndices are the two triangles of a quad's vertices in the
+	// order tileQuad returns them.
+	quadIndices = []uint16{0, 1, 2, 1, 2, 3}
+	tileOptions = ebiten.DrawTrianglesOptions{Address: ebiten.AddressRepeat}
+)
 
 // placement is the pixel geometry of one image placement: src selects
 // the texels in the picture's texture, area is where the whole picture
-// would land, and clip narrows the painting to the cells the placement
-// still covers.
+// would land, or where its tiles repeat across, and clip narrows the
+// painting to the cells the placement still covers.
 type placement struct {
 	src, area, clip image.Rectangle
 }
@@ -120,6 +131,11 @@ func (l *imageLayer) drawOne(
 	if tex == nil {
 		return image.Rectangle{}
 	}
+	if img.Fit == term.ImageFitTile {
+		l.quad = tileQuad(p)
+		dst.DrawTriangles(l.quad[:], quadIndices, tex.SubImage(p.src).(*ebiten.Image), &tileOptions)
+		return p.clip
+	}
 
 	var op ebiten.DrawImageOptions
 	op.GeoM.Scale(
@@ -135,6 +151,29 @@ func (l *imageLayer) drawOne(
 	}
 	target.DrawImage(tex.SubImage(p.src).(*ebiten.Image), &op)
 	return p.clip
+}
+
+// tileQuad returns the corners of p.clip, top-left, top-right,
+// bottom-left and bottom-right, each sampling the texel of p.src that
+// tiles repeated one texel to a pixel from p.area's top-left corner put
+// there. The texels run past p.src for the sampler to wrap them, so
+// placements of one area clipped to adjacent pixels continue each
+// other's tiles.
+func tileQuad(p placement) [4]ebiten.Vertex {
+	corners := [4]image.Point{
+		p.clip.Min, {X: p.clip.Max.X, Y: p.clip.Min.Y},
+		{X: p.clip.Min.X, Y: p.clip.Max.Y}, p.clip.Max,
+	}
+	var quad [4]ebiten.Vertex
+	for i, corner := range corners {
+		texel := corner.Sub(p.area.Min).Add(p.src.Min)
+		quad[i] = ebiten.Vertex{
+			DstX: float32(corner.X), DstY: float32(corner.Y),
+			SrcX: float32(texel.X), SrcY: float32(texel.Y),
+			ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1,
+		}
+	}
+	return quad
 }
 
 // texture returns the uploaded pixels for img, uploading them when the

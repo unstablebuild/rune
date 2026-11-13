@@ -19,6 +19,7 @@ package component
 import (
 	"context"
 	"fmt"
+	"image"
 	"strconv"
 	"strings"
 	"testing"
@@ -1746,6 +1747,82 @@ func TestWindowCoordinatesPanicDeleteRow(t *testing.T) {
 		scroll.WindowToScrollCoordinates(term.Coordinates{Y: 8, X: 0})
 		// do not assert result as it will always be incorrect
 	})
+}
+
+func TestScrollEndRow(t *testing.T) {
+	const content = "AAAAAAAAAAAAA\nBBBBBBB\nCCCCCCCCCCCCCC\nDDDDDDD\nEEEEEEEEEEEEEE"
+	tests := []struct {
+		name          string
+		wrap, invert  bool
+		width, height int
+		offset        int
+		hidden        *startEndBlock
+		want          int
+	}{
+		{name: "content shorter than the scroll", width: 20, height: 8, want: 5},
+		{name: "content past the bottom", width: 20, height: 3, want: 3},
+		{name: "scrolled down", width: 20, height: 8, offset: 2, want: 3},
+		{name: "scrolled past the content", width: 20, height: 8, offset: 7, want: 0},
+		{name: "wrapped rows", wrap: true, width: 10, height: 12, want: 8},
+		{name: "wrapped rows scrolled down", wrap: true, width: 10, height: 12, offset: 3, want: 5},
+		{name: "a hidden block drawn on one row", width: 30, height: 8, hidden: &startEndBlock{1, 3}, want: 3},
+		{name: "an inverted offset drawing the content at the bottom", invert: true, width: 20, height: 8, want: 8},
+		{name: "an inverted offset scrolled up", invert: true, width: 20, height: 3, offset: 1, want: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := cell.NewBuffer()
+			buf.WriteString(content)
+			s := NewScroll(buf)
+			s.Wrap, s.InvertOffset = tt.wrap, tt.invert
+			s.Resize(tt.width, tt.height)
+			if tt.hidden != nil {
+				s.MarkHidden(tt.hidden.start, tt.hidden.end)
+			}
+			s.SetOffset(term.Coordinates{Y: tt.offset})
+			w := term.NewStringWriter(tt.width, tt.height)
+			s.Draw(w)
+			require.NoError(t, w.Flush())
+
+			assert.Equal(t, tt.want, s.EndRow())
+			var drawn int
+			for y, row := range strings.Split(strings.Trim(w.String(), "\n"), "\n") {
+				if strings.TrimSpace(row) != "" {
+					drawn = y + 1
+				}
+			}
+			assert.Equal(t, drawn, s.EndRow(), "the content ends on the row above:\n%s", w.String())
+		})
+	}
+}
+
+func TestScrollHatchesRowsBelowContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    []image.Rectangle
+	}{
+		{name: "below short content", content: "a\nb\n", want: []image.Rectangle{image.Rect(0, 3, 6, 4)}},
+		{name: "nowhere when the content fills the scroll", content: "a\nb\nc\nd"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := cell.NewBuffer()
+			buf.WriteString(tt.content)
+			s := NewScroll(buf)
+			s.Hatch = new(Hatch)
+			s.Resize(6, 4)
+			ctx := cell.ContextWithPixelSize(context.Background(), cell.PixelSize{Width: 10, Height: 20})
+			w := cell.NewBufferWriter(ctx, 6, 4)
+			s.Draw(w)
+
+			var hatched []image.Rectangle
+			for _, img := range w.Images() {
+				hatched = append(hatched, img.Bounds())
+			}
+			assert.Equal(t, tt.want, hatched)
+		})
+	}
 }
 
 func TestScrollGetMaxXOffsetWithTabs(t *testing.T) {

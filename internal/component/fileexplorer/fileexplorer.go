@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -375,6 +376,108 @@ func (c *Component) ExpandNodeAt(
 	}
 	c.rewriteBufferFromTree(view)
 	return workspaceapi.URI{}, false
+}
+
+// Reveal expands dir, a path on disk, and each of its ancestors below
+// the root, and returns the buffer row showing dir. Unflushed edits
+// are kept, and so is what writing them does: an ancestor renamed or
+// moved in the buffer is expanded where it now is, and the
+// subdirectories of a reopened ancestor come back expanded or
+// collapsed as they were left. ok is false, and the buffer and what
+// writing it does stay as they were, when dir is not strictly under
+// the root (same scheme, host and user), or the tree does not show it:
+// it is ignored, missing or unreadable, or its row or one of its
+// ancestors' was deleted in the buffer.
+func (c *Component) Reveal(dir workspaceapi.URI) (row int, ok bool) {
+	if dir.Scheme() != c.root.Scheme() || dir.Host() != c.root.Host() ||
+		dir.User() != c.root.User() {
+		return 0, false
+	}
+	rel, ok := strings.CutPrefix(path.Clean(dir.Path()),
+		strings.TrimSuffix(path.Clean(c.root.Path()), "/")+"/")
+	if !ok {
+		return 0, false
+	}
+	view := c.parseViewTree()
+	base := c.baseTree
+	var bases, targets []*node
+	for name := range strings.SplitSeq(rel, "/") {
+		base = childDirByName(base, name)
+		if base == nil {
+			return 0, false
+		}
+		target := c.findNodeByID(view, base.id)
+		if target == nil || !target.isDir {
+			return 0, false
+		}
+		if base.children == nil {
+			// base stays collapsed until the whole path resolves:
+			// parseViewTree grafts the children of a collapsed base
+			// back, so a failed reveal leaves no deletion to write.
+			if err := readChildren(c.fs, c.cfg.Ignore, base); err != nil {
+				return 0, false
+			}
+			c.assignIDs(base)
+			appendBaseChildren(target, base)
+		}
+		bases = append(bases, base)
+		targets = append(targets, target)
+	}
+	for i, target := range targets {
+		if !target.expanded {
+			c.expandLikeBase(target)
+		}
+		target.expanded = true
+		bases[i].expanded = true
+	}
+	c.rewriteBufferFromTree(view)
+	row = slices.Index(c.rowIDs, targets[len(targets)-1].id)
+	return row, row >= 0
+}
+
+// appendBaseChildren adds the children just read into base to dst, its
+// view node, beside the rows typed under dst. A typed row naming one of
+// them becomes it: writing it would only have created what is there.
+func appendBaseChildren(dst, base *node) {
+	for _, bc := range base.children {
+		i := slices.IndexFunc(dst.children, func(vc *node) bool {
+			return vc.id == 0 && vc.name == bc.name && vc.isDir == bc.isDir
+		})
+		if i >= 0 {
+			dst.children[i].id = bc.id
+			continue
+		}
+		dst.children = append(dst.children, &node{
+			id:     bc.id,
+			name:   bc.name,
+			uri:    workspaceapi.Join(dst.uri, bc.name),
+			isDir:  bc.isDir,
+			depth:  dst.depth + 1,
+			parent: dst,
+		})
+	}
+	sortChildren(dst.children)
+}
+
+// expandLikeBase expands the descendants of n, a view node about to be
+// reopened, as baseTree records them: parseViewTree marks every
+// directory it grafts under a collapsed node expanded. The descendants
+// of a collapsed node all come from baseTree, by graft or by
+// appendBaseChildren.
+func (c *Component) expandLikeBase(n *node) {
+	for _, child := range n.children {
+		child.expanded = c.findNodeByID(c.baseTree, child.id).expanded
+		c.expandLikeBase(child)
+	}
+}
+
+func childDirByName(n *node, name string) *node {
+	for _, child := range n.children {
+		if child.isDir && child.name == name {
+			return child
+		}
+	}
+	return nil
 }
 
 // ExpandLevel expands all directories at the same depth

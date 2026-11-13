@@ -20,7 +20,9 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -156,6 +158,577 @@ func TestExpandNodeAtDirectory(t *testing.T) {
 
 	_, _ = c.ExpandNodeAt(term.Coordinates{Y: 0})
 	assert.Equal(t, " src/", buf.String())
+}
+
+func TestReveal(t *testing.T) {
+	const (
+		closed = "\uf4d3 "
+		open   = "\uf07c "
+		file   = "\uf40d "
+	)
+	row := func(depth int, icon, name string) string {
+		return strings.Repeat("│   ", depth) + icon + name
+	}
+	lines := func(rows ...string) string { return strings.Join(rows, "\n") }
+	type step func(t *testing.T, c *Component, buf *cell.Buffer)
+	toggle := func(label string) step {
+		return func(t *testing.T, c *Component, buf *cell.Buffer) {
+			toggleComponentRowContaining(t, c, buf, label)
+		}
+	}
+	// The edits below keep the row ids, as an editor's do.
+	replace := func(y int, line string) step {
+		return func(t *testing.T, c *Component, buf *cell.Buffer) {
+			replaceLine(buf, y, line)
+			require.True(t, c.HasPendingEdits())
+		}
+	}
+	insert := func(after int, line string) step {
+		return func(t *testing.T, c *Component, buf *cell.Buffer) {
+			insertAfter(buf, after, line)
+			require.True(t, c.HasPendingEdits())
+		}
+	}
+	remove := func(y int) step {
+		return func(t *testing.T, c *Component, buf *cell.Buffer) {
+			buf.DeleteRow(y)
+			require.True(t, c.HasPendingEdits())
+		}
+	}
+	paste := func(y int, line string) step {
+		return func(t *testing.T, _ *Component, buf *cell.Buffer) {
+			at := term.Coordinates{Y: y}
+			buf.Edit(context.Background(), at, at, line+"\n")
+		}
+	}
+	reveal := func(dir string) step {
+		return func(t *testing.T, c *Component, _ *cell.Buffer) {
+			_, ok := c.Reveal(mustParseURI(dir))
+			require.True(t, ok)
+		}
+	}
+
+	disk := map[string][]mockEntry{
+		"/project": {
+			{name: "docs", isDir: true},
+			{name: "src", isDir: true},
+			{name: "tmp.swp", isDir: true},
+			{name: "README.md"},
+		},
+		"/project/docs":          {{name: "guide.md"}},
+		"/project/src":           {{name: "pkg", isDir: true}, {name: "root.go"}},
+		"/project/src/pkg":       {{name: "inner", isDir: true}, {name: "main.go"}},
+		"/project/src/pkg/inner": {{name: "deep.go"}},
+		"/project/tmp.swp":       {{name: "inner", isDir: true}},
+		"/project/tmp.swp/inner": {},
+	}
+	without := func(path string) map[string][]mockEntry {
+		dirs := maps.Clone(disk)
+		delete(dirs, path)
+		return dirs
+	}
+	srcOpen := []string{
+		row(0, closed, "docs/"),
+		row(0, open, "src/"),
+		row(1, closed, "pkg/"),
+		row(1, file, "root.go"),
+		row(0, file, "README.md"),
+	}
+	pkgOpen := []string{
+		row(0, closed, "docs/"),
+		row(0, open, "src/"),
+		row(1, open, "pkg/"),
+		row(2, closed, "inner/"),
+		row(2, file, "main.go"),
+		row(1, file, "root.go"),
+		row(0, file, "README.md"),
+	}
+
+	tests := []struct {
+		name  string
+		root  string
+		dirs  map[string][]mockEntry
+		setup []step
+		dir   string
+		// relDir, when set, is the path of a dir URI on the root's
+		// scheme and host that is relative, which ParseURI never makes.
+		relDir string
+		// want is the tree after a successful reveal, whose row shows
+		// wantNode; a failed reveal must leave the tree as it was.
+		want     string
+		wantRow  int
+		wantNode string
+		// wantPlan is what a write does after the reveal, when the
+		// reveal finds the disk differs from what it was told.
+		wantPlan      []string
+		wantConflicts int
+	}{
+		{
+			name:     "top-level dir",
+			dir:      "file:///project/docs",
+			wantNode: "file:///project/docs",
+			want: lines(
+				row(0, open, "docs/"),
+				row(1, file, "guide.md"),
+				row(0, closed, "src/"),
+				row(0, file, "README.md"),
+			),
+		},
+		{
+			name:     "nested dir expands each ancestor",
+			dir:      "file:///project/src/pkg/inner",
+			wantRow:  3,
+			wantNode: "file:///project/src/pkg/inner",
+			want: lines(
+				row(0, closed, "docs/"),
+				row(0, open, "src/"),
+				row(1, open, "pkg/"),
+				row(2, open, "inner/"),
+				row(3, file, "deep.go"),
+				row(2, file, "main.go"),
+				row(1, file, "root.go"),
+				row(0, file, "README.md"),
+			),
+		},
+		{
+			name:     "trailing slash",
+			dir:      "file:///project/src/",
+			wantRow:  1,
+			wantNode: "file:///project/src",
+			want:     lines(srcOpen...),
+		},
+		{
+			name:     "dot and empty segments",
+			dir:      "file:///project/./src//pkg",
+			wantRow:  2,
+			wantNode: "file:///project/src/pkg",
+			want:     lines(pkgOpen...),
+		},
+		{
+			name:     "dot-dot that stays under the root",
+			dir:      "file:///project/src/../docs",
+			wantNode: "file:///project/docs",
+			want: lines(
+				row(0, open, "docs/"),
+				row(1, file, "guide.md"),
+				row(0, closed, "src/"),
+				row(0, file, "README.md"),
+			),
+		},
+		{
+			name:     "expanded dir stays expanded",
+			setup:    []step{toggle("src/")},
+			dir:      "file:///project/src",
+			wantRow:  1,
+			wantNode: "file:///project/src",
+			want:     lines(srcOpen...),
+		},
+		{
+			name:     "expanded dir under a collapsed ancestor reopens expanded",
+			setup:    []step{toggle("src/"), toggle("pkg/"), toggle("src/")},
+			dir:      "file:///project/src/pkg",
+			wantRow:  2,
+			wantNode: "file:///project/src/pkg",
+			want:     lines(pkgOpen...),
+		},
+		{
+			name:     "collapsed subdirs of a reopened dir stay collapsed",
+			setup:    []step{toggle("src/"), toggle("pkg/"), toggle("pkg/"), toggle("src/")},
+			dir:      "file:///project/src",
+			wantRow:  1,
+			wantNode: "file:///project/src",
+			want:     lines(srcOpen...),
+		},
+		{
+			name:     "deeper reveal after a shallower one",
+			setup:    []step{reveal("file:///project/src")},
+			dir:      "file:///project/src/pkg",
+			wantRow:  2,
+			wantNode: "file:///project/src/pkg",
+			want:     lines(pkgOpen...),
+		},
+		{
+			name:     "repeated reveal",
+			setup:    []step{reveal("file:///project/src/pkg")},
+			dir:      "file:///project/src/pkg",
+			wantRow:  2,
+			wantNode: "file:///project/src/pkg",
+			want:     lines(pkgOpen...),
+		},
+		{
+			name:     "expanded siblings stay expanded",
+			setup:    []step{toggle("docs/")},
+			dir:      "file:///project/src",
+			wantRow:  2,
+			wantNode: "file:///project/src",
+			want: lines(
+				row(0, open, "docs/"),
+				row(1, file, "guide.md"),
+				row(0, open, "src/"),
+				row(1, closed, "pkg/"),
+				row(1, file, "root.go"),
+				row(0, file, "README.md"),
+			),
+		},
+		{
+			name:     "unflushed edits elsewhere survive",
+			setup:    []step{insert(1, row(0, file, "typed.go"))},
+			dir:      "file:///project/src/pkg",
+			wantRow:  2,
+			wantNode: "file:///project/src/pkg",
+			want: lines(
+				row(0, closed, "docs/"),
+				row(0, open, "src/"),
+				row(1, open, "pkg/"),
+				row(2, closed, "inner/"),
+				row(2, file, "main.go"),
+				row(1, file, "root.go"),
+				row(0, file, "typed.go"),
+				row(0, file, "README.md"),
+			),
+		},
+		{
+			name:     "rows typed under an unloaded dir keep its files",
+			setup:    []step{insert(1, row(1, file, "typed.go"))},
+			dir:      "file:///project/src",
+			wantRow:  1,
+			wantNode: "file:///project/src",
+			want: lines(
+				row(0, closed, "docs/"),
+				row(0, open, "src/"),
+				row(1, closed, "pkg/"),
+				row(1, file, "root.go"),
+				row(1, file, "typed.go"),
+				row(0, file, "README.md"),
+			),
+		},
+		{
+			name:     "typed row naming a file on disk becomes that file",
+			setup:    []step{insert(1, row(1, file, "root.go"))},
+			dir:      "file:///project/src",
+			wantRow:  1,
+			wantNode: "file:///project/src",
+			want:     lines(srcOpen...),
+			wantPlan: []string{},
+		},
+		{
+			name:     "typed dir row naming a dir on disk becomes that dir",
+			setup:    []step{insert(1, row(1, closed, "pkg/"))},
+			dir:      "file:///project/src/pkg",
+			wantRow:  2,
+			wantNode: "file:///project/src/pkg",
+			want:     lines(pkgOpen...),
+			wantPlan: []string{},
+		},
+		{
+			name:     "typed file row naming a dir on disk conflicts with it",
+			setup:    []step{insert(1, row(1, file, "pkg"))},
+			dir:      "file:///project/src",
+			wantRow:  1,
+			wantNode: "file:///project/src",
+			want: lines(
+				row(0, closed, "docs/"),
+				row(0, open, "src/"),
+				row(1, closed, "pkg/"),
+				row(1, file, "pkg"),
+				row(1, file, "root.go"),
+				row(0, file, "README.md"),
+			),
+			wantPlan:      []string{},
+			wantConflicts: 1,
+		},
+		{
+			name:     "row moved under an unloaded dir",
+			setup:    []step{remove(2), paste(2, row(1, file, "README.md"))},
+			dir:      "file:///project/src",
+			wantRow:  1,
+			wantNode: "file:///project/src",
+			want: lines(
+				row(0, closed, "docs/"),
+				row(0, open, "src/"),
+				row(1, closed, "pkg/"),
+				row(1, file, "README.md"),
+				row(1, file, "root.go"),
+			),
+		},
+		{
+			name: "empty dir",
+			dirs: map[string][]mockEntry{
+				"/project":       {{name: "empty", isDir: true}, {name: "a.go"}},
+				"/project/empty": {},
+			},
+			dir:      "file:///project/empty",
+			wantNode: "file:///project/empty",
+			want:     lines(row(0, open, "empty/"), row(0, file, "a.go")),
+		},
+		{
+			name: "name that needs escaping",
+			dirs: map[string][]mockEntry{
+				"/project":          {{name: "my dir ñ", isDir: true}},
+				"/project/my dir ñ": {{name: "a.go"}},
+			},
+			dir:      "file:///project/my%20dir%20%C3%B1",
+			wantNode: "file:///project/my%20dir%20%C3%B1",
+			want:     lines(row(0, open, "my dir ñ/"), row(1, file, "a.go")),
+		},
+		{
+			name: "row moved onto a file on disk conflicts with it",
+			dirs: map[string][]mockEntry{
+				"/project":     {{name: "src", isDir: true}, {name: "root.go"}},
+				"/project/src": {{name: "root.go"}},
+			},
+			setup:    []step{remove(1), paste(1, row(1, file, "root.go"))},
+			dir:      "file:///project/src",
+			wantNode: "file:///project/src",
+			want: lines(
+				row(0, open, "src/"),
+				row(1, file, "root.go"),
+				row(1, file, "root.go"),
+			),
+			wantPlan:      []string{"move root.go -> src/root.go"},
+			wantConflicts: 1,
+		},
+		{
+			name:     "rows typed under a collapsed subdir of an expanded dir survive",
+			setup:    []step{toggle("src/"), insert(2, row(2, file, "typed.go"))},
+			dir:      "file:///project/src",
+			wantRow:  1,
+			wantNode: "file:///project/src",
+			want: lines(
+				row(0, closed, "docs/"),
+				row(0, open, "src/"),
+				row(1, open, "pkg/"),
+				row(2, file, "typed.go"),
+				row(1, file, "root.go"),
+				row(0, file, "README.md"),
+			),
+		},
+		{
+			name:     "unflushed rename of an ancestor",
+			setup:    []step{replace(1, row(0, closed, "lib/"))},
+			dir:      "file:///project/src/pkg",
+			wantRow:  2,
+			wantNode: "file:///project/src/pkg",
+			want: lines(
+				row(0, closed, "docs/"),
+				row(0, open, "lib/"),
+				row(1, open, "pkg/"),
+				row(2, closed, "inner/"),
+				row(2, file, "main.go"),
+				row(1, file, "root.go"),
+				row(0, file, "README.md"),
+			),
+		},
+		{
+			name:     "children deleted from the buffer stay deleted",
+			setup:    []step{toggle("src/"), remove(2), remove(2)},
+			dir:      "file:///project/src",
+			wantRow:  1,
+			wantNode: "file:///project/src",
+			want: lines(
+				row(0, closed, "docs/"),
+				row(0, open, "src/"),
+				row(0, file, "README.md"),
+			),
+		},
+		{
+			name:     "dir moved elsewhere in the buffer",
+			setup:    []step{toggle("src/"), remove(2), paste(3, row(0, closed, "pkg/"))},
+			dir:      "file:///project/src/pkg",
+			wantRow:  3,
+			wantNode: "file:///project/src/pkg",
+			want: lines(
+				row(0, closed, "docs/"),
+				row(0, open, "src/"),
+				row(1, file, "root.go"),
+				row(0, open, "pkg/"),
+				row(1, closed, "inner/"),
+				row(1, file, "main.go"),
+				row(0, file, "README.md"),
+			),
+		},
+		{
+			name: "root at the file system root",
+			root: "file:///",
+			dirs: map[string][]mockEntry{
+				"/":            {{name: "project", isDir: true}},
+				"/project":     {{name: "src", isDir: true}},
+				"/project/src": {{name: "main.go"}},
+			},
+			dir:      "file:///project/src",
+			wantRow:  1,
+			wantNode: "file:///project/src",
+			want: lines(
+				row(0, open, "project/"),
+				row(1, open, "src/"),
+				row(2, file, "main.go"),
+			),
+		},
+		{
+			name:     "root with a trailing slash",
+			root:     "file:///project/",
+			dir:      "file:///project/docs",
+			wantNode: "file:///project/docs",
+			want: lines(
+				row(0, open, "docs/"),
+				row(1, file, "guide.md"),
+				row(0, closed, "src/"),
+				row(0, file, "README.md"),
+			),
+		},
+		{
+			name:     "remote dir with dot, empty and trailing segments",
+			root:     "ssh://alice@host:22/project",
+			dir:      "ssh://alice@host:22/project/./src//pkg/",
+			wantRow:  2,
+			wantNode: "ssh://alice@host:22/project/src/pkg",
+			want:     lines(pkgOpen...),
+		},
+		{
+			name: "remote root with a dot segment",
+			root: "ssh://alice@host:22/project/.",
+			dirs: func() map[string][]mockEntry {
+				dirs := maps.Clone(disk)
+				dirs["/project/."] = disk["/project"]
+				return dirs
+			}(),
+			dir:      "ssh://alice@host:22/project/docs",
+			wantNode: "ssh://alice@host:22/project/docs",
+			want: lines(
+				row(0, open, "docs/"),
+				row(1, file, "guide.md"),
+				row(0, closed, "src/"),
+				row(0, file, "README.md"),
+			),
+		},
+		{
+			name:     "remote root",
+			root:     "ssh://alice@host:22/project",
+			dir:      "ssh://alice@host:22/project/docs",
+			wantNode: "ssh://alice@host:22/project/docs",
+			want: lines(
+				row(0, open, "docs/"),
+				row(1, file, "guide.md"),
+				row(0, closed, "src/"),
+				row(0, file, "README.md"),
+			),
+		},
+
+		{name: "the root itself", dir: "file:///project"},
+		{name: "the root with a trailing slash", dir: "file:///project/"},
+		{name: "the root through a dot segment", dir: "file:///project/."},
+		{name: "the root's parent", dir: "file:///"},
+		{name: "the root's parent through dot-dot", dir: "file:///project/.."},
+		{name: "outside the root", dir: "file:///other/src"},
+		{name: "sibling named with the root as prefix", dir: "file:///project2"},
+		{name: "dot-dot out of the root", dir: "file:///project/../other"},
+		{name: "relative path", relDir: "src"},
+		{name: "remote root itself with a trailing slash", root: "ssh://alice@host:22/project",
+			dir: "ssh://alice@host:22/project/"},
+		{name: "remote dot-dot out of the root", root: "ssh://alice@host:22/project",
+			dir: "ssh://alice@host:22/project/../other"},
+		{name: "another scheme", dir: "memory:///project/src"},
+		{name: "another host", dir: "file://other/project/src"},
+		{name: "another user", root: "ssh://alice@host:22/project", dir: "ssh://bob@host:22/project/src"},
+		{name: "another port", root: "ssh://alice@host:22/project", dir: "ssh://alice@host:2222/project/src"},
+		{name: "missing top-level dir", dir: "file:///project/nope"},
+		{name: "missing nested dir", dir: "file:///project/src/nope"},
+		{name: "missing deep dir", dir: "file:///project/src/pkg/nope"},
+		{name: "top-level file", dir: "file:///project/README.md"},
+		{name: "nested file", dir: "file:///project/src/root.go"},
+		{name: "path through a file", dir: "file:///project/src/root.go/x"},
+		{name: "ignored dir", dir: "file:///project/tmp.swp"},
+		{name: "dir under an ignored dir", dir: "file:///project/tmp.swp/inner"},
+		{name: "case mismatch", dir: "file:///project/SRC"},
+		{name: "unreadable dir", dirs: without("/project/src"), dir: "file:///project/src"},
+		{
+			name: "dir under an unreadable dir",
+			dirs: without("/project/src/pkg"),
+			dir:  "file:///project/src/pkg/inner",
+		},
+		{
+			name:  "dir whose row was deleted",
+			setup: []step{remove(1)},
+			dir:   "file:///project/src",
+		},
+		{
+			name:  "dir under a dir whose row was deleted",
+			setup: []step{remove(1)},
+			dir:   "file:///project/src/pkg",
+		},
+		{
+			name:  "dir whose parent's children were deleted",
+			setup: []step{toggle("src/"), remove(2), remove(2)},
+			dir:   "file:///project/src/pkg",
+		},
+		{
+			name: "file on disk retyped as a dir in the buffer",
+			dirs: func() map[string][]mockEntry {
+				dirs := maps.Clone(disk)
+				dirs["/project/src/root.go"] = nil
+				return dirs
+			}(),
+			setup: []step{toggle("src/"), replace(3, row(1, closed, "root.go/"))},
+			dir:   "file:///project/src/root.go",
+		},
+		{
+			name:  "dir whose row was retyped as a file",
+			setup: []step{replace(1, row(0, file, "src"))},
+			dir:   "file:///project/src",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dirs := tc.dirs
+			if dirs == nil {
+				dirs = disk
+			}
+			root := rootURI()
+			if tc.root != "" {
+				root = mustParseURI(tc.root)
+			}
+			buf := cell.NewBuffer()
+			c, err := New(buf, &mockFS{dirs: dirs}, root, Config{Ignore: suffixIgnore{".swp"}})
+			require.NoError(t, err)
+			for _, s := range tc.setup {
+				s(t, c, buf)
+			}
+			before, pending := buf.String(), c.HasPendingEdits()
+			plan := c.DryFlush()
+
+			dir, err := workspaceapi.WithPath(root, tc.relDir)
+			if tc.relDir == "" {
+				dir, err = workspaceapi.ParseURI(tc.dir)
+			}
+			require.NoError(t, err)
+
+			row, ok := c.Reveal(dir)
+
+			if tc.wantPlan != nil {
+				after := c.DryFlush()
+				assert.Equal(t, tc.wantPlan, planLines(root, after.Operations))
+				assert.Len(t, after.Conflicts, tc.wantConflicts)
+			} else {
+				assert.Equal(t, plan, c.DryFlush(), "the reveal must not change what a write does")
+			}
+			assert.Equal(t, pending, c.HasPendingEdits())
+			if tc.wantNode == "" {
+				assert.False(t, ok)
+				assert.Equal(t, before, buf.String())
+				return
+			}
+			require.True(t, ok)
+			assert.Equal(t, tc.wantRow, row)
+			assert.Equal(t, tc.want, buf.String())
+			node, known := c.NodeAt(term.Coordinates{Y: row})
+			require.True(t, known)
+			assert.Equal(t, tc.wantNode, node.String())
+			expanded := uriStrings(c.ExpandedDirectories())
+			for n := node; len(n.Path()) > len(path.Clean(root.Path())); n = workspaceapi.Dir(n) {
+				assert.Contains(t, expanded, n.String(), "a refresh must keep the reveal")
+			}
+		})
+	}
 }
 
 func TestExpandLevel(t *testing.T) {

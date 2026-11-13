@@ -370,6 +370,7 @@ func (h *workspaceManagerHandler) newBuiltinModalEditor(
 		vi.WithScheduleNextTick(cfg.scheduleNextTick),
 		vi.WithAttr(cfg.vimAttr()),
 		vi.WithAuxiliaryBar(cfg.auxiliaryBarEnabled(), auxBarConfig),
+		vi.WithHatch(cfg.eofHatch()),
 		vi.WithIconsBar(cfg.iconsBarEnabled(), iconsBarConfig),
 		vi.WithGitIcons(cfg.gitIconsEnabled()),
 		vi.WithStatusBarConfig(cfg.statusBarEnabled(), statusBarConfig),
@@ -405,6 +406,7 @@ func (h *workspaceManagerHandler) newBuiltinHelixEditor(
 		helix.WithScheduleNextTick(cfg.scheduleNextTick),
 		helix.WithAttr(cfg.helixAttr()),
 		helix.WithAuxiliaryBar(cfg.auxiliaryBarEnabled(), auxBarConfig),
+		helix.WithHatch(cfg.eofHatch()),
 		helix.WithIconsBar(cfg.iconsBarEnabled(), iconsBarConfig),
 		helix.WithGitIcons(cfg.gitIconsEnabled()),
 		helix.WithStatusBarConfig(cfg.statusBarEnabled(), statusBarConfig),
@@ -441,6 +443,7 @@ func (h *workspaceManagerHandler) newBuiltinStandardEditor(
 		standard.WithScheduleNextTick(cfg.scheduleNextTick),
 		standard.WithAttr(cfg.standardAttr()),
 		standard.WithAuxiliaryBar(cfg.auxiliaryBarEnabled(), auxBarConfig),
+		standard.WithHatch(cfg.eofHatch()),
 		standard.WithIconsBar(cfg.iconsBarEnabled(), iconsBarConfig),
 		standard.WithGitIcons(cfg.gitIconsEnabled()),
 		standard.WithHideInitialFolds(cfg.initialFolds()),
@@ -476,6 +479,7 @@ func (h *workspaceManagerHandler) newBuiltinEmacsEditor(
 		emacs.WithScheduleNextTick(cfg.scheduleNextTick),
 		emacs.WithAttr(cfg.emacsAttr()),
 		emacs.WithAuxiliaryBar(cfg.auxiliaryBarEnabled(), auxBarConfig),
+		emacs.WithHatch(cfg.eofHatch()),
 		emacs.WithIconsBar(cfg.iconsBarEnabled(), iconsBarConfig),
 		emacs.WithGitIcons(cfg.gitIconsEnabled()),
 		emacs.WithHideInitialFolds(cfg.initialFolds()),
@@ -2617,9 +2621,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("new command authorizer: %w", err)
 	}
 	var graphics thandlerrpc.GraphicsConfig
-	// The tab manager ex was created with, under its terminal aliases.
-	extBrowser := statusInboxBrowser{Browser: ex.Browser(), tm: ex.tabAliases.TabManager}
-	res := extension.BrowserResources(extBrowser, h.events.newPublisher(uri), graphics)
+	res := extension.BrowserResources(newExtensionBrowser(ex), h.events.newPublisher(uri), graphics)
 	res = extension.MergeResourceMap(res,
 		extension.EditorResources(ex.Browser(), ed, h.events.newPublisher(uri), graphics))
 	res = extension.MergeResourceMap(res,
@@ -5246,9 +5248,12 @@ func (h *workspaceManagerHandler) releaseStartupPrompts() {
 func (h *workspaceManagerHandler) openURI(file workspaceapi.URI, focus bool) error {
 	ex := h.exHandler(h.focusHandler())
 	var err error
-	if focus {
+	switch {
+	case focus && ex.isDirectory(file):
+		err = ex.openDirectory(file)
+	case focus:
 		_, err = ex.editFileURI(file, ex.invokeWindow(), false)
-	} else {
+	default:
 		_, err = ex.comp.Open(file)
 	}
 	if err != nil {
@@ -5371,22 +5376,42 @@ func (f *workspaceTabManager) statusWorkspace() (workspaceapi.URI, bool) {
 	return f.parent.homeURI, f.parent.empty != nil && !f.parent.empty.closed
 }
 
-// statusInboxBrowser is the browser.Browser extensions get, whose
-// program status reports go through tm, which keeps those for a uri that
-// is no tab for the status inbox: an extension's program can go on
-// working once its tab closes, and the inbox opens it again. Like tm's,
-// its SetTabStatus and EndTabStatus may be called from any goroutine.
-type statusInboxBrowser struct {
+// extensionBrowser is the browser.Browser extensions get. Its program
+// status reports go through tm, which keeps those for a uri that is no
+// tab for the status inbox: an extension's program can go on working
+// once its tab closes, and the inbox opens it again. Like tm's, its
+// SetTabStatus and EndTabStatus may be called from any goroutine. Its
+// resources are opened by opener, the workspace's ex, whose Show opens
+// a directory of the workspace in the file explorer.
+type extensionBrowser struct {
 	browser.Browser
-	tm browser.TabManager
+	opener browser.ResourceOpener
+	tm     browser.TabManager
 }
 
-func (b statusInboxBrowser) SetTabStatus(uri workspaceapi.URI, report programstatus.Report) error {
+func newExtensionBrowser(ex *ex) extensionBrowser {
+	// The tab manager ex was created with, under its terminal aliases.
+	return extensionBrowser{Browser: ex.Browser(), opener: ex, tm: ex.tabAliases.TabManager}
+}
+
+func (b extensionBrowser) SetTabStatus(uri workspaceapi.URI, report programstatus.Report) error {
 	return b.tm.SetTabStatus(uri, report)
 }
 
-func (b statusInboxBrowser) EndTabStatus(uri workspaceapi.URI) error {
+func (b extensionBrowser) EndTabStatus(uri workspaceapi.URI) error {
 	return b.tm.EndTabStatus(uri)
+}
+
+func (b extensionBrowser) Open(uri workspaceapi.URI) (browserapi.Handler, error) {
+	return b.opener.Open(uri)
+}
+
+func (b extensionBrowser) Show(uri workspaceapi.URI) error {
+	return b.opener.Show(uri)
+}
+
+func (b extensionBrowser) Resource(uri workspaceapi.URI) (browserapi.Handler, bool) {
+	return b.opener.Resource(uri)
 }
 
 func lspCommandsConfig(
