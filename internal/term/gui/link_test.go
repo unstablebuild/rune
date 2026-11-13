@@ -211,7 +211,7 @@ func TestRowScannerScanRow(t *testing.T) {
 			row:         cellRow("    foo_test.go:42: expected 1"),
 			expected: []linkSpan{
 				{y: 3, x0: 4, x1: 18, kind: linkPath, link: Link{
-					Path: "foo_test.go", Line: 42, Col: 1,
+					Path: "foo_test.go", Line: 42, Col: 0,
 				}},
 			},
 		},
@@ -220,7 +220,7 @@ func TestRowScannerScanRow(t *testing.T) {
 			row:         cellRow("see x.go:76."),
 			expected: []linkSpan{
 				{y: 3, x0: 4, x1: 11, kind: linkPath, link: Link{
-					Path: "x.go", Line: 76, Col: 1,
+					Path: "x.go", Line: 76, Col: 0,
 				}},
 			},
 		},
@@ -229,7 +229,7 @@ func TestRowScannerScanRow(t *testing.T) {
 			row:         cellRow("(internal/x/y.go:76)"),
 			expected: []linkSpan{
 				{y: 3, x0: 1, x1: 19, kind: linkPath, link: Link{
-					Path: "internal/x/y.go", Line: 76, Col: 1,
+					Path: "internal/x/y.go", Line: 76, Col: 0,
 				}},
 			},
 		},
@@ -978,13 +978,13 @@ func TestRowScannerKeepsANeighbouringPaneWhenJoiningAWrappedPath(t *testing.T) {
 	got := new(rowScanner).scan(grid, nil)
 	assert.Equal(t, []linkSpan{
 		{y: 0, x0: 4, x1: 12, kind: linkPath, link: Link{
-			Path: "a/b.go", Line: 12, Col: 1,
+			Path: "a/b.go", Line: 12, Col: 0,
 		}},
 		{y: 0, x0: paneWidth, x1: paneWidth + 8, kind: linkPath, link: Link{
-			Path: "c/d.go", Line: 5, Col: 1,
+			Path: "c/d.go", Line: 5, Col: 0,
 		}},
 		{y: 1, x0: 0, x1: 1, kind: linkPath, link: Link{
-			Path: "a/b.go", Line: 12, Col: 1,
+			Path: "a/b.go", Line: 12, Col: 0,
 		}},
 	}, got)
 }
@@ -999,7 +999,7 @@ func TestRowScannerKeepsANeighbouringPaneWhenAWrappedURLFails(t *testing.T) {
 	got := new(rowScanner).scan(grid, nil)
 	assert.Equal(t, []linkSpan{
 		{y: 0, x0: paneWidth + 2, x1: paneWidth + 11, kind: linkPath, link: Link{
-			Path: "a/b.go", Line: 12, Col: 1,
+			Path: "a/b.go", Line: 12, Col: 0,
 		}},
 	}, got)
 }
@@ -1192,7 +1192,7 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 			wrapped: []int{0},
 			expected: []linkSpan{
 				{y: 0, x0: 0, x1: 8, kind: linkPath, link: Link{
-					Path: "a/b.go", Line: 1, Col: 1,
+					Path: "a/b.go", Line: 1, Col: 0,
 				}},
 				{y: 0, x0: 9, x1: 32, kind: linkScheme, text: "https://rune.build?aaaabbbb=cc"},
 				{y: 1, x0: 0, x1: 7, kind: linkScheme, text: "https://rune.build?aaaabbbb=cc"},
@@ -1990,7 +1990,7 @@ func TestRowScannerKeepsTheChromeOutOfABarePath(t *testing.T) {
 	got := new(rowScanner).scan(cells, nil)
 	assert.Equal(t, []linkSpan{
 		{y: 0, x0: left, x1: left + 8, kind: linkPath, link: Link{
-			Path: "ab.go", Line: 12, Col: 1,
+			Path: "ab.go", Line: 12, Col: 0,
 		}},
 	}, got)
 }
@@ -2009,7 +2009,7 @@ func TestRowScannerReadsAWideRunePath(t *testing.T) {
 			row:         "日本.go:12",
 			expected: []linkSpan{
 				{y: 0, x0: 0, x1: 10, kind: linkPath, link: Link{
-					Path: "日本.go", Line: 12, Col: 1,
+					Path: "日本.go", Line: 12, Col: 0,
 				}},
 			},
 		},
@@ -2027,7 +2027,7 @@ func TestRowScannerReadsAWideRunePath(t *testing.T) {
 			row:         "╭日本.go:12",
 			expected: []linkSpan{
 				{y: 0, x0: 2, x1: 12, kind: linkPath, link: Link{
-					Path: "日本.go", Line: 12, Col: 1,
+					Path: "日本.go", Line: 12, Col: 0,
 				}},
 			},
 		},
@@ -2134,49 +2134,6 @@ func BenchmarkRowScannerScanWrapped(b *testing.B) {
 	}
 }
 
-func TestSplitPosition(t *testing.T) {
-	suite := []struct {
-		description string
-		path        string
-		wantPath    string
-		wantLine    int
-		wantCol     int
-		wantOK      bool
-	}{
-		{description: "no position", path: "/x/y.go", wantPath: "/x/y.go"},
-		{description: "a line", path: "/x/y.go:7",
-			wantPath: "/x/y.go", wantLine: 7, wantCol: 1, wantOK: true},
-		{description: "a line and a column", path: "/x/y.go:7:2",
-			wantPath: "/x/y.go", wantLine: 7, wantCol: 2, wantOK: true},
-		{description: "a column of zero is a line with no column",
-			path: "/x/y.go:7:0", wantPath: "/x/y.go", wantLine: 7, wantCol: 0, wantOK: true},
-		{description: "a line of zero is not a position",
-			path: "/x/y.go:0", wantPath: "/x/y.go:0"},
-		{description: "a drive letter is not a position", path: "C:/x/a.go:3:4",
-			wantPath: "C:/x/a.go", wantLine: 3, wantCol: 4, wantOK: true},
-		{description: "a colon in the name is kept", path: "/a:b.go:1",
-			wantPath: "/a:b.go", wantLine: 1, wantCol: 1, wantOK: true},
-		{description: "a third number is not a position",
-			path: "/x/y.go:7:2:4", wantPath: "/x/y.go:7:2:4"},
-		{description: "a fourth number is not a position",
-			path: "/x.go:1:2:3:4", wantPath: "/x.go:1:2:3:4"},
-		{description: "an empty column is not a position",
-			path: "/x/y.go:1:", wantPath: "/x/y.go:1:"},
-		{description: "an empty line is not a position",
-			path: "/x/y.go::3", wantPath: "/x/y.go::3"},
-	}
-
-	for _, tc := range suite {
-		t.Run(tc.description, func(t *testing.T) {
-			path, line, col, ok := splitPosition(tc.path)
-			assert.Equal(t, tc.wantOK, ok)
-			assert.Equal(t, tc.wantPath, path)
-			assert.Equal(t, tc.wantLine, line)
-			assert.Equal(t, tc.wantCol, col)
-		})
-	}
-}
-
 func TestSchemeLinkPositions(t *testing.T) {
 	suite := []struct {
 		description string
@@ -2189,7 +2146,7 @@ func TestSchemeLinkPositions(t *testing.T) {
 		{description: "a file url with no position", text: "file:///x/y.go",
 			wantPath: "/x/y.go", wantURL: "file:///x/y.go"},
 		{description: "a file url with a line", text: "file:///x/y.go:7",
-			wantPath: "/x/y.go", wantURL: "file:///x/y.go", wantLine: 7, wantCol: 1},
+			wantPath: "/x/y.go", wantURL: "file:///x/y.go", wantLine: 7, wantCol: 0},
 		{description: "a file url with a line and a column",
 			text: "file:///x/y.go:7:2", wantPath: "/x/y.go",
 			wantURL: "file:///x/y.go", wantLine: 7, wantCol: 2},
@@ -2197,7 +2154,7 @@ func TestSchemeLinkPositions(t *testing.T) {
 			text: "file:///x/y.go#42:5", wantPath: "/x/y.go",
 			wantURL: "file:///x/y.go", wantLine: 42, wantCol: 5},
 		{description: "a fragment names a line", text: "file:///x/y.go#42",
-			wantPath: "/x/y.go", wantURL: "file:///x/y.go", wantLine: 42, wantCol: 1},
+			wantPath: "/x/y.go", wantURL: "file:///x/y.go", wantLine: 42, wantCol: 0},
 		{description: "an ambiguous suffix stays in the path",
 			text: "file:///x/y.go:7:2:4", wantPath: "/x/y.go:7:2:4",
 			wantURL: "file:///x/y.go:7:2:4"},

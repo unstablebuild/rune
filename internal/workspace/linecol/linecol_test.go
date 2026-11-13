@@ -32,11 +32,12 @@ func TestParse(t *testing.T) {
 		ok      bool
 		comment string
 	}{
-		{raw: "42", line: 42, col: 1, n: 2, ok: true},
+		{raw: "42", line: 42, col: 0, n: 2, ok: true,
+			comment: "a missing column stays zero so the caller can tell"},
 		{raw: "42:5", line: 42, col: 5, n: 4, ok: true},
-		{raw: "42:", line: 42, col: 1, n: 2, ok: true,
+		{raw: "42:", line: 42, col: 0, n: 2, ok: true,
 			comment: "a colon with no column is not part of the position"},
-		{raw: "42: ", line: 42, col: 1, n: 2, ok: true},
+		{raw: "42: ", line: 42, col: 0, n: 2, ok: true},
 		{raw: "0", ok: false},
 		{raw: "", ok: false},
 		{raw: "abc", ok: false},
@@ -49,9 +50,9 @@ func TestParse(t *testing.T) {
 			comment: "a third number is not read"},
 		{raw: "99999999999999999999", ok: false,
 			comment: "a number that does not fit is not a position"},
-		{raw: "42abc", line: 42, col: 1, n: 2, ok: true,
+		{raw: "42abc", line: 42, col: 0, n: 2, ok: true,
 			comment: "a number running into letters still names a line"},
-		{raw: "007", line: 7, col: 1, n: 3, ok: true,
+		{raw: "007", line: 7, col: 0, n: 3, ok: true,
 			comment: "leading zeros are read as a number"},
 		{raw: "\u0661\u0662", ok: false,
 			comment: "only ASCII digits count"},
@@ -91,6 +92,67 @@ func TestCoord(t *testing.T) {
 	for _, tc := range suite {
 		t.Run(tc.description, func(t *testing.T) {
 			assert.Equal(t, tc.want, Coord(tc.line, tc.col))
+		})
+	}
+}
+
+func TestCut(t *testing.T) {
+	suite := []struct {
+		description string
+		in          string
+		wantPath    string
+		wantLine    int
+		wantCol     int
+		wantRest    string
+		wantOK      bool
+	}{
+		{description: "no position", in: "/x/y.go", wantPath: "/x/y.go"},
+		{description: "a line", in: "/x/y.go:7",
+			wantPath: "/x/y.go", wantLine: 7, wantCol: 0, wantOK: true},
+		{description: "a line and a column", in: "/x/y.go:7:2",
+			wantPath: "/x/y.go", wantLine: 7, wantCol: 2, wantOK: true},
+		{description: "a column of zero is a line with no column",
+			in: "/x/y.go:7:0", wantPath: "/x/y.go", wantLine: 7, wantCol: 0, wantOK: true},
+		{description: "a line of zero is not a position",
+			in: "/x/y.go:0", wantPath: "/x/y.go:0"},
+		{description: "a drive letter is not a position", in: "C:/x/a.go:3:4",
+			wantPath: "C:/x/a.go", wantLine: 3, wantCol: 4, wantOK: true},
+		{description: "a colon in the name is kept", in: "/a:b.go:1",
+			wantPath: "/a:b.go", wantLine: 1, wantCol: 0, wantOK: true},
+		{description: "a third number is not part of the position",
+			in: "/x/y.go:7:2:4", wantPath: "/x/y.go", wantLine: 7, wantCol: 2,
+			wantRest: "4", wantOK: true},
+		{description: "a fourth number stays in the rest",
+			in: "/x.go:1:2:3:4", wantPath: "/x.go", wantLine: 1, wantCol: 2,
+			wantRest: "3:4", wantOK: true},
+		{description: "a trailing colon leaves an empty rest",
+			in: "/x/y.go:1:", wantPath: "/x/y.go", wantLine: 1, wantCol: 0,
+			wantRest: "", wantOK: true},
+		{description: "an empty line is not a position",
+			in: "/x/y.go::3", wantPath: "/x/y.go::3"},
+		{description: "an empty path is not a position", in: ":42", wantPath: ":42"},
+		{description: "a windows path", in: `C:\foo\bar:10:3`,
+			wantPath: `C:\foo\bar`, wantLine: 10, wantCol: 3, wantOK: true},
+		{description: "a compiler message keeps the rest out",
+			in:       "internal/x/y.go:76:7: undefined: foo",
+			wantPath: "internal/x/y.go", wantLine: 76, wantCol: 7,
+			wantRest: " undefined: foo", wantOK: true},
+		{description: "a grep line only names a line",
+			in:       "main.go:42:matched line content",
+			wantPath: "main.go", wantLine: 42, wantCol: 0,
+			wantRest: "matched line content", wantOK: true},
+		{description: "a number running into letters is not a position",
+			in: "x.go:42abc", wantPath: "x.go:42abc"},
+	}
+
+	for _, tc := range suite {
+		t.Run(tc.description, func(t *testing.T) {
+			path, pos, rest, ok := Cut(tc.in)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.wantPath, path)
+			assert.Equal(t, tc.wantLine, pos.Line)
+			assert.Equal(t, tc.wantCol, pos.Col)
+			assert.Equal(t, tc.wantRest, rest)
 		})
 	}
 }

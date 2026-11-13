@@ -26,7 +26,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -40,6 +39,7 @@ import (
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/handler/finder"
 	"unstable.build/rune/internal/handler/search"
+	"unstable.build/rune/internal/workspace/linecol"
 )
 
 // Config configures the appearance and behavior of the locationsearch handler.
@@ -534,23 +534,16 @@ func (h *Handler) stopScanSpinner() {
 	h.scanWatchDone = nil
 }
 
-func isPositiveInt(s string) bool {
-	n, err := strconv.Atoi(s)
-	return err == nil && n > 0
-}
-
 // parseLocationLine parses lines emitted by grep-style tools in the
 // form `path`, `path:LINE`, `path:LINE:COL`, or `path:LINE:COL:rest`,
 // where `rest` is matched content that we ignore. Line/col are
 // 1-indexed in input and converted to 0-indexed in term.Coordinates.
 //
-// The first ':'-separated segment that parses as a positive integer
-// is treated as the line number; the segment to the left (joined by
-// `:`) is the path. If the segment after the line is also a positive
-// integer it is treated as the column. Everything after is ignored.
-// This makes the parser tolerant of `git grep -n --column` style
-// output like `path:line:col:matched line content` and of
-// Windows-style paths like `C:\foo\bar:42:5`.
+// linecol.Cut decides where the path ends and the position begins, so
+// the rules are the ones the terminal scanner uses: `git grep -n
+// --column` output like `path:line:col:matched line content` and
+// Windows-style paths like `C:\foo\bar:42:5` both parse, and the
+// matched content stays out of the position.
 func parseLocationLine(fs workspaceapi.FileSystem, line string) (
 	workspaceapi.URI, term.Coordinates, bool,
 ) {
@@ -574,48 +567,18 @@ func parseLocationLineDetailed(fs workspaceapi.FileSystem, line string) parsedLo
 	if s == "" {
 		return parsedLocationLine{}
 	}
-
-	parts := strings.Split(s, ":")
-	lineIdx := -1
-	for i := 1; i < len(parts); i++ {
-		if n, err := strconv.Atoi(parts[i]); err == nil && n > 0 {
-			lineIdx = i
-			break
-		}
-	}
-
-	var path string
-	lineNum, col := 0, 0
-	hasColumn := false
-	if lineIdx < 0 {
-		path = s
-	} else {
-		path = strings.Join(parts[:lineIdx], ":")
-		lineNum, _ = strconv.Atoi(parts[lineIdx])
-		if lineIdx+1 < len(parts) && isPositiveInt(parts[lineIdx+1]) {
-			col, _ = strconv.Atoi(parts[lineIdx+1])
-			hasColumn = true
-		}
-	}
+	path, pos, _, _ := linecol.Cut(s)
 	if path == "" {
 		return parsedLocationLine{}
 	}
-
 	uri, err := fs.URI(path)
 	if err != nil {
 		return parsedLocationLine{}
 	}
-	coords := term.Coordinates{}
-	if lineNum > 0 {
-		coords.Y = lineNum - 1
-	}
-	if col > 0 {
-		coords.X = col - 1
-	}
 	return parsedLocationLine{
 		uri:       uri,
-		coords:    coords,
-		hasColumn: hasColumn,
+		coords:    linecol.Coord(pos.Line, pos.Col),
+		hasColumn: pos.Col > 0,
 		ok:        true,
 	}
 }
