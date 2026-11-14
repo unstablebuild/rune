@@ -374,7 +374,7 @@ if _, err := lsp.Initialize(ctx, params); err != nil {
 That example is taken from
 [`initializeGoRoot`](https://github.com/unstablebuild/rune/blob/main/cmd/extension_go/extension.go#L156-L186).
 The complete parameter builders for
-[Go](https://github.com/unstablebuild/rune/blob/main/cmd/extension_go/initialize.go#L47-L208),
+[Go](https://github.com/unstablebuild/rune/blob/main/cmd/extension_go/initialize.go#L47-L235),
 [Python](https://github.com/unstablebuild/rune/blob/main/cmd/extension_python/initialize.go#L48-L217),
 [Rust](https://github.com/unstablebuild/rune/blob/main/cmd/extension_rust/initialize.go#L26-L253),
 and
