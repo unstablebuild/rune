@@ -191,6 +191,13 @@ extensions:
 | `renameMovesSubpackages` | `true`/`false` | Renaming a package also moves its subdirectories. Off by default. |
 | `fileWatcher` | `"off"`, `"poll"`, `"fsnotify"` | Watches the filesystem for changes instead of polling. `"poll"` scans every 1-2s; `"fsnotify"` uses OS watchers and can exhaust file descriptors on macOS. |
 
+`fileWatcher` supplements Rune's own change notifications, it does not replace
+them. Rune does not advertise `workspace.didChangeWatchedFiles`, so edits made
+outside the editor are invisible to gopls without it. Use `"poll"` over a
+remote or network filesystem, or when an external tool rewrites files. Both
+modes skip directories starting with `.` or `_`, skip `testdata`, and report
+only `.go`, `.mod`, `.sum`, `.work`, and `.s` files.
+
 See the [gopls settings reference](https://github.com/golang/tools/blob/master/gopls/doc/settings.md)
 and [analyzers reference](https://github.com/golang/tools/blob/master/gopls/doc/analyzers.md)
 for the full list.
