@@ -267,6 +267,10 @@ func TestRowScannerScanRow(t *testing.T) {
 			row:         cellRow("12:30"),
 		},
 		{
+			description: "a timestamp is not a path",
+			row:         cellRow("2026-11-12T13:51:05Z level=info note: key: value"),
+		},
+		{
 			description: "scheme with no host is not a link",
 			row:         cellRow("https:// and http://"),
 		},

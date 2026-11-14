@@ -546,6 +546,11 @@ func (s *rowScanner) scanPath(
 		return dst, x + 1
 	}
 	start := x
+	// A path names a directory or carries an extension, so a run with
+	// neither a slash nor a dot can be rejected without reading it. Log
+	// output puts a colon after every digit, and walking back over the
+	// timestamp only to reject it is the costliest thing this does.
+	slash, dot := false, false
 	for start > 0 {
 		cell := start - 1
 		if row[cell].Ch == 0 {
@@ -557,6 +562,12 @@ func (s *rowScanner) scanPath(
 			// decides whether the path continues past it.
 			cell--
 		}
+		switch row[cell].Ch {
+		case '/':
+			slash = true
+		case '.':
+			dot = true
+		}
 		if !isPathRune(row[cell].Ch) {
 			break
 		}
@@ -564,6 +575,9 @@ func (s *rowScanner) scanPath(
 	}
 	if start == x {
 		// Nothing in front of the colon, so there is no path.
+		return dst, x + 1
+	}
+	if !slash && !dot {
 		return dst, x + 1
 	}
 	if coveredBySpan(dst, y, start, x) {
