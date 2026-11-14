@@ -23,24 +23,32 @@ import (
 	"image/color"
 	"image/png"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/tcell/v3"
+	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/handler/quickmenu"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/hostenv"
+	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/ide/starlarkconfig"
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/gui"
 	"unstable.build/rune/internal/term/gui/glassbar"
+	"unstable.build/rune/internal/text"
 )
 
 // fakeHandler counts calls to each tui.Handler method so tests can
@@ -954,4 +962,164 @@ func TestQueueScreenshotWaitsForSignalledExtensions(t *testing.T) {
 			assert.Equal(t, 1, queued)
 		})
 	}
+}
+
+// newBootstrapForWorkspace builds a bootstrap handler whose workspace is
+// the given directory, and the URLs it opens in the browser.
+func newBootstrapForWorkspace(
+	t *testing.T, workspace string,
+) (*bootstrapHandler, *[]string) {
+	t.Helper()
+
+	dataDir := t.TempDir()
+	configPath := filepath.Join(dataDir, "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(
+		"editor:\n  mode: modal\nupgrade:\n  auto_check_enabled: false\n"), 0o644))
+
+	restoreFlags := overrideBootstrapFlags(t, bootstrapFlagOverrides{
+		dataPath:       dataDir,
+		configPath:     configPath,
+		websiteAddress: "https://rune.test",
+	})
+	t.Cleanup(restoreFlags)
+
+	mu := new(sync.Mutex)
+	publishEvent, stopPump := newBootstrapPublishPump(mu)
+	t.Cleanup(stopPump)
+
+	rootCfg, err := ide.Config(configPath, runeDefaultConfig())
+	require.NoError(t, err)
+
+	var opened []string
+	soundOutput := gui.NewSounds()
+	soundOutput.SetMuted(true)
+	b, err := newBootstrapHandler(
+		dataDir, configPath, workspace, "", /* shellRCDir */
+		hostenv.New(dataDir, ""), nil, nil,
+		ide.FuncExtensionsRunner(testE2EExtensionsRunner),
+		mu, publishEvent, nil, /* cellPixelSize */
+		func(u *url.URL) error {
+			opened = append(opened, u.String())
+			return nil
+		},
+		clipboard.NewInMemory(), soundOutput,
+		dataDir, rootCfg, pkgtrust.NewStore(),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = b.Close() })
+	require.NotNil(t, b.realIDE, "the workspace must give the handler a real IDE")
+	b.realIDE.WaitWorkspaces()
+	return b, &opened
+}
+
+// tabLister is the part of the browser the link test needs.
+type tabLister interface {
+	Tabs() []*browser.Tab
+}
+
+// tabsOf returns the URIs of the tabs the browser holds.
+func tabsOf(t *testing.T, b *bootstrapHandler) []workspaceapi.URI {
+	t.Helper()
+	lister, ok := b.browser().(tabLister)
+	require.True(t, ok, "the browser must list its tabs")
+	var uris []workspaceapi.URI
+	for _, tab := range lister.Tabs() {
+		uris = append(uris, tab.URI())
+	}
+	return uris
+}
+
+// cursorOf returns the editor cursor of the tab holding the given URI.
+// It fails when no tab holds the URI or when the tab is not an editor.
+func cursorOf(t *testing.T, b *bootstrapHandler, uri workspaceapi.URI) term.Coordinates {
+	t.Helper()
+	lister, ok := b.browser().(tabLister)
+	require.True(t, ok, "the browser must list its tabs")
+	for _, tab := range lister.Tabs() {
+		if tab.URI() != uri {
+			continue
+		}
+		h, ok := tab.Handler().(text.Handler)
+		require.True(t, ok, "the tab must hold an editor")
+		return h.CursorAtScroll()
+	}
+	t.Fatalf("no tab holds %s", uri)
+	return term.Coordinates{}
+}
+
+func TestBootstrapLinkObserverOpensBarePaths(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "a"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a", "b.go"),
+		[]byte("one\ntwo\nthree\n"), 0o644))
+
+	b, _ := newBootstrapForWorkspace(t, root)
+
+	// The IDE runs on the event loop, which holds its mutex.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// A bare path opens the file the path names.
+	require.NoError(t, b.openLink(gui.Link{Path: "a/b.go", Line: 3, Col: 2}))
+
+	uri, err := workspaceapi.ParseURI("file://" + filepath.Join(root, "a", "b.go"))
+	require.NoError(t, err)
+	assert.Contains(t, tabsOf(t, b), uri,
+		"the linked file must be open in a tab")
+	// The position is 1-based, so line 3 and column 2 land the cursor on
+	// row 2, column 1.
+	assert.Equal(t, term.Coordinates{Y: 2, X: 1}, cursorOf(t, b, uri),
+		"the link's line and column must place the cursor")
+
+	// A link with a line but no column starts at the first column.
+	require.NoError(t, b.openLink(gui.Link{Path: "a/b.go", Line: 2}))
+	assert.Equal(t, term.Coordinates{Y: 1, X: 0}, cursorOf(t, b, uri),
+		"a link with no column must start at the first column")
+
+	// A link with no position leaves the cursor where it was.
+	require.NoError(t, b.openLink(gui.Link{Path: "a/b.go"}))
+	assert.Equal(t, term.Coordinates{Y: 1, X: 0}, cursorOf(t, b, uri),
+		"a link with no position must not move the cursor")
+
+	// A path that names no file is reported and opens no tab.
+	err = b.openLink(gui.Link{Path: "missing.go", Line: 1})
+	require.Error(t, err, "a path that names no file must be reported")
+
+	missing, err := workspaceapi.ParseURI("file://" + filepath.Join(root, "missing.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, tabsOf(t, b), missing,
+		"a path that names no file must open no tab")
+}
+
+func TestBootstrapLinkObserverOpensURLs(t *testing.T) {
+	root := t.TempDir()
+	b, opened := newBootstrapForWorkspace(t, root)
+
+	// The IDE runs on the event loop, which holds its mutex.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// An http link opens in the browser, not in the editor.
+	require.NoError(t, b.openLink(gui.Link{
+		URL: mustParseURL(t, "https://example.com"),
+	}))
+	assert.Equal(t, []string{"https://example.com/"}, *opened)
+	assert.Empty(t, tabsOf(t, b), "a url link must open no tab")
+
+	// A file link opens in the editor.
+	uri, err := workspaceapi.ParseURI("file://" + filepath.Join(root, "a.go"))
+	require.NoError(t, err)
+	require.NoError(t, b.openLink(gui.Link{
+		URL:  mustParseURL(t, uri.String()),
+		Line: 3, Col: 2,
+	}))
+	assert.Contains(t, tabsOf(t, b), uri,
+		"a file link must open the file in a tab")
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	require.NoError(t, err)
+	return u
 }
