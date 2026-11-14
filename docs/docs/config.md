@@ -70,8 +70,8 @@ comments) is treated as an empty overlay.
 
 ## Applying config changes
 
-Rune does not watch the config file. Open it with `config`, edit it, save it —
-nothing happens until you reload. There are two levels of reload, and
+Rune does not watch the config file. Open it with `config`, edit it, save it,
+and nothing happens until you reload. There are two levels of reload, and
 `themereload` applies the appearance keys without either.
 
 ### `workspacereload`
