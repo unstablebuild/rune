@@ -546,14 +546,15 @@ func (s *rowScanner) scanPath(
 		return dst, x + 1
 	}
 	start := x
-	// A path names a directory or carries an extension, so a run with
-	// neither a slash nor a dot can be rejected without reading it. Log
-	// output puts a colon after every digit, and walking back over the
-	// timestamp only to reject it is the costliest thing this does.
+	// isFilePathBytes can only accept a run that holds a slash or a dot,
+	// so a run with neither is rejected without building the text. A log
+	// line puts a colon after every digit, and the walk over the
+	// timestamp in front of one is the costliest thing this does.
 	slash, dot := false, false
 	for start > 0 {
 		cell := start - 1
-		if row[cell].Ch == 0 {
+		ch := row[cell].Ch
+		if ch == 0 {
 			if cell == 0 || row[cell-1].Width <= 1 {
 				// A blank the pane did not write, so the path ends.
 				break
@@ -561,14 +562,14 @@ func (s *rowScanner) scanPath(
 			// The second cell of a wide rune: the rune in front of it
 			// decides whether the path continues past it.
 			cell--
+			ch = row[cell].Ch
 		}
-		switch row[cell].Ch {
-		case '/':
+		if ch == '/' {
 			slash = true
-		case '.':
+		} else if ch == '.' {
 			dot = true
 		}
-		if !isPathRune(row[cell].Ch) {
+		if !isPathRune(ch) {
 			break
 		}
 		start = cell
@@ -653,22 +654,33 @@ func isDigit(r rune) bool {
 	return r >= '0' && r <= '9'
 }
 
+// pathRuneTable holds the ASCII runes that can appear in a path, so the
+// backward walk can classify a cell with one array read instead of two
+// switches. Index it with a byte; anything at or above 0x80 is not ASCII.
+var pathRuneTable = func() (t [utf8.RuneSelf]bool) {
+	for c := 'a'; c <= 'z'; c++ {
+		t[c] = true
+	}
+	for c := 'A'; c <= 'Z'; c++ {
+		t[c] = true
+	}
+	for c := '0'; c <= '9'; c++ {
+		t[c] = true
+	}
+	for _, c := range []byte("/._-~+@") {
+		t[c] = true
+	}
+	return t
+}()
+
 // isPathRune reports whether r can appear in a file path written in
 // prose. The glyphs the window draws its own chrome with are excluded,
 // so a border drawn against the text does not become part of the path.
 func isPathRune(r rune) bool {
-	if r > unicode.MaxASCII {
-		return unicode.IsLetter(r) || unicode.IsDigit(r)
+	if uint32(r) < utf8.RuneSelf {
+		return pathRuneTable[byte(r)]
 	}
-	switch {
-	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		return true
-	}
-	switch r {
-	case '/', '.', '_', '-', '~', '+', '@':
-		return true
-	}
-	return false
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 // isFilePath reports whether the text names a file rather than prose. A
