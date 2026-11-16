@@ -104,7 +104,7 @@ func (localExec) Start(ctx context.Context, cmd workspaceapi.Cmd) (workspaceapi.
 	c.Stdin = cmd.Stdin
 	c.Stdout = cmd.Stdout
 	c.Stderr = cmd.Stderr
-	c.Env = cmd.Env
+	c.Env = append(os.Environ(), cmd.Env...)
 
 	if err := c.Start(); err != nil {
 		return 0, err
@@ -1513,27 +1513,119 @@ func TestBash_args_do_not_include_program_name(t *testing.T) {
 		"Args must not include the program name; the executor adds it from Path")
 }
 
-func TestBash_env_is_nil_so_host_inherits(t *testing.T) {
-	// The bash tool runs inside the rune-agent extension process whose
-	// os.Environ() may be missing PATH entries the user expects (e.g.
-	// Homebrew on macOS GUI launch). When Env is nil, the host executor
-	// falls back to its own os.Environ(), which carries the shell-loaded
-	// PATH and gui.env overrides. Setting Env from the extension would
-	// shadow those values because Go's os/exec lets the last duplicate
-	// key win.
-	var recorded workspaceapi.Cmd
-	rec := &recordingExec{startFn: func(_ context.Context, cmd workspaceapi.Cmd) (workspaceapi.Pid, error) {
-		recorded = cmd
-		if cmd.Watcher != nil {
-			cmd.Watcher.WatchProcess() <- nil
-		}
-		return 1, nil
-	}}
-	tool := newBash(rec, dirURI("/workspace"), configedit.NopConfig())
-	tool.Execute(context.Background(), `{"command": "true", "description": "noop"}`)
+func TestShellTools_send_only_the_rune_env(t *testing.T) {
+	remote, err := workspaceapi.ParseURI("ssh://devbox/workspace")
+	require.NoError(t, err)
+	tools := []struct {
+		name string
+		run  func(t *testing.T, exec workspaceapi.Executor, cwd workspaceapi.URI)
+	}{
+		{
+			name: "bash",
+			run: func(_ *testing.T, exec workspaceapi.Executor, cwd workspaceapi.URI) {
+				newBash(exec, cwd, configedit.NopConfig()).
+					Execute(context.Background(), `{"command": "true", "description": "noop"}`)
+			},
+		},
+		{
+			name: "exec_command",
+			run: func(t *testing.T, exec workspaceapi.Executor, cwd workspaceapi.URI) {
+				mgr := NewSessionManager(context.Background(), exec, nil)
+				t.Cleanup(func() { _ = mgr.Close() })
+				NewExecCommand(mgr, cwd, configedit.NopConfig()).
+					Execute(context.Background(), `{"cmd": "true"}`)
+			},
+		},
+	}
+	all := map[string]string{
+		"RUNE_SOCKET":     "unix:///tmp/rune.sock",
+		"RUNE_TOKEN":      "tok",
+		"RUNE_CERT":       "cert",
+		"RUNE_INSTALLDIR": "/install",
+		"RUNE_PID":        "1234",
+	}
+	envs := []struct {
+		name string
+		cwd  workspaceapi.URI
+		set  map[string]string
+		want []string
+	}{
+		{
+			name: "local",
+			cwd:  dirURI("/workspace"),
+			set:  all,
+			want: []string{
+				"RUNE_SOCKET=unix:///tmp/rune.sock",
+				"RUNE_TOKEN=tok",
+				"RUNE_CERT=cert",
+				"RUNE_INSTALLDIR=/install",
+				"RUNE_PID=1234",
+			},
+		},
+		{
+			name: "local with insecure auth",
+			cwd:  dirURI("/workspace"),
+			set: map[string]string{
+				"RUNE_SOCKET":     "unix:///tmp/rune.sock",
+				"RUNE_CERT":       "cert",
+				"RUNE_INSTALLDIR": "/install",
+				"RUNE_PID":        "1234",
+			},
+			want: []string{
+				"RUNE_SOCKET=unix:///tmp/rune.sock",
+				"RUNE_CERT=cert",
+				"RUNE_INSTALLDIR=/install",
+				"RUNE_PID=1234",
+			},
+		},
+		{
+			name: "remote clears the pid of this machine",
+			cwd:  remote,
+			set:  all,
+			want: []string{
+				"RUNE_SOCKET=unix:///tmp/rune.sock",
+				"RUNE_TOKEN=tok",
+				"RUNE_CERT=cert",
+				"RUNE_INSTALLDIR=/install",
+				"RUNE_PID=",
+			},
+		},
+		{
+			name: "local outside rune",
+			cwd:  dirURI("/workspace"),
+		},
+		{
+			name: "remote outside rune",
+			cwd:  remote,
+			want: []string{"RUNE_PID="},
+		},
+	}
+	for _, tool := range tools {
+		for _, env := range envs {
+			t.Run(tool.name+"/"+env.name, func(t *testing.T) {
+				t.Setenv("PATH", "/stale")
+				t.Setenv("RUNE_DATADIR", "/extension-datadir")
+				for k := range all {
+					t.Setenv(k, "")
+					if v, ok := env.set[k]; ok {
+						t.Setenv(k, v)
+					} else {
+						require.NoError(t, os.Unsetenv(k))
+					}
+				}
 
-	assert.Nil(t, recorded.Env,
-		"Env must be nil so the host executor inherits its own environment")
+				recorded := make(chan workspaceapi.Cmd, 1)
+				rec := &recordingExec{startFn: func(_ context.Context, cmd workspaceapi.Cmd) (workspaceapi.Pid, error) {
+					recorded <- cmd
+					cmd.Watcher.WatchProcess() <- nil
+					return 1, nil
+				}}
+				tool.run(t, rec, env.cwd)
+
+				assert.Equal(t, env.want, (<-recorded).Env)
+			})
+		}
+	}
 }
 
 func TestBash_tells_the_executor_its_description(t *testing.T) {

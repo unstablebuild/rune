@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"unicode/utf8"
 
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
@@ -185,11 +186,8 @@ func (t *bashTool) Execute(ctx context.Context, arguments string) agent.ToolResu
 		Path: "bash",
 		Args: []string{"-c", args.Command},
 		Dir:  workDir,
-		// Env is intentionally nil: the host executor falls back to its
-		// own os.Environ(), which carries the shell-loaded PATH and any
-		// gui.env overrides. Setting Env from the extension would shadow
-		// those values because Go's os/exec lets the last duplicate key
-		// win when merging.
+		// See runeEnv for why nothing else is sent.
+		Env:     runeEnv(t.cwd),
 		Stdout:  &buf,
 		Stderr:  &buf,
 		Watcher: watcher,
@@ -247,6 +245,34 @@ func appendHints(content string, hints []string) string {
 		content += "\n\nTIP: " + hint
 	}
 	return content
+}
+
+// runeEnv returns, as KEY=value entries, the variables Rune set on this
+// extension that a command run in cwd needs to use Rune as runectl does:
+// RUNE_SOCKET, RUNE_TOKEN, RUNE_CERT, RUNE_INSTALLDIR and RUNE_PID, skipping
+// unset ones. They stay constant for the extension's lifetime. RUNE_PID
+// names a process on this machine, so it is sent empty when cwd is on
+// another host, as Rune does for ! commands. RUNE_DATADIR is left to the
+// host that runs the command.
+//
+// Nothing else of the extension's environment may be sent: the executor
+// appends Cmd.Env to the host's current environment and the last duplicate
+// wins, so the rest, a snapshot from when the extension started, would
+// shadow later changes such as a package's gui.env.
+func runeEnv(cwd workspaceapi.URI) []string {
+	var env []string
+	for _, k := range []string{"RUNE_SOCKET", "RUNE_TOKEN", "RUNE_CERT", "RUNE_INSTALLDIR"} {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
+		}
+	}
+	if cwd.Scheme() != "file" {
+		return append(env, "RUNE_PID=")
+	}
+	if v, ok := os.LookupEnv("RUNE_PID"); ok {
+		env = append(env, "RUNE_PID="+v)
+	}
+	return env
 }
 
 type processWatcher struct {
