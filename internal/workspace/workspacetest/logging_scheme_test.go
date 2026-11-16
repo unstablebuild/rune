@@ -18,12 +18,14 @@ package workspacetest
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"google.golang.org/grpc"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -36,4 +38,90 @@ func TestLoggingScheme(t *testing.T) {
 		require.NoError(t, err)
 		return scheme
 	})
+}
+
+func TestLoggingSchemeKeepsHostCapabilities(t *testing.T) {
+	uri, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	disconnect := make(chan struct{})
+	for _, tc := range []struct {
+		name  string
+		inner func(schemeapi.Scheme) schemeapi.Scheme
+		check func(*testing.T, workspace.Workspace)
+	}{{
+		name: "a capable scheme keeps its capabilities",
+		inner: func(s schemeapi.Scheme) schemeapi.Scheme {
+			return &capableScheme{Scheme: s, disconnect: disconnect}
+		},
+		check: func(t *testing.T, w workspace.Workspace) {
+			ctx := context.Background()
+			rs, ok := w.(workspace.RemoteScheme)
+			require.True(t, ok)
+			require.Equal(t, (<-chan struct{})(disconnect), rs.OnDisconnect())
+			require.ErrorIs(t, rs.WaitConnected(ctx), errCapableConnect)
+			dir, err := w.InstallDataDir(ctx)
+			require.NoError(t, err)
+			require.Equal(t, "/capable", dir)
+			cc, ok := w.(workspace.PackageHost).HostConn()
+			require.True(t, ok)
+			require.Same(t, capableHostConn, cc)
+		},
+	}, {
+		name:  "a plain scheme still lacks them",
+		inner: func(s schemeapi.Scheme) schemeapi.Scheme { return s },
+		check: func(t *testing.T, w workspace.Workspace) {
+			ctx := context.Background()
+			rs, ok := w.(workspace.RemoteScheme)
+			require.True(t, ok)
+			require.Nil(t, rs.OnDisconnect())
+			require.NoError(t, rs.WaitConnected(ctx))
+			_, err := w.InstallDataDir(ctx)
+			require.ErrorIs(t, err, errors.ErrUnsupported)
+			_, ok = w.(workspace.PackageHost).HostConn()
+			require.False(t, ok)
+		},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			traced := workspace.LoggingScheme("memory", func(
+				ctx context.Context, cfg config.Config, uri workspaceapi.URI,
+			) (schemeapi.Scheme, error) {
+				s, err := workspace.NewMemoryScheme(ctx, cfg, uri)
+				if err != nil {
+					return nil, err
+				}
+				return tc.inner(s), nil
+			})
+			scheme, err := traced(context.Background(), config.NopConfig(), uri)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = scheme.Close() })
+			tc.check(t, workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule))
+		})
+	}
+}
+
+var (
+	errCapableConnect = errors.New("connected by the wrapped scheme")
+	capableHostConn   = new(capableConn)
+)
+
+// capableConn is the connection to the host of a capableScheme.
+type capableConn struct{ grpc.ClientConnInterface }
+
+// capableScheme has every optional host capability, each answering in
+// a way only it could.
+type capableScheme struct {
+	schemeapi.Scheme
+	disconnect chan struct{}
+}
+
+func (s *capableScheme) OnDisconnect() <-chan struct{} { return s.disconnect }
+
+func (*capableScheme) WaitConnected(context.Context) error { return errCapableConnect }
+
+func (*capableScheme) InstallDataDir(context.Context) (string, error) {
+	return "/capable", nil
+}
+
+func (*capableScheme) HostConn() (grpc.ClientConnInterface, bool) {
+	return capableHostConn, true
 }
