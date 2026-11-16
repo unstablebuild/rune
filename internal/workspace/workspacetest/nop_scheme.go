@@ -184,6 +184,11 @@ func (t *NopScheme) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) (err erro
 	return nil
 }
 
+// ForegroundProcessGroup satisfies schemeapi.Scheme
+func (t *NopScheme) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 0, errors.ErrUnsupported
+}
+
 // Lstat satisfies schemeapi.Scheme
 func (t *NopScheme) Lstat(path string) (os.FileInfo, error) {
 	return t.LstatFunc(path)

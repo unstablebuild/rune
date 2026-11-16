@@ -190,6 +190,10 @@ func (t *testScheme) SetPtySize(p workspaceapi.Pty, size workspaceapi.PtySize) (
 	panic("unimplemented")
 }
 
+func (t *testScheme) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	panic("unimplemented")
+}
+
 func (t *testScheme) Lstat(path string) (os.FileInfo, error) {
 	return t.lstatFunc(path)
 }

@@ -78,6 +78,10 @@ func (b *blockingTerminal) SetPtySize(
 	return b.setSizeErr
 }
 
+func (b *blockingTerminal) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 0, errors.ErrUnsupported
+}
+
 func (b *blockingTerminal) delivered() [][2]int {
 	b.mu.Lock()
 	defer b.mu.Unlock()

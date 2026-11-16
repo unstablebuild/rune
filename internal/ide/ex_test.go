@@ -248,6 +248,10 @@ func (w *testLoader) SetPtySize(p workspaceapi.Pty, size workspaceapi.PtySize) e
 	return nil
 }
 
+func (w *testLoader) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 0, errors.ErrUnsupported
+}
+
 func (w *testLoader) NewFile(fd uintptr, name string) workspaceapi.File {
 	panic("unimplemented")
 }

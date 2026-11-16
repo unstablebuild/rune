@@ -1356,6 +1356,10 @@ func (f *fakeScheme) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	return nil
 }
 
+func (f *fakeScheme) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 0, errors.ErrUnsupported
+}
+
 type fakeWindow struct {
 	mu        sync.Mutex
 	name      string

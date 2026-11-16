@@ -207,6 +207,9 @@ func (s *fixtureScheme) NewPty(_ context.Context) (workspaceapi.Pty, error) {
 func (s *fixtureScheme) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	panic("not implemented")
 }
+func (s *fixtureScheme) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	panic("not implemented")
+}
 
 // install runs the install subcommand; the manager installs synchronously.
 func install(t *testing.T, h *Handler, _ *idepkgtest.Notifications, pw repl.ProgressWriter, args ...string) {

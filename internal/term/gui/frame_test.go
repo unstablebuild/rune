@@ -779,6 +779,10 @@ func (pipeTerminal) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	return nil
 }
 
+func (pipeTerminal) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 0, errors.ErrUnsupported
+}
+
 func (pipeTerminal) StartCommand(context.Context, workspaceapi.Cmd) (workspaceapi.Pid, error) {
 	return 0, nil
 }

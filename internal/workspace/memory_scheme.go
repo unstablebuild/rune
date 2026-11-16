@@ -418,6 +418,12 @@ func (m *memoryScheme) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error 
 	return errExecute
 }
 
+// ForegroundProcessGroup reports that the scheme cannot tell: it opens
+// no ptys.
+func (m *memoryScheme) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 0, fmt.Errorf("%w: %w", errExecute, errors.ErrUnsupported)
+}
+
 func (m *memoryScheme) Chroot(path string) (schemeapi.Scheme, error) {
 	uri, err := m.URI(path)
 	if err != nil {

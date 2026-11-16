@@ -22,6 +22,8 @@ import (
 	"errors"
 	"os"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // NewGroup returns attributes that start the process as the leader of a new
@@ -66,4 +68,10 @@ func KillGroup(proc *os.Process) error {
 // Signal sends sig to the process with the given pid.
 func Signal(pid int, sig syscall.Signal) error {
 	return syscall.Kill(pid, sig)
+}
+
+// ForegroundProcessGroup returns the id of the foreground process group
+// of the terminal whose descriptor is fd.
+func ForegroundProcessGroup(fd uintptr) (int, error) {
+	return unix.IoctlGetInt(int(fd), unix.TIOCGPGRP)
 }

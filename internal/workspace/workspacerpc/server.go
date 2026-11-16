@@ -445,6 +445,24 @@ func (s *Server) SetPtySize(ctx context.Context, req *workspacerpc.SetPtySizeReq
 	return new(workspacerpc.SetPtySizeResponse), nil
 }
 
+// ForegroundProcessGroup satisfies TerminalServer.
+func (s *Server) ForegroundProcessGroup(
+	ctx context.Context, req *workspacerpc.ForegroundProcessGroupRequest,
+) (*workspacerpc.ForegroundProcessGroupResponse, error) {
+	master := s.s.NewFile(uintptr(req.GetMasterFd()), req.GetMaster())
+	if master == nil {
+		return nil, workspace.ErrInvalidMasterPtyFd
+	}
+	pgrp, err := s.s.ForegroundProcessGroup(workspaceapi.Pty{Master: master})
+	if errors.Is(err, errors.ErrUnsupported) {
+		return &workspacerpc.ForegroundProcessGroupResponse{IsUnsupportedErr: true}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &workspacerpc.ForegroundProcessGroupResponse{Pgrp: int64(pgrp)}, nil
+}
+
 // Stop closes all resources associated with this server.
 func (s *Server) Stop() error {
 	s.cancelCtx()

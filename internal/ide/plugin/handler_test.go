@@ -348,6 +348,10 @@ func (e *pluginTestExecutor) SetPtySize(p workspaceapi.Pty, size workspaceapi.Pt
 	return nil
 }
 
+func (e *pluginTestExecutor) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 0, errors.ErrUnsupported
+}
+
 func TestPluginHandlerPointerLeaves(t *testing.T) {
 	t.Parallel()
 	output := strings.Repeat("ok  \tunstable.build/rune/internal/ide/plugin\t0.512s\n--- FAIL: TestSomething (0.01s)\n", 20)

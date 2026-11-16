@@ -5813,6 +5813,10 @@ func (s *terminalSessionTestScheme) SetPtySize(workspaceapi.Pty, workspaceapi.Pt
 	return nil
 }
 
+func (s *terminalSessionTestScheme) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 0, errors.ErrUnsupported
+}
+
 func (s *terminalSessionTestScheme) StartCommand(context.Context, workspaceapi.Cmd) (workspaceapi.Pid, error) {
 	return 0, nil
 }

@@ -1466,6 +1466,10 @@ func (s *localScheme) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	panic("not implemented")
 }
 
+func (s *localScheme) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	panic("not implemented")
+}
+
 func readUserConfig(t *testing.T, datadir string) *yaml.Node {
 	t.Helper()
 	configPath := filepath.Join(datadir, "config.yaml")

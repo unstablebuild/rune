@@ -209,6 +209,12 @@ func (t loggingScheme) SetPtySize(p workspaceapi.Pty, size workspaceapi.PtySize)
 	return
 }
 
+func (t loggingScheme) ForegroundProcessGroup(p workspaceapi.Pty) (pgrp int, err error) {
+	pgrp, err = t.other.ForegroundProcessGroup(p)
+	t.trace("ForegroundProcessGroup(%v): %d, %v", p, pgrp, err)
+	return
+}
+
 func (t loggingScheme) ReadDir(name string) (
 	ret []os.DirEntry, err error,
 ) {

@@ -374,6 +374,9 @@ func (e *recordingExecutor) NewPty(context.Context) (workspaceapi.Pty, error) {
 func (e *recordingExecutor) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	return nil
 }
+func (e *recordingExecutor) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 0, errors.ErrUnsupported
+}
 
 func (e *recordingExecutor) argvSnapshot() [][]string {
 	e.mu.Lock()
@@ -431,6 +434,9 @@ func (e *osExecutor) NewPty(context.Context) (workspaceapi.Pty, error) {
 	return workspaceapi.Pty{}, nil
 }
 func (e *osExecutor) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error { return nil }
+func (e *osExecutor) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 0, errors.ErrUnsupported
+}
 
 // recursiveExecutor returns a different canned stdout per call.
 // Calls past len(responses) error.
@@ -480,6 +486,9 @@ func (e *recursiveExecutor) NewPty(context.Context) (workspaceapi.Pty, error) {
 }
 func (e *recursiveExecutor) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	return nil
+}
+func (e *recursiveExecutor) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 0, errors.ErrUnsupported
 }
 
 func (e *recursiveExecutor) argvSnapshot() [][]string {

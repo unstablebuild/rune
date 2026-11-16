@@ -55,6 +55,9 @@ func TestLoggingSchemeKeepsHostCapabilities(t *testing.T) {
 		},
 		check: func(t *testing.T, w workspace.Workspace) {
 			ctx := context.Background()
+			pgrp, err := w.ForegroundProcessGroup(workspaceapi.Pty{})
+			require.NoError(t, err)
+			require.Equal(t, 42, pgrp)
 			rs, ok := w.(workspace.RemoteScheme)
 			require.True(t, ok)
 			require.Equal(t, (<-chan struct{})(disconnect), rs.OnDisconnect())
@@ -71,11 +74,13 @@ func TestLoggingSchemeKeepsHostCapabilities(t *testing.T) {
 		inner: func(s schemeapi.Scheme) schemeapi.Scheme { return s },
 		check: func(t *testing.T, w workspace.Workspace) {
 			ctx := context.Background()
+			_, err := w.ForegroundProcessGroup(workspaceapi.Pty{})
+			require.ErrorIs(t, err, errors.ErrUnsupported)
 			rs, ok := w.(workspace.RemoteScheme)
 			require.True(t, ok)
 			require.Nil(t, rs.OnDisconnect())
 			require.NoError(t, rs.WaitConnected(ctx))
-			_, err := w.InstallDataDir(ctx)
+			_, err = w.InstallDataDir(ctx)
 			require.ErrorIs(t, err, errors.ErrUnsupported)
 			_, ok = w.(workspace.PackageHost).HostConn()
 			require.False(t, ok)
@@ -124,4 +129,8 @@ func (*capableScheme) InstallDataDir(context.Context) (string, error) {
 
 func (*capableScheme) HostConn() (grpc.ClientConnInterface, bool) {
 	return capableHostConn, true
+}
+
+func (*capableScheme) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 42, nil
 }

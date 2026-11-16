@@ -560,6 +560,10 @@ func (e *testExecutor) SetPtySize(p workspaceapi.Pty, size workspaceapi.PtySize)
 	return nil
 }
 
+func (e *testExecutor) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 0, errors.ErrUnsupported
+}
+
 // stalledTerminal simulates a remote workspace whose transport has
 // wedged: NewPty never returns until the RPC context is cancelled.
 type stalledTerminal struct {

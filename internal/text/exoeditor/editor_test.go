@@ -112,6 +112,9 @@ func (stubTerminal) NewPty(context.Context) (workspaceapi.Pty, error) {
 func (stubTerminal) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	return nil
 }
+func (stubTerminal) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 0, errors.ErrUnsupported
+}
 
 type stubExecutor struct{}
 
