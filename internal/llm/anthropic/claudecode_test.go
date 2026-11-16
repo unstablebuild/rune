@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"golang.org/x/mod/semver"
 )
 
 func TestXXHash64MatchesReferenceSeedZero(t *testing.T) {
@@ -57,6 +58,14 @@ func TestComputeFingerprintDeterministic(t *testing.T) {
 	// Short text falls back to '0' for out-of-range indices but is still stable.
 	fpShort := computeFingerprint("abc", claudeCodeVersion)
 	assert.Equal(t, fpShort, computeFingerprint("abc", claudeCodeVersion))
+}
+
+func TestClaudeCodeBillingHeaderMeetsMinimumVersion(t *testing.T) {
+	header := claudeCodeBillingHeader("You are a helpful assistant for the rune editor project.")
+	version := regexp.MustCompile(`\bcc_version=(\d+\.\d+\.\d+)\.[0-9a-f]{3};`).FindStringSubmatch(header)
+	require.Len(t, version, 2, "expected a version and build fingerprint in %q", header)
+	assert.GreaterOrEqual(t, semver.Compare("v"+version[1], "v2.1.290"), 0,
+		"the API rejects older clients with claude_code_version_too_old")
 }
 
 func TestSignClaudeCodeBodyProducesStable5HexCCH(t *testing.T) {
