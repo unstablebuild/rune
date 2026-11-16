@@ -4,15 +4,7 @@ sidebar_position: 25
 
 # Emacs Editor
 
-An Emacs-style cheatsheet for Rune's built-in Emacs editor. It combines
-familiar point, mark, and kill-ring editing, incremental search, and numeric
-arguments with Rune commands for files, windows, tabs, search, and language
-intelligence.
-
-## Preset
-
-Choose **emacs** when Rune first asks which key bindings you want. For an
-existing configuration, the editor itself is selected with:
+Enable it in `config.yaml`:
 
 ```yaml tab
 editor:
@@ -312,7 +304,7 @@ without it. These are Rune additions.
 | `<ctrl-shift-/>` `<ctrl-alt-/>` `<ctrl-alt-_>` | redo |
 | `<ctrl-q>` | quoted insert: insert the literal form of the next character-producing key |
 
-The [Emacs preset](#preset) enables auto-pairing. Typing `(`, `[`, `{`, `"`, or
+The [Emacs preset](#emacs-keybindings-preset) enables auto-pairing. Typing `(`, `[`, `{`, `"`, or
 `'` inserts its matching close. `<backspace>` between an empty pair removes
 both characters, and typing a matching closer immediately before its
 auto-inserted copy moves over it. `<enter>` between `{}` opens an indented blank
@@ -455,8 +447,7 @@ the most recently accepted search.
 
 A focused terminal reuses `<ctrl-s>` too: it opens a find box over the
 terminal's scrollback instead of the buffer-local incremental search
-described above. See [Search](./search.md#search-a-terminals-scrollback)
-for how it behaves there. The emacs preset moves it off the default
+described above. The emacs preset moves it off the default
 `<meta-f>` so terminal search shares the same muscle memory, which also
 frees <KeyBinding command="windowfocus right" chord="<meta-f>" /> for `windowfocus right`.
 

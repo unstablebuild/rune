@@ -6,20 +6,19 @@ sidebar_position: 2
 
 ## Where the config lives
 
-Your personal Rune config lives at `~/.rune/config.yaml` or
-`~/.rune/config.star`: one file, in one of two formats. You never have to
-create it by hand: the first time you open Rune, the bootstrap offers
-**standard**, **emacs**, and **vim** key bindings and writes
-`~/.rune/config.yaml` for you. The choice is not permanent: change
-[`editor.mode`](#editor-modes) later to switch editors.
+Your personal Rune config lives at `~/.rune/config.yaml` or `~/.rune/config.star`: one
+file, in one of two formats. You never have to create it by hand: the first time you open
+Rune, the bootstrap writes `~/.rune/config.yaml` with a preset of your choosing for you.
 
-A workspace can also carry its own `.rune/config.yaml` at the repository
-root, which is layered on top of your personal config for that project.
+A workspace can also define its own `.rune/config.yaml` at the repository
+root, which is layered on top of your personal config, when you open that workspace.
 
 A workspace config can run programs on your machine, through extensions,
 language servers, aliases or the terminal shell, so it only applies once you
 trust it. The first time you open a workspace that has one, Rune shows you the
 file and asks:
+
+![Workspace trust prompt](https://assets.rune.build/images/docs-rune/config/workspace-trust.png)
 
 - **trust** applies it now and every time you open this workspace, until the
   file changes.
@@ -71,10 +70,7 @@ comments) is treated as an empty overlay.
 ## Applying config changes
 
 Rune does not watch the config file. Open it with `config`, edit it, save it —
-nothing happens until you reload. There are two levels of reload, and
-`themereload` applies the appearance keys without either.
-
-### `workspacereload`
+nothing happens until you reload.
 
 `workspacereload` closes the focused workspace and opens it again. The open
 buffers, cursor positions, window layout and the extension tabs shown in it,
@@ -96,19 +92,6 @@ surface:
 
 Only the focused workspace is reloaded; other workspace tabs keep running with
 the configuration they were opened with.
-
-### `themereload`
-
-`themereload` reads the config file again and applies the keys that style
-Rune to every open workspace, with nothing closed or reopened: frames, window
-bars and prompts, tabs and their sounds, notifications, the editor and Rune
-Agent status bars, the Rune Agent compose box frame, the wallpaper, `sounds`,
-the terminal bell, the program status inbox and its sounds, and the quick
-menu, themes, sound volume and app icon of the GUI. It also reads again every
-image those keys name.
-[`runectl screenshot`](./develop/runectl.md#screenshots) does the same before
-each capture, which is how Rune Agent checks a theme it is designing; the
-screenshot section lists the exact keys.
 
 ### Restart
 
@@ -209,19 +192,15 @@ Broad strokes of what's supported:
 - Auto-pair for `()`, `[]`, `{}`, `"`, `'`.
 - Macros recorded on the unnamed register via `<ctrl-q>`.
 
-Not supported in the standard editor: multi-cursor editing, a `<ctrl-x>` Emacs
-prefix, completion popup (lives in language extensions), and goto-line (use
-the [command prompt](#command-prompt)).
-
 See the [Standard Editor cheatsheet](./learn/standard-editor.md) for
 the exact keystrokes and the full binding table.
 
 ### Emacs
 
 An Emacs-style editor with point motion, marks and regions, word and
-paragraph commands, clipboard-history yank-pop, and a Rune command family
+paragraph commands, clipboard-history yank-pop, and a command family
 under `<ctrl-x>`. Pick this if your muscle memory comes from Emacs but you
-want Rune's native editor and IDE integration.
+want Rune's native editor and IDE integrations.
 
 See the [Emacs Editor cheatsheet](./learn/emacs-editor.md) for the complete
 binding tables and the differences from GNU Emacs.
@@ -233,15 +212,14 @@ the mode does not replace your `command.key_bindings` map.
 ### Helix
 
 A [Helix](https://helix-editor.com)-style editor with an inverted modal
-grammar: a motion first selects the text you mean, then an operator acts on
-that selection. You press `w` then `d` to delete a word, not `dw`, and you
-always see what an operator is about to touch.
+grammar: a motion first selects text, then an operator acts on
+that selection.
 
 Pick this if your muscle memory comes from Helix, or if you like modal editing
 but want the selection to be visible before you act on it.
 
 See the [Helix Editor cheatsheet](./learn/helix-editor.md) for the exact
-keystrokes and what is or isn't supported.
+key combinations and what is or isn't supported.
 
 Multiple selections work as in Helix: `C` copies a selection onto the next
 line, `s` selects every regex match, `,` drops back to one selection, and every
@@ -259,50 +237,46 @@ Exoeditor mode (`editor.mode = "exo"`) runs a real terminal editor
 (Vim, Neovim, Helix, Kakoune, Nano, Emacs `-nw`, ...) as an **external
 editor** inside a Rune-managed file tab, with Rune acting as the
 **host** around it. Use this when you want the last 1% of parity with
-your editor of choice, or you want to use an editor Rune does not
+your favorite editor, or you want to use an editor Rune does not
 ship as a built-in.
 
-For the list of what does and does not work inside `exo` mode (file
-watching, LSP, search integration, ...), see the
-[Exoeditor](./learn/exoeditor.md) guide.
+For the list of what's supported in `exo` mode (file watching, LSP, search integration,
+...), see the [Exoeditor](./learn/exoeditor.md) guide.
 
-Exoeditor has four fallback choices, picked with `editor.exo.fallback`. The
-fallback is what Rune uses for buffers whose URI is not a real file path,
-anything that is not `file://` or `ssh://`. Today the single concrete example
-that ships with Rune is the file explorer
-(`memory:///fexplorer`), where launching the external editor doesn't
-make sense. Picking the right fallback keeps those buffers feeling like
-the editor you chose:
-
-- `editor.exo.fallback: "vim"` keeps those buffers in the vim editor. Use it
-  when your external editor is Vim or Neovim, so a keystroke like `j`/`k` keeps
-  its vi meaning across the whole UI.
-- `editor.exo.fallback: "helix"` keeps those buffers on Helix's
-  selection-first grammar. Use it when your external editor is Helix, so a
-  keystroke like `w`/`e` keeps its Helix meaning across the whole UI.
-- `editor.exo.fallback: "standard"` keeps those buffers in the standard editor.
-  Use it when your external editor is modeless (Nano, Micro, Kakoune, Emacs in its
-  default bindings, ...), so a printable keystroke is always insertion, not a
-  command.
-- `editor.exo.fallback: "emacs"` gives those buffers Rune's built-in Emacs
-  editing behavior. Use it when your external editor is Emacs and you want
-  consistent point, mark, and region commands in Rune-owned buffers.
+Exoeditor has four fallback choices, picked with `editor.exo.fallback`. The fallback is
+what Rune uses for buffers whose URI is not a real file path, anything that is not
+`file://`, `ssh://` or `rune://`. For example, Rune's file explorer is an in-memory
+editable buffer, so launching the external editor is not possible. Picking the right
+fallback keeps those buffers feeling like the editor you chose:
 
 For ready-to-copy `exo` configs (Vim, Neovim, Helix, Nano, and more), see the
 [examples in the Exoeditor guide](./learn/exoeditor.md#examples).
 
 ## Syntax Highlighting
 
-- `editor.highlights`: the attributes applied to each Tree-sitter capture
-  name, merged key by key onto Rune's defaults. See
-  [Syntax Highlighting](./learn/syntax-highlighting.md).
+If you don't like the default syntax highlights, you can always override the default
+config by adding a `editor.highlights` section in your config. The attributes applied to
+each Tree-sitter capture name, are merged key by key onto Rune's defaults. See the [Syntax
+Highlighting](./appearance/syntax-highlighting.md) guide, or check the default values in
+[Rune's builtin
+config](https://github.com/unstablebuild/rune/tree/main/cmd/rune/rune.star).
 
   ```yaml tab
   editor:
     highlights:
+      function:
+        fg: blue
       comment:
         fg: silver
         flags: italic
+      # function, function.builtin, function.method, type, property, 
+      # variable, operator, keyword, string, escape, number, 
+      # constant.builtin, comment, markup.heading, markup.raw, 
+      # markup.raw.delimiter, markup.link, markup.link.url,
+      # markup.link.label, markup.link.text, markup.list,
+      # markup.quote, markup.strong, markup.italic, markup.strikethrough,
+      # markup.underline, markup.math, text.title, text.literal,
+      # text.uri, text.reference, text.emphasis, text.strong
   ```
 
   ```python tab
@@ -311,49 +285,15 @@ For ready-to-copy `exo` configs (Vim, Neovim, Helix, Nano, and more), see the
 
 ## Command Prompt
 
-- `command.key`: the [key combination](./learn/key-syntax.md) that opens the
-  command prompt. The first-run preset writes a matching value. For the preset
-  selected at the top of this page, it is <CommandPromptKey />.
-
-  [Exoeditor](#exoeditor) is not part of the bootstrap flow, so it has no
-  bootstrapped default; you set `command.key` yourself (see below).
-
-  ```yaml tab
-  command:
-    key: ":"
-  ```
-
-  ```python tab
-  "command": {
-      "key": ":",
-  },
-  ```
-
-  A bare printable key like `:` only works with [Vim](#vim)
-  editing, where the editor distinguishes a normal mode from an insert
-  mode and the command key is bound outside insert mode. With
-  [Standard](#standard) editing the editor always treats the next
-  character as text to insert, so pressing `:` would insert `:` at the
-  cursor instead of opening the prompt; that is why the standard
-  bootstrap rebinds `command.key` to `<shift-meta-p>`.
-
-  In [Exoeditor](#exoeditor) mode the right `command.key` depends on your
-  **external editor's** modality, not on the fallback. There is no
-  bootstrapped default, so pick the value that fits your editor:
-
-  - Modal external editors (Vim, Neovim, Helix, Kakoune) have a normal mode
-    where `:` is free, so keep `command.key` at `:`.
-  - Naturally modeless external editors (Micro, Emacs, Nano) treat `:` as
-    text to insert, so a single-character `command.key` can never open the
-    prompt; rebind it to a modified combination such as `<shift-meta-p>`.
-
-  See the [Examples](./learn/exoeditor.md#examples) in the Exoeditor guide for
-  the recommended `command.key` per editor.
+`command.key` is the [key combination](./learn/key-syntax.md) that opens the command
+prompt. Based on the preset selected at the top of this page, it is <CommandPromptKey />.
+If you use a different preset, switch it above and the rest of this guide will show
+you the key bindings according to your preset.
 
 ## Animations
 
 These keys set the animations Rune plays and the shaders they play. See
-[Animations](./learn/animations.md) for each of them, and for the shaders
+[Animations](./appearance/animations.md) for each of them, and for the shaders
 available:
 
 - `animations.intro`: the intro of the built-in logo when Rune starts.
@@ -368,8 +308,8 @@ available:
 ## GUI
 
 - `gui.default_theme` / `gui.themes`: the active color theme and the catalog
-  of available themes. See [Themes](./learn/themes.md).
-- `gui.sound_volume`: the volume of the GUI's [sounds](./learn/sounds.md),
+  of available themes. See [Themes](./appearance/themes.md).
+- `gui.sound_volume`: the volume of the GUI's [sounds](./appearance/sounds.md),
   from `0` (mute) to `1` (the default). Values outside that range are clamped.
 
   ```yaml tab
@@ -380,6 +320,8 @@ available:
   ```python tab
   config["gui"]["sound_volume"] = 0.5
   ```
+
+### Remap keys
 
 - `gui.key_mapping`: remap physical keys before they reach the editor (GUI
   only). Both sides use the [key combination syntax](./learn/key-syntax.md).
@@ -397,11 +339,10 @@ available:
   config["gui"]["key_mapping"] = {"<capslock>": "<esc>"}
   ```
 
+### Choose your meta key (Linux only)
+
 - `gui.meta_key`: the physical key or keys that `<meta>` stands for in Rune's
-  own key specs: `command.key_bindings`, `command.key`,
-  `command.history_key`, and the search and file explorer `*_key` settings.
-  The editors, terminals and extensions still receive the key you actually
-  pressed, so this is not a remap. The value is one of the following:
+  key binding syntax. The value can be one of the following:
 
   | Value | `<meta-x>` means | Offered for |
   | --- | --- | --- |
@@ -427,24 +368,19 @@ available:
   config["gui"]["meta_key"] = "<alt>"
   ```
 
+### Environment Variables
+
 - `gui.env`: environment variables Rune sets for itself and everything it
   starts: terminals, extensions, language servers, debuggers and tasks. A
   value may reference other variables, such as `$HOME`, and `$RUNE_DATADIR`
   names the Rune data directory of the machine that applies it. Each machine
   applies the config stored on it, so in a remote workspace the variables come
   from `~/.rune/config.yaml` on the remote machine. The remote machine never
-  applies the `gui.env` of a project's `.rune/config.yaml`, because it can't
-  ask you to trust that file.
+  applies the `gui.env` of a project's `.rune/config.yaml`, for security reasons.
 
   `PATH` extends the existing `PATH` instead of replacing it: the directories
   listed before `$PATH` go in front of it and the ones after it go at the end.
   Rune's shared binary directory, `$RUNE_DATADIR/bin`, always comes first.
-
-  Terminals running bash, zsh or fish apply `gui.env` again after the shell's
-  startup files, so it wins over them: a variable set in both has the
-  `gui.env` value, and Rune's `PATH` entries come first even when a startup
-  file such as `/etc/profile` resets `PATH`. The rest of the `PATH` that your
-  startup files built follows.
 
   ```yaml tab
   gui:
@@ -460,11 +396,12 @@ available:
   }
   ```
 
-- `gui.app_icon`: the path of a GIF, JPEG, PNG or WebP image that Rune shows
-  as its icon while it runs, in place of the Rune logo. `~` and variables
-  such as `$HOME` expand. A square image at least 256 pixels wide looks best;
-  other shapes are centered on a transparent square. Images wider or taller
-  than 8192 pixels are rejected.
+### Choose the app's icon
+
+- `gui.app_icon`: the path of a GIF, JPEG, PNG or WebP image that Rune shows as its icon
+while it runs, in place of the Rune logo. A square image at least 256 pixels wide looks
+best; other shapes are centered on a transparent square. Images wider or taller than 8192
+pixels are rejected.
 
   - On Linux the image becomes the window icon. GNOME and KDE Plasma show the
     icon of Rune's launcher instead, so also set the `Icon=` line of
@@ -476,17 +413,14 @@ available:
     switcher. Finder, Launchpad and the Dock tile shown while Rune is not
     running keep the bundled icon.
 
-  [`runectl screenshot`](./develop/runectl.md#screenshots) reads the key and
-  the image again, so you can try an icon without restarting Rune.
+```yaml tab
+gui:
+  app_icon: ~/.rune/icon.png
+```
 
-  ```yaml tab
-  gui:
-    app_icon: ~/.config/rune/icon.png
-  ```
-
-  ```python tab
-  config["gui"]["app_icon"] = "~/.config/rune/icon.png"
-  ```
+```python tab
+config["gui"]["app_icon"] = "~/.rune/icon.png"
+```
 
 ## Links
 
@@ -499,39 +433,10 @@ available:
   - a Rune command, written like an [alias](./learn/aliases.md) body, that runs
     with `$URL` set to the link.
 
-  A link is untrusted input, so a command receives it in a form that cannot
-  run anything. `$URL` always expands to a single argument. In `$URL`,
-  characters a URL may not contain, as well as `'` and `$`, are
-  percent-encoded, which leaves the link pointing at the same page. Inside a
-  `!` or `!!` command, or a terminal command such as `terminalnewtab`, `$URL`
-  is read as plain text whether you write it unquoted, in double quotes or in
-  single quotes, and Rune refuses to run the command rather than let a link
-  change it. A command that passes `$URL` on to a second shell, such as
-  `sh -c`, `eval` or `ssh`, must quote it again there, since characters like
-  `&` and `;` can appear in links.
-
-  Clicking a link with another scheme with `<meta>` held in the GUI opens it
-  in the system browser.
-
   ```yaml tab
   meta_open_url: "browser $URL" # or "clipboard", or "! open $URL"
   ```
 
   ```python tab
   config["meta_open_url"] = "browser $URL" # or "clipboard", or "! open $URL"
-  ```
-
-## Telemetry
-
-- `telemetry.enabled`: whether Rune reports anonymous usage data. It is `true`
-  by default. See [Telemetry](./learn/telemetry.md) for the full list of what
-  is reported and how to opt out.
-
-  ```yaml tab
-  telemetry:
-    enabled: false
-  ```
-
-  ```python tab
-  config["telemetry"]["enabled"] = False
   ```

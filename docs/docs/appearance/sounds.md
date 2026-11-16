@@ -1,5 +1,5 @@
 ---
-sidebar_position: 48
+sidebar_position: 5
 sidebar_label: Sounds
 ---
 
@@ -75,7 +75,7 @@ The [sounds pack](https://github.com/unstablebuild/rune-sounds-pack) adds the
 936 interface sounds of [UI SFX](https://uisfx.com): twelve packs, such as
 `minimal`, `glass` and `arcade`, each with the same 78 cues. Each sound is
 named `uisfx-<pack>-<cue>`, such as `uisfx-minimal-success`. To install it,
-run this in the [console](./console.md):
+run this in the [console](../learn/console.md):
 
 ```text
 pkg install github.com/unstablebuild/rune-sounds-pack
@@ -110,7 +110,7 @@ terminal on the next `runectl screenshot`.
 Programs that report their status, such as Rune Agent, agent CLIs and
 commands run in the IDE console, play a sound when they finish, fail or wait
 on you. `program_status.sounds` maps each state to a sound; see
-[Program status](./terminal/program-status.md#sounds).
+[Program status](../learn/terminal/program-status.md#sounds).
 
 ## Quick menu
 
@@ -166,7 +166,7 @@ config["workspace"]["tab_sounds"] = {"click": "success"}
 
 ## Play a sound from an alias
 
-To play a sound from an [alias](./aliases.md), add a `guisound` step. An
+To play a sound from an [alias](../learn/aliases.md), add a `guisound` step. An
 alias stops at the first step that fails, so a sound at the end plays only
 when the steps before it succeed:
 

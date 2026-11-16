@@ -9,7 +9,7 @@ that wires something into Rune, plus whatever that thing needs to run. It is
 the shared delivery format underneath [extensions](./extensions.md),
 which communicate with Rune through the [SDK](./sdk/index.md),
 [plugins](./plugins.md), which wrap command-line tools, and
-[themes](../learn/themes.md#share-your-theme).
+[themes](../appearance/themes.md#share-your-theme).
 
 ## Distributing from a git repository
 
@@ -59,7 +59,7 @@ extension package also needs its source files:
 
 - A **non-empty `config.yaml`** overlay with the settings to merge into the
   user's config. This can be a theme under `gui.themes` (see
-  [Share your theme](../learn/themes.md#share-your-theme)), aliases under
+  [Share your theme](../appearance/themes.md#share-your-theme)), aliases under
   `command.aliases`, or any other Rune configuration. If it declares extensions,
   see [Registering an extension](#registering-an-extension). Every extension's
   `path` must point at something the runner can start: a Go package directory,
@@ -325,7 +325,7 @@ additively.
 ### Registering sounds
 
 A package can ship audio files and register them as named
-[sounds](../learn/sounds.md). Include the files in the package and add
+[sounds](../appearance/sounds.md). Include the files in the package and add
 `sounds.<name>` entries that point at them with the install-location
 variables:
 

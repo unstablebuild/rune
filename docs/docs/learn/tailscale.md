@@ -18,7 +18,7 @@ and there is no configuration: every machine running Rune serves its
 workspaces to the tailnet for as long as Tailscale is connected, and
 Tailscale's own ownership and policy decide who may open them.
 
-Everything Rune does on a [workspace](./workspaces.md) works the same
+Everything Rune does on a [workspace](./layout-management.md#workspaces) works the same
 on one opened this way: the [file explorer](./file-explorer.md),
 terminals, language servers, tasks and the agent all run on the machine
 that holds the code.

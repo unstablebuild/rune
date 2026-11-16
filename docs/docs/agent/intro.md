@@ -36,13 +36,6 @@ chat input is itself a
 [vim editor](../learn/vim-editor.md), so you get the same motions and
 text objects you use everywhere else while composing messages.
 
-### Chats that keep running
-
-A chat runs apart from the tab that shows it. Closing an agent tab while the agent is
-still working, running tools or waiting on you to answer a question leaves the chat
-running: the [status inbox](../learn/terminal/program-status.md#the-status-inbox) lists it
-as working, blocked or done, and showing it from there opens its tab again.
-
 ### Quick questions with `?`
 
 `? <message>` asks a one-off question and shows the answer in a floating

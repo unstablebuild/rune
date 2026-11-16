@@ -11,14 +11,6 @@ worktrees into a first-class workflow: each worktree opens as its own
 at once, each in its own directory, and work on them side by side without
 stashing or switching branches in place.
 
-This makes worktrees the natural unit for **parallel work** on a repository.
-Say you are mid-change on a feature branch when an urgent fix comes in: spin up
-a worktree for the hotfix branch, fix and ship it there, and come back to your
-feature branch exactly as you left it, no stash, no dirty tree. The same
-isolation lets an agent churn through edits on its own branch in one worktree
-while you keep working on yours in another, with no collisions. When a task
-finishes or needs you, its workspace tab lights up so you know where to look.
-
 ## The worktree commands
 
 Rune ships three commands for managing worktrees from the
@@ -50,7 +42,7 @@ The worktree commands are not built into Rune's core. They are ordinary
 far Rune's [alias and command-variable](./aliases.md) system goes. You
 can read them, copy them, and bend them to your own workflow.
 
-Here is `worktreenew`, the most involved of the three:
+Here is `worktreenew` is implemented as an alias:
 
 ```yaml tab
 command:
@@ -144,55 +136,6 @@ you can let different tasks run in each at the same time:
 Switch between worktree workspaces the same way you switch any workspace, and
 the worktree's branch is exactly what `git` sees in that directory, so commits,
 diffs, and status are all scoped to that branch.
-
-## Knowing when a worktree needs you
-
-When you run work in parallel, you are not watching every workspace at once. So
-Rune surfaces activity from the workspaces you are **not** looking at.
-
-When a notification is posted on a workspace that is not currently in focus,
-Rune holds the notification open until you switch to it and counts it in a
-superscript badge after that workspace's tab, in the color of the highest level
-pending (`2 api²`). The tab of the workspace that finished a build, hit an
-error, or needs your input shows the badge, and you can jump straight there
-without hunting through tabs. Focusing the workspace clears it.
-
-Programs that report their [status](./terminal/program-status.md) over
-OSC 7501 (`runectl status`, agents, builds) also show on the workspace bar: the
-tab's name takes the color of the most pressing status among the workspace's
-terminals (yellow when blocked on you, red on error, green once done), so a
-workspace that needs you reads at a glance even before any notification, and
-`programstatus` lists every reported status across workspaces so you can jump
-to the one that needs you. (Tune the colors under
-`terminal.status.workspace_tab`.)
-
-Rune Agent chats report their status this way: the chat tab spins while the
-agent thinks and runs tools, its workspace tab turns green as the tasks it
-planned complete (`terminal.status.workspace_tab.progress`; set
-`terminal.status.content_tab.progress` to fill the chat tab too), turns
-blocked when it asks you a question or for permission, and turns done with the
-first line of its reply, or failed with the reason, when the turn ends. Rune's
-own permission prompts, raised when an extension asks for something it was not
-granted, show as blocked on the workspace bar until you answer them.
-
-This works no matter where the notification comes from:
-
-- **Internally**, from Rune itself: a `!!` command that finishes in a background
-  worktree, an auto-save warning, or anything that posts a notification.
-- **From an extension**, through the [Rune SDK](../develop/sdk/index.md): an extension
-  can post a notification on its workspace, and if that workspace is in the
-  background its tab is highlighted.
-- **From outside Rune**, through [`runectl`](../develop/runectl.md): any process
-  running in a workspace terminal can post a notification with
-  `runectl notify <level> <message>`, where `<level>` is `error`, `warn`,
-  `info`, or `success`. Because Rune sets the workspace's socket in the
-  terminal's environment, `runectl` finds the right workspace automatically.
-
-That last one is what makes worktrees and external agents click together. Wire
-an agent's "I'm done" or "I need permission" hook to `runectl notify`, run it in
-its own worktree, and its workspace tab lights up the moment it needs you, even
-while you are working elsewhere. For a worked example with Claude Code, see the
-[Claude Code guide](../agent/claude-code.md#notify-rune-when-claude-is-done).
 
 ## See also
 

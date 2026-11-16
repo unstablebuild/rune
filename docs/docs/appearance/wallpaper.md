@@ -1,10 +1,10 @@
 ---
-sidebar_position: 46
+sidebar_position: 3
 ---
 
 # Wallpaper
 
-Rune shows a wallpaper in every [window](./layout-management.md#windows) that
+Rune shows a wallpaper in every [window](../learn/layout-management.md#windows) that
 has no tab to show. By default it is Rune's built-in logo, which plays an
 intro when Rune starts. You can replace it with ASCII or Unicode text that
 Rune renders directly, or give Rune a PNG image to show as a picture, up to the

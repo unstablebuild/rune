@@ -4,23 +4,13 @@ sidebar_position: 2
 
 # Rune Console
 
-The Rune console is a read-evaluate-print loop for Rune's built-in commands.
-These are the commands best run interactively: ones whose output is worth
-streaming line by line, that report progress as they work, or that update
-global Rune state. From a single prompt you install packages, sign in to
-model providers, manage local models, and drive the
-[debugger](./debugger.md).
+The Rune console is a read-evaluate-print loop to manage Rune's resources. From
+configuring model providers, installing packages, revoking permissions, to driving the
+[debugger](./debugger.md), Rune's console differs from Rune's command prompt in that it's
+designed for commands that are best run interactively.
 
-When you type a command that is not a Rune built-in, the console runs it as an
-ordinary command on your `PATH`, just like a regular terminal. That means you
-can pipe the output of a Rune built-in into the usual POSIX utilities to trim
-and filter it, exactly as you would in a normal shell.
-
-It is not a terminal emulator (those are separate, opened with
-`terminalnew`). The console is a durable tab with its own prompt: a small
-read-evaluate-print loop wired into the same machinery as Rune's
-[command prompt](./command-prompt.md), so every command you can run there is
-also available here, with output that scrolls above the prompt.
+It is not a terminal emulator (those are separate, opened with the `terminal*` family 
+of commands).
 
 ## Opening the console
 
@@ -33,17 +23,6 @@ console
 The first time you run it, Rune opens a durable **console** tab anchored at
 the current workspace's root. Running `console` again focuses the same tab,
 so there is one console per workspace.
-
-You can also run a single command without dropping into the prompt by
-passing it as arguments:
-
-```
-console pkg install rune-agent
-```
-
-This opens (or focuses) the console tab and submits the line for you. If a
-command is already running in that console, Rune interrupts it with
-`<ctrl-c>` first.
 
 There is no default key binding for `console`; bind one yourself if you use
 it often. For example, to mirror the companion terminal's
@@ -91,7 +70,7 @@ installed in the workspace, but the core commands are:
 | `logout` | Log out from the current session so you can login with a different account. |
 | `pkg <command> [<args>]` | Install and manage packages from Rune's official distribution. |
 | `models <command> [<args>]` | Inspect and manage LLM providers and local models. |
-| `search (<query...>\|status\|reindex)` | [Search the workspace's code](#searching-code-with-search) by meaning and by words, and inspect its search index. |
+| `search (<query...>\|status\|reindex)` | [Search the workspace's code](./search.md#search-with-natural-language) by meaning and by words, and inspect its search index. |
 | `agent <command> [<args>]` | Inspect and manage [Rune Agent](../agent/intro.md) models, chats, tools, skills, and configuration (available once the `rune-agent` package is installed). |
 | `debugger <subcommand> [...]` | Control a [debug session](./debugger.md) via the Debug Adapter Protocol. Start with `debugger initialize <langID>`, then `launch` or `attach`, then `configured`. |
 | `extensions (status\|info\|start\|stop\|restart\|logs) ...` | Manage workspace extensions. |
@@ -150,21 +129,6 @@ models providers openai add work    # store an OpenAI API key
 models providers codex login        # sign in to a ChatGPT subscription
 models local list                   # list locally cached models
 ```
-
-## Searching code with `search`
-
-The `search` command ranks the workspace's files by meaning and by words,
-best first. See [Workspace search](../agent/local-models.md#workspace-search)
-for what is indexed and how to turn on meaning search.
-
-| Command | What it does |
-| --- | --- |
-| `search <query...>` | List the best matches, each at its most relevant line. |
-| `search status` | Show the index: files by state, vectors and the model they were made with, and what the scan left out. |
-| `search reindex` | Rebuild the index from scratch. |
-
-To browse the matches with a preview instead, run
-[`searchsemantic`](./search.md#search-by-meaning) from the command prompt.
 
 ## Editing, history, and completion
 

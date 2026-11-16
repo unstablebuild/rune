@@ -4,34 +4,27 @@ sidebar_position: 1
 
 # Command Prompt
 
-One prompt drives the whole editor. If it isn't typing into a buffer,
-it's a command: open a file, split a window, run a build, jump to a
-definition. Each one is a single thing you can type, bind to a key, or
-chain into an alias.
+Rune's fuzzy searchable command prompt is how you articulate actions and drive your whole
+workflow. If it isn't typing into a buffer, it's a command: open a file, split a window,
+run a build, jump to a definition. Each one is a single thing you can type, bind to a key,
+or chain into an alias.
 
-The payoff is speed that compounds. The fuzzy finder reaches any
-command from the shortest sequence that singles it out, and commands
-are named in consistent themed groups, so those sequences are
-predictable and settle into muscle memory. You don't burn a key binding
-on every action; you learn one prompt and it keeps getting faster.
+The payoff is speed that compounds. The fuzzy finder reaches any command from the shortest
+sequence that singles it out, and commands are named in consistent themed groups, so those
+sequences are predictable and settle into muscle memory. You don't need to memorize a key
+binding for every action. Instead, you can learn the mechanics of Rune's command prompt
+once, and then you won't need to reach for your mouse ever again.
 
 This page covers how to open the prompt, how Rune parses what you type,
-how to drive the fuzzy finder, and how to fire shell commands at will.
+how to drive the fuzzy finder, and how to also fire shell commands.
 
 ## Open the command prompt
 
-The first-run key-binding preset chooses the activation key. For the preset
-selected at the top of this page, it is <CommandPromptKey />.
-
-Press that key from any editor or buffer and a one-line prompt opens at the
-bottom of the screen. Type the command name, then any arguments separated by
-spaces, then `<enter>`:
-
-```
-edit /etc/hosts
-split
-tabclose
-```
+The first time you run Rune, your selected preset will determine how you invoke the
+command prompt. You should match your selected preset with the selector at the top of this
+page, so all of the key bindings that we show are applicable to your favorite Rune preset.
+For example, with your current preset, Rune's command prompt is activated with
+<CommandPromptKey />.
 
 Press `<esc>` or `<ctrl-c>` to dismiss the prompt without running
 anything. Press `<tab>` while typing to complete the command name;

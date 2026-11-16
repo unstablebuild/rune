@@ -4,59 +4,19 @@ sidebar_position: 5
 
 # Layout Management
 
-Rune is a full virtualized tiling window manager, inspired by
-[i3](https://i3wm.org/). You split the screen into windows, fill them
-with content from tabs, group projects into workspaces, and dock
-background work as tasks. This guide builds that picture up one
-primitive at a time, and along the way you will see why the preset
-keybindings are the way they are. The bindings below follow the editor preset
-selected at the top of the page.
-
-On macOS, `<meta>` is the Command key. On Linux, first-run setup asks which key
-it is, and [`gui.meta_key`](./key-syntax.md#what-meta-means) changes it later.
-See the [key syntax](./key-syntax.md) reference for how modifiers are spelled.
-
-## The big idea
-
-Vim showed a generation of programmers how productive a small, spatial
-keyboard language can be. Directions stay under your fingers, combinations
-have consistent meanings, and repeated actions become muscle memory instead
-of trips through menus and interface controls.
-
-Rune's keybinding system brings that advantage to the entire workspace, not
-just the text editor, and you do not have to use modal editing to get it. Each
-preset starts with a directional vocabulary suited to its editor. The physical
-keys differ, but the grammar stays the same.
-
-The physical keys differ, but the grammar stays the same: direction plus
-target. A window binding affects windows, a tab binding affects tabs, and
-workspace digits select workspaces. Add `<shift>` to change "go to" into
-"move": move window content instead of changing focus, reorder a tab instead
-of switching tabs, or send content to a workspace instead of visiting it.
-
-That composability is the important feature. Once the relationships are in
-muscle memory, the same small set of ideas controls Rune's full virtualized
-tiling environment. Every layout action is also a
-[command](./command-prompt.md) you can type at the prompt or bind under
-`command.key_bindings`, so you can keep the grammar while changing any
-physical key.
+Rune implements a virtualized tiling window manager, inspired by [i3](https://i3wm.org/).
+This allows you to efficiently manage your layout as you see fit, instead of having to
+adapt to a fixed set of panes, limiting your ability to use the full width and height
+of the screen available.
 
 ## Windows
 
-A **window** is a tile on screen. A fresh workspace has one window
-filling the editor area; you split it to get more.
-
-Split the current window in two with `windownew`. With no argument it
-uses your default split orientation (see below); pass a direction to
-force one:
+Split the current window in two with `windownew`. With no argument it uses your default
+split orientation (see below); pass a direction to specify one:
 
 ```
 windownew right
 ```
-
-`terminalneworsplit` drops a terminal into the current window if it is empty,
-or splits off a new window with a terminal if it is not. Run it with
-<KeyBinding command="terminalneworsplit" />.
 
 Once you have more than one window, use the directional keys to focus across
 them:
@@ -95,6 +55,11 @@ other window with <KeyBinding command="windowcloseall" />.
 
 Toggle maximization of the focused window with
 <KeyBinding command="windowtogglemaximize" />.
+
+`terminalneworsplit` drops a terminal into the current window if it is empty,
+or splits off a new window with a terminal if it is not. Run it with
+<KeyBinding command="terminalneworsplit" />.
+
 
 ## Resizing windows
 

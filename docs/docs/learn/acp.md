@@ -8,12 +8,7 @@ Rune runs coding agents that speak the
 [Agent Client Protocol](https://agentclientprotocol.com) (ACP), such as
 Claude Code, Codex and Rune Agent itself, and chats with them in a tab.
 ACP is the protocol Zed, JetBrains IDEs and neovim use for the same
-purpose, so any agent written for one of them runs in Rune unchanged.
-
-The agent does its own work: it reads files, edits them and runs
-commands with its own tools, and asks you before it does something that
-needs your approval. Rune shows the conversation, its tool calls and its
-plan, and relays the questions.
+purpose, so any agent written for one of them runs in the IDE's UI.
 
 ## Configure agents
 
@@ -64,9 +59,11 @@ login and settings.
 The two examples above need Node.js for `npx`, and each agent signs in the
 way its own CLI does.
 
+:::tip
 Claude Code shows no reasoning unless its `CLAUDE_CODE_THINKING_DISPLAY`
 variable is `summarized`. The claude-code package sets it; add it to the
 agent's `env` when you configure Claude Code yourself.
+:::
 
 ## Chat with an agent
 
@@ -101,30 +98,6 @@ for your permission. The session then keeps running and shows in the
 name, as working or blocked, and as done once the turn ends. Choose it
 there, or run `acp open`, to bring its tab back; close it there to end it.
 Press `<tab>` to complete agent and session names.
-
-In the chat, type a message and press `<enter>` to send it. Attached files
-are sent to the agent as links. While the agent works, `<ctrl-c>` stops
-the turn. When the agent asks for permission, the chat shows its options;
-dismissing the question rejects the request once.
-
-The chat looks and edits like the Rune Agent chat. It reads the same
-`extensions.rune-agent.config` keys: those under
-[Appearance](../agent/config.md#appearance), the
-[status bar](../agent/config.md#status-bar) and `editor_modal_start_insert`.
-Its message box edits like your `editor.mode`. Reloading the config
-restyles the status bar and the message box border of open chats, as it
-does for Rune Agent's.
-
-Each tool call shows the tool's name and its arguments, as Rune Agent's
-chat does. ACP itself does not name tools, so the name comes from what
-Rune Agent and Claude Code add to their tool calls. Other agents' calls
-show their kind, such as `read` or `execute`, followed by the agent's
-title for the call.
-
-When the agent hands work to a subagent, as Claude does with its Agent
-tool, the chat shows the subagent as a single tool call: what it was asked,
-the tools it runs nested inside, and its report as the result. A
-permission request from a subagent names the subagent that asks.
 
 ### Chat commands
 
@@ -171,7 +144,7 @@ run in a terminal. Only configure agents you trust.
 Rune does not read or write files, or run commands, on an agent's behalf:
 it offers agents none of ACP's file system or terminal capabilities.
 When an agent calls back into Rune, it is authorized as a plugin: Rune asks
-before it runs workspace commands, and grants its other access
+before it runs workspace commands, and grants access to Rune's capabilities
 automatically unless you set `authorizer.auto_authorize_extensions` to
 `false` (see [Too many permission prompts?](../agent/config.md#too-many-permission-prompts)).
 
@@ -244,6 +217,3 @@ Standard output carries the protocol, so log to standard error.
 it as the agent works, call `Ask` to request a permission and wait for the
 answer, and `Done` to end the turn. Since the program speaks plain ACP, it
 also runs in every other ACP client. `rune-agent acp` is built this way.
-
-`acpstdio.Dial` is the other side: it starts talking to an agent over any
-pair of streams and returns an `acpapi.Agent` for it.

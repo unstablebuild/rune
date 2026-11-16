@@ -40,22 +40,13 @@ the code.
 
 ## Joining the network
 
-Rune joins on startup, so usually there is nothing to do. Check where
-this machine stands with `network status` in the console:
+Rune joins on startup, when you're logged in, so usually there is nothing to do. Check
+where this machine stands with `network status` in the console. Otherwise,
+you can connect with:
 
 ```
-network status
+network up
 ```
-
-It reports the name this machine is known by, its state (`Running` once
-it has joined), its addresses on the network, the account it belongs to,
-and the last error if it could not join. While a sign-in is pending it
-prints a URL to open in a browser to authorize the machine.
-
-To join without restarting, or after a `network down`, run `network up`.
-It waits until the machine is a member and then prints the status. If
-joining takes longer than 30 seconds, Rune tells you so and keeps trying
-in the background; run `network status` to see how it went.
 
 ### The `network` command
 
@@ -73,20 +64,6 @@ run it as `network <subcommand>`, or submit a one-off from the
 | `network up` | Join the network and wait until this machine is a member. |
 | `network down` | Leave the network. Open `rune://` workspaces stop working until you run `network up` again. |
 | `network help` | Show the command's usage. |
-
-## How many machines you can have
-
-Each machine registered to Rune Network is a node. The limits are:
-
-| Plan | Network nodes |
-| --- | --- |
-| Free | Up to 2 |
-| Rune Pro | Up to 10 |
-| Enterprise | Unlimited |
-
-Rune Pro also includes premium support. Enterprise includes the option to
-run Rune's networking stack on-prem. See the [pricing page](https://rune.build/pricing)
-for the current plan details.
 
 When your account reaches its limit, another machine cannot join until
 you remove one or upgrade. `network machines` shows what is registered
@@ -175,13 +152,6 @@ workspaceopen rune://
 Pick a machine and completion moves on to its directories, which Rune
 asks that machine for as you type, one level at a time.
 
-Once you have typed `rune://`, the list only ever shows what the network
-reports. Unlike other `workspaceopen` completion, it does not offer
-workspaces you opened before, since those machines may be offline now or
-the paths may never have existed. An empty list after `rune://` means no
-other machine is online. Check `network status` on this machine and
-`network peers` for the state of the others.
-
 ### Checking the connection to a machine
 
 `network ping` shows how this machine reaches another one:
@@ -203,47 +173,17 @@ machines keep looking for a direct path, so the first pings are often
 relayed. `network ping` stops at the first direct reply, or after 10
 pings. Press `Tab` after `network ping` to complete the machine name.
 
-### Installing packages on another machine
-
-Language servers, debuggers, and build tools run on the machine that
-holds the code, so a `rune://` workspace uses the packages installed on
-that machine. When it needs one the machine does not have yet, Rune asks
-you in your own window, naming the machine:
-
-> Do you want to install package **"go"** on **carbon**?
-
-**Yes** installs it on `carbon`, built for that machine's operating
-system and architecture, and shows the download progress in your
-window. In a `rune://` workspace, `pkg install` and the other `pkg`
-commands act on that machine too, so running `pkg install go` from the
-workspace's [console](./console.md) sets it up ahead of time.
-If a package would replace a setting in that machine's Rune
-configuration, such as a `GOROOT` you set there, Rune asks you in your
-window before changing it, never whoever is at that machine.
-
-A machine that runs the editor keeps these packages with its own: a
-package you install on it from your laptop is also there for the editor
-on that machine. If the machine runs a version of Rune that cannot
-install packages, Rune asks you to update Rune there.
-
-## Running a machine without the editor
-
-A build box or a server has code you want to open from your laptop, but
-nobody sits in front of it. `rune --headless` puts such a machine on the
-network with no editor at all: no window, no terminal UI, just the node
-and the workspace server its peers connect to.
+## Connecting to a server with no display
 
 ```bash
 rune --headless
 ```
 
-:::tip[Keep it running]
 A machine serves its workspaces only while `rune --headless` runs. To
 start it at boot and keep it up, install it as a service: the
 [Headless](./headless.md) guide has recipes for systemd, launchd, OpenRC,
 and runit. On a host with Docker there is nothing to install: the
 [`unstablebuild/rune` image](./headless.md#docker) is a ready-made node.
-:::
 
 It needs no display and no graphical libraries, so it runs on a minimal
 server install or inside a container. Everything the editor would show
@@ -265,33 +205,6 @@ Open that page on any machine, laptop or phone, enter the code, and
 Rune signs in as soon as you approve it. Nothing needs to reach the
 machine running Rune: it only polls out, so no port forward or SSH
 tunnel is involved.
-
-The sign-in is cached in the data directory, so later runs go straight
-to joining and print the node's name, state, and addresses. From then on
-the machine shows up in `network peers` on your other machines and
-`workspaceopen rune://<machine>/path` works against it.
-
-A headless node serves the network and nothing else, so it needs
-`network.auto_join` left on: with it off there is no console to run
-`network up` in, and Rune says so and exits.
-
-### Headless machines only serve
-
-A headless machine accepts connections from your other machines and
-opens none of its own. Your laptop can open `rune://buildbox/...`, but
-nothing on `buildbox` can reach your laptop, another headless machine, or
-any machine on another account. A server is the machine most likely to be
-exposed, so taking it over gives an attacker no way into the rest of
-your network or your account: its sign-in can only ever renew into
-another serve-only one, and copying its disk yields a machine that is
-still serve-only.
-
-`network machines` marks these machines:
-
-| machine | state | last seen |
-| --- | --- | --- |
-| carbon (this machine) | online | 2026-03-01 12:04 |
-| buildbox (serve-only) | online | 2026-03-01 12:03 |
 
 ## Configuration
 
@@ -325,10 +238,9 @@ exact name to put in a `rune://` URL.
 
 ## How it works
 
-Rune embeds a userspace [WireGuard](https://www.wireguard.com/) node in
-its own process. There is no daemon to install, nothing runs as root,
-and the rest of your system's traffic is untouched: only Rune uses the
-network.
+Rune embeds a [Tailscale](https://tailscale.com) node in its own process. There is no
+daemon to install, nothing runs as root, and the rest of your system's traffic is
+untouched: only Rune uses the network.
 
 When a machine joins, Rune's coordination server checks your account,
 hands the machine short-lived credentials, and tells your machines about
@@ -341,10 +253,6 @@ Each machine serves its workspaces on port 7473 of its network address
 only. Every request carries the identity of the machine behind it, and
 Rune refuses any whose owning account is not yours, so sharing a network
 is never enough to read a machine's files or run commands on it.
-
-A machine's network identity is stored in your Rune data directory,
-under `~/.rune/runenet`. `network down` leaves the network but keeps that
-identity, so `network up` rejoins without a new sign-in.
 
 ## `rune://` and `ssh://`
 
