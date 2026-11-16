@@ -8,4 +8,5 @@ fi
 if [ -r "$__rune_shellrc/env.sh" ]; then
 	. "$__rune_shellrc/env.sh"
 fi
+. "$__rune_shellrc/marks.bash"
 unset __rune_shellrc

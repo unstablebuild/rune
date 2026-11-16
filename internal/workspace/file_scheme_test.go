@@ -937,7 +937,8 @@ func TestReadFileClosesFile(t *testing.T) {
 }
 
 func TestFileSchemeWithShellRC(t *testing.T) {
-	fishInit := []string{"-C", "test -r '/rune/shellrc/env.fish'; and source '/rune/shellrc/env.fish'; " + fishBindings}
+	fishInit := []string{"-C", "test -r '/rune/shellrc/env.fish'; and source '/rune/shellrc/env.fish'; " +
+		fishBindings + "; " + fishMarks}
 	inputrc := []string{"INPUTRC=/rune/shellrc/inputrc"}
 	profile := []string{"--init-file", "/rune/shellrc/bash_profile"}
 	rcfile := []string{"--rcfile", "/rune/shellrc/bashrc"}
@@ -1021,7 +1022,7 @@ func TestFileSchemeWithShellRC(t *testing.T) {
 			// fish's bindings don't come from the directory
 			name: "fish without a directory",
 			cmd:  workspaceapi.Cmd{Path: "fish"},
-			want: workspaceapi.Cmd{Path: "fish", Args: []string{"-C", fishBindings}},
+			want: workspaceapi.Cmd{Path: "fish", Args: []string{"-C", fishBindings + "; " + fishMarks}},
 		},
 		{
 			name: "zsh without a directory",

@@ -113,8 +113,8 @@ its width, growing and shrinking downwards as the preview changes size.
 | `k` / `<up>` / `<ctrl-k>` / `<ctrl-p>` | Previous program |
 | Click | Select a program |
 | Mouse wheel over the sidebar | Scroll the programs |
-| `<enter>` | Switch to the program's workspace and show it |
-| `<delete>` / `<backspace>` | Close the program as `tabclose` would: a tab or window is closed, a task stopped, an ACP session ended, and the companion terminal hidden. A `working` or `blocked` program, or a file with unwritten changes, asks first |
+| `<enter>` | Switch to the program's workspace and show it. A [detached terminal](./detached-terminals.md) opens in a new tab |
+| `<delete>` / `<backspace>` | Close the program as `tabclose` would: a tab or window is closed, a task stopped, an ACP session or a detached terminal ended, and the companion terminal hidden. A `working` or `blocked` program, or a file with unwritten changes, asks first |
 | `<esc>` / `q` / `<ctrl-c>` | Close the inbox |
 
 Tabs that never reported a status are not listed, and the inbox is not bound
@@ -122,9 +122,9 @@ to a key by default. Bind it like any other command under
 `command.key_bindings`.
 
 :::tip
-Rune does not install shell integration. If your shell does not mark its
-prompts with OSC 133, a program that dies without reporting again leaves its
-`working` or `blocked` record until the terminal closes. Run
+zsh, fish, and bash 4.4 or later mark their prompts with OSC 133 in Rune's
+terminals. If your shell does not, a program that dies without reporting
+again leaves its `working` or `blocked` record until the terminal closes. Run
 `runectl status clear` to remove it, or start the program under
 `runectl status wrap`, which always reports how the command ended.
 :::

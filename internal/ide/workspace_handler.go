@@ -108,7 +108,7 @@ import (
 	"unstable.build/rune/internal/llm/llmsearch"
 	"unstable.build/rune/internal/localstorage"
 	"unstable.build/rune/internal/term/programstatus"
-	"unstable.build/rune/internal/term/vte/vtereservoir"
+	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/emacs"
 	"unstable.build/rune/internal/text/exoeditor"
@@ -933,6 +933,27 @@ func (h *workspaceManagerHandler) init(
 	return nil
 }
 
+// runningDetachedTerminals tells then, on the event loop, how many
+// terminals of every workspace no tab shows and run a program, which
+// exiting ends.
+func (h *workspaceManagerHandler) runningDetachedTerminals(then func(int)) {
+	exes := []*ex{h.empty}
+	for _, hm := range h.workspaces {
+		if hm != nil {
+			exes = append(exes, hm.ex)
+		}
+	}
+	left, n := len(exes), 0
+	for _, e := range exes {
+		e.terminals.runningDetached(func(running int) {
+			n += running
+			if left--; left == 0 {
+				then(n)
+			}
+		})
+	}
+}
+
 func (h *workspaceManagerHandler) focusHandler() tui.Handler {
 	if handler := h.workspaces[h.focus]; handler != nil {
 		return handler
@@ -1396,7 +1417,9 @@ func (h *workspaceManagerHandler) Handle(ev term.Event) (exit, handled bool) {
 	if !h.exitPromptOpen {
 		hasDirtyFilesOpen := h.state.DirtyFilesOpen()
 		h.exitPromptOpen = true
-		h.openConfirmExitPrompt(exHandler, hasDirtyFilesOpen)
+		h.runningDetachedTerminals(func(n int) {
+			h.openConfirmExitPrompt(exHandler, hasDirtyFilesOpen, n)
+		})
 		h.shaderRunner.runShutdownShader()
 	}
 
@@ -4206,9 +4229,10 @@ const statusMinWidthPercent = 60
 
 // focusStatusEntry switches to the workspace at ws and shows the tab at
 // uri in the focused window, or focuses the window already showing it.
-// For what is no tab, it focuses the task or the window showing it, or
-// shows the hidden companion terminal, or opens it again in a tab when
-// an extension opens uri. It fails when the workspace or the tab is gone.
+// For what is no tab, it focuses the task or the window showing it,
+// shows the hidden companion terminal, attaches a detached terminal in
+// a new tab, or opens it again in a tab when an extension opens uri. It
+// fails when the workspace or the tab is gone.
 func (h *workspaceManagerHandler) focusStatusEntry(ws, uri workspaceapi.URI) error {
 	slot, _, ok := statusWorkspaces{h}.Workspace(ws)
 	if !ok {
@@ -4379,6 +4403,11 @@ func (s statusWorkspaces) Preview(ws, uri workspaceapi.URI) (idestatus.Preview, 
 	if v, ok := hiddenCompanionTerminal(e, uri); ok {
 		return idestatus.Preview{Content: v, Fit: v.Resize, Hidden: true}, true
 	}
+	if info, ok := e.terminals.detached(uri); ok {
+		if v, err := e.terminals.previewOf(info.ID); err == nil {
+			return idestatus.Preview{Content: v, Fit: v.Resize, Hidden: true}, true
+		}
+	}
 	return idestatus.Preview{}, false
 }
 
@@ -4400,6 +4429,10 @@ func focusStatusSource(e *ex, uri workspaceapi.URI) error {
 		// for open and closed again.
 		e.companionTerminalWin = nil
 		return e.toggleCompanionTerminal()
+	}
+	if info, ok := e.terminals.detached(uri); ok {
+		e.terminals.closePreview()
+		return e.attachTerminalTab(info, e.invokeWindow())
 	}
 	if e.acpChats != nil {
 		if ok, err := e.acpChats.ShowStatus(uri); ok {
@@ -4425,7 +4458,7 @@ func statusTaskOf(e *ex, uri workspaceapi.URI) (*idetask.Task, bool) {
 
 // hiddenCompanionTerminal returns the companion terminal of e when it
 // reports its statuses under uri while its window is closed.
-func hiddenCompanionTerminal(e *ex, uri workspaceapi.URI) (vtereservoir.VTE, bool) {
+func hiddenCompanionTerminal(e *ex, uri workspaceapi.URI) (vte.View, bool) {
 	v := e.companionTerminal
 	if v == nil || (e.companionTerminalWin != nil && !e.companionTerminalWin.Closed()) ||
 		!v.URI().Equal(uri) {
@@ -4564,9 +4597,10 @@ func (s statusWorkspaces) Close(ws, uri workspaceapi.URI) {
 
 // closeStatusSource closes what reported at uri in the workspace at ws
 // the way the user closes it by hand: a tab as its close icon does, a
-// task as taskstop does, the companion terminal by hiding it, a window
-// of a tile as tabclose does, and any other floating window, such as a
-// "!" command or a prompt, by closing it.
+// task as taskstop does, the companion terminal by hiding it, a
+// detached terminal as terminalclose does, a window of a tile as
+// tabclose does, and any other floating window, such as a "!" command
+// or a prompt, by closing it.
 func (h *workspaceManagerHandler) closeStatusSource(ws, uri workspaceapi.URI) error {
 	e := h.exForWorkspace(ws)
 	if e == nil {
@@ -4587,6 +4621,28 @@ func (h *workspaceManagerHandler) closeStatusSource(ws, uri workspaceapi.URI) er
 		return e.tasks.StopTask(t.Name)
 	}
 	if _, ok := hiddenCompanionTerminal(e, uri); ok {
+		return nil
+	}
+	if info, ok := e.terminals.detached(uri); ok {
+		closeTerminal := func() {
+			if err := e.terminals.remove(info.ID); err != nil {
+				_, _ = e.notifications.Notify(browserapi.LevelError, "close terminal: %v", err)
+			}
+		}
+		// The inbox already asked before closing what reads working or
+		// blocked.
+		sum, _ := h.status.Status(ws, uri)
+		if sum.State == programstatus.Working || sum.State == programstatus.Blocked {
+			closeTerminal()
+			return nil
+		}
+		e.terminals.liveness(info.ID, func(l vte.Liveness) {
+			if warning := terminalCloseWarning(info, 0, l); warning != "" {
+				statusWorkspaces{h}.Confirm(warning, closeTerminal)
+				return
+			}
+			closeTerminal()
+		})
 		return nil
 	}
 	if e.acpChats != nil {

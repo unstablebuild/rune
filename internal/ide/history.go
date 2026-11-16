@@ -18,16 +18,18 @@ package ide
 
 import (
 	"fmt"
+	"net/url"
 
 	"github.com/ernestrc/go-multierror"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"unstable.build/rune/internal/browser"
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/ide/idehistory"
 	"unstable.build/rune/internal/ide/idestatus"
 	"unstable.build/rune/internal/ide/idetask"
-	"unstable.build/rune/internal/term/vte/vtereservoir"
+	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -51,13 +53,14 @@ func (s exSnapshotter) Name() string {
 }
 
 // Terminals snapshots every open terminal in the ex into
-// idehistory.TerminalSession records.
+// idehistory.TerminalSession records. A detached terminal comes back as
+// a hidden tab: terminals end with Rune, so only their output can.
 func (s exSnapshotter) Terminals() []idehistory.TerminalSession {
 	e := s.ex
 	tabs, terminals := openTerminalSessionWindowsForState(e)
 	var ret []idehistory.TerminalSession
 	for _, tab := range e.comp.Tabs() {
-		terminal, ok := tab.Handler().(vtereservoir.VTE)
+		terminal, ok := tab.Handler().(vte.View)
 		if !ok {
 			continue
 		}
@@ -96,6 +99,9 @@ func (s exSnapshotter) Terminals() []idehistory.TerminalSession {
 			Focus:    win.window.focus,
 			WindowID: win.window.windowID,
 		})
+	}
+	for _, snap := range e.terminals.detachedSnapshots() {
+		ret = append(ret, idehistory.TerminalSession{Snapshot: snap, Tab: true})
 	}
 	return ret
 }
@@ -197,7 +203,7 @@ type openTerminalWindow struct {
 }
 
 type openTerminalWindowTerminal struct {
-	terminal vtereservoir.VTE
+	terminal vte.View
 	window   openTerminalWindow
 }
 
@@ -221,13 +227,13 @@ func openTerminalSessionWindowsForState(e *ex) (
 			windowID: win.WindowID(),
 		}
 		if tab, ok := content.(*browser.Tab); ok {
-			if _, ok := tab.Handler().(vtereservoir.VTE); ok {
+			if _, ok := tab.Handler().(vte.View); ok {
 				window.tab = true
 				tabs[tab] = window
 			}
 			return
 		}
-		terminal, ok := content.(vtereservoir.VTE)
+		terminal, ok := content.(vte.View)
 		if !ok {
 			return
 		}
@@ -242,7 +248,7 @@ func openTerminalSessionWindowsForState(e *ex) (
 func openTerminalSessionTitle(
 	e *ex,
 	tab *browser.Tab,
-	terminal vtereservoir.VTE,
+	terminal vte.View,
 	fallback string,
 ) string {
 	if tab != nil {
@@ -383,9 +389,13 @@ func restoreOpenTerminalSessionSequential(
 func newTerminalSessionContentFromState(
 	e *ex, doc idehistory.TerminalSession,
 ) (browserapi.Handler, error) {
-	h, err := e.newTerminalSessionHandler(doc.Name, doc.Snapshot)
+	h, err := e.newEmulatorHandler(nil)
 	if err != nil {
 		return nil, err
+	}
+	if err := h.RestoreFromSnapshot(doc.Snapshot); err != nil {
+		_ = h.Close()
+		return nil, fmt.Errorf("restore terminal session %q: %w", doc.Name, err)
 	}
 	if !doc.Tab {
 		return h, nil
@@ -398,7 +408,7 @@ func newTerminalSessionContentFromState(
 }
 
 func newTerminalSessionTabFromState(
-	e *ex, doc idehistory.TerminalSession, h vtereservoir.VTE,
+	e *ex, doc idehistory.TerminalSession, h vte.View,
 ) (*browser.Tab, error) {
 	uri, err := terminalSessionURI(doc.Name)
 	if err != nil {
@@ -415,10 +425,14 @@ func newTerminalSessionTabFromState(
 	}
 	// Route dynamic title updates issued under the handler's own URI
 	// to this session-keyed tab.
-	e.tabAliases.addAlias(h.URI(), uri)
+	e.terminals.aliasTab(h.URI(), uri)
 	tab := t.(*browser.Tab)
 	tab.Subscribe((*tabSubscriber)(e))
 	return tab, nil
+}
+
+func terminalSessionURI(name string) (workspaceapi.URI, error) {
+	return workspaceapi.ParseURI("terminalsession:///" + url.PathEscape(name))
 }
 
 // restoreOpenTaskSessions restores tasks from state into the given ex.

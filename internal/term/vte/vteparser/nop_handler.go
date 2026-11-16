@@ -311,7 +311,7 @@ func (h nopHandler) ProgramStatusQuery(terminator string) {
 
 }
 
-func (h nopHandler) PromptStart() {
+func (h nopHandler) ShellMark(mark ShellMark) {
 
 }
 

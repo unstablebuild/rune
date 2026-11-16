@@ -30,7 +30,7 @@ type programStatusHandler struct {
 	nopHandler
 	reports []programstatus.Report
 	queries []string
-	prompts int
+	marks   []ShellMark
 }
 
 func (h *programStatusHandler) ProgramStatus(r programstatus.Report) {
@@ -41,7 +41,7 @@ func (h *programStatusHandler) ProgramStatusQuery(terminator string) {
 	h.queries = append(h.queries, terminator)
 }
 
-func (h *programStatusHandler) PromptStart() { h.prompts++ }
+func (h *programStatusHandler) ShellMark(mark ShellMark) { h.marks = append(h.marks, mark) }
 
 type pointerShapeHandler struct {
 	nopHandler
@@ -158,7 +158,7 @@ func TestOSCDispatchProgramStatus(t *testing.T) {
 		stream      string
 		wantReports []programstatus.Report
 		wantQueries []string
-		wantPrompts int
+		wantMarks   []ShellMark
 	}{
 		// --- states and terminators ---
 		{
@@ -1042,19 +1042,32 @@ func TestOSCDispatchProgramStatus(t *testing.T) {
 
 		// --- shell integration ---
 		{
-			name:        "prompt start",
-			stream:      "\x1b]133;A" + st + "\x1b]133;A;special_key=1" + bel,
-			wantPrompts: 2,
+			name:      "prompt start",
+			stream:    "\x1b]133;A" + st + "\x1b]133;A;special_key=1" + bel,
+			wantMarks: []ShellMark{ShellMarkPromptStart, ShellMarkPromptStart},
 		},
 		{
-			name:   "other shell integration marks ignored",
-			stream: "\x1b]133;B" + st + "\x1b]133;C" + st + "\x1b]133;D;0" + st + "\x1b]133" + st + "\x1b]133;" + st + "\x1b]133;a" + st,
+			name:      "new command and prompt variants start a prompt",
+			stream:    "\x1b]133;N" + st + "\x1b]133;P;k=s" + bel,
+			wantMarks: []ShellMark{ShellMarkPromptStart, ShellMarkPromptStart},
+		},
+		{
+			name:   "prompt end, command start and command end",
+			stream: "\x1b]133;B" + st + "\x1b]133;C" + st + "\x1b]133;D;0" + st + "\x1b]133;D" + bel,
+			wantMarks: []ShellMark{
+				ShellMarkPromptEnd, ShellMarkCommandStart,
+				ShellMarkCommandEnd, ShellMarkCommandEnd,
+			},
+		},
+		{
+			name:   "malformed shell integration marks ignored",
+			stream: "\x1b]133" + st + "\x1b]133;" + st + "\x1b]133;a" + st + "\x1b]133;c" + st + "\x1b]133;Z" + st,
 		},
 		{
 			name:        "prompt start between reports",
 			stream:      osc("state=done") + "\x1b]133;A" + bel + osc("state=working"),
 			wantReports: []programstatus.Report{rep(programstatus.Done), working},
-			wantPrompts: 1,
+			wantMarks:   []ShellMark{ShellMarkPromptStart},
 		},
 	}
 	feeds := []struct {
@@ -1079,7 +1092,7 @@ func TestOSCDispatchProgramStatus(t *testing.T) {
 					feed.feed(p, tc.stream)
 					assert.Equal(t, tc.wantReports, h.reports)
 					assert.Equal(t, tc.wantQueries, h.queries)
-					assert.Equal(t, tc.wantPrompts, h.prompts)
+					assert.Equal(t, tc.wantMarks, h.marks)
 				})
 			}
 		})

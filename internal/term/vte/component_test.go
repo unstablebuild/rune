@@ -1213,6 +1213,93 @@ func ptyOutput(pty *workspacetest.File) string {
 	return sb.String()
 }
 
+func TestComponentShellMark(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		desc   string
+		output string
+		want   vteparser.ShellMark
+	}{
+		{desc: "a program that sent no mark has none"},
+		{desc: "a shell without integration has none", output: "$ ls\r\n"},
+		{desc: "a prompt starts", output: "\x1b]133;A\x07$ ",
+			want: vteparser.ShellMarkPromptStart},
+		{desc: "a new command's prompt starts a prompt", output: "\x1b]133;N\x07",
+			want: vteparser.ShellMarkPromptStart},
+		{desc: "a continuation prompt starts a prompt", output: "\x1b]133;P;k=s\x07",
+			want: vteparser.ShellMarkPromptStart},
+		{desc: "a prompt ends", output: "\x1b]133;A\x07$ \x1b]133;B\x07",
+			want: vteparser.ShellMarkPromptEnd},
+		{desc: "a command's output starts", output: "\x1b]133;B\x07ls\r\n\x1b]133;C\x07",
+			want: vteparser.ShellMarkCommandStart},
+		{desc: "the command's output keeps its mark", output: "\x1b]133;C\x07a\r\nb\r\n",
+			want: vteparser.ShellMarkCommandStart},
+		{desc: "a command ends", output: "\x1b]133;C\x07done\r\n\x1b]133;D;0\x07",
+			want: vteparser.ShellMarkCommandEnd},
+		{desc: "the last mark is kept", output: "\x1b]133;C\x07\x1b]133;D;1\x07\x1b]133;A\x07",
+			want: vteparser.ShellMarkPromptStart},
+		{desc: "a mark ended by ST is read", output: "\x1b]133;C\x1b\\",
+			want: vteparser.ShellMarkCommandStart},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+			comp, err := NewComponent(&testExecutor{}, &testExecutor{},
+				&mockTabManager{}, DefaultConfig())
+			require.NoError(t, err)
+			require.NoError(t, comp.Resize(10, 3))
+			comp.parser.AdvanceBytes([]byte(tc.output))
+			assert.Equal(t, tc.want, comp.ShellMark())
+		})
+	}
+}
+
+func TestComponentForegroundProcessGroup(t *testing.T) {
+	t.Parallel()
+	errHost := errors.New("host unreachable")
+	cases := []struct {
+		desc string
+		// answer is what the host of the pty tells.
+		pgrp    int
+		err     error
+		closed  bool
+		want    int
+		wantErr error
+		// wantAsked is whether the host was asked.
+		wantAsked bool
+	}{
+		{desc: "the host tells", pgrp: 77, want: 77, wantAsked: true},
+		{desc: "a host that cannot tell fails", err: errors.ErrUnsupported,
+			wantErr: errors.ErrUnsupported, wantAsked: true},
+		{desc: "the host's failure is passed on", err: errHost, wantErr: errHost, wantAsked: true},
+		{desc: "a closed terminal asks nothing", pgrp: 77, closed: true, wantErr: os.ErrClosed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+			var asked []workspaceapi.Pty
+			shell := &pidExecutor{startedPid: 4242, foreground: func(p workspaceapi.Pty) (int, error) {
+				asked = append(asked, p)
+				return tc.pgrp, tc.err
+			}}
+			comp, err := NewComponent(shell, shell, &mockTabManager{}, DefaultConfig())
+			require.NoError(t, err)
+			pty := comp.pty
+			if tc.closed {
+				require.NoError(t, comp.Close())
+			}
+			got, err := comp.ForegroundProcessGroup()
+			require.ErrorIs(t, err, tc.wantErr)
+			assert.Equal(t, tc.want, got)
+			if !tc.wantAsked {
+				assert.Empty(t, asked)
+				return
+			}
+			assert.Equal(t, []workspaceapi.Pty{pty}, asked, "the host is asked of the terminal's own pty")
+		})
+	}
+}
+
 // liveDraw is what Draw paints when no synchronized update holds it.
 func liveDraw(comp *Component) string {
 	w := term.NewStringWriter(comp.width, comp.height)
@@ -1881,12 +1968,21 @@ func TestComponentRestoreFromSnapshotCursorWithScrollback(t *testing.T) {
 type pidExecutor struct {
 	testExecutor
 	startedPid workspaceapi.Pid
+	// foreground answers ForegroundProcessGroup; nil cannot tell.
+	foreground func(workspaceapi.Pty) (int, error)
 }
 
 func (e *pidExecutor) StartCommand(
 	context.Context, workspaceapi.Cmd,
 ) (workspaceapi.Pid, error) {
 	return e.startedPid, nil
+}
+
+func (e *pidExecutor) ForegroundProcessGroup(p workspaceapi.Pty) (int, error) {
+	if e.foreground == nil {
+		return 0, errors.ErrUnsupported
+	}
+	return e.foreground(p)
 }
 
 func (*pidExecutor) LookPath(context.Context, string, string) (string, error) {

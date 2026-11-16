@@ -117,6 +117,9 @@ type parserHandler struct {
 	// ResetState, which clears what was reported.
 	statusReported bool
 
+	// shellMark is the last OSC 133 mark the shell sent, zero for none.
+	shellMark vteparser.ShellMark
+
 	// clusterBuf is reused scratch for the mergeContinuation probe.
 	clusterBuf []byte
 	// glyphBuf is reused scratch for the batched non-ASCII write.
@@ -2263,12 +2266,15 @@ func (t *parserHandler) ProgramStatusQuery(terminator string) {
 	}
 }
 
-// PromptStart satisfies vteparser.Handler. A new prompt means the
+// ShellMark satisfies vteparser.Handler. A new prompt means the
 // program that reported working or blocked is gone.
-func (t *parserHandler) PromptStart() {
+func (t *parserHandler) ShellMark(mark vteparser.ShellMark) {
 	t.sync.mu.Lock()
 	defer t.sync.mu.Unlock()
-	t.endStatus()
+	t.shellMark = mark
+	if mark == vteparser.ShellMarkPromptStart {
+		t.endStatus()
+	}
 }
 
 // SetPointerShape satisfies vteparser.Handler.

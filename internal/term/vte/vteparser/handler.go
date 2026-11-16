@@ -263,8 +263,9 @@ type Handler interface {
 	// the query back with the given terminator (BEL or ST).
 	ProgramStatusQuery(terminator string)
 
-	// PromptStart marks the beginning of a shell prompt (OSC 133 A).
-	PromptStart()
+	// ShellMark marks the start or the end of a shell prompt, or of
+	// the command typed at it (OSC 133).
+	ShellMark(mark ShellMark)
 
 	// SetPointerShape replaces the shape on top of the OSC 22 pointer
 	// shape stack, pushing it onto an empty one. The empty shape lets the

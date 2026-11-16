@@ -36,7 +36,7 @@ import (
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/sounds"
-	"unstable.build/rune/internal/term/vte/vtereservoir"
+	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/text"
 )
 
@@ -296,7 +296,7 @@ command:
 				if cerr != nil {
 					return
 				}
-				v, isVTE := content.(vtereservoir.VTE)
+				v, isVTE := content.(vte.View)
 				if !isVTE {
 					return
 				}

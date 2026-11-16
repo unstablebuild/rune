@@ -97,7 +97,7 @@ import (
 	"unstable.build/rune/internal/localstorage"
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/programstatus"
-	"unstable.build/rune/internal/term/vte/vtereservoir"
+	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/textrpc"
 	"unstable.build/rune/internal/workspace"
@@ -2220,6 +2220,82 @@ func TestCommandProgramStatusPreviewsDetachedPrograms(t *testing.T) {
 	assert.False(t, preview.Hidden, "shown, it is previewed in its window")
 }
 
+func TestCommandProgramStatusDetachedTerminals(t *testing.T) {
+	const job = 99
+	ctx := context.Background()
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	var (
+		w   *workspaceHandler
+		e   *ex
+		exe *fgPtyExecutor
+		av  *asyncVTE
+	)
+	m.locked(func() {
+		w = m.workspaces[slot]
+		e = w.ex
+		e.Resize(60, 30)
+		exe = useTestVTEs(t, e)
+		require.NoError(t, e.terminalnewtab(ctx))
+	})
+	m.quiesce()
+	p := <-exe.Started()
+	m.locked(func() {
+		h, ok := e.terminalInFocus()
+		require.True(t, ok)
+		av = h.(*asyncVTE)
+		exe.fg.Store(job)
+		require.NoError(t, e.closeWindowContent(e.invokeWindow()))
+	})
+	m.quiesce()
+	uri := av.real.URI()
+	attachments := func() int {
+		info, ok := e.terminals.info(av.ID())
+		if !ok {
+			return -1
+		}
+		return info.Attachments
+	}
+	// The registry watches a detached terminal off the event loop.
+	require.Eventually(t, func() bool {
+		m.quiesce()
+		var ok bool
+		m.locked(func() { _, ok = m.status.Status(w.uri, uri) })
+		return ok
+	}, 5*time.Second, 5*time.Millisecond)
+	m.locked(func() {
+		sum, ok := m.status.Status(w.uri, uri)
+		require.True(t, ok, "closing the tab of a job lists the terminal")
+		assert.Equal(t, programstatus.Working, sum.State)
+		preview, ok := statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, uri)
+		require.True(t, ok, "a detached terminal is previewed")
+		assert.True(t, preview.Hidden, "the inbox sizes what is shown nowhere")
+		again, _ := statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, uri)
+		assert.Same(t, preview.Content, again.Content, "every draw previews the same view")
+		assert.Equal(t, 0, attachments(), "previewing leaves it detached")
+
+		require.NoError(t, m.focusStatusEntry(w.uri, uri))
+	})
+	m.quiesce()
+	m.locked(func() {
+		assert.Equal(t, 1, attachments(), "choosing it attaches it")
+		h, ok := e.terminalInFocus()
+		require.True(t, ok)
+		assert.Equal(t, av.ID(), h.ID())
+		_, ok = m.status.Status(w.uri, uri)
+		assert.False(t, ok, "a terminal in a tab is listed as the tab")
+
+		exe.fg.Store(int64(p.Pid))
+		require.NoError(t, e.terminaldetach(ctx))
+	})
+	m.quiesce()
+	m.locked(func() {
+		require.NoError(t, m.closeStatusSource(w.uri, uri))
+	})
+	m.quiesce()
+	m.locked(func() { assert.Equal(t, -1, attachments(), "closing it from the inbox ends it") })
+}
+
 type statusTestPluginHandler struct {
 	*testVte
 	uri workspaceapi.URI
@@ -2563,7 +2639,7 @@ func TestCommandProgramStatusClosesPrograms(t *testing.T) {
 				focused.Resize(120, 40)
 				pr.uri = mustURI(t, "file:///dev/ttys060")
 				pr.p = newStatusTestProgram(pr.e.tm, pr.uri, "make")
-				pr.e.newEmulatorHandler = func([]string) (vtereservoir.VTE, error) { return pr.p, nil }
+				pr.e.newEmulatorHandler = func([]string) (vte.View, error) { return pr.p, nil }
 				pr.e.newPluginHandler = func(int, ...string) (pluginHandler, error) { return pr.p, nil }
 				pr.e.tasks.SetProgramBuilder(func(
 					browser.EventPublisher, browser.Notifications, schemeapi.Executor,
@@ -2700,7 +2776,7 @@ func TestWorkspaceBarStatusSeenFromTerminalWithoutTab(t *testing.T) {
 				w.notifications = notes
 				pr.e.Resize(80, 30)
 				pr.p = newStatusTestProgram(pr.e.tm, pr.uri, "make")
-				pr.e.newEmulatorHandler = func([]string) (vtereservoir.VTE, error) { return pr.p, nil }
+				pr.e.newEmulatorHandler = func([]string) (vte.View, error) { return pr.p, nil }
 				pr.e.newPluginHandler = func(int, ...string) (pluginHandler, error) { return pr.p, nil }
 				pr.e.tasks.SetProgramBuilder(func(
 					browser.EventPublisher, browser.Notifications, schemeapi.Executor,
@@ -4807,6 +4883,50 @@ func TestWorkspaceManagerClosePromptIntegration(t *testing.T) {
 		require.NoError(t, m.Close())
 	})
 
+	t.Run("warns of a detached terminal running a program", func(t *testing.T) {
+		const job = 99
+		m := newTestWorkspaceManagerHandler(t, defaultCfg(), []string{}, nopShutdownShaderConfig())
+		var (
+			exe *fgPtyExecutor
+			av  *asyncVTE
+		)
+		m.locked(func() {
+			e := m.focusEx()
+			exe = useTestVTEs(t, e)
+			av = e.terminals.open(nil)
+		})
+		m.quiesce()
+		<-exe.Started()
+		m.locked(func() {
+			exe.fg.Store(job)
+			require.NoError(t, av.Close())
+		})
+		m.quiesce()
+		h := newSafeHandler(m)
+		handlertest.TestHandlerSequence(t, h, 40, 12, []handlertest.SequenceTestCase{{
+			InputSequence: ":quit>",
+			Expected: `┌──────────────────────────────────────┐
+│                                      │
+├●█████████████████████████████████████┤
+│                                      │
+│  A detached terminal is running a    │
+│  program, which exiting ends. Are    │
+│  you sure you want to exit?          │
+│                                      │
+│                                      │
+│                                      │
+│         Yes              No          │
+└──────────────────────────────────────┘`,
+		}})
+		exit, _ := h.Handle(term.Event{Type: term.EventKey, Ch: 'n'})
+		require.False(t, exit)
+
+		m.locked(func() { require.NoError(t, m.focusEx().forcequit(context.Background())) })
+		exit, _ = h.Handle(term.Event{Type: term.EventNone})
+		assert.True(t, exit, "forcequit! does not ask")
+		require.NoError(t, m.Close())
+	})
+
 	t.Run("single prompt when running quite more than once", func(t *testing.T) {
 		m := newTestWorkspaceManagerHandler(t, defaultCfg(), []string{}, nopShutdownShaderConfig())
 
@@ -5434,7 +5554,7 @@ func TestWorkspaceManagerRestoresOpenTerminalSessions(t *testing.T) {
 		require.Len(t, tabs, 2)
 		var terminalTabs int
 		for _, tab := range tabs {
-			if _, ok := tab.Handler().(vtereservoir.VTE); ok {
+			if _, ok := tab.Handler().(vte.View); ok {
 				terminalTabs++
 			}
 		}
@@ -5446,11 +5566,11 @@ func TestWorkspaceManagerRestoresOpenTerminalSessions(t *testing.T) {
 			content, err := win.Content()
 			require.NoError(t, err)
 			switch content := content.(type) {
-			case vtereservoir.VTE:
+			case vte.View:
 				ephemeralTerminalWindows++
 				terminalWindows++
 			case *browser.Tab:
-				if _, ok := content.Handler().(vtereservoir.VTE); ok {
+				if _, ok := content.Handler().(vte.View); ok {
 					tabTerminalWindows++
 					terminalWindows++
 				} else if _, ok := content.Handler().(text.Handler); ok {
@@ -5756,7 +5876,7 @@ func TestWorkspaceManagerRestoresOpenTerminalSessions(t *testing.T) {
 		ex2 := m2.exHandler(m2.focusHandler())
 		tabs := ex2.comp.Tabs()
 		require.Len(t, tabs, 1)
-		_, ok := tabs[0].Handler().(vtereservoir.VTE)
+		_, ok := tabs[0].Handler().(vte.View)
 		require.True(t, ok)
 	})
 }

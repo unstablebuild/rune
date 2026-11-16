@@ -104,14 +104,22 @@ const fishBindings = `bind \ca beginning-of-line; bind \ce end-of-line; ` +
 	`bind \cg 'printf \a'; bind -M insert \ca beginning-of-line; ` +
 	`bind -M insert \ce end-of-line; bind -M insert \cg 'printf \a'`
 
+// fishMarks marks each prompt and command with OSC 133, as Rune's .zshrc
+// does for zsh. fish 4 marks them itself and fish 3 does not; a mark
+// repeated tells the same.
+const fishMarks = `function __rune_mark_command --on-event fish_preexec; ` +
+	`printf '\e]133;C\a'; end; ` +
+	`function __rune_mark_prompt --on-event fish_prompt; ` +
+	`printf '\e]133;D\a\e]133;A\a'; end`
+
 // fishInitCommand is what fish runs after its own startup files: Rune's
-// environment from shellRCDir, if any, and the bindings.
+// environment from shellRCDir, if any, the bindings and the marks.
 func fishInitCommand(shellRCDir string) string {
 	if shellRCDir == "" {
-		return fishBindings
+		return fishBindings + "; " + fishMarks
 	}
 	env := fishQuote(filepath.Join(shellRCDir, hostenv.FishFragment))
-	return "test -r " + env + "; and source " + env + "; " + fishBindings
+	return "test -r " + env + "; and source " + env + "; " + fishBindings + "; " + fishMarks
 }
 
 func fishQuote(s string) string {

@@ -79,7 +79,6 @@ import (
 	"unstable.build/rune/internal/localstorage"
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/vte"
-	"unstable.build/rune/internal/term/vte/vtereservoir"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/texttest"
 	"unstable.build/rune/internal/workspace"
@@ -2108,11 +2107,11 @@ command:
 			if err != nil {
 				return
 			}
-			vte, isVTE := content.(vtereservoir.VTE)
+			v, isVTE := content.(vte.View)
 			if !isVTE {
 				return
 			}
-			snap, err := vte.Snapshot()
+			snap, err := v.Snapshot()
 			if err != nil {
 				return
 			}
@@ -2213,7 +2212,7 @@ command:
 			if err != nil {
 				return
 			}
-			emulator, isVTE := content.(vtereservoir.VTE)
+			emulator, isVTE := content.(vte.View)
 			if !isVTE {
 				return
 			}
@@ -2321,7 +2320,7 @@ command:
 			if err != nil {
 				return
 			}
-			emulator, isVTE := content.(vtereservoir.VTE)
+			emulator, isVTE := content.(vte.View)
 			if !isVTE {
 				return
 			}
@@ -3583,7 +3582,7 @@ tutorial(entry=run)
 	}{
 		{name: "split windows, explorer, console, lesson and workspace bar"},
 		{name: "the quit prompt over them", setup: func() {
-			i.workspaceHandler.openConfirmExitPrompt(e, false)
+			i.workspaceHandler.openConfirmExitPrompt(e, false, 0)
 		}},
 	}
 	for _, tc := range cases {

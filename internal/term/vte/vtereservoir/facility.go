@@ -25,60 +25,29 @@ import (
 	"github.com/ernestrc/go-multierror"
 	"github.com/ernestrc/logd-go/logging"
 	log "github.com/sirupsen/logrus"
-	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
-	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
-	"github.com/unstablebuild/rune-go-sdk/component"
-	"github.com/unstablebuild/rune-go-sdk/term"
-	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/workspace"
 )
 
-// VTE abstracts a vte.Handler.
-type VTE interface {
-	browserapi.Handler
-	component.Scrollable
-	OnFocusChange(bool)
-	SetDefaultAttributes(attr term.Attributes)
-	Snapshot() (vte.Snapshot, error)
-	RestoreFromSnapshot(vte.Snapshot) error
-	IsComplete() bool
-	URI() workspaceapi.URI
-	Title() string
-	UsedAlternateBuffer() bool
-	ClearPrimaryBuffer() bool
-	// ExitErr returns the error the process exited with: nil while it
-	// runs, when it exited cleanly, or before it was spawned.
-	ExitErr() error
-	// CursorAtScroll returns the cursor's position in the rows
-	// Snapshot captures, scrollback included.
-	CursorAtScroll() term.Coordinates
+// Terminals owns the terminals the reservoir warms, rather than
+// emulators of its own. The reservoir deletes those nobody claims,
+// since closing an attachment only detaches it.
+type Terminals interface {
+	CreateVTE(context.Context, vte.CreateOptions) (vte.View, error)
+	DeleteVTE(context.Context, vte.ID) error
 }
 
-// Pin the subset of VTE that *vte.Handler must satisfy directly so
-// removing one of these methods from vte.Handler fails compilation
-// here, with a clear "missing method X" pointer, instead of producing
-// confusing interface-satisfaction errors at every vteAdapter call
-// site below.
-var _ interface {
-	OnFocusChange(bool)
-	SetDefaultAttributes(term.Attributes)
-	Snapshot() (vte.Snapshot, error)
-	RestoreFromSnapshot(vte.Snapshot) error
-	ExitErr() error
-	CursorAtScroll() term.Coordinates
-} = (*vte.Handler)(nil)
-
-// Facility is a pool of vte instances.It only caches vte instances
-// that start with no initial commands,
+// Facility is a pool of warm shells. It only caches terminals that run
+// the configured shell.
 type Facility struct {
-	mu     sync.Mutex
-	cond   *sync.Cond
-	pool   []VTE
-	closed bool
-	new    func(bool) (VTE, error)
+	mu        sync.Mutex
+	cond      *sync.Cond
+	pool      []vte.View
+	closed    bool
+	new       func() (vte.View, error)
+	terminals Terminals
 	// pendingInit counts how many VTEs are still being created by
 	// initCap. Get() blocks on cond while the pool is empty and
 	// pendingInit > 0 so callers do not race the warm-up goroutines.
@@ -100,11 +69,17 @@ type Facility struct {
 // of spinning forever.
 const defaultSpawnTimeout = 30 * time.Second
 
-// New allocates storage for a new Facility and initializes it.
+// disposeTimeout bounds the DeleteVTE issued for a warm terminal
+// nobody claimed. It is independent of the facility context, which is
+// already cancelled by the time Close disposes.
+const disposeTimeout = 5 * time.Second
+
+// New returns a Facility warming initialCapacity shells of config
+// through terminals. transport is the scheme the shells run on, watched
+// for the drops of a remote one.
 func New(
-	publisher browser.EventPublisher, n browser.Notifications,
-	terminal schemeapi.Terminal, executor schemeapi.Executor,
-	tm browser.TabManager, config vte.Config, initialCapacity int,
+	terminals Terminals, transport schemeapi.Terminal,
+	config vte.Config, initialCapacity int,
 ) *Facility {
 	if config.WidthHint == 0 {
 		config.WidthHint = 100
@@ -115,8 +90,8 @@ func New(
 	if config.SpawnTimeout == 0 {
 		config.SpawnTimeout = defaultSpawnTimeout
 	}
-	rs, _ := terminal.(workspace.RemoteScheme)
-	newVTE := func(ret *Facility, initialAlloc bool) (VTE, error) {
+	rs, _ := transport.(workspace.RemoteScheme)
+	newVTE := func(ret *Facility) (vte.View, error) {
 		if rs != nil {
 			// SpawnTimeout must measure the spawn RPCs, not
 			// transport establishment: first-connect provisioning
@@ -131,16 +106,15 @@ func New(
 		}
 		ret.log(log.TraceLevel, "called pool.New, width hint: %d, height hint: %d",
 			config.WidthHint, config.HeightHint)
-		i, err := vte.NewHandler(publisher, n, terminal, executor, tm, config)
-		if err != nil {
-			return nil, err
-		}
-		if initialAlloc {
-			i.Resize(config.WidthHint, config.HeightHint)
-		}
-		return &vteAdapter{Handler: i, f: ret}, nil
+		ctx, cancel := context.WithTimeout(ret.ctx, config.SpawnTimeout)
+		defer cancel()
+		return terminals.CreateVTE(ctx, vte.CreateOptions{
+			CommandAndArgs: config.CommandAndArgs,
+			Width:          config.WidthHint,
+			Height:         config.HeightHint,
+		})
 	}
-	return newWithFactory(newVTE, terminal, initialCapacity)
+	return newWithFactory(terminals, newVTE, transport, initialCapacity)
 }
 
 // newWithFactory builds a Facility around a caller-supplied VTE
@@ -160,17 +134,19 @@ func New(
 // — primarily tests asserting allocation counts — must wait for
 // it explicitly; see [Facility.WaitForInitialFill].
 func newWithFactory(
-	newVTE func(*Facility, bool) (VTE, error),
-	terminal schemeapi.Terminal,
+	terminals Terminals,
+	newVTE func(*Facility) (vte.View, error),
+	transport schemeapi.Terminal,
 	initialCapacity int,
 ) *Facility {
 	ret := new(Facility)
 	ret.cond = sync.NewCond(&ret.mu)
+	ret.terminals = terminals
 	ret.initialCapacity = initialCapacity
 	ret.pendingInit = initialCapacity
 	ret.ctx, ret.cancelCtx = context.WithCancel(context.Background())
-	ret.new = func(initialAlloc bool) (VTE, error) {
-		return newVTE(ret, initialAlloc)
+	ret.new = func() (vte.View, error) {
+		return newVTE(ret)
 	}
 
 	go debug.CapturePanicReport(func() {
@@ -180,7 +156,7 @@ func newWithFactory(
 	// If the underlying scheme can drop and reconnect, watch for
 	// invalidation signals and reset the pool so the next Get does
 	// not hand out a VTE bound to the dead transport.
-	if rs, ok := terminal.(workspace.RemoteScheme); ok {
+	if rs, ok := transport.(workspace.RemoteScheme); ok {
 		ch := rs.OnDisconnect()
 		if ch != nil {
 			go debug.CapturePanicReport(func() {
@@ -223,14 +199,15 @@ func (f *Facility) WaitForInitialFill() {
 }
 
 // Get selects an arbitrary vte from the [Facility], removes it from the
-// Facility, and returns it to the caller.
-func (f *Facility) Get() (VTE, error) {
+// Facility, and returns it to the caller, who hands it back with
+// [Facility.Release].
+func (f *Facility) Get() (vte.View, error) {
 	v, dead, err := f.get()
-	// Dispose dead VTEs off-lock: closing a VTE bound to a dropped
-	// remote transport can block on RPC teardown.
+	// Dispose dead VTEs off-lock: DeleteVTE against a dropped
+	// transport can block on RPC teardown.
 	for _, d := range dead {
-		if cerr := d.Close(); cerr != nil {
-			f.log(log.WarnLevel, "close dead pooled vte: %v", cerr)
+		if derr := f.dispose(d); derr != nil {
+			f.log(log.WarnLevel, "dispose dead pooled vte: %v", derr)
 		}
 	}
 	return v, err
@@ -242,7 +219,7 @@ func (f *Facility) Get() (VTE, error) {
 // pooled VTE in place, and OnDisconnect is a one-shot signal, so a
 // drop after the first reconnect leaves the pool full of dead VTEs
 // that would render as blank, unresponsive terminals.
-func (f *Facility) get() (v VTE, dead []VTE, err error) {
+func (f *Facility) get() (v vte.View, dead []vte.View, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -264,7 +241,7 @@ func (f *Facility) get() (v VTE, dead []VTE, err error) {
 		// is opportunistic: a failure must not cost the caller the
 		// warm VTE it already holds.
 		if len(f.pool) == 0 {
-			newvte, err := f.new(true)
+			newvte, err := f.new()
 			if err != nil {
 				f.log(log.WarnLevel, "refill vte pool: %v", err)
 			} else {
@@ -274,8 +251,48 @@ func (f *Facility) get() (v VTE, dead []VTE, err error) {
 		return head, dead, nil
 	}
 
-	v, err = f.new(false)
+	v, err = f.new()
 	return v, dead, err
+}
+
+// Pooled reports whether the terminal id is warm in the pool, which no
+// user has seen.
+func (f *Facility) Pooled(id vte.ID) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, v := range f.pool {
+		if v.ID() == id {
+			return true
+		}
+	}
+	return false
+}
+
+// Release takes back a terminal [Facility.Get] returned once its user
+// is done with it. A shell at its prompt that never switched to the
+// alternate screen is cleared and pooled again; any other terminal is
+// deleted. It must be called on the host event loop.
+func (f *Facility) Release(v vte.View) {
+	// IsComplete means the pty run loop exited (shell gone or remote
+	// transport dropped): the bell probe below could never dispatch,
+	// and caching such a VTE would hand a dead terminal to a later
+	// Get.
+	probe, ok := v.(bellProbe)
+	if !ok || f.drained() || v.IsComplete() || v.UsedAlternateBuffer() {
+		f.disposeLogged(v)
+		return
+	}
+	probe.SystemCanDispatchBell(func(err error) {
+		if err != nil || !f.put(v) {
+			f.disposeLogged(v)
+		}
+	})
+}
+
+// bellProbe is a terminal that can tell whether its program still
+// answers, as [vte.Handler.SystemCanDispatchBell] does.
+type bellProbe interface {
+	SystemCanDispatchBell(func(error))
 }
 
 // Resize can be used to update the width/height of all the vtes in the reservoir.
@@ -288,7 +305,7 @@ func (f *Facility) Resize(width, height int) {
 	}
 }
 
-// Close closes all vtes associated with this Facility.
+// Close deletes every pooled terminal. Later releases delete theirs.
 func (f *Facility) Close() (ret error) {
 	if f.cancelCtx != nil {
 		f.cancelCtx()
@@ -306,11 +323,27 @@ func (f *Facility) reset() (ret error) {
 	f.mu.Unlock()
 
 	for _, vte := range pool {
-		if err := vte.Close(); err != nil {
+		if err := f.dispose(vte); err != nil {
 			ret = multierror.Append(ret, err)
 		}
 	}
 	return
+}
+
+// dispose destroys a terminal nobody claimed: closing it would only
+// detach it, leaving a terminal no user ever saw running.
+func (f *Facility) dispose(v vte.View) error {
+	ctx, cancel := context.WithTimeout(context.Background(), disposeTimeout)
+	defer cancel()
+	err := f.terminals.DeleteVTE(ctx, v.ID())
+	_ = v.Close()
+	return err
+}
+
+func (f *Facility) disposeLogged(v vte.View) {
+	if err := f.dispose(v); err != nil {
+		f.log(log.WarnLevel, "dispose vte: %v", err)
+	}
 }
 
 // Reset disposes every VTE currently pooled in this Facility.
@@ -359,7 +392,7 @@ func (f *Facility) initCap(initialCapacity int) {
 	for range initialCapacity {
 		go debug.CapturePanicReport(func() {
 			defer wg.Done()
-			vte, err := f.new(true)
+			vte, err := f.new()
 			f.mu.Lock()
 			f.pendingInit--
 			closed := f.closed
@@ -372,18 +405,17 @@ func (f *Facility) initCap(initialCapacity int) {
 				f.log(log.WarnLevel, "new vte: %v", err)
 				return
 			}
-			// Do not resurrect a closed pool: dispose the just-created
-			// VTE instead of leaking it back in. Its Close re-takes
-			// f.mu to decide whether to re-pool, so it must run off-lock.
+			// Do not resurrect a closed pool: dispose the
+			// just-created VTE instead of leaking it back in.
 			if closed {
-				_ = vte.Close()
+				f.disposeLogged(vte)
 			}
 		})
 	}
 	wg.Wait()
 }
 
-func (f *Facility) put(v VTE) bool {
+func (f *Facility) put(v vte.View) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -401,8 +433,8 @@ func (f *Facility) put(v VTE) bool {
 	return true
 }
 
-// drained reports whether the facility can no longer re-pool an
-// adapter: it was closed, or its pool was torn down (reset after a
+// drained reports whether the facility can no longer re-pool a
+// terminal: it was closed, or its pool was torn down (reset after a
 // transport drop, or not yet populated by the warm-up).
 func (f *Facility) drained() bool {
 	f.mu.Lock()
@@ -415,66 +447,4 @@ func (e *Facility) log(level log.Level, msg string, args ...any) {
 		return
 	}
 	log.WithField(logging.KeyClass, "vtereservoir.Facility").Logf(level, msg, args...)
-}
-
-var _ VTE = (*vteAdapter)(nil)
-
-type vteAdapter struct {
-	f *Facility
-	*vte.Handler
-	exit bool
-}
-
-func (v *vteAdapter) SetDefaultAttributes(attr term.Attributes) {
-	v.Handler.SetDefaultAttributes(attr)
-}
-
-func (v *vteAdapter) IsComplete() bool {
-	return v.Component().IsComplete()
-}
-
-func (v *vteAdapter) URI() workspaceapi.URI {
-	return v.Component().URI()
-}
-
-func (v *vteAdapter) Title() string {
-	return v.Component().Title()
-}
-
-func (v *vteAdapter) UsedAlternateBuffer() bool {
-	return v.Component().UsedAlternateBuffer()
-}
-
-func (v *vteAdapter) ClearPrimaryBuffer() bool {
-	return v.Handler.ClearPrimaryBuffer()
-}
-
-func (v *vteAdapter) Handle(ev term.Event) (exit, handled bool) {
-	exit, handled = v.Handler.Handle(ev)
-	// a dead terminal does not report exit for every event, such as a
-	// pointer leaving it, so the first report must stick
-	v.exit = v.exit || exit
-	return
-}
-
-func (v *vteAdapter) Close() error {
-	v.f.log(log.TraceLevel, "Close called on vte %p", v)
-	// IsComplete means the pty run loop exited (shell gone or remote
-	// transport dropped): the bell probe below could never dispatch,
-	// and caching such a VTE would hand a dead terminal to a later
-	// Get.
-	if v.exit || v.f.drained() || v.IsComplete() || v.UsedAlternateBuffer() {
-		return v.Handler.Close()
-	}
-	v.Handler.SystemCanDispatchBell(func(err error) {
-		if err != nil {
-			_ = v.Handler.Close()
-			return
-		}
-		v.f.log(log.TraceLevel, "we were able to schedule a callback, caching VTE %p", v)
-		if !v.f.put(v) {
-			_ = v.Handler.Close()
-		}
-	})
-	return nil
 }

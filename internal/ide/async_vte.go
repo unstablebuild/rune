@@ -39,12 +39,19 @@ const maxQueuedAsyncVTEEvents = 256
 
 var asyncVTEURICounter atomic.Uint64
 
-var _ vtereservoir.VTE = (*asyncVTE)(nil)
+var _ vte.View = (*asyncVTE)(nil)
 
+// tabNameAliaser routes the tab and status calls a terminal makes under
+// its own URI to the tabs showing it, through the placeholder and
+// session URIs in between. A terminal shown by no tab keeps its own URI,
+// which the workspace lists as a terminal that is no tab.
 type tabNameAliaser struct {
 	browser.TabManager
-	sched   func(func()) bool
-	alias   map[string]workspaceapi.URI
+	sched func(func()) bool
+	// alias maps a URI to the URIs standing for it: a terminal to the
+	// placeholders of every view attached to it, a placeholder to its
+	// session tab.
+	alias   map[string][]workspaceapi.URI
 	pending map[string][]programstatus.Report
 	closed  map[string]bool
 }
@@ -55,7 +62,7 @@ func newTabNameAliaser(
 	return &tabNameAliaser{
 		TabManager: tm,
 		sched:      sched,
-		alias:      make(map[string]workspaceapi.URI),
+		alias:      make(map[string][]workspaceapi.URI),
 		pending:    make(map[string][]programstatus.Report),
 		closed:     make(map[string]bool),
 	}
@@ -65,13 +72,19 @@ func (a *tabNameAliaser) SetTabName(
 	uri workspaceapi.URI, name string, attr term.Attributes,
 ) error {
 	a.sched(func() {
-		_ = a.TabManager.SetTabName(a.resolve(uri), name, attr)
+		for _, to := range a.resolve(uri) {
+			_ = a.TabManager.SetTabName(to, name, attr)
+		}
 	})
 	return nil
 }
 
 func (a *tabNameAliaser) OnTabExit(uri workspaceapi.URI) bool {
-	return a.TabManager.OnTabExit(a.resolve(uri))
+	exited := false
+	for _, to := range a.resolve(uri) {
+		exited = a.TabManager.OnTabExit(to) || exited
+	}
+	return exited
 }
 
 func (a *tabNameAliaser) SetTabStatus(
@@ -81,8 +94,10 @@ func (a *tabNameAliaser) SetTabStatus(
 		if a.closed[uri.String()] {
 			return
 		}
-		a.retainStatus(a.resolve(uri), report)
-		_ = a.TabManager.SetTabStatus(a.resolve(uri), report)
+		for _, to := range a.resolve(uri) {
+			a.retainStatus(to, report)
+			_ = a.TabManager.SetTabStatus(to, report)
+		}
 	})
 	return nil
 }
@@ -92,42 +107,80 @@ func (a *tabNameAliaser) EndTabStatus(uri workspaceapi.URI) error {
 		if a.closed[uri.String()] {
 			return
 		}
-		uri = a.resolve(uri)
-		a.pending[uri.String()] = slices.DeleteFunc(a.pending[uri.String()], func(r programstatus.Report) bool {
-			return r.State == programstatus.Working || r.State == programstatus.Blocked || r.State == programstatus.Idle
-		})
-		if len(a.pending[uri.String()]) == 0 {
-			delete(a.pending, uri.String())
+		for _, to := range a.resolve(uri) {
+			key := to.String()
+			a.pending[key] = slices.DeleteFunc(a.pending[key], func(r programstatus.Report) bool {
+				return r.State == programstatus.Working || r.State == programstatus.Blocked || r.State == programstatus.Idle
+			})
+			if len(a.pending[key]) == 0 {
+				delete(a.pending, key)
+			}
+			_ = a.TabManager.EndTabStatus(to)
 		}
-		_ = a.TabManager.EndTabStatus(a.resolve(uri))
 	})
 	return nil
 }
 
-func (a *tabNameAliaser) resolve(uri workspaceapi.URI) workspaceapi.URI {
-	for range 4 {
-		next, ok := a.alias[uri.String()]
-		if !ok {
-			break
-		}
-		uri = next
-	}
-	return uri
+// resolve returns the tab keys uri stands for, uri itself when it is
+// aliased to none.
+func (a *tabNameAliaser) resolve(uri workspaceapi.URI) []workspaceapi.URI {
+	return a.resolveDepth(uri, 4)
 }
 
+func (a *tabNameAliaser) resolveDepth(uri workspaceapi.URI, depth int) []workspaceapi.URI {
+	next := a.alias[uri.String()]
+	if len(next) == 0 || depth == 0 {
+		return []workspaceapi.URI{uri}
+	}
+	var ret []workspaceapi.URI
+	for _, to := range next {
+		ret = append(ret, a.resolveDepth(to, depth-1)...)
+	}
+	return ret
+}
+
+// addAlias makes to stand for from too. The reports retained for from
+// move to to; when from already had tabs, to gets a copy of theirs.
 func (a *tabNameAliaser) addAlias(from, to workspaceapi.URI) {
-	if from.String() == to.String() {
+	if from.String() == to.String() || slices.ContainsFunc(a.alias[from.String()],
+		func(u workspaceapi.URI) bool { return u.String() == to.String() }) {
 		return
 	}
-	a.alias[from.String()] = to
+	var siblings []programstatus.Report
+	if len(a.alias[from.String()]) != 0 {
+		siblings = slices.Clone(a.pending[a.resolve(from)[0].String()])
+	}
+	a.alias[from.String()] = append(a.alias[from.String()], to)
 	delete(a.closed, from.String())
-	if reports := a.pending[from.String()]; len(reports) != 0 {
+	reports := a.pending[from.String()]
+	if len(reports) != 0 {
 		delete(a.pending, from.String())
 		_ = a.TabManager.SetTabStatus(from, programstatus.Report{State: programstatus.Clear})
-		for _, report := range reports {
-			a.retainStatus(a.resolve(to), report)
-			_ = a.TabManager.SetTabStatus(a.resolve(to), report)
+	}
+	for _, report := range append(siblings, reports...) {
+		for _, leaf := range a.resolve(to) {
+			a.retainStatus(leaf, report)
+			_ = a.TabManager.SetTabStatus(leaf, report)
 		}
+	}
+}
+
+// handBack drops the reports retained for the tab leaf, which stops
+// showing the terminal at canonical. When no other tab shows it, they
+// go back to the terminal itself, which is then listed as no tab.
+func (a *tabNameAliaser) handBack(leaf, canonical workspaceapi.URI) {
+	reports := a.pending[leaf.String()]
+	if len(reports) == 0 {
+		return
+	}
+	delete(a.pending, leaf.String())
+	_ = a.TabManager.SetTabStatus(leaf, programstatus.Report{State: programstatus.Clear})
+	if len(a.alias[canonical.String()]) != 0 {
+		return
+	}
+	for _, report := range reports {
+		a.retainStatus(canonical, report)
+		_ = a.TabManager.SetTabStatus(canonical, report)
 	}
 }
 
@@ -155,9 +208,11 @@ func (a *tabNameAliaser) retainStatus(uri workspaceapi.URI, report programstatus
 
 func (a *tabNameAliaser) discardStatus(uri workspaceapi.URI) {
 	delete(a.pending, uri.String())
-	delete(a.pending, a.resolve(uri).String())
+	for _, to := range a.resolve(uri) {
+		delete(a.pending, to.String())
+		_ = a.TabManager.SetTabStatus(to, programstatus.Report{State: programstatus.Clear})
+	}
 	a.closed[uri.String()] = true
-	_ = a.TabManager.SetTabStatus(a.resolve(uri), programstatus.Report{State: programstatus.Clear})
 }
 
 func (a *tabNameAliaser) removeAlias(from workspaceapi.URI) {
@@ -166,25 +221,51 @@ func (a *tabNameAliaser) removeAlias(from workspaceapi.URI) {
 
 func (a *tabNameAliaser) removeAliasesTo(target workspaceapi.URI) {
 	for from, to := range a.alias {
-		if to.String() == target.String() {
+		to = slices.DeleteFunc(to, func(u workspaceapi.URI) bool {
+			return u.String() == target.String()
+		})
+		if len(to) == 0 {
 			delete(a.alias, from)
+		} else {
+			a.alias[from] = to
 		}
 	}
 }
 
-// asyncVTE is a permanent vtereservoir.VTE wrapper that runs the
+// vteCloseMode is what closing an asyncVTE does to its terminal.
+type vteCloseMode int
+
+const (
+	// vteCloseAuto detaches a terminal that may be running something
+	// for the user or that another view shows, and terminates any
+	// other.
+	vteCloseAuto vteCloseMode = iota
+	// vteCloseDetach leaves the terminal running.
+	vteCloseDetach
+	// vteCloseDelete terminates the terminal, and every view of it.
+	vteCloseDelete
+)
+
+// asyncVTE is a permanent vte.View wrapper that runs the
 // blocking VTE factory (reservoir warm-up waits, NewPty/StartCommand
-// RPCs) off the host event loop.
+// RPCs) off the host event loop. It is a view of a terminal s keeps.
 type asyncVTE struct {
-	e   *ex
+	s   *terminalSessions
 	uri workspaceapi.URI
 
 	anim        *component.Animation
 	animStopped bool
 
-	real   vtereservoir.VTE
+	real   vte.View
 	err    error
 	closed bool
+	// pool is the reservoir real came from, which takes it back when
+	// it is idle.
+	pool *vtereservoir.Facility
+	// existing is whether the factory attaches a terminal that was
+	// running before, which abandoning the placeholder must not end.
+	existing  bool
+	closeMode vteCloseMode
 
 	width, height int
 	resized       bool
@@ -197,8 +278,8 @@ type asyncVTE struct {
 	errComp component.String
 }
 
-func newAsyncVTE(e *ex, factory func() (vtereservoir.VTE, error)) *asyncVTE {
-	av := &asyncVTE{e: e}
+func newAsyncVTE(s *terminalSessions, factory func() (vte.View, error)) *asyncVTE {
+	av := &asyncVTE{s: s}
 	uri, err := workspaceapi.ParseURI(fmt.Sprintf(
 		"terminal://loading/%d", asyncVTEURICounter.Add(1)))
 	if err == nil {
@@ -206,13 +287,13 @@ func newAsyncVTE(e *ex, factory func() (vtereservoir.VTE, error)) *asyncVTE {
 	}
 	frames, sequence := component.ProgressAnimationFrames()
 	av.anim = component.NewAnimation(
-		browser.EventPublisherInterrupter(e.Browser()), frames, sequence, 0)
+		browser.EventPublisherInterrupter(s.cfg.Publisher), frames, sequence, 0)
 	av.anim.Resize(2, 1)
-	e.asyncVTELoads.Add(1)
+	s.inflight.Add(1)
 	go debug.CapturePanicReport(func() {
-		defer e.asyncVTELoads.Done()
+		defer s.inflight.Done()
 		v, ferr := factory()
-		if !e.sched(func() { av.complete(v, ferr) }) {
+		if !s.cfg.VTE.ScheduleNextTick(func() { av.complete(v, ferr) }) {
 			// The event loop is gone: nothing will ever install the
 			// result, so release the freshly-built VTE.
 			if ferr == nil && v != nil {
@@ -225,13 +306,12 @@ func newAsyncVTE(e *ex, factory func() (vtereservoir.VTE, error)) *asyncVTE {
 }
 
 // complete installs the factory result. It runs on the host event loop.
-func (av *asyncVTE) complete(v vtereservoir.VTE, err error) {
+func (av *asyncVTE) complete(v vte.View, err error) {
 	if av.closed {
 		// Only a successful build hands over an owned, fully
 		// initialized VTE; closing anything else is unsafe.
 		if err == nil && v != nil {
-			av.e.tabAliases.discardStatus(v.URI())
-			_ = v.Close()
+			av.s.abandonView(av, v)
 		}
 		return
 	}
@@ -242,15 +322,15 @@ func (av *asyncVTE) complete(v vtereservoir.VTE, err error) {
 			fmt.Sprintf("terminal unavailable: %v", err),
 			component.StringConfig{Alignment: component.AlignmentCentered})
 		av.errComp.Resize(av.width, av.height)
-		_, _ = av.e.notifications.Notify(browserapi.LevelError,
+		_, _ = av.s.cfg.Notifications.Notify(browserapi.LevelError,
 			"new terminal: %v", err)
 		return
 	}
 	av.real = v
-	av.e.tabAliases.addAlias(v.URI(), av.uri)
+	av.s.aliasTab(v.URI(), av.uri)
 	if av.pendingSnapshot != nil {
 		if rerr := v.RestoreFromSnapshot(*av.pendingSnapshot); rerr != nil {
-			_, _ = av.e.notifications.Notify(browserapi.LevelError,
+			_, _ = av.s.cfg.Notifications.Notify(browserapi.LevelError,
 				"restore terminal session: %v", rerr)
 		}
 		av.pendingSnapshot = nil
@@ -275,7 +355,7 @@ func (av *asyncVTE) complete(v vtereservoir.VTE, err error) {
 	// av.uri to the final tab key (e.g. a restored session URI) and
 	// routes the vte's later dynamic title updates the same way.
 	if title := v.Title(); title != "" {
-		_ = av.e.tm.SetTabName(av.uri, title, term.Attributes{})
+		_ = av.s.tabs.SetTabName(av.uri, title, term.Attributes{})
 	}
 }
 
@@ -318,7 +398,7 @@ func (av *asyncVTE) Handle(ev term.Event) (exit, handled bool) {
 		exit, handled = av.real.Handle(ev)
 		// The tab drops content that reports exit, which may
 		// happen before the vte asks for it through OnTabExit.
-		if exit && av.e.keepFailedTerminalTab(av.e.tabAliases.resolve(av.uri)) {
+		if exit && av.s.tabs.keepFailed(av.uri) {
 			exit = false
 		}
 		return exit, handled
@@ -464,23 +544,26 @@ func (av *asyncVTE) ClearPrimaryBuffer() bool {
 	return false
 }
 
+// ID returns the terminal's id, empty while it loads.
+func (av *asyncVTE) ID() vte.ID {
+	if av.real != nil {
+		return av.real.ID()
+	}
+	return ""
+}
+
+// Close drops this view of the terminal. See
+// [terminalSessions.closeView] for what becomes of the terminal.
 func (av *asyncVTE) Close() error {
 	if av.closed {
 		return nil
 	}
 	av.closed = true
 	av.stopAnimation()
-	if av.real != nil {
-		av.e.tabAliases.discardStatus(av.real.URI())
+	if av.real == nil {
+		// complete observes av.closed and disposes of what it gets.
+		av.s.forgetView(av.uri)
+		return nil
 	}
-	// Drop both directions: the vte URI pointing at this placeholder
-	// and this placeholder pointing at a session tab key.
-	av.e.tabAliases.removeAliasesTo(av.uri)
-	av.e.tabAliases.removeAlias(av.uri)
-	if av.real != nil {
-		return av.real.Close()
-	}
-	// Pre-ready: complete observes av.closed and closes the
-	// freshly-built VTE silently (the user abandoned the terminal).
-	return nil
+	return av.s.closeView(av)
 }

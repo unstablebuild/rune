@@ -78,9 +78,9 @@ func newAsyncPlugin(
 	ap.anim = component.NewAnimation(
 		browser.EventPublisherInterrupter(e.Browser()), frames, sequence, 0)
 	ap.anim.Resize(2, 1)
-	e.asyncVTELoads.Add(1)
+	e.asyncPluginLoads.Add(1)
 	go debug.CapturePanicReport(func() {
-		defer e.asyncVTELoads.Done()
+		defer e.asyncPluginLoads.Done()
 		h, ferr := factory()
 		if !e.sched(func() { ap.complete(h, ferr) }) {
 			// The event loop is gone: nothing will ever install the

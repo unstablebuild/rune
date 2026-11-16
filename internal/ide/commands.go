@@ -449,26 +449,45 @@ var (
 			handler: (*ex).terminalneworsplit,
 			rawArgs: true,
 		},
-		"terminalsave": {
+		"terminalattach": {
 			man: textapi.CommandManual{
-				Summary: "Save the current terminal buffer and scrollback under the given session name. " +
-					"The saved session stores terminal output for later recovery, but does not preserve " +
-					"or resume the live pty process.",
-				Synopsis: "<session-name>",
+				Summary: "Show a terminal of the workspace in a new tab of the current " +
+					"active window. Without an argument, the first detached terminal is " +
+					"shown. A terminal another tab already shows gets a second view: both " +
+					"show the same terminal, whose size follows the view focused last. " +
+					"The other views cut its top rows and right columns, or pad it, to " +
+					"their own size, since a program draws for a single size.",
+				Synopsis: "[<terminal-id>]",
 			},
-			handler: (*ex).terminalsave,
-		},
-		"terminalresume": {
-			man: textapi.CommandManual{
-				Summary: "Open a previously saved terminal session by name in a functioning " +
-					"terminal, restoring its saved output and scrollback. This starts a new " +
-					"pty process; it does not resume the original process.",
-				Synopsis: "<session-name>",
-			},
-			handler: (*ex).terminalresume,
+			handler: (*ex).terminalattach,
 			completer: func(e *ex, ctx context.Context, cmd textapi.Command,
 			) (iterator.Iterator[string], string, error) {
-				return e.completeTerminalSessions(ctx, cmd)
+				return e.completeTerminals(ctx, cmd)
+			},
+		},
+		"terminaldetach": {
+			man: textapi.CommandManual{
+				Summary: "Close the tab of the terminal in the current active window but " +
+					"keep the terminal running, even when its shell waits at its prompt. " +
+					"Closing the tab of a terminal that is running a program detaches it " +
+					"too. A detached terminal running a program is listed in the program " +
+					"status inbox until it is done, and `terminalattach` shows it again. " +
+					"Terminals end when Rune exits.",
+			},
+			handler: (*ex).terminaldetach,
+		},
+		"terminalclose": {
+			man: textapi.CommandManual{
+				Summary: "End a terminal of the workspace and its program, and close every " +
+					"tab showing it. Without an argument, the terminal in the current " +
+					"active window is closed. Asks first when the terminal is running a " +
+					"program or is shown in another tab.",
+				Synopsis: "[<terminal-id>]",
+			},
+			handler: (*ex).terminalclose,
+			completer: func(e *ex, ctx context.Context, cmd textapi.Command,
+			) (iterator.Iterator[string], string, error) {
+				return e.completeTerminals(ctx, cmd)
 			},
 		},
 		"edit": {

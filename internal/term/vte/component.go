@@ -731,6 +731,28 @@ func (t *Component) IsComplete() bool {
 	return t.complete
 }
 
+// ShellMark returns the last OSC 133 mark the program sent, zero when
+// it sent none: it is no shell, or one without that integration. A
+// shell may relay the marks of another, as one in ssh does.
+func (t *Component) ShellMark() vteparser.ShellMark {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.parserHandler.shellMark
+}
+
+// ForegroundProcessGroup returns the process group in the foreground of
+// the pty, which is [Component.Pid]'s while a shell with job control
+// waits at its prompt. It asks the host of the pty, which may be
+// remote, so the host event loop must not call it. It fails with
+// [os.ErrClosed] once the Component is closed, and with
+// errors.ErrUnsupported where the host cannot tell.
+func (t *Component) ForegroundProcessGroup() (int, error) {
+	if t.closed.Load() {
+		return 0, os.ErrClosed
+	}
+	return t.terminal.ForegroundProcessGroup(t.pty)
+}
+
 // Unselect clears this Component's selection.
 func (t *Component) Unselect() {
 	t.mu.Lock()

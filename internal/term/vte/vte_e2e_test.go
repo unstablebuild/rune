@@ -23,7 +23,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +37,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"golang.org/x/sys/unix"
 	xterm "golang.org/x/term"
+	"unstable.build/rune/internal/term/vte/vteparser"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -215,4 +218,86 @@ func TestE2EPasteLargerThanTtyQueueArrivesWhole(t *testing.T) {
 
 	requireSameBytes(t, payload, h.waitFile(t, received, len(payload)))
 	assert.Empty(t, h.notifications.Messages())
+}
+
+func TestE2EShellMarksWithoutJobControl(t *testing.T) {
+	cases := []struct {
+		shell string
+		// rc is the user's startup file, relative to $HOME, which turns
+		// job control off as zplug does.
+		rcFile, rc string
+		// skip tells why the shell cannot report its commands, if so.
+		skip func(shellPath string) string
+	}{
+		{shell: "zsh", rcFile: ".zshrc", rc: "unsetopt monitor\nPS1='$ '\n"},
+		{shell: "bash", rcFile: ".bashrc", rc: "set +m\nPS1='$ '\n", skip: func(shellPath string) string {
+			out, err := exec.Command(shellPath, "-c",
+				`[ "${BASH_VERSINFO[0]}${BASH_VERSINFO[1]}" -ge 44 ] && echo ok`).Output()
+			if err != nil || strings.TrimSpace(string(out)) != "ok" {
+				return "bash before 4.4 has no PS0 to mark a command's start with"
+			}
+			return ""
+		}},
+		{shell: "fish", rcFile: ".config/fish/config.fish",
+			rc: "status job-control none\nfunction fish_prompt; echo -n '$ '; end\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.shell, func(t *testing.T) {
+			shellPath, err := exec.LookPath(tc.shell)
+			if err != nil {
+				t.Skipf("%s is not installed", tc.shell)
+			}
+			if tc.skip != nil {
+				if why := tc.skip(shellPath); why != "" {
+					t.Skip(why)
+				}
+			}
+			home := t.TempDir()
+			rc := filepath.Join(home, tc.rcFile)
+			require.NoError(t, os.MkdirAll(filepath.Dir(rc), 0o755))
+			require.NoError(t, os.WriteFile(rc, []byte(tc.rc), 0o644))
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+			t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+			t.Setenv("ZDOTDIR", "")
+			release := filepath.Join(t.TempDir(), "release")
+			job := filepath.Join(t.TempDir(), "job.sh")
+			require.NoError(t, os.WriteFile(job, []byte(
+				"#!/bin/sh\nwhile [ ! -f "+release+" ]; do sleep 0.05; done\n"), 0o755))
+
+			h := newE2ETerminal(t, e2eOptions{command: shellPath})
+			screen := func() string {
+				snap, err := h.Snapshot()
+				if err != nil {
+					return err.Error()
+				}
+				return term.CellsToString(snap.ActiveCells())
+			}
+			// Without job control, the marks are what tells a shell waiting
+			// at its prompt from one running a job.
+			atPrompt := func(m vteparser.ShellMark) bool {
+				return m == vteparser.ShellMarkPromptStart ||
+					m == vteparser.ShellMarkPromptEnd || m == vteparser.ShellMarkCommandEnd
+			}
+			running := func(m vteparser.ShellMark) bool { return m == vteparser.ShellMarkCommandStart }
+			waitMark := func(want func(vteparser.ShellMark) bool, msg string) {
+				t.Helper()
+				if !assert.Eventually(t, func() bool { return want(h.comp.ShellMark()) },
+					e2eTimeout, 10*time.Millisecond) {
+					t.Fatalf("%s: the last mark is %q; screen:\n%s", msg, h.comp.ShellMark(), screen())
+				}
+			}
+			waitMark(atPrompt, "the shell never marked its prompt")
+
+			require.NoError(t, h.comp.WriteToPty([]byte(job+"\r")))
+			waitMark(running, "the shell never marked the job's start")
+			fg, err := h.comp.ForegroundProcessGroup()
+			require.NoError(t, err)
+			require.Equal(t, int(h.comp.Pid()), fg,
+				"without job control the job runs in the shell's process group")
+
+			require.NoError(t, os.WriteFile(release, nil, 0o644))
+			waitMark(atPrompt, "the shell never marked its prompt after the job")
+		})
+	}
 }

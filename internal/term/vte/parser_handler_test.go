@@ -976,20 +976,30 @@ func TestProgramStatus(t *testing.T) {
 			run: func(ph *parserHandler) {
 				ph.ProgramStatus(done)
 				ph.ProgramStatus(blocked)
-				ph.PromptStart()
+				ph.ShellMark(vteparser.ShellMarkPromptStart)
 			},
 			want: []statusCall{{report: done}, {report: blocked}, end},
 		},
 		{
 			name: "prompt without a report tells nothing",
-			run:  func(ph *parserHandler) { ph.PromptStart() },
+			run:  func(ph *parserHandler) { ph.ShellMark(vteparser.ShellMarkPromptStart) },
+		},
+		{
+			name: "a command's marks end nothing",
+			run: func(ph *parserHandler) {
+				ph.ProgramStatus(working)
+				ph.ShellMark(vteparser.ShellMarkPromptEnd)
+				ph.ShellMark(vteparser.ShellMarkCommandStart)
+				ph.ShellMark(vteparser.ShellMarkCommandEnd)
+			},
+			want: []statusCall{{report: working}},
 		},
 		{
 			name: "prompt after clearing everything tells nothing",
 			run: func(ph *parserHandler) {
 				ph.ProgramStatus(working)
 				ph.ProgramStatus(clearAll)
-				ph.PromptStart()
+				ph.ShellMark(vteparser.ShellMarkPromptStart)
 			},
 			want: []statusCall{{report: working}, {report: clearAll}},
 		},
@@ -998,7 +1008,7 @@ func TestProgramStatus(t *testing.T) {
 			run: func(ph *parserHandler) {
 				ph.ProgramStatus(working)
 				ph.ProgramStatus(programstatus.Report{ID: "eu", State: programstatus.Clear})
-				ph.PromptStart()
+				ph.ShellMark(vteparser.ShellMarkPromptStart)
 			},
 			want: []statusCall{
 				{report: working},

@@ -35,7 +35,7 @@ import (
 	"unstable.build/rune/internal/browser"
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
-	"unstable.build/rune/internal/term/vte/vtereservoir"
+	"unstable.build/rune/internal/term/vte"
 )
 
 func TestE2EWorkspaceReloadRestoresLayoutAndTerminalOutput(t *testing.T) {
@@ -127,11 +127,11 @@ workspace:
 			if cerr != nil {
 				return
 			}
-			vte, isVTE := content.(vtereservoir.VTE)
+			v, isVTE := content.(vte.View)
 			if !isVTE {
 				return
 			}
-			snap, sErr := vte.Snapshot()
+			snap, sErr := v.Snapshot()
 			if sErr != nil {
 				return
 			}

@@ -30,8 +30,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/component/shader/shaderutils"
 	"unstable.build/rune/internal/handler/handlertest"
+	"unstable.build/rune/internal/ide/idehistory"
 	"unstable.build/rune/internal/term/vte"
-	"unstable.build/rune/internal/term/vte/vtereservoir"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/emacs"
 	"unstable.build/rune/internal/text/helix"
@@ -150,8 +150,8 @@ func newTerminalExitHarness(
 	}
 	h.terminal.uri = mustURI(t, "file:///dev/ttys077")
 	h.terminal.title = "make"
-	h.ex.newEmulatorHandler = func([]string) (vtereservoir.VTE, error) {
-		h.av = newAsyncVTE(h.ex, func() (vtereservoir.VTE, error) {
+	h.ex.newEmulatorHandler = func([]string) (vte.View, error) {
+		h.av = newAsyncVTE(h.ex.terminals, func() (vte.View, error) {
 			return h.terminal, nil
 		})
 		return h.av, nil
@@ -206,12 +206,13 @@ func TestTerminalTabExit(t *testing.T) {
 		return h.av.URI()
 	}
 	openSession := func(t *testing.T, h *terminalExitHarness) workspaceapi.URI {
-		doc := terminalSessionDocument{
+		doc := idehistory.TerminalSession{
 			Name:     "build",
 			Snapshot: vte.Snapshot{Schema: 1, Title: "build"},
+			Tab:      true,
+			Visible:  true,
 		}
-		_, err := h.ex.restoreTerminalSessionTab(doc, h.ex.invokeWindow())
-		require.NoError(t, err)
+		require.NoError(t, restoreOpenTerminalSessions(h.ex, []idehistory.TerminalSession{doc}, nil))
 		uri, err := terminalSessionURI(doc.Name)
 		require.NoError(t, err)
 		return uri
@@ -580,7 +581,7 @@ func TestTerminalTabExit(t *testing.T) {
 			if kept {
 				_, isEditor := tab.Handler().(text.Handler)
 				assert.True(t, isEditor, "a failed tab must be left with an editor")
-				_, isTerminal := tab.Handler().(vtereservoir.VTE)
+				_, isTerminal := tab.Handler().(vte.View)
 				assert.False(t, isTerminal,
 					"a dead tab must not be saved or resumed as a terminal session")
 				assertTabIconColor(t, h.testEx, width, height, term.ColorRed)

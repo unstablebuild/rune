@@ -291,13 +291,43 @@ func (p *driver) OSCDispatch(params [][]byte, bellTerminated bool) {
 	case "104", "110", "111", "112":
 	/* unsupported color CSI dispatch */
 	case "133":
-		if len(params) >= 2 && len(params[1]) > 0 && params[1][0] == 'A' {
-			p.handler.PromptStart()
-		}
+		p.shellIntegrationDispatch(params)
 	case "7501":
 		p.programStatusDispatch(params, terminator)
 	default:
 		p.logUnhandledOSC(params)
+	}
+}
+
+// ShellMark is an OSC 133 mark that a shell sends around a prompt and
+// the commands typed at it.
+type ShellMark byte
+
+const (
+	// ShellMarkPromptStart starts a prompt (A). A new command's (N)
+	// and a continuation prompt's (P) read as one.
+	ShellMarkPromptStart ShellMark = 'A'
+	// ShellMarkPromptEnd ends the prompt where the user types (B).
+	ShellMarkPromptEnd ShellMark = 'B'
+	// ShellMarkCommandStart starts the output of the command the user
+	// typed (C).
+	ShellMarkCommandStart ShellMark = 'C'
+	// ShellMarkCommandEnd ends the command, with its exit status (D).
+	ShellMarkCommandEnd ShellMark = 'D'
+)
+
+// shellIntegrationDispatch handles OSC 133. The mark is the first byte
+// of the first parameter: what follows it, such as D's exit status or
+// A's options, is not needed.
+func (p *driver) shellIntegrationDispatch(params [][]byte) {
+	if len(params) < 2 || len(params[1]) == 0 {
+		return
+	}
+	switch mark := ShellMark(params[1][0]); mark {
+	case 'A', 'N', 'P':
+		p.handler.ShellMark(ShellMarkPromptStart)
+	case ShellMarkPromptEnd, ShellMarkCommandStart, ShellMarkCommandEnd:
+		p.handler.ShellMark(mark)
 	}
 }
 

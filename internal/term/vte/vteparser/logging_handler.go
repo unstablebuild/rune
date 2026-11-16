@@ -443,9 +443,9 @@ func (h loggingHandler) ProgramStatusQuery(terminator string) {
 	h.h.ProgramStatusQuery(terminator)
 }
 
-func (h loggingHandler) PromptStart() {
-	h.log("PromptStart")
-	h.h.PromptStart()
+func (h loggingHandler) ShellMark(mark ShellMark) {
+	h.log("ShellMark %c", mark)
+	h.h.ShellMark(mark)
 }
 
 func (h loggingHandler) SetPointerShape(shape PointerShape) {

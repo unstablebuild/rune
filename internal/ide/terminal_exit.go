@@ -42,15 +42,30 @@ const exitedTerminalLocationList = "terminalexit"
 
 // failedTerminalKeeper keeps terminal tabs whose process failed open
 // when their vte asks to be dropped, so the failure stays visible
-// until the user closes the tab.
+// until the user closes the tab. keep replaces the terminal of the tab
+// it is given, and reports whether it did.
 type failedTerminalKeeper struct {
 	*tabNameAliaser
-	e *ex
+	keep func(workspaceapi.URI) bool
 }
 
 func (k failedTerminalKeeper) OnTabExit(uri workspaceapi.URI) bool {
-	return k.e.keepFailedTerminalTab(k.resolve(uri)) ||
-		k.tabNameAliaser.OnTabExit(uri)
+	handled := false
+	for _, tab := range k.resolve(uri) {
+		handled = k.keep(tab) ||
+			k.tabNameAliaser.TabManager.OnTabExit(tab) || handled
+	}
+	return handled
+}
+
+// keepFailed keeps open the tabs that show uri when its terminal
+// failed, and reports whether it kept any.
+func (k failedTerminalKeeper) keepFailed(uri workspaceapi.URI) bool {
+	kept := false
+	for _, tab := range k.resolve(uri) {
+		kept = k.keep(tab) || kept
+	}
+	return kept
 }
 
 // grayTerminalCells drains the color from cells in place, the way the

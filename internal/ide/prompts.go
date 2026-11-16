@@ -164,10 +164,20 @@ func (h *reopenSessionPromptHandler) OnClose() error {
 	return nil
 }
 
-func (h *workspaceManagerHandler) openConfirmExitPrompt(ex *ex, hasDirtyFilesOpen bool) {
+func (h *workspaceManagerHandler) openConfirmExitPrompt(
+	ex *ex, hasDirtyFilesOpen bool, runningTerminals int,
+) {
 
 	promptText := "Are you sure you want to **exit**?"
 
+	switch {
+	case runningTerminals == 1:
+		promptText = "A detached terminal is running a program, " +
+			"which exiting ends. " + promptText
+	case runningTerminals > 1:
+		promptText = fmt.Sprintf("%d detached terminals are running programs, "+
+			"which exiting ends. ", runningTerminals) + promptText
+	}
 	if hasDirtyFilesOpen {
 		promptText = "There are open files with changes pending to be written. " +
 			promptText
