@@ -211,10 +211,12 @@ func TestGoE2E(t *testing.T) {
 
 	t.Run("definition-only symbols resolve from the index", func(t *testing.T) {
 		for name, rel := range map[string]string{
-			"iter.OnlyDefined": "iter/iter.go",
-			"iter.Aggregate":   "iter/extra.go",
-			"mylib.New":        "mylib/mylib.go",
-			"iter.New":         "iter/extra.go",
+			"iter.OnlyDefined":        "iter/iter.go",
+			"iter.Aggregate":          "iter/extra.go",
+			"mylib.New":               "mylib/mylib.go",
+			"iter.New":                "iter/extra.go",
+			"iter.privateOnlyDefined": "iter/iter.go",
+			"mylib.unexportedHelper":  "mylib/mylib.go",
 		} {
 			assert.Equalf(t, []string{env.uri(t, rel)}, resolveURIs(t, env.p, name),
 				"definition resolution for %q", name)
@@ -228,13 +230,12 @@ func TestGoE2E(t *testing.T) {
 			resolveURIs(t, env.p, "mylib.MyType.Set"))
 		assert.Equal(t, []string{env.uri(t, "mylib/mylib.go")},
 			resolveURIs(t, env.p, "mylib.Store.Load"))
+		assert.Equal(t, []string{env.uri(t, "mylib/mylib.go")},
+			resolveURIs(t, env.p, "mylib.Store.save"))
 	})
 
-	t.Run("unexported and constants are not indexed", func(t *testing.T) {
-		for _, name := range []string{
-			"iter.privateOnlyDefined", "mylib.unexportedHelper",
-			"iter.MaxItems", "iter.DefaultIterator",
-		} {
+	t.Run("constants are not indexed", func(t *testing.T) {
+		for _, name := range []string{"iter.MaxItems", "iter.DefaultIterator"} {
 			// No index entry → passthrough to the backing parser,
 			// which also finds nothing and reports not-found.
 			it, err := env.p.ResolveSymbol(context.Background(), name, nil)
@@ -281,7 +282,7 @@ func TestGoE2E(t *testing.T) {
 		}
 	})
 
-	t.Run("listed symbols include refs, defs and methods, exclude unexported", func(t *testing.T) {
+	t.Run("listed symbols include refs, defs and methods of any visibility", func(t *testing.T) {
 		got := listSet(t, env.p)
 		for _, name := range []string{
 			"mylib.MyType", "mylib.MyFunc", "mylib.New",
@@ -289,13 +290,9 @@ func TestGoE2E(t *testing.T) {
 			"iterator.Iterator",
 			"mylib.MyType.String", "mylib.MyType.Set",
 			"mylib.Store.Load",
-		} {
-			assert.Truef(t, got[name], "expected %q to be listed", name)
-		}
-		for _, name := range []string{
 			"mylib.unexportedHelper", "iter.privateOnlyDefined", "mylib.Store.save",
 		} {
-			assert.Falsef(t, got[name], "%q must not be listed", name)
+			assert.Truef(t, got[name], "expected %q to be listed", name)
 		}
 	})
 

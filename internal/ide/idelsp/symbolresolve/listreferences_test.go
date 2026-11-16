@@ -63,16 +63,9 @@ func TestListReferencesGoE2E(t *testing.T) {
 		"iterator.Iterator", "iterator.Map", "iterator.Filter",
 		"manyfiles.Token",
 		"mylib.MyType.String", "mylib.Store.Load",
-	} {
-		assert.Truef(t, got[name], "expected Go reference %q to be listed", name)
-	}
-
-	// Unexported workspace definitions must be filtered by the Go
-	// export predicate.
-	for _, name := range []string{
 		"mylib.unexportedHelper", "iter.privateOnlyDefined", "mylib.Store.save",
 	} {
-		assert.Falsef(t, got[name], "unexported %q must not be listed", name)
+		assert.Truef(t, got[name], "expected Go reference %q to be listed", name)
 	}
 }
 

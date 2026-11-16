@@ -401,7 +401,7 @@ func collectDefinitions(
 			if !ok {
 				break
 			}
-			if r.Text != sym || !spec.exported(r.Text) {
+			if r.Text != sym {
 				continue
 			}
 			add(fileURI.String(), r.From)
@@ -436,7 +436,7 @@ func collectReexportDefs(
 			return it.Err()
 		}
 		uri := r.File.String()
-		if r.Text != sym || !spec.exported(sym) || !spec.isReexportFile(uri) ||
+		if r.Text != sym || !spec.isReexportFile(uri) ||
 			!modulePathHasSuffix(spec.qualifier(qc, uri), pkg) {
 			continue
 		}
@@ -454,9 +454,6 @@ func collectMethodDefinitions(
 	packages map[workspaceapi.URI]string, pkg, typeName, method string,
 	add func(uri string, pos term.Coordinates),
 ) error {
-	if !spec.exported(method) {
-		return nil
-	}
 	files, err := definitionFiles(ctx, parser, spec, qc, packages, pkg)
 	if err != nil {
 		return err
@@ -579,8 +576,7 @@ func reducePackages(
 // skipped; otherwise the qualifier is derived from each file's URI.
 // Nested-module qualifiers stream one name per dotted suffix of the
 // module path, and re-export bindings are streamed as definitions.
-// Names rejected by the spec's export predicate or by keep are skipped.
-// keep may be nil.
+// Names rejected by keep are skipped. keep may be nil.
 func SearchDefinitions(
 	ctx context.Context, parser Searcher, spec *Spec, qc QualifierContext,
 	packages map[workspaceapi.URI]string,
@@ -612,9 +608,6 @@ func SearchDefinitions(
 			pkgName = spec.qualifier(qc, r.File.String())
 		}
 		if pkgName == "" {
-			continue
-		}
-		if !spec.exported(r.Text) {
 			continue
 		}
 		if keep != nil && !keep(r.Text) {
@@ -669,7 +662,7 @@ func SearchMethodDefinitions(
 		} else {
 			pkgName = spec.qualifier(qc, method.File.String())
 		}
-		if pkgName == "" || !spec.exported(method.Text) {
+		if pkgName == "" {
 			continue
 		}
 		for _, q := range moduleSuffixes(pkgName) {
@@ -701,7 +694,7 @@ func searchReexportDefinitions(
 			return iter.Err()
 		}
 		uri := r.File.String()
-		if !spec.isReexportFile(uri) || !spec.exported(r.Text) {
+		if !spec.isReexportFile(uri) {
 			continue
 		}
 		if keep != nil && !keep(r.Text) {

@@ -29,12 +29,12 @@ const (
 
 	metaScanID = "scan"
 
-	// schemaVersion identifies the layout of the persisted partitions.
-	// A database written under a different version is fully re-indexed:
-	// its derived tables (such as the names partition) may not exist,
-	// and per-file records alone cannot rebuild them because unchanged
-	// files are normally skipped.
-	schemaVersion = 6
+	// schemaVersion identifies the layout and indexing rules of the
+	// persisted partitions. A database written under a different
+	// version is fully re-indexed: its derived tables (such as the
+	// names partition) may not exist, and per-file records alone cannot
+	// rebuild them because unchanged files are normally skipped.
+	schemaVersion = 7
 )
 
 // Kinds of stored symbol locations. Lookups prefer refs, then defs,

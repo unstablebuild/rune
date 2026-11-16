@@ -303,14 +303,19 @@ func TestResolveE2E(t *testing.T) {
 			wantErrContains: "no symbols found",
 		},
 		{
-			name:            "unexported workspace symbol is not surfaced",
-			symbol:          "iter.privateOnlyDefined",
-			wantErrContains: "no symbols found",
+			name:     "unexported definition resolves via definitions phase",
+			symbol:   "iter.privateOnlyDefined",
+			wantURIs: []string{iterFileURI},
 		},
 		{
-			name:            "unexported helper in another package is not surfaced",
-			symbol:          "mylib.unexportedHelper",
-			wantErrContains: "no symbols found",
+			name:     "unexported helper in another package resolves via definitions phase",
+			symbol:   "mylib.unexportedHelper",
+			wantURIs: []string{mylibFileURI},
+		},
+		{
+			name:     "unexported method resolves via definitions phase",
+			symbol:   "mylib.Store.save",
+			wantURIs: []string{mylibFileURI},
 		},
 	}
 
@@ -461,7 +466,7 @@ func TestSearchDefinitionsE2E(t *testing.T) {
 		defer close(ch)
 		done <- symbolresolve.SearchDefinitions(
 			context.Background(), env.parser, symbolresolve.Go, env.qc,
-			packages, ch, symbolresolve.IsExported,
+			packages, ch, nil,
 		)
 	}()
 
@@ -479,17 +484,11 @@ func TestSearchDefinitionsE2E(t *testing.T) {
 		"iterator.Iterator", "iterator.Map", "iterator.Filter",
 		"manyfiles.Token", "manyfiles.Use", "manyfiles.Acquire",
 		"nested.Repeated",
-	} {
-		assert.Truef(t, got[name],
-			"expected workspace definition %q to be streamed", name)
-	}
-
-	for _, name := range []string{
 		"mylib.unexportedHelper",
 		"iter.privateOnlyDefined",
 	} {
-		assert.Falsef(t, got[name],
-			"unexported %q must not be streamed", name)
+		assert.Truef(t, got[name],
+			"expected workspace definition %q to be streamed", name)
 	}
 
 	// DefinitionVar is intentionally outside the SearchDefinitions

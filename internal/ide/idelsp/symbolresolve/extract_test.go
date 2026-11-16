@@ -100,11 +100,8 @@ func TestExtractFileGo(t *testing.T) {
 		// m.String(): the selector query requires the operand to be an
 		// imported alias, so local variables never produce references.
 		assert.Zero(t, occs[occurrence{"m.String", symbolresolve.SymbolRef}])
-		// main and useTypes are unexported, so main.go has no defs.
-		for o := range occs {
-			assert.Equalf(t, symbolresolve.SymbolRef, o.kind,
-				"unexpected non-ref %+v", o)
-		}
+		assert.NotZero(t, occs[occurrence{"main.main", symbolresolve.SymbolDef}])
+		assert.NotZero(t, occs[occurrence{"main.useTypes", symbolresolve.SymbolDef}])
 
 		assert.Equal(t, map[string]string{
 			"context": "context",
@@ -123,10 +120,12 @@ func TestExtractFileGo(t *testing.T) {
 			{"mylib.MyFunc", symbolresolve.SymbolDef}:              1,
 			{"mylib.New", symbolresolve.SymbolDef}:                 1,
 			{"mylib.Store", symbolresolve.SymbolDef}:               1,
+			{"mylib.unexportedHelper", symbolresolve.SymbolDef}:    1,
 			{"mylib.MyType.String", symbolresolve.SymbolMethodDef}: 1,
 			{"mylib.MyType.Set", symbolresolve.SymbolMethodDef}:    1,
 			{"mylib.Store.Load", symbolresolve.SymbolMethodDef}:    1,
-		}, occs, "unexportedHelper and Store.save must be excluded")
+			{"mylib.Store.save", symbolresolve.SymbolMethodDef}:    1,
+		}, occs)
 		assert.Empty(t, ext.Imports)
 	})
 
