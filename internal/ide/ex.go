@@ -409,7 +409,7 @@ func (e *ex) init(
 	e.tm = tabs
 	e.comp.SubscribeWindow((*windowSubscriber)(e))
 	vtes := vteregistry.New(e.Browser(), e.Browser(), e.terminal, e.executor, e.tm,
-		vteregistry.Config{VTE: e.emulatorConfig, OnDelete: e.tabAliases.discardStatus})
+		vteregistry.Config{VTE: e.emulatorConfig})
 	e.terminals = newTerminalSessions(vtes, tabs, terminalSessionsConfig{
 		Ctx: e.bgCtx, Publisher: e.Browser(), Notifications: e.notifications,
 		Terminal: e.terminal, VTE: e.emulatorConfig, ReservoirCapacity: initialVTECapacity,

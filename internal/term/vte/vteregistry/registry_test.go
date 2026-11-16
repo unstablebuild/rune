@@ -19,6 +19,7 @@ package vteregistry
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -88,20 +89,6 @@ func (r *recordingTabs) SetTabStatus(_ workspaceapi.URI, report programstatus.Re
 
 func (*recordingTabs) EndTabStatus(workspaceapi.URI) error { return nil }
 
-// hostStates returns the states of the host reports, Clear for the
-// clearing of every record.
-func (r *recordingTabs) hostStates() []programstatus.State {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var ret []programstatus.State
-	for _, report := range r.reports {
-		if report.ID == HostReportID || report.ID == "" && report.State == programstatus.Clear {
-			ret = append(ret, report.State)
-		}
-	}
-	return ret
-}
-
 type nopHost struct{}
 
 func (nopHost) PublishEvent(term.Event) error { return nil }
@@ -121,6 +108,9 @@ type fixture struct {
 	term    *fgTerminal
 	tabs    *recordingTabs
 	deleted chan workspaceapi.URI
+
+	mu      sync.Mutex
+	changes []vte.Change
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -133,11 +123,41 @@ func newFixture(t *testing.T) *fixture {
 	cfg := vte.DefaultConfig()
 	f.r = New(nopHost{}, nopHost{}, f.term, f.term, f.tabs, Config{
 		VTE:          cfg,
-		OnDelete:     func(uri workspaceapi.URI) { f.deleted <- uri },
 		PollInterval: 10 * time.Millisecond,
 	})
+	ctx, cancel := context.WithCancel(context.Background())
+	f.r.Watch(ctx, func(change vte.Change) {
+		f.mu.Lock()
+		f.changes = append(f.changes, change)
+		f.mu.Unlock()
+		if change.Deleted {
+			f.deleted <- change.URI
+		}
+	})
+	t.Cleanup(cancel)
 	t.Cleanup(func() { _ = f.r.Close() })
 	return f
+}
+
+// told returns what the registry told of the detached terminals, in
+// order: the changes that carry what one runs.
+func (f *fixture) told() []vte.Liveness {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var ret []vte.Liveness
+	for _, change := range f.changes {
+		if change.Liveness != vte.LivenessUnknown {
+			ret = append(ret, change.Liveness)
+		}
+	}
+	return ret
+}
+
+// last returns the last change told.
+func (f *fixture) last() vte.Change {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.changes[len(f.changes)-1]
 }
 
 // create returns a new terminal's first attachment and its process.
@@ -183,12 +203,11 @@ func (f *fixture) liveness(t *testing.T, id vte.ID) vte.Liveness {
 	return l
 }
 
-// working waits for the detached terminal to be reported working.
+// working waits for the detached terminal to be told running.
 func (f *fixture) working(t *testing.T) {
 	t.Helper()
 	require.Eventually(t, func() bool {
-		states := f.tabs.hostStates()
-		return len(states) == 1 && states[0] == programstatus.Working
+		return slices.Equal(f.told(), []vte.Liveness{vte.LivenessRunning})
 	}, 5*time.Second, 5*time.Millisecond)
 }
 
@@ -322,7 +341,8 @@ func TestRegistryDetachedTerminal(t *testing.T) {
 	cases := []struct {
 		desc string
 		run  func(t *testing.T, f *fixture, v *attachment, p *workspacetest.Process)
-		want []programstatus.State
+		// want is what the registry tells the detached terminal runs.
+		want []vte.Liveness
 	}{{
 		desc: "an idle shell is detached silently",
 		run: func(t *testing.T, f *fixture, v *attachment, p *workspacetest.Process) {
@@ -335,20 +355,22 @@ func TestRegistryDetachedTerminal(t *testing.T) {
 			}, 5*time.Second, 5*time.Millisecond, "its watcher finds it idle")
 			assert.Equal(t, 0, f.info(t, v.ID()).Attachments)
 		},
+		want: []vte.Liveness{vte.LivenessIdle},
 	}, {
-		desc: "a running job is reported working, then done once the shell is back",
+		desc: "a running job is told running, then idle once the shell is back",
 		run: func(t *testing.T, f *fixture, v *attachment, p *workspacetest.Process) {
 			f.term.fg.Store(job)
 			require.NoError(t, v.Close())
 			f.working(t)
 			f.term.fg.Store(int64(p.Pid))
 			p.Print("$ ")
-			require.Eventually(t, func() bool { return len(f.tabs.hostStates()) == 2 },
+			require.Eventually(t, func() bool { return len(f.told()) == 2 },
 				5*time.Second, 5*time.Millisecond)
 			assert.Equal(t, vte.LivenessIdle, f.liveness(t, v.ID()),
 				"the shell stays once its job is done")
+			assert.False(t, f.last().Complete)
 		},
-		want: []programstatus.State{programstatus.Working, programstatus.Done},
+		want: []vte.Liveness{vte.LivenessRunning, vte.LivenessIdle},
 	}, {
 		desc: "a job's end is found without output",
 		run: func(t *testing.T, f *fixture, v *attachment, p *workspacetest.Process) {
@@ -356,12 +378,12 @@ func TestRegistryDetachedTerminal(t *testing.T) {
 			require.NoError(t, v.Close())
 			f.working(t)
 			f.term.fg.Store(int64(p.Pid))
-			require.Eventually(t, func() bool { return len(f.tabs.hostStates()) == 2 },
+			require.Eventually(t, func() bool { return len(f.told()) == 2 },
 				5*time.Second, 5*time.Millisecond)
 		},
-		want: []programstatus.State{programstatus.Working, programstatus.Done},
+		want: []vte.Liveness{vte.LivenessRunning, vte.LivenessIdle},
 	}, {
-		desc: "attaching it again withdraws the report",
+		desc: "attaching it again stops the watch",
 		run: func(t *testing.T, f *fixture, v *attachment, p *workspacetest.Process) {
 			f.term.fg.Store(job)
 			require.NoError(t, v.Close())
@@ -370,10 +392,11 @@ func TestRegistryDetachedTerminal(t *testing.T) {
 			f.term.fg.Store(int64(p.Pid))
 			time.Sleep(50 * time.Millisecond)
 			assert.Equal(t, 1, f.info(t, again.ID()).Attachments)
+			assert.Equal(t, 1, f.last().Attachments, "the attachment is told")
 		},
-		want: []programstatus.State{programstatus.Working, programstatus.Clear},
+		want: []vte.Liveness{vte.LivenessRunning},
 	}, {
-		desc: "a shell that exits detached is deleted with its records",
+		desc: "a shell that exits detached is deleted",
 		run: func(t *testing.T, f *fixture, v *attachment, p *workspacetest.Process) {
 			f.term.fg.Store(job)
 			require.NoError(t, v.Close())
@@ -390,8 +413,9 @@ func TestRegistryDetachedTerminal(t *testing.T) {
 			require.NoError(t, err)
 			assert.Empty(t, infos)
 			assert.Zero(t, f.tabs.exits, "no tab shows it to drop")
+			assert.True(t, f.last().Deleted, "its deletion is the last change told")
 		},
-		want: []programstatus.State{programstatus.Working, programstatus.Clear},
+		want: []vte.Liveness{vte.LivenessRunning},
 	}}
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
@@ -399,7 +423,7 @@ func TestRegistryDetachedTerminal(t *testing.T) {
 			f := newFixture(t)
 			v, p := f.create(t, 10, 4)
 			tc.run(t, f, v, p)
-			assert.Equal(t, tc.want, f.tabs.hostStates())
+			assert.Equal(t, tc.want, f.told())
 		})
 	}
 }
@@ -442,7 +466,7 @@ func TestRegistryNeverWaitsOnThePtyHost(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("listing or detaching a terminal waited on the host of its pty")
 	}
-	assert.Empty(t, f.tabs.hostStates(), "what it runs is not known yet")
+	assert.Empty(t, f.told(), "what it runs is not known yet")
 
 	answered := make(chan vte.Liveness, 1)
 	go debug.CapturePanicReport(func() {
@@ -469,8 +493,7 @@ func TestRegistryPreview(t *testing.T) {
 	v, _ := f.create(t, 10, 4)
 	f.term.fg.Store(job)
 	require.NoError(t, v.Close())
-	require.Eventually(t, func() bool { return len(f.tabs.hostStates()) == 1 },
-		5*time.Second, 5*time.Millisecond)
+	f.working(t)
 
 	preview, err := f.r.PreviewVTE(context.Background(), v.ID())
 	require.NoError(t, err)
@@ -480,6 +503,7 @@ func TestRegistryPreview(t *testing.T) {
 	assert.Equal(t, v.URI(), info.URI)
 	assert.Equal(t, []int{30, 8}, []int{info.Width, info.Height},
 		"a preview owns the size of a detached terminal")
+	assert.Equal(t, 0, f.last().Attachments, "a preview is no change to the terminal")
 
 	again := f.attach(t, v.ID())
 	again.Resize(20, 6)
@@ -490,9 +514,115 @@ func TestRegistryPreview(t *testing.T) {
 	assert.Equal(t, 6, f.info(t, v.ID()).Height)
 	require.NoError(t, preview.Close())
 	assert.Equal(t, 1, f.info(t, v.ID()).Attachments)
-	assert.Equal(t, []programstatus.State{programstatus.Working, programstatus.Clear},
-		f.tabs.hostStates(), "only attaching withdraws the report")
+	assert.Equal(t, []vte.Liveness{vte.LivenessRunning}, f.told(),
+		"only attaching stops the watch")
+	assert.Equal(t, 1, f.last().Attachments, "only attaching is told")
 
 	_, err = f.r.PreviewVTE(context.Background(), "missing")
 	require.ErrorIs(t, err, vte.ErrNotFound)
+}
+
+func TestRegistryWatch(t *testing.T) {
+	t.Parallel()
+	type change struct {
+		attachments int
+		liveness    vte.Liveness
+		complete    bool
+		deleted     bool
+	}
+	brief := func(changes []vte.Change) []change {
+		var ret []change
+		for _, c := range changes {
+			ret = append(ret, change{c.Attachments, c.Liveness, c.Complete, c.Deleted})
+		}
+		return ret
+	}
+	cases := []struct {
+		desc string
+		// run returns the terminal whose changes are compared.
+		run  func(t *testing.T, f *fixture) vte.ID
+		want []change
+	}{{
+		desc: "creating a terminal",
+		run: func(t *testing.T, f *fixture) vte.ID {
+			v, _ := f.create(t, 10, 4)
+			return v.ID()
+		},
+		want: []change{{attachments: 1}},
+	}, {
+		desc: "each attachment and detachment",
+		run: func(t *testing.T, f *fixture) vte.ID {
+			v, p := f.create(t, 10, 4)
+			f.term.fg.Store(int64(p.Pid))
+			other := f.attach(t, v.ID())
+			require.NoError(t, other.Close())
+			require.NoError(t, v.Close())
+			require.Eventually(t, func() bool { return len(f.told()) == 1 },
+				5*time.Second, 5*time.Millisecond)
+			return v.ID()
+		},
+		want: []change{{attachments: 1}, {attachments: 2}, {attachments: 1},
+			{attachments: 0}, {attachments: 0, liveness: vte.LivenessIdle}},
+	}, {
+		desc: "a shown terminal whose process exits completes",
+		run: func(t *testing.T, f *fixture) vte.ID {
+			v, p := f.create(t, 10, 4)
+			p.HangUp()
+			p.ReportExit(nil)
+			require.Eventually(t, func() bool { return f.last().Complete },
+				5*time.Second, 5*time.Millisecond)
+			return v.ID()
+		},
+		want: []change{{attachments: 1}, {attachments: 1, complete: true}},
+	}, {
+		desc: "deleting a terminal",
+		run: func(t *testing.T, f *fixture) vte.ID {
+			v, _ := f.create(t, 10, 4)
+			require.NoError(t, f.r.DeleteVTE(context.Background(), v.ID()))
+			return v.ID()
+		},
+		want: []change{{attachments: 1}, {deleted: true}},
+	}, {
+		desc: "closing the registry deletes every terminal",
+		run: func(t *testing.T, f *fixture) vte.ID {
+			v, _ := f.create(t, 10, 4)
+			require.NoError(t, f.r.Close())
+			return v.ID()
+		},
+		want: []change{{attachments: 1}, {deleted: true}},
+	}}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			id := tc.run(t, f)
+			f.mu.Lock()
+			var got []vte.Change
+			for _, c := range f.changes {
+				if c.ID == id {
+					got = append(got, c)
+				}
+			}
+			f.mu.Unlock()
+			assert.Equal(t, tc.want, brief(got))
+		})
+	}
+
+	t.Run("a watch ends with its context", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		var n atomic.Int64
+		f.r.Watch(ctx, func(vte.Change) { n.Add(1) })
+		v, _ := f.create(t, 10, 4)
+		assert.Equal(t, int64(1), n.Load())
+		cancel()
+		require.Eventually(t, func() bool {
+			f.r.mu.Lock()
+			defer f.r.mu.Unlock()
+			return len(f.r.watchers) == 1
+		}, 5*time.Second, 5*time.Millisecond, "the watcher is forgotten")
+		require.NoError(t, f.r.DeleteVTE(context.Background(), v.ID()))
+		assert.Equal(t, int64(1), n.Load())
+	})
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/term/programstatus"
+	"unstable.build/rune/internal/term/vte"
 )
 
 // tabManager hands the emulator's tab and status calls to the host,
@@ -41,6 +42,7 @@ func (t tabManager) OnTabExit(uri workspaceapi.URI) bool {
 	if t.c.exited() {
 		return true
 	}
+	t.c.changed(vte.LivenessUnknown)
 	return t.c.r.tm.OnTabExit(uri)
 }
 

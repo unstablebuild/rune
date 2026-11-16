@@ -39,7 +39,6 @@ import (
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
-	"unstable.build/rune/internal/term/vte/vteregistry"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/workspace"
 )
@@ -403,7 +402,7 @@ func TestE2ETerminalDetach(t *testing.T) {
 	}
 	hostState := func(f fixture, uri workspaceapi.URI) programstatus.State {
 		for _, r := range f.b.ex.tabAliases.pending[uri.String()] {
-			if r.ID == vteregistry.HostReportID {
+			if r.ID == hostReportID {
 				return r.State
 			}
 		}

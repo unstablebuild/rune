@@ -24,7 +24,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/debug"
-	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
 )
 
@@ -57,10 +56,6 @@ type canonical struct {
 	width, height int
 	defAttr       term.Attributes
 	destroyed     bool
-	// reported is whether the host report of a detached terminal is
-	// posted, and detachedTitle the title it was posted with.
-	reported      bool
-	detachedTitle string
 	// stopWatch stops the watcher of a detached terminal, if any.
 	stopWatch chan struct{}
 }
@@ -79,15 +74,16 @@ func (c *canonical) attachLocked() *attachment {
 
 func (c *canonical) detach(a *attachment) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if a.preview {
 		delete(c.previews, a)
 		if c.resizeOwner == a {
 			c.resizeOwner = c.nextResizeOwnerLocked()
 		}
+		c.mu.Unlock()
 		return
 	}
 	if _, ok := c.attachments[a]; !ok {
+		c.mu.Unlock()
 		return
 	}
 	delete(c.attachments, a)
@@ -99,12 +95,13 @@ func (c *canonical) detach(a *attachment) {
 			c.followLocked(heir)
 		}
 	}
-	if len(c.attachments) > 0 || c.destroyed {
-		return
+	if len(c.attachments) == 0 && !c.destroyed {
+		// It may be running something the user wants back: list it,
+		// and tell them when it is done.
+		c.startWatchLocked()
 	}
-	// It may be running something the user wants back: list it, and
-	// tell them when it is done.
-	c.startWatchLocked()
+	c.mu.Unlock()
+	c.changed(vte.LivenessUnknown)
 }
 
 // nextResizeOwnerLocked picks the most recently focused attachment,
@@ -146,6 +143,10 @@ func (c *canonical) liveness() vte.Liveness {
 func (c *canonical) info() vte.Info {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.infoLocked()
+}
+
+func (c *canonical) infoLocked() vte.Info {
 	comp := c.h.Component()
 	return vte.Info{
 		ID:             c.id,
@@ -160,26 +161,28 @@ func (c *canonical) info() vte.Info {
 	}
 }
 
-func (c *canonical) hostReport(state programstatus.State) programstatus.Report {
-	report := programstatus.Report{
-		ID: HostReportID, State: state, Progress: -1,
-		App: programstatus.HostApp, Title: c.detachedTitle,
-	}
-	if normalized, err := programstatus.Normalize(report); err == nil {
-		return normalized
-	}
-	report.Title = ""
-	return report
-}
-
-func (c *canonical) report(report programstatus.Report) {
-	_ = c.r.tm.SetTabStatus(c.uri, report)
+// changed tells the registry's watchers of the terminal's state, with l
+// as what it runs when that was just found out. c.mu must not be held:
+// the state is read and told under the registry's notify lock, so
+// watchers see changes in the order they happened.
+func (c *canonical) changed(l vte.Liveness) {
+	c.r.notifyMu.Lock()
+	defer c.r.notifyMu.Unlock()
+	c.mu.Lock()
+	info := c.infoLocked()
+	deleted := c.destroyed
+	c.mu.Unlock()
+	c.r.notify(vte.Change{
+		ID: info.ID, URI: info.URI, Title: info.Title,
+		Attachments: info.Attachments, Liveness: l,
+		Complete: info.Complete, Deleted: deleted,
+	})
 }
 
 // startWatchLocked watches a detached terminal off the event loop, as
-// telling what it runs asks the host of its pty: it is reported working
-// while it runs a program, then done once its shell is idle again. It
-// is checked at once, whenever it prints and every poll interval.
+// telling what it runs asks the host of its pty: the watchers are told
+// it runs a program, then that its shell is idle again. It is checked
+// at once, whenever it prints and every poll interval.
 func (c *canonical) startWatchLocked() {
 	if c.stopWatch != nil {
 		return
@@ -213,34 +216,30 @@ func (c *canonical) stopWatchLocked() {
 	}
 }
 
-// working reports that a detached terminal runs a program.
+// working tells that a detached terminal runs a program.
 func (c *canonical) working(stop chan struct{}) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.stopWatch != stop {
-		// It was attached again, or destroyed, since.
-		return
+	// It may have been attached again, or destroyed, since.
+	current := c.stopWatch == stop
+	c.mu.Unlock()
+	if current {
+		c.changed(vte.LivenessRunning)
 	}
-	c.detachedTitle = c.h.Component().Title()
-	c.reported = true
-	c.report(c.hostReport(programstatus.Working))
 }
 
-// done reports that the program a detached terminal ran ended, if it
-// ran one. The terminal stays: it is still listed and attachable.
+// done tells that a detached terminal is idle: the program it ran, if
+// any, ended. The terminal stays: it is still listed and attachable.
 func (c *canonical) done(stop chan struct{}) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.stopWatch != stop {
-		// It was attached again, or destroyed, since.
-		return
+	// It may have been attached again, or destroyed, since.
+	current := c.stopWatch == stop
+	if current {
+		c.stopWatch = nil
 	}
-	c.stopWatch = nil
-	if !c.reported || c.h.Component().IsComplete() {
-		// It ran nothing, or the shell exited: OnTabExit deletes it.
-		return
+	c.mu.Unlock()
+	if current {
+		c.changed(vte.LivenessIdle)
 	}
-	c.report(c.hostReport(programstatus.Done))
 }
 
 // exited is told that the terminal's process exited. A detached

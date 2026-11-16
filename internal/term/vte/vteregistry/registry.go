@@ -29,30 +29,22 @@ import (
 
 	"github.com/ernestrc/go-multierror"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
-	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/browser"
-	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
 )
-
-// HostReportID is the id of the record a detached terminal is reported
-// under, apart from those its programs report.
-const HostReportID = "detached"
 
 const defaultPollInterval = time.Second
 
 // ErrClosed is returned by a Registry that was closed.
 var ErrClosed = errors.New("vteregistry: closed")
 
+var _ vte.Host = (*Registry)(nil)
+
 // Config configures a Registry.
 type Config struct {
 	// VTE configures every emulator. CreateVTEOptions override its
 	// command and size hints. Its ScheduleNextTick is required.
 	VTE vte.Config
-	// OnDelete, when not nil, is called on the host event loop with
-	// the URI of every terminal DeleteVTE terminated, or that was
-	// terminated as its shell exited while detached.
-	OnDelete func(workspaceapi.URI)
 	// PollInterval is how often a detached terminal running a program
 	// that prints nothing is checked for its shell's prompt. Zero is a
 	// second.
@@ -81,10 +73,16 @@ type Registry struct {
 	tm            browser.TabManager
 	cfg           Config
 
-	mu      sync.Mutex
-	entries map[vte.ID]*canonical
-	closed  bool
+	mu       sync.Mutex
+	entries  map[vte.ID]*canonical
+	watchers map[*watcher]struct{}
+	closed   bool
+	// notifyMu serializes the changes told to watchers, so each sees
+	// them in the order they happened.
+	notifyMu sync.Mutex
 }
+
+type watcher struct{ fn func(vte.Change) }
 
 // New returns an empty Registry. publisher, n, terminal and executor
 // are the collaborators of every emulator, as for [vte.NewHandler].
@@ -92,9 +90,8 @@ type Registry struct {
 // tm receives the tab and status calls of every terminal under the
 // terminal's own URI, attached or not: the host resolves it to the
 // tabs of its attachments, and keeps what a terminal with none reports
-// as a terminal that is no tab. A detached terminal that runs a program
-// is reported there under [HostReportID] with [programstatus.HostApp]:
-// working while it runs, done once its shell is idle again.
+// as a terminal that is no tab. What a detached terminal runs is told
+// to [Registry.Watch]: it is the host's to report.
 func New(
 	publisher browser.EventPublisher, n browser.Notifications,
 	terminal schemeapi.Terminal, executor schemeapi.Executor,
@@ -109,7 +106,8 @@ func New(
 	return &Registry{
 		publisher: publisher, notifications: n,
 		terminal: terminal, executor: executor, tm: tm, cfg: cfg,
-		entries: make(map[vte.ID]*canonical),
+		entries:  make(map[vte.ID]*canonical),
+		watchers: make(map[*watcher]struct{}),
 	}
 }
 
@@ -171,6 +169,7 @@ func (r *Registry) CreateVTE(
 	}
 	r.entries[c.id] = c
 	r.mu.Unlock()
+	c.changed(vte.LivenessUnknown)
 	return a, nil
 }
 
@@ -184,18 +183,17 @@ func (r *Registry) AttachVTE(
 		return nil, vte.ErrNotFound
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.destroyed {
+		c.mu.Unlock()
 		return nil, vte.ErrNotFound
 	}
 	if len(c.attachments) == 0 {
 		c.stopWatchLocked()
-		if c.reported {
-			c.reported = false
-			c.report(programstatus.Report{ID: HostReportID, State: programstatus.Clear})
-		}
 	}
-	return c.attachLocked(), nil
+	a := c.attachLocked()
+	c.mu.Unlock()
+	c.changed(vte.LivenessUnknown)
+	return a, nil
 }
 
 // PreviewVTE returns a view of the terminal id that leaves it detached:
@@ -260,9 +258,8 @@ func (r *Registry) VTELiveness(
 }
 
 // DeleteVTE terminates the terminal id: it closes every attachment, its
-// pty and its process, clears the records its programs reported, and
-// forgets it. It returns [vte.ErrNotFound] when there is none
-// with that id.
+// pty and its process, and forgets it. It returns
+// [vte.ErrNotFound] when there is none with that id.
 func (r *Registry) DeleteVTE(_ context.Context, id vte.ID) error {
 	r.mu.Lock()
 	c, ok := r.entries[id]
@@ -272,12 +269,38 @@ func (r *Registry) DeleteVTE(_ context.Context, id vte.ID) error {
 		return vte.ErrNotFound
 	}
 	err := c.destroy()
-	c.report(programstatus.Report{State: programstatus.Clear})
-	if r.cfg.OnDelete != nil {
-		uri := c.uri
-		r.schedule(func() { r.cfg.OnDelete(uri) })
-	}
+	c.changed(vte.LivenessUnknown)
 	return err
+}
+
+// Watch calls fn with every change to a terminal's attachments, with
+// its creation, completion and deletion, and with what it runs when
+// the registry finds out while it is detached, until ctx ends. fn may
+// be called from any goroutine, never two at once, and must return
+// promptly without calling back into the registry.
+func (r *Registry) Watch(ctx context.Context, fn func(vte.Change)) {
+	w := &watcher{fn: fn}
+	r.mu.Lock()
+	r.watchers[w] = struct{}{}
+	r.mu.Unlock()
+	context.AfterFunc(ctx, func() {
+		r.mu.Lock()
+		delete(r.watchers, w)
+		r.mu.Unlock()
+	})
+}
+
+// notify tells every watcher of change.
+func (r *Registry) notify(change vte.Change) {
+	r.mu.Lock()
+	watchers := make([]*watcher, 0, len(r.watchers))
+	for w := range r.watchers {
+		watchers = append(watchers, w)
+	}
+	r.mu.Unlock()
+	for _, w := range watchers {
+		w.fn(change)
+	}
 }
 
 // Close terminates every terminal. Later calls fail with [ErrClosed].
@@ -296,6 +319,7 @@ func (r *Registry) Close() error {
 		if err := c.destroy(); err != nil {
 			errs = multierror.Append(errs, err)
 		}
+		c.changed(vte.LivenessUnknown)
 	}
 	return errs
 }

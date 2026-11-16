@@ -18,6 +18,7 @@ package ide
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -61,7 +62,7 @@ func useTestVTEs(t *testing.T, e *ex) *fgPtyExecutor {
 	cfg := e.terminals.cfg
 	cfg.Terminal, cfg.ReservoirCapacity = exe, 0
 	vtes := vteregistry.New(e.Browser(), e.Browser(), exe, exe, e.tm,
-		vteregistry.Config{VTE: cfg.VTE, OnDelete: e.tabAliases.discardStatus})
+		vteregistry.Config{VTE: cfg.VTE})
 	e.terminals = newTerminalSessions(vtes, e.terminals.tabs, cfg)
 	e.newEmulatorHandler = func(args []string) (vte.View, error) {
 		return e.terminals.open(args), nil
@@ -116,7 +117,7 @@ func newSessionsFixture(t *testing.T, reservoirCapacity int) *sessionsFixture {
 	ctx, f.cancel = context.WithCancel(context.Background())
 	tabs := newTestTerminalTabs(f.loop)
 	vtes := vteregistry.New(nopTerminalHost{}, nopTerminalHost{}, f.exe, f.exe, tabs,
-		vteregistry.Config{VTE: cfg, OnDelete: tabs.discardStatus})
+		vteregistry.Config{VTE: cfg})
 	f.s = newTerminalSessions(vtes, tabs, terminalSessionsConfig{
 		Ctx: ctx, Publisher: nopTerminalHost{}, Notifications: nopTerminalHost{},
 		Terminal: f.exe, VTE: cfg, ReservoirCapacity: reservoirCapacity,
@@ -219,6 +220,195 @@ func terminalIDs(infos []vte.Info) []vte.ID {
 		ret = append(ret, info.ID)
 	}
 	return ret
+}
+
+// fakeVTEHost is a vte.Host of no terminals that tells its watchers the
+// changes a test feeds it.
+type fakeVTEHost struct {
+	mu       sync.Mutex
+	watchers map[*func(vte.Change)]struct{}
+	closed   bool
+}
+
+func newFakeVTEHost() *fakeVTEHost {
+	return &fakeVTEHost{watchers: make(map[*func(vte.Change)]struct{})}
+}
+
+func (o *fakeVTEHost) CreateVTE(context.Context, vte.CreateOptions) (vte.View, error) {
+	return nil, errors.ErrUnsupported
+}
+
+func (o *fakeVTEHost) AttachVTE(context.Context, vte.ID) (vte.View, error) {
+	return nil, vte.ErrNotFound
+}
+
+func (o *fakeVTEHost) PreviewVTE(context.Context, vte.ID) (vte.View, error) {
+	return nil, vte.ErrNotFound
+}
+
+func (o *fakeVTEHost) ListVTEs(context.Context) ([]vte.Info, error) {
+	return nil, nil
+}
+
+func (o *fakeVTEHost) VTELiveness(context.Context, vte.ID) (vte.Liveness, error) {
+	return vte.LivenessUnknown, vte.ErrNotFound
+}
+
+func (o *fakeVTEHost) DeleteVTE(context.Context, vte.ID) error {
+	return vte.ErrNotFound
+}
+
+func (o *fakeVTEHost) Watch(ctx context.Context, fn func(vte.Change)) {
+	o.mu.Lock()
+	o.watchers[&fn] = struct{}{}
+	o.mu.Unlock()
+	context.AfterFunc(ctx, func() {
+		o.mu.Lock()
+		delete(o.watchers, &fn)
+		o.mu.Unlock()
+	})
+}
+
+func (o *fakeVTEHost) Close() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.closed = true
+	return nil
+}
+
+// tell tells the watchers of change.
+func (o *fakeVTEHost) tell(change vte.Change) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for fn := range o.watchers {
+		(*fn)(change)
+	}
+}
+
+func (o *fakeVTEHost) watching() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.watchers)
+}
+
+// newFakeVTEHostSessions returns a terminalSessions over owner, whose
+// event loop is the test goroutine.
+func newFakeVTEHostSessions(t *testing.T, owner *fakeVTEHost) (*terminalSessions, *queuedScheduler) {
+	t.Helper()
+	loop := newQueuedScheduler()
+	cfg := vte.DefaultConfig()
+	cfg.ScheduleNextTick = loop.ScheduleNextTick
+	s := newTerminalSessions(owner, newTestTerminalTabs(loop), terminalSessionsConfig{
+		Ctx: context.Background(), Publisher: nopTerminalHost{}, Notifications: nopTerminalHost{},
+		VTE: cfg,
+	})
+	return s, loop
+}
+
+func TestTerminalSessionsOnChange(t *testing.T) {
+	t.Parallel()
+	const id vte.ID = "abc"
+	uri := mustURI(t, "terminal:///abc")
+	running := vte.Change{ID: id, URI: uri, Title: "make", Liveness: vte.LivenessRunning}
+	idle := vte.Change{ID: id, URI: uri, Title: "zsh", Liveness: vte.LivenessIdle}
+	attached := vte.Change{ID: id, URI: uri, Title: "zsh", Attachments: 1}
+	deleted := vte.Change{ID: id, URI: uri, Deleted: true}
+	type report struct {
+		state programstatus.State
+		title string
+	}
+	cases := []struct {
+		desc    string
+		changes []vte.Change
+		// want is what the terminal is reported under its own URI.
+		want []report
+		// wantReported is whether the host record is posted after.
+		wantReported bool
+		// wantClosed is whether the terminal's records are discarded.
+		wantClosed bool
+	}{{
+		desc:         "a detached job is reported working",
+		changes:      []vte.Change{running},
+		want:         []report{{programstatus.Working, "make"}},
+		wantReported: true,
+	}, {
+		desc:         "then done, titled as it ran",
+		changes:      []vte.Change{running, idle},
+		want:         []report{{programstatus.Done, "make"}},
+		wantReported: true,
+	}, {
+		desc:         "a job still running is reported once",
+		changes:      []vte.Change{running, {ID: id, URI: uri, Title: "other", Liveness: vte.LivenessRunning}},
+		want:         []report{{programstatus.Working, "make"}},
+		wantReported: true,
+	}, {
+		desc:    "a detached shell at its prompt reports nothing",
+		changes: []vte.Change{idle},
+	}, {
+		desc:    "attaching a job again withdraws the record",
+		changes: []vte.Change{running, attached},
+	}, {
+		desc:    "attaching a done job withdraws the record",
+		changes: []vte.Change{running, idle, attached},
+	}, {
+		desc: "a shell that exited is not reported done",
+		changes: []vte.Change{running,
+			{ID: id, URI: uri, Liveness: vte.LivenessIdle, Complete: true}},
+		want:         []report{{programstatus.Working, "make"}},
+		wantReported: true,
+	}, {
+		desc:       "deleting a job discards its records",
+		changes:    []vte.Change{running, deleted},
+		wantClosed: true,
+	}, {
+		desc: "a shown terminal reports nothing",
+		changes: []vte.Change{attached, {ID: id, URI: uri, Attachments: 2},
+			{ID: id, URI: uri, Attachments: 1, Complete: true}},
+	}}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+			owner := newFakeVTEHost()
+			s, loop := newFakeVTEHostSessions(t, owner)
+			t.Cleanup(func() { assert.NoError(t, s.close()) })
+			for _, change := range tc.changes {
+				before := slices.Clone(s.tabs.pending[uri.String()])
+				owner.tell(change)
+				assert.Equal(t, before, s.tabs.pending[uri.String()], "it is acted on on the event loop")
+				loop.Flush(nil)
+			}
+			var got []report
+			for _, r := range s.tabs.pending[uri.String()] {
+				got = append(got, report{r.State, r.Title})
+				assert.Equal(t, hostReportID, r.ID)
+				assert.Equal(t, programstatus.HostApp, r.App)
+			}
+			assert.Equal(t, tc.want, got)
+			_, reported := s.reported[id]
+			assert.Equal(t, tc.wantReported, reported)
+			assert.Equal(t, tc.wantClosed, s.tabs.closed[uri.String()])
+		})
+	}
+}
+
+func TestTerminalSessionsOwner(t *testing.T) {
+	t.Parallel()
+	owner := newFakeVTEHost()
+	s, loop := newFakeVTEHostSessions(t, owner)
+	assert.Same(t, owner, s.vtes, "the configured owner holds the terminals")
+	assert.Equal(t, 1, owner.watching(), "its changes are followed")
+	assert.Nil(t, s.reservoir, "no shell is kept warm without a capacity")
+
+	av := s.open(nil)
+	loop.Flush(nil)
+	s.wait()
+	loop.Flush(nil)
+	assert.True(t, av.IsComplete(), "a view the owner cannot serve fails")
+
+	require.NoError(t, s.close())
+	assert.True(t, owner.closed)
+	require.Eventually(t, func() bool { return owner.watching() == 0 },
+		5*time.Second, 5*time.Millisecond, "closing stops following the owner")
 }
 
 func TestTerminalSessionsList(t *testing.T) {

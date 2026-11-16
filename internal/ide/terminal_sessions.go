@@ -34,10 +34,14 @@ import (
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/handler/command"
+	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
-	"unstable.build/rune/internal/term/vte/vteregistry"
 	"unstable.build/rune/internal/term/vte/vtereservoir"
 )
+
+// hostReportID is the id of the record a detached terminal is reported
+// under, apart from those its programs report.
+const hostReportID = "detached"
 
 // terminalSessionsConfig is what terminalSessions needs of the
 // workspace whose terminals it keeps.
@@ -67,7 +71,7 @@ type terminalSessionsConfig struct {
 // which may be remote, runs off it and calls back on it.
 type terminalSessions struct {
 	cfg       terminalSessionsConfig
-	vtes      *vteregistry.Registry
+	vtes      vte.Host
 	reservoir *vtereservoir.Facility
 	// tabs is the TabManager the terminals of vtes report to: it routes
 	// the tab and status calls a terminal makes under its own URI to
@@ -77,6 +81,12 @@ type terminalSessions struct {
 	// preview is the view the status inbox shows a detached terminal
 	// with.
 	preview vte.View
+	// reported holds, by terminal, the title the record of a detached
+	// terminal that ran a program was posted with, until a view
+	// attaches it again.
+	reported map[vte.ID]string
+	// stopWatch stops following the changes of vtes.
+	stopWatch context.CancelFunc
 	// inflight tracks the goroutines that start terminals and that ask
 	// what they run. Test-only synchronization point.
 	inflight sync.WaitGroup
@@ -85,13 +95,65 @@ type terminalSessions struct {
 // newTerminalSessions keeps the terminals of vtes, which report to
 // tabs. Closing it closes vtes.
 func newTerminalSessions(
-	vtes *vteregistry.Registry, tabs failedTerminalKeeper, cfg terminalSessionsConfig,
+	vtes vte.Host, tabs failedTerminalKeeper, cfg terminalSessionsConfig,
 ) *terminalSessions {
-	s := &terminalSessions{cfg: cfg, vtes: vtes, tabs: tabs}
+	s := &terminalSessions{cfg: cfg, vtes: vtes, tabs: tabs, reported: make(map[vte.ID]string)}
+	// The terminals tell their changes from any goroutine; they are
+	// acted on on the event loop, in order. The watch outlives Ctx: a
+	// terminal detached while the workspace closes is still reported.
+	var watchCtx context.Context
+	watchCtx, s.stopWatch = context.WithCancel(context.Background())
+	vtes.Watch(watchCtx, func(change vte.Change) {
+		cfg.VTE.ScheduleNextTick(func() { s.onChange(change) })
+	})
 	if cfg.ReservoirCapacity != 0 {
 		s.reservoir = s.newReservoir()
 	}
 	return s
+}
+
+// onChange reports a detached terminal that runs a program under
+// hostReportID with [programstatus.HostApp]: working while it runs,
+// done once its shell is idle again, withdrawn when a view attaches it
+// again. A deleted terminal's records go with it.
+func (s *terminalSessions) onChange(change vte.Change) {
+	title, reported := s.reported[change.ID]
+	switch {
+	case change.Deleted:
+		delete(s.reported, change.ID)
+		s.tabs.discardStatus(change.URI)
+	case change.Attachments > 0:
+		if reported {
+			delete(s.reported, change.ID)
+			_ = s.tabs.SetTabStatus(change.URI,
+				programstatus.Report{ID: hostReportID, State: programstatus.Clear})
+		}
+	case change.Liveness == vte.LivenessRunning:
+		if !reported {
+			s.reported[change.ID] = change.Title
+			_ = s.tabs.SetTabStatus(change.URI, hostReport(programstatus.Working, change.Title))
+		}
+	case change.Liveness == vte.LivenessIdle:
+		// A shell that exited has nothing to report done: its deletion
+		// follows.
+		if reported && !change.Complete {
+			_ = s.tabs.SetTabStatus(change.URI, hostReport(programstatus.Done, title))
+		}
+	}
+}
+
+// hostReport is the record of a detached terminal that ran the program
+// titled title.
+func hostReport(state programstatus.State, title string) programstatus.Report {
+	report := programstatus.Report{
+		ID: hostReportID, State: state, Progress: -1,
+		App: programstatus.HostApp, Title: title,
+	}
+	if normalized, err := programstatus.Normalize(report); err == nil {
+		return normalized
+	}
+	report.Title = ""
+	return report
 }
 
 func (s *terminalSessions) newReservoir() *vtereservoir.Facility {
@@ -469,7 +531,9 @@ func (s *terminalSessions) close() error {
 	if s.reservoir != nil {
 		err = s.reservoir.Close()
 	}
-	return errors.Join(err, s.vtes.Close())
+	err = errors.Join(err, s.vtes.Close())
+	s.stopWatch()
+	return err
 }
 
 func (s *terminalSessions) log(level log.Level, msg string, args ...any) {
