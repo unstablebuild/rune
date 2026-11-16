@@ -566,6 +566,7 @@ func (i *IDE) init(
 		panic("ide.init: nil trust store")
 	}
 	op := newOptions(opts...)
+	op.dataDir = dataDir
 	i.options = op
 
 	defaultCfg := newDefaultConfig(op)
@@ -705,7 +706,7 @@ func (i *IDE) init(
 		op.extensionRunner, trust, i.locker, op.extensions, func() (ideConfig, error) {
 			// Every reload applies the user config's sounds, which is
 			// how workspacereload and package installs pick them up.
-			cfg, err := reloadConfig(cfgfilename,
+			cfg, err := reloadConfig(cfgfilename, dataDir,
 				op.logo, defaultCfg, i.soundRegistry, op.scheduleFn)
 			cfg.applySounds(i.soundRegistry, dataDir)
 			cfg.storage = i.ideConfig.storage
@@ -837,7 +838,7 @@ func loadIDEConfig(
 	cfgfilename string, op options, player sounds.Player,
 ) (ideConfig, error) {
 	var cfg ideConfig
-	err := loadConfig(&cfg, cfgfilename,
+	err := loadConfig(&cfg, cfgfilename, op.dataDir,
 		op.logo, newDefaultConfig(op), player,
 		op.scheduleFn)
 	cfg.cellPixelSize = op.cellPixelSize

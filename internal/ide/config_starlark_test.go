@@ -260,7 +260,7 @@ func TestStarlarkConfigLoadsFromFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(starlarkSampleConfig), 0o644))
 
 	c := &ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
-	require.NoError(t, loadFileConfig(c, path))
+	require.NoError(t, loadFileConfig(c, path, ""))
 	assert.Equal(t, "info", c.cfg["log_level"])
 }
 
@@ -270,7 +270,7 @@ func TestYAMLConfigLoadsFromFileByExtension(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("log_level: info\n"), 0o644))
 
 	c := &ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
-	require.NoError(t, loadFileConfig(c, path))
+	require.NoError(t, loadFileConfig(c, path, ""))
 	assert.Equal(t, "info", c.cfg["log_level"])
 }
 
@@ -477,7 +477,7 @@ func TestRuneStarAsDefaultConfig(t *testing.T) {
 	data := readRuneStar(t)
 
 	var cfg ideConfig
-	require.NoError(t, loadConfig(&cfg, "nonExistent", nil,
+	require.NoError(t, loadConfig(&cfg, "nonExistent", "", nil,
 		DefaultConfig{
 			src:   string(data),
 			modal: true,
@@ -700,7 +700,7 @@ func TestLoadConfigStarUserOverlayPreservesEmbeddedRuneStar(t *testing.T) {
 		[]byte(`config = {"log_level": "debug"}`), 0o644))
 
 	var cfg ideConfig
-	require.NoError(t, loadConfig(&cfg, userPath, nil,
+	require.NoError(t, loadConfig(&cfg, userPath, "", nil,
 		DefaultConfig{
 			src:   string(data),
 			modal: true,
@@ -801,7 +801,7 @@ func TestHelixPresetLoads(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, preset, 0o644))
 	var cfg ideConfig
-	require.NoError(t, loadConfig(&cfg, path, nil,
+	require.NoError(t, loadConfig(&cfg, path, "", nil,
 		DefaultConfig{src: string(readRuneStar(t)), modal: true},
 		sounds.Silent, term.ScheduleNextTick))
 
@@ -871,7 +871,7 @@ func newTestFileWorkspace(t *testing.T, dir string) workspace.Workspace {
 func loadTestUserConfig(t *testing.T) ideConfig {
 	t.Helper()
 	var cfg ideConfig
-	require.NoError(t, loadConfig(&cfg, filepath.Join(t.TempDir(), "config.yaml"), nil,
+	require.NoError(t, loadConfig(&cfg, filepath.Join(t.TempDir(), "config.yaml"), "", nil,
 		DefaultConfig{src: string(readRuneStar(t)), modal: true},
 		sounds.Silent, term.ScheduleNextTick))
 	return cfg
@@ -1085,7 +1085,7 @@ config["editor"]["modal"]["message_bar"] = {"attr": {"fg": "white", "bg": "navy"
 			require.NoError(t, os.WriteFile(userPath, []byte(user.src), 0o644))
 		}
 		var cfg ideConfig
-		require.NoError(t, loadConfig(&cfg, userPath, nil,
+		require.NoError(t, loadConfig(&cfg, userPath, "", nil,
 			DefaultConfig{src: string(runeStar), modal: true},
 			sounds.Silent, term.ScheduleNextTick))
 		if ws.name == "" {
@@ -1142,7 +1142,7 @@ func TestVimSettingsSectionMalformed(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yaml")
 			require.NoError(t, os.WriteFile(path, []byte(tt.src), 0o644))
 			var cfg ideConfig
-			require.NoError(t, loadConfig(&cfg, path, nil,
+			require.NoError(t, loadConfig(&cfg, path, "", nil,
 				DefaultConfig{src: string(runeStar), modal: true},
 				sounds.Silent, term.ScheduleNextTick))
 			cfg.vimAttr()

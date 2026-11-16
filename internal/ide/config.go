@@ -30,6 +30,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
@@ -408,7 +409,11 @@ type ideConfig struct {
 	// wallpaper. Nil when the IDE was given none.
 	logo *Logo
 
-	configPath       string
+	configPath string
+	// includedFiles holds the absolute path of every file the config was
+	// loaded from, configPath first, then the files it includes in the
+	// order they were read. Empty when configPath does not exist.
+	includedFiles    []string
 	cfg              map[string]any
 	errors           map[string]error
 	sounds           sounds.Player
@@ -6394,10 +6399,12 @@ func copyConfigValue(val any) any {
 	}
 }
 
-// decodeOverlayConfigFile decodes a user override document and
-// deep-merges it onto base, identically for both Starlark and YAML.
-// A top-level rebind in Starlark (config = {...}) is treated as a
-// fresh overlay, not a replacement, mirroring YAML semantics.
+// decodeOverlayConfigFile decodes an override document that may not
+// include other files, a workspace config, and deep-merges it onto base,
+// identically for both Starlark and YAML. A top-level rebind in Starlark
+// (config = {...}) is treated as a fresh overlay, not a replacement,
+// mirroring YAML semantics. A YAML include key is an error, and the
+// Starlark include function is undefined.
 func decodeOverlayConfigFile(
 	r io.Reader, filename string, base map[string]any,
 ) (map[string]any, error) {
@@ -6425,17 +6432,20 @@ func decodeOverlayConfigFile(
 	if err := yaml.NewDecoder(bytes.NewReader(src)).Decode(&overrides); err != nil {
 		return nil, err
 	}
+	if _, ok := overrides[includeKey]; ok {
+		return nil, fmt.Errorf("%s is not allowed in %s", includeKey, filename)
+	}
 	foldVimSection(overrides, nil)
 	overrideConfig(base, overrides)
 	return base, nil
 }
 
 func reloadConfig(
-	configFilePath string, logo *Logo,
+	configFilePath, dataDir string, logo *Logo,
 	defaultConfig DefaultConfig,
 	player sounds.Player, scheduleNextTick func(func()) bool,
 ) (ret ideConfig, err error) {
-	err = loadConfig(&ret, configFilePath,
+	err = loadConfig(&ret, configFilePath, dataDir,
 		logo, defaultConfig, player,
 		scheduleNextTick)
 	return
@@ -6510,8 +6520,12 @@ func overlayWorkspaceConfig(
 
 // NOTE: it's imperative that this function populates c with sane defaults even in the event
 // of an error.
+//
+// dataDir is the data directory $RUNE_DATADIR names in include paths and
+// whose etc directory holds package configs; empty means the directory of
+// configPath.
 func loadConfig(
-	c *ideConfig, configPath string,
+	c *ideConfig, configPath, dataDir string,
 	logo *Logo,
 	defaultConfig DefaultConfig,
 	player sounds.Player, scheduleNextTick func(func()) bool,
@@ -6527,7 +6541,7 @@ func loadConfig(
 	initConfig(c, cfg, logo, player,
 		scheduleNextTick, configPath)
 
-	if err := loadFileConfig(c, configPath); err != nil {
+	if err := loadFileConfig(c, configPath, dataDir); err != nil {
 		return err
 	}
 
@@ -6555,21 +6569,22 @@ func decodeDefaultConfig(d DefaultConfig) (map[string]any, error) {
 	return cfg, nil
 }
 
-func loadFileConfig(c *ideConfig, configPath string) (err error) {
-	f, err := workspace.OpenFile(configPath, os.O_RDONLY, 0)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
+// loadFileConfig layers the config file at configPath and the files it
+// includes onto c. A missing configPath leaves c as it is. Problems that
+// do not stop the load are recorded in c.errors.
+func loadFileConfig(c *ideConfig, configPath, dataDir string) (err error) {
+	if dataDir == "" {
+		dataDir = filepath.Dir(configPath)
 	}
-	defer f.Close()
-
-	cfg, err := decodeOverlayConfigFile(f, configPath, c.cfg)
+	loader := newIncludeLoader(dataDir, func(key string, err error) {
+		c.errors[key] = err
+	})
+	cfg, err := loader.overlayRoot(configPath, c.cfg)
 	if err != nil {
 		return err
 	}
 	c.cfg = cfg
+	c.includedFiles = loader.files
 	return nil
 }
 

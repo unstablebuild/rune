@@ -22,7 +22,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/console/upgradeconsole"
 )
 
@@ -34,7 +33,7 @@ func TestUpgradeAliasTargetsConsoleCommand(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.star")
 	require.NoError(t, os.WriteFile(path, nil, 0o644))
 
-	cfg, err := ide.Config(path, runeDefaultConfig())
+	cfg, err := rootConfig(path)
 	require.NoError(t, err)
 	command, err := cfg.GetConfig("command")
 	require.NoError(t, err)

@@ -1477,10 +1477,13 @@ func loneSubdir(dir string) (string, bool) {
 	return filepath.Join(dir, entries[0].Name()), true
 }
 
-// idePkgStarlarkParams binds RUNE_DATADIR to its own placeholder so a
-// config.star that builds paths from it yields "$RUNE_DATADIR/..." and the
-// host that uses the value resolves it.
-func idePkgStarlarkParams(
+// StarlarkParams returns the predeclared globals of a package's
+// config.star: RUNE_DATADIR, RUNE_PKG_ID, RUNE_PKG_VERSION and
+// RUNE_EDITOR_MODE. RUNE_DATADIR is bound to its own placeholder so a
+// script that builds paths from it yields "$RUNE_DATADIR/..." and the host
+// that uses the value resolves it. Empty pkgID, pkgVersion and editorMode
+// leave their globals undefined.
+func StarlarkParams(
 	pkgID string, pkgVersion release.Version, editorMode string,
 ) map[string]any {
 	params := map[string]any{"RUNE_DATADIR": "$" + hostenv.DataDirVar}
@@ -1512,7 +1515,7 @@ func loadIdePkgConfigFromBytes(
 		cfg, err := starlarkconfig.Decode(starlarkconfig.Source{
 			Src:      data,
 			Filename: filename,
-			Params:   idePkgStarlarkParams(pkgID, pkgVersion, editorMode),
+			Params:   StarlarkParams(pkgID, pkgVersion, editorMode),
 			Base:     base,
 		})
 		if errors.Is(err, starlarkconfig.ErrMissingConfig) {
@@ -1538,7 +1541,7 @@ func loadIdePkgConfigOverlay(
 		return starlarkconfig.Decode(starlarkconfig.Source{
 			Src:      data,
 			Filename: filename,
-			Params:   idePkgStarlarkParams(pkgID, pkgVersion, editorMode),
+			Params:   StarlarkParams(pkgID, pkgVersion, editorMode),
 			Base:     base,
 		})
 	}
@@ -2180,6 +2183,24 @@ func makePackageLibDirname(
 	dataDir, pkgID string,
 ) string {
 	return filepath.Join(dataDir, "lib", pkgID)
+}
+
+// PackageLibDir returns the path of the symlink that names the in-use
+// version of pkgID, <dataDir>/lib/<pkgID>. The symlink is absent when no
+// version is in use.
+func PackageLibDir(dataDir, pkgID string) string {
+	return makePackageLibDirname(dataDir, pkgID)
+}
+
+// EtcDir returns the directory the package manager writes the config of
+// each installed package to, <dataDir>/etc. The config of a package is at
+// <pkgID>.yaml or <pkgID>.star under it.
+func EtcDir(dataDir string) string {
+	return makeEtcDirname(dataDir)
+}
+
+func makeEtcDirname(dataDir string) string {
+	return filepath.Join(dataDir, "etc")
 }
 
 func makeStagingDirname(dataDir, pkgID string, version release.Version) string {

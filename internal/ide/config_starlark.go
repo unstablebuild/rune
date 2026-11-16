@@ -20,17 +20,19 @@ import (
 	"unstable.build/rune/internal/ide/starlarkconfig"
 )
 
-// starlarkConfigSource is a thin in-package alias over ideconfig.Source so
+// starlarkConfigSource is a thin in-package alias over starlarkconfig.Source so
 // existing call sites and tests can keep using lowercase fields.
 type starlarkConfigSource struct {
 	src      []byte
 	filename string
 	params   map[string]any
 	base     map[string]any
+	// include is starlarkconfig.Source.Include.
+	include func(path string, current map[string]any) (map[string]any, error)
 }
 
 // decodeStarlarkConfig parses and executes src via the shared
-// ide/ideconfig decoder. See ideconfig.Source for the two modes.
+// starlarkconfig decoder. See starlarkconfig.Source for the two modes.
 func decodeStarlarkConfig(s starlarkConfigSource) (map[string]any, error) {
 	filename := s.filename
 	if filename == "" {
@@ -41,5 +43,6 @@ func decodeStarlarkConfig(s starlarkConfigSource) (map[string]any, error) {
 		Filename: filename,
 		Params:   s.params,
 		Base:     s.base,
+		Include:  s.include,
 	})
 }

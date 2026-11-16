@@ -74,7 +74,7 @@ func planConfigChange(
 	}
 	// requirements is package metadata consumed at install time; it
 	// must never reach the user config.
-	delete(pkgOverlayCfg, requirementsKey)
+	delete(pkgOverlayCfg, RequirementsKey)
 	if len(pkgOverlayCfg) == 0 {
 		return configChangePlan{}, nil
 	}

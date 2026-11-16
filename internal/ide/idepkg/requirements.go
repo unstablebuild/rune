@@ -24,11 +24,11 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 )
 
-// requirementsKey is the top-level package config key listing Rune
+// RequirementsKey is the top-level package config key listing Rune
 // package IDs that must be installed before the declaring package. It
-// is package metadata: it is consumed at install time and stripped
-// before the overlay merges into the user config.
-const requirementsKey = "requirements"
+// is package metadata: it is consumed at install time and the config
+// loader drops it from the package's config.
+const RequirementsKey = "requirements"
 
 // pkgConfigRequirements parses the top-level `requirements` list from a
 // package config overlay (config.yaml or config.star). It returns nil
@@ -45,7 +45,7 @@ func pkgConfigRequirements(
 	if err != nil {
 		return nil, fmt.Errorf("decode package config: %w", err)
 	}
-	raw, ok := cfg[requirementsKey]
+	raw, ok := cfg[RequirementsKey]
 	if !ok {
 		return nil, nil
 	}

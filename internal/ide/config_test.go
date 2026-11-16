@@ -1941,7 +1941,7 @@ func TestConfigDecodeError(t *testing.T) {
 	}
 	ret.sounds = sounds.Silent
 	ret.scheduleNextTick = term.ScheduleNextTick
-	err = loadFileConfig(&ret, f.Name())
+	err = loadFileConfig(&ret, f.Name(), "")
 	assert.Error(t, err)
 	assertDefaultConfig(t, &ret)
 }
@@ -3156,7 +3156,7 @@ func TestConfigWindowBarGraphics(t *testing.T) {
 
 func TestLoadEmbededConfig(t *testing.T) {
 	var cfg ideConfig
-	err := loadConfig(&cfg, "nonExistent", nil,
+	err := loadConfig(&cfg, "nonExistent", "", nil,
 		DefaultConfig{src: "config = {}"},
 		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
@@ -3859,7 +3859,7 @@ func TestShellMaxHistoryFromConfig(t *testing.T) {
 	require.NoError(t, f.Close())
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), nil,
+	err = loadConfig(&cfg, f.Name(), "", nil,
 		DefaultConfig{src: "config = {}"},
 		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
@@ -3880,7 +3880,7 @@ func TestShellModalStartInsertFromConfig(t *testing.T) {
 	require.NoError(t, f.Close())
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), nil,
+	err = loadConfig(&cfg, f.Name(), "", nil,
 		DefaultConfig{src: "config = {}"},
 		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
@@ -3901,7 +3901,7 @@ func TestShellModalStartInsertDefaultsTrue(t *testing.T) {
 	require.NoError(t, f.Close())
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), nil,
+	err = loadConfig(&cfg, f.Name(), "", nil,
 		DefaultConfig{src: "config = {}"},
 		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
@@ -3922,7 +3922,7 @@ func TestConsolePromptFromConfig(t *testing.T) {
 	require.NoError(t, f.Close())
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), nil,
+	err = loadConfig(&cfg, f.Name(), "", nil,
 		DefaultConfig{src: "config = {}"},
 		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
@@ -3944,7 +3944,7 @@ func TestConsolePromptDefaultsEmpty(t *testing.T) {
 	require.NoError(t, f.Close())
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), nil,
+	err = loadConfig(&cfg, f.Name(), "", nil,
 		DefaultConfig{src: "config = {}"},
 		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
@@ -4002,7 +4002,7 @@ command:
 	require.NoError(t, err)
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), nil,
+	err = loadConfig(&cfg, f.Name(), "", nil,
 		DefaultConfig{src: "config = {}"},
 		sounds.Silent, term.ScheduleNextTick)
 	require.Error(t, err)
@@ -4023,7 +4023,7 @@ editor:
 	require.NoError(t, err)
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), nil,
+	err = loadConfig(&cfg, f.Name(), "", nil,
 		DefaultConfig{src: "config = {}"},
 		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
@@ -4042,7 +4042,7 @@ editor:
 	require.NoError(t, err)
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), nil,
+	err = loadConfig(&cfg, f.Name(), "", nil,
 		DefaultConfig{src: "config = {}"},
 		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)
@@ -4076,7 +4076,7 @@ func TestEditorSwapDir(t *testing.T) {
 			require.NoError(t, err)
 
 			var cfg ideConfig
-			err = loadConfig(&cfg, f.Name(), nil,
+			err = loadConfig(&cfg, f.Name(), "", nil,
 				DefaultConfig{src: "config = {}"},
 				sounds.Silent, term.ScheduleNextTick)
 			require.NoError(t, err)
@@ -4105,7 +4105,7 @@ editor:
 	require.NoError(t, err)
 
 	var cfg ideConfig
-	err = loadConfig(&cfg, f.Name(), nil,
+	err = loadConfig(&cfg, f.Name(), "", nil,
 		DefaultConfig{src: "config = {}"},
 		sounds.Silent, term.ScheduleNextTick)
 	require.NoError(t, err)

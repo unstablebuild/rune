@@ -444,7 +444,7 @@ func (b *bootstrapHandler) guiEnvLiveApplyHook(
 	if !event.TouchesPath("gui", "env") {
 		return idepkg.ConfigMergeResult{}, nil
 	}
-	rootCfg, err := ide.Config(b.configPath, runeDefaultConfig())
+	rootCfg, err := rootConfig(b.configPath)
 	if err != nil {
 		return idepkg.ConfigMergeResult{}, fmt.Errorf("reload config for gui.env: %w", err)
 	}
@@ -469,7 +469,7 @@ func (b *bootstrapHandler) guiThemesLiveApplyHook(
 	if !event.TouchesPath("gui", "themes") || b.g == nil {
 		return idepkg.ConfigMergeResult{}, nil
 	}
-	rootCfg, err := ide.Config(b.configPath, runeDefaultConfig())
+	rootCfg, err := rootConfig(b.configPath)
 	if err != nil {
 		return idepkg.ConfigMergeResult{}, fmt.Errorf("reload config for gui.themes: %w", err)
 	}

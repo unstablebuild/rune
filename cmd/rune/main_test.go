@@ -393,7 +393,7 @@ func TestRunGUIOffersToReopenTheLastSessionWithoutAnIntro(t *testing.T) {
 				configPath:     configPath,
 				websiteAddress: "https://rune.test",
 			}))
-			rootCfg, err := ide.Config(configPath, runeDefaultConfig())
+			rootCfg, err := rootConfig(configPath)
 			require.NoError(t, err)
 
 			mu := new(sync.Mutex)

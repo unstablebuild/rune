@@ -25,7 +25,8 @@
 //     `config = {...}` dict. The returned map is that dict.
 //   - Overlay mode (Base != nil): `config` is predeclared with the given
 //     base map. The script may mutate it (config["x"] = y, etc.) or rebind
-//     it entirely. The returned map is the final value of `config`.
+//     it entirely. The returned map is the predeclared dict's final
+//     contents with a rebound `config`, if any, deep-merged over them.
 //
 // The helpers are intentionally low-level: callers wrap them with their own
 // domain concerns (YAML fallback, filename suffix detection, param
@@ -48,6 +49,10 @@ import (
 // ConfigGlobal is the name of the top-level dict the script reads from and
 // writes to. Anything else is ignored.
 const ConfigGlobal = "config"
+
+// IncludeBuiltin is the name of the function an overlay-mode script calls
+// to layer another config file over `config`. See Source.Include.
+const IncludeBuiltin = "include"
 
 // ErrMissingConfig is returned by Decode in base mode when the script does
 // not bind a top-level `config` dict. Callers that treat a missing binding
@@ -78,6 +83,17 @@ type Source struct {
 	// with ConfigGlobal when Base is non-nil; collisions cause
 	// Decode to return an error.
 	Builtins starlark.StringDict
+
+	// Include, when non-nil in overlay mode, predeclares the
+	// IncludeBuiltin function. include(path) calls Include with path and
+	// the current contents of the predeclared `config` dict, and replaces
+	// those contents with the map it returns, so the statements after the
+	// call read and mutate the merged tree. An error it returns ends the
+	// script with that error. A script that rebound `config` before the
+	// call still layers over the included tree in the result, as the
+	// predeclared dict is what the call changes. The builtin is not
+	// defined in base mode or when Include is nil.
+	Include func(path string, current map[string]any) (map[string]any, error)
 }
 
 // Decode parses and executes src. See Source for the two modes.
@@ -128,6 +144,14 @@ func Decode(s Source) (map[string]any, error) {
 				"predeclared base config", ConfigGlobal)
 		}
 		predeclared[ConfigGlobal] = baseVal
+		if s.Include != nil {
+			if _, taken := predeclared[IncludeBuiltin]; taken {
+				return nil, fmt.Errorf("starlark: param %q collides with "+
+					"the include builtin", IncludeBuiltin)
+			}
+			predeclared[IncludeBuiltin] = includeBuiltin(
+				baseVal.(*starlark.Dict), s.Include)
+		}
 	}
 
 	globals, err := starlark.ExecFileOptions(opts, thread, filename, s.Src, predeclared)
@@ -142,8 +166,9 @@ func Decode(s Source) (map[string]any, error) {
 	// If the script never rebinds `config`, it won't appear in globals —
 	// in overlay mode the predeclared dict still holds the latest value
 	// because dict mutations modify the object in place.
-	val, ok := globals[ConfigGlobal]
-	if !ok {
+	val, rebound := globals[ConfigGlobal]
+	ok := rebound
+	if !rebound {
 		val, ok = predeclared[ConfigGlobal]
 	}
 	if !ok {
@@ -158,7 +183,56 @@ func Decode(s Source) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("starlark: %w", err)
 	}
-	return out, nil
+	if !rebound || s.Base == nil {
+		return out, nil
+	}
+	// Mutations and includes made through the predeclared dict before the
+	// rebind are a layer under the rebound one.
+	predeclaredOut, err := DictToMap(predeclared[ConfigGlobal].(*starlark.Dict))
+	if err != nil {
+		return nil, fmt.Errorf("starlark: %w", err)
+	}
+	deepMergeMap(predeclaredOut, out)
+	return predeclaredOut, nil
+}
+
+// includeBuiltin returns the include function bound to the predeclared
+// config dict and the loader of included files.
+func includeBuiltin(
+	configDict *starlark.Dict,
+	include func(path string, current map[string]any) (map[string]any, error),
+) *starlark.Builtin {
+	return starlark.NewBuiltin(IncludeBuiltin, func(
+		_ *starlark.Thread, b *starlark.Builtin,
+		args starlark.Tuple, kwargs []starlark.Tuple,
+	) (starlark.Value, error) {
+		var path string
+		if err := starlark.UnpackPositionalArgs(b.Name(), args, kwargs, 1, &path); err != nil {
+			return nil, err
+		}
+		current, err := DictToMap(configDict)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", b.Name(), err)
+		}
+		next, err := include(path, current)
+		if err != nil {
+			return nil, err
+		}
+		nextVal, err := FromGo(next)
+		if err != nil {
+			return nil, fmt.Errorf("%s: encode included config: %w", b.Name(), err)
+		}
+		nextDict := nextVal.(*starlark.Dict)
+		if err := configDict.Clear(); err != nil {
+			return nil, fmt.Errorf("%s: %w", b.Name(), err)
+		}
+		for _, item := range nextDict.Items() {
+			// The dict is unfrozen and keyed by strings, so SetKey
+			// cannot fail.
+			_ = configDict.SetKey(item[0], item[1])
+		}
+		return starlark.None, nil
+	})
 }
 
 // ToGo converts an arbitrary Starlark value to the closest Go equivalent

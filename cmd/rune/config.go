@@ -551,6 +551,14 @@ func runeDefaultConfig() ide.DefaultConfig {
 	return ide.StarlarkDefaultConfig(defaultStarlarkConfig, true, true)
 }
 
+// rootConfig loads the config file at path, and the files it includes,
+// over runeDefaultConfig with the data directory of this process, so
+// $RUNE_DATADIR in an include path and the etc directory package configs
+// are installed to resolve as the running IDE resolves them.
+func rootConfig(path string) (config.Config, error) {
+	return ide.Config(path, runeDefaultConfig(), ide.WithDataDir(*flagDataPath))
+}
+
 func resolveInitialThemeAttr(b browser.Browser, rootCfg config.Config) term.Attributes {
 	guiCfg, ok, err := getGUIConfig(rootCfg)
 	if err != nil {

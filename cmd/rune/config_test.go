@@ -44,7 +44,7 @@ func TestIDEConfigOverlaySubscriptResolvesDefaultTree(t *testing.T) {
 	require.NoError(t, os.WriteFile(path,
 		[]byte("config[\"terminal\"][\"initial_reservoir\"] = 2\n"), 0o644))
 
-	cfg, err := ide.Config(path, runeDefaultConfig())
+	cfg, err := rootConfig(path)
 	require.NoError(t, err)
 
 	term, err := cfg.GetConfig("terminal")
@@ -52,6 +52,24 @@ func TestIDEConfigOverlaySubscriptResolvesDefaultTree(t *testing.T) {
 	got, err := term.GetInt("initial_reservoir")
 	require.NoError(t, err)
 	assert.Equal(t, 2, got)
+}
+
+func TestRootConfigIncludesFromTheDataDir(t *testing.T) {
+	dataDir := t.TempDir()
+	prev := *flagDataPath
+	*flagDataPath = dataDir
+	t.Cleanup(func() { *flagDataPath = prev })
+	require.NoError(t, os.MkdirAll(filepath.Join(dataDir, "etc"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "etc", "pkg.yaml"),
+		[]byte("telemetry:\n  enabled: false\n"), 0o644))
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path,
+		[]byte("include:\n  - $RUNE_DATADIR/etc/pkg.yaml\n"), 0o644))
+
+	cfg, err := rootConfig(path)
+	require.NoError(t, err)
+	assert.False(t, ide.TelemetryEnabled(cfg))
 }
 
 func TestTelemetryEnabledFromUserConfig(t *testing.T) {
@@ -180,7 +198,7 @@ func TestDeprecatedWallpaperKeyIsKeptOverTheDefaults(t *testing.T) {
 
 func mustLoadConfig(t *testing.T, path string) config.Config {
 	t.Helper()
-	cfg, err := ide.Config(path, runeDefaultConfig())
+	cfg, err := rootConfig(path)
 	require.NoError(t, err)
 	return cfg
 }

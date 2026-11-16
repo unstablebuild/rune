@@ -75,7 +75,7 @@ func quickMenuGlassButtons(buttons []ide.QuickMenuButton) []glassbar.Button {
 // IDE reports it to the user, so the valid buttons are kept rather than
 // dropping the whole bar.
 func readQuickMenu(configPath string) ([]ide.QuickMenuButton, quickmenu.Sounds) {
-	cfg, err := ide.Config(configPath, runeDefaultConfig())
+	cfg, err := rootConfig(configPath)
 	if err != nil {
 		log.Warnf("load config for quick menu: %v", err)
 	}

@@ -1242,7 +1242,7 @@ func newPkgInstallExtHandler(
 		ret := defaultCfg()
 		ret.configPath = configPath
 		ret.storage = cfg.storage
-		if err := loadFileConfig(&ret, configPath); err != nil {
+		if err := loadFileConfig(&ret, configPath, ""); err != nil {
 			return ret, err
 		}
 		return ret, nil

@@ -36,7 +36,6 @@ import (
 	"google.golang.org/grpc"
 	"unstable.build/rune/auth"
 	"unstable.build/rune/cmd/rune/ide/apiclient"
-	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
 	"unstable.build/rune/internal/runenet"
@@ -61,7 +60,7 @@ type headlessClient interface {
 func runHeadless(
 	ctx context.Context, host *hostenv.Host, shellRCDir string, shellRCErr error,
 ) int {
-	rootCfg, err := ide.Config(*flagConfigPath, runeDefaultConfig())
+	rootCfg, err := rootConfig(*flagConfigPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %s\n", err)
 		return 1
@@ -272,7 +271,7 @@ func serveHeadlessPackages(
 }
 
 func applyUserConfigEnv(host *hostenv.Host) {
-	cfg, err := ide.Config(*flagConfigPath, runeDefaultConfig())
+	cfg, err := rootConfig(*flagConfigPath)
 	if err != nil {
 		log.Warnf("load config to apply gui.env: %v", err)
 		if cfg == nil {

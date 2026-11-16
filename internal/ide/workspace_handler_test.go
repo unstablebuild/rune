@@ -11949,7 +11949,7 @@ func swapDirIDEConfig(t *testing.T, enabled bool) ideConfig {
 	require.NoError(t, err)
 
 	var cfg ideConfig
-	require.NoError(t, loadConfig(&cfg, f.Name(), nil,
+	require.NoError(t, loadConfig(&cfg, f.Name(), "", nil,
 		DefaultConfig{src: "config = {}"},
 		sounds.Silent, term.ScheduleNextTick))
 	return cfg

@@ -185,6 +185,16 @@ func WithHostDataDir(dir string) Option {
 	}
 }
 
+// WithDataDir sets the data directory the config loader resolves
+// $RUNE_DATADIR in include paths with, and whose etc directory holds the
+// configs of installed packages. Without this option, Config uses the
+// directory of the config file; New always uses its dataDir argument.
+func WithDataDir(dir string) Option {
+	return func(opts *options) {
+		opts.dataDir = dir
+	}
+}
+
 // WithConfigFilename defines the base filename of the IDE configuration
 // to be expected in a workspace's directory.
 func WithConfigFilename(filename string) Option {
@@ -573,6 +583,7 @@ type options struct {
 	schemes              map[string]schemeapi.SchemeFunc
 	shellRCDir           string
 	hostDataDir          string
+	dataDir              string
 	workspaceConfig      string
 	logo                 *Logo
 	defaultConfig        string

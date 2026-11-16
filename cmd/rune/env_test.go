@@ -196,7 +196,7 @@ func newBootstrapForTest(
 	mu := new(sync.Mutex)
 	publishEvent, stopPump := newBootstrapPublishPump(mu)
 	t.Cleanup(stopPump)
-	rootCfg, err := ide.Config(configPath, runeDefaultConfig())
+	rootCfg, err := rootConfig(configPath)
 	require.NoError(t, err)
 
 	soundOutput := gui.NewSounds()

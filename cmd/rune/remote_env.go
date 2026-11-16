@@ -64,7 +64,7 @@ func applyConfigEnv(host *hostenv.Host, rootCfg config.Config) {
 // error it warns and returns the default (via ide.PkgEditorMode), so the
 // mode is always concrete.
 func resolveRemoteEditorMode() string {
-	cfg, err := ide.Config(*flagConfigPath, runeDefaultConfig())
+	cfg, err := rootConfig(*flagConfigPath)
 	if err != nil {
 		log.Warnf("resolve editor mode: %v", err)
 	}

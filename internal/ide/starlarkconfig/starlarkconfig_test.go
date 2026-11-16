@@ -19,6 +19,7 @@ package starlarkconfig
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"os"
@@ -108,12 +109,26 @@ func TestDecode(t *testing.T) {
 			wantCfg: map[string]any{"existing": "yes", "added": true},
 		},
 		{
-			name: "overlay mode rebind config replaces it",
+			name: "overlay mode rebind config layers over the base",
 			src: Source{
 				Src:  []byte(`config = {"only": 1}`),
-				Base: map[string]any{"existing": "gone"},
+				Base: map[string]any{"existing": "kept", "only": 0},
 			},
-			wantCfg: map[string]any{"only": 1},
+			wantCfg: map[string]any{"existing": "kept", "only": 1},
+		},
+		{
+			name: "overlay mode rebind keeps earlier mutations under it",
+			src: Source{
+				Src: []byte(`
+config["a"] = {"x": 1, "y": 1}
+config = {"a": {"y": 2}, "b": 3}
+`),
+				Base: map[string]any{},
+			},
+			wantCfg: map[string]any{
+				"a": map[string]any{"x": 1, "y": 2},
+				"b": 3,
+			},
 		},
 		{
 			name: "base FromGo error surfaces",
@@ -241,6 +256,100 @@ else:
 				},
 			},
 			wantErr: `builtin "echo" collides with predeclared param`,
+		},
+		{
+			name: "include is undefined in base mode",
+			src: Source{
+				Src:     []byte(`include("x.star"); config = {}`),
+				Include: func(string, map[string]any) (map[string]any, error) { return nil, nil },
+			},
+			wantErr: "undefined: include",
+		},
+		{
+			name: "include is undefined without a loader",
+			src: Source{
+				Src:  []byte(`include("x.star")`),
+				Base: map[string]any{},
+			},
+			wantErr: "undefined: include",
+		},
+		{
+			name: "include param collides with the builtin",
+			src: Source{
+				Src:     []byte(`config["x"] = 1`),
+				Params:  map[string]any{"include": "stomp"},
+				Base:    map[string]any{},
+				Include: func(string, map[string]any) (map[string]any, error) { return nil, nil },
+			},
+			wantErr: `param "include" collides with the include builtin`,
+		},
+		{
+			name: "include wants one string argument",
+			src: Source{
+				Src:     []byte(`include(1)`),
+				Base:    map[string]any{},
+				Include: func(string, map[string]any) (map[string]any, error) { return nil, nil },
+			},
+			wantErr: "include: for parameter 1: got int, want string",
+		},
+		{
+			name: "include merges at the call point and later statements win",
+			src: Source{
+				Src: []byte(`
+config["before"] = "script"
+config["shared"] = "script"
+include("layer.star")
+config["after"] = config["from_include"] + "!"
+config["shared"] = "script-after"
+`),
+				Base: map[string]any{"base": true},
+				Include: func(path string, current map[string]any) (map[string]any, error) {
+					if path != "layer.star" {
+						return nil, fmt.Errorf("unexpected path %q", path)
+					}
+					// The loader sees what the script set before the call.
+					if current["before"] != "script" || current["base"] != true {
+						return nil, fmt.Errorf("unexpected current %v", current)
+					}
+					current["from_include"] = "inc"
+					current["shared"] = "include"
+					return current, nil
+				},
+			},
+			wantCfg: map[string]any{
+				"base":         true,
+				"before":       "script",
+				"from_include": "inc",
+				"after":        "inc!",
+				"shared":       "script-after",
+			},
+		},
+		{
+			name: "rebind after include keeps the included keys",
+			src: Source{
+				Src: []byte(`
+include("layer.star")
+config = {"own": 1}
+`),
+				Base: map[string]any{},
+				Include: func(_ string, current map[string]any) (map[string]any, error) {
+					current["from_include"] = "inc"
+					return current, nil
+				},
+			},
+			wantCfg: map[string]any{"from_include": "inc", "own": 1},
+		},
+		{
+			name: "include error ends the script with it",
+			src: Source{
+				Src:      []byte("x = 1\ninclude(\"missing.star\")\n"),
+				Filename: "user.star",
+				Base:     map[string]any{},
+				Include: func(path string, _ map[string]any) (map[string]any, error) {
+					return nil, fmt.Errorf("include %q (from user.star): boom", path)
+				},
+			},
+			wantErr: `include "missing.star" (from user.star): boom`,
 		},
 	}
 

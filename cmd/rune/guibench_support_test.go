@@ -257,7 +257,7 @@ func newGUIBenchSession(tb testing.TB, cfg guiBenchConfig) *guiBenchSession {
 		files = append(files, filepath.Join(s.workDir, filepath.FromSlash(rel)))
 	}
 
-	rootCfg, err := ide.Config(configPath, runeDefaultConfig())
+	rootCfg, err := rootConfig(configPath)
 	if err != nil {
 		tb.Fatalf("load config: %v", err)
 	}

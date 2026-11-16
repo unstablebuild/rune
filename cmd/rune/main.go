@@ -630,7 +630,7 @@ func runTUI(
 	}
 
 	storage := newRuneStorage(*flagDataPath)
-	rootCfg, err := ide.Config(*flagConfigPath, runeDefaultConfig())
+	rootCfg, err := rootConfig(*flagConfigPath)
 	if err != nil {
 		fmt.Printf("%s", err)
 		return 1
@@ -752,7 +752,7 @@ func runGUI(
 
 	// We load config twice, but it's better than the race conditions caused
 	// by env var resolution order.
-	rootCfg, envErr := ide.Config(*flagConfigPath, runeDefaultConfig())
+	rootCfg, envErr := rootConfig(*flagConfigPath)
 	if envErr != nil {
 		envErr = fmt.Errorf("load config for gui.env: %w", envErr)
 		rootCfg = config.NopConfig()
