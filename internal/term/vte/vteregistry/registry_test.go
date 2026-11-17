@@ -358,20 +358,26 @@ func TestRegistryDetachedTerminal(t *testing.T) {
 				return v.c.stopWatch == nil
 			}, 5*time.Second, 5*time.Millisecond, "its watcher finds it idle")
 			assert.Equal(t, 0, f.info(t, v.ID()).Attachments)
+			assert.Equal(t, vte.LivenessIdle, f.info(t, v.ID()).Liveness)
 		},
 		want: []vte.Liveness{vte.LivenessIdle},
 	}, {
 		desc: "a running job is told running, then idle once the shell is back",
 		run: func(t *testing.T, f *fixture, v *attachment, p *workspacetest.Process) {
+			assert.Equal(t, vte.LivenessUnknown, f.info(t, v.ID()).Liveness,
+				"an attached terminal is not watched")
 			f.term.fg.Store(job)
 			require.NoError(t, v.Close())
 			f.working(t)
+			assert.Equal(t, vte.LivenessRunning, f.info(t, v.ID()).Liveness,
+				"the listing carries what was told, for a watcher that missed it")
 			f.term.fg.Store(int64(p.Pid))
 			p.Print("$ ")
 			require.Eventually(t, func() bool { return len(f.told()) == 2 },
 				5*time.Second, 5*time.Millisecond)
 			assert.Equal(t, vte.LivenessIdle, f.liveness(t, v.ID()),
 				"the shell stays once its job is done")
+			assert.Equal(t, vte.LivenessIdle, f.info(t, v.ID()).Liveness)
 			assert.False(t, f.last().Complete)
 		},
 		want: []vte.Liveness{vte.LivenessRunning, vte.LivenessIdle},
@@ -396,6 +402,8 @@ func TestRegistryDetachedTerminal(t *testing.T) {
 			f.term.fg.Store(int64(p.Pid))
 			time.Sleep(50 * time.Millisecond)
 			assert.Equal(t, 1, f.info(t, again.ID()).Attachments)
+			assert.Equal(t, vte.LivenessUnknown, f.info(t, again.ID()).Liveness,
+				"attached again, it is no longer watched")
 			assert.Equal(t, 1, f.last().Attachments, "the attachment is told")
 		},
 		want: []vte.Liveness{vte.LivenessRunning},

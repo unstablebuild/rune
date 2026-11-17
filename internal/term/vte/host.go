@@ -88,6 +88,11 @@ type Info struct {
 	// Attachments is the number of views attached to the terminal. A
 	// terminal with none is detached.
 	Attachments int
+	// Liveness is what the Host last found the terminal to run while it
+	// was detached, as its last [Change] told: LivenessUnknown while it
+	// is attached, and until the Host checked. It is how what was told
+	// while nobody listened is caught up with.
+	Liveness Liveness
 	// Complete reports that the emulator stopped reading its pty.
 	Complete  bool
 	CreatedAt time.Time

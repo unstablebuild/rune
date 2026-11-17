@@ -23,8 +23,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,8 +40,11 @@ import (
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/runenet"
 	"unstable.build/rune/internal/runenet/runenetpb"
+	"unstable.build/rune/internal/term/vte"
+	"unstable.build/rune/internal/term/vte/vtewire"
 	"unstable.build/rune/internal/workspace"
 	tworkspacerpc "unstable.build/rune/internal/workspace/workspacerpc"
+	"unstable.build/rune/internal/workspace/workspacetest"
 )
 
 func TestParseWorkspaceURI(t *testing.T) {
@@ -179,11 +184,15 @@ func TestConnectFailureReportsItsOwnError(t *testing.T) {
 		"the connect failure must survive its own cleanup: %v", err)
 }
 
-// dialerFunc adapts a function to Dialer.
+// dialerFunc adapts a function to Dialer, with no attachment port.
 type dialerFunc func(ctx context.Context, peer string) (net.Conn, error)
 
 func (f dialerFunc) Dial(ctx context.Context, peer string) (net.Conn, error) {
 	return f(ctx, peer)
+}
+
+func (dialerFunc) DialAttachment(context.Context, string) (net.Conn, error) {
+	return nil, errors.ErrUnsupported
 }
 
 func TestSchemeConnectsOverDialer(t *testing.T) {
@@ -426,4 +435,152 @@ func TestSchemeStartsCommandsInTheWorkspaceDirectory(t *testing.T) {
 	// directory of its own — every terminal Rune opens — would start in
 	// the peer's root instead of the workspace.
 	assert.Equal(t, dir, <-peer.dirs)
+}
+
+// admitAll admits every peer, as a test's loopback has one.
+type admitAll struct{}
+
+func (admitAll) Authorize(context.Context) error { return nil }
+
+// peerDialer reaches a peer served by runenet.Serve on the loopback: its
+// workspace port and its attachment port. Its connections can be
+// broken, as a network loss breaks them.
+type peerDialer struct {
+	addr, attachAddr string
+
+	mu    sync.Mutex
+	conns []net.Conn
+}
+
+func (d *peerDialer) Dial(ctx context.Context, _ string) (net.Conn, error) {
+	return d.dial(ctx, d.addr)
+}
+
+func (d *peerDialer) DialAttachment(ctx context.Context, _ string) (net.Conn, error) {
+	return d.dial(ctx, d.attachAddr)
+}
+
+func (d *peerDialer) dial(ctx context.Context, addr string) (net.Conn, error) {
+	var nd net.Dialer
+	conn, err := nd.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	d.mu.Lock()
+	d.conns = append(d.conns, conn)
+	d.mu.Unlock()
+	return conn, nil
+}
+
+func (d *peerDialer) breakAll() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, c := range d.conns {
+		_ = c.Close()
+	}
+	d.conns = nil
+}
+
+// servePeer stands in for a peer running Rune with its terminals: it
+// serves scheme as runenet.ServeWorkspace does, on the loopback.
+func servePeer(t *testing.T, scheme schemeapi.Scheme) *peerDialer {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	attachLis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := runenet.Serve(lis, attachLis, admitAll{}, scheme, "/data")
+	t.Cleanup(func() { _ = server.Close() })
+	return &peerDialer{addr: lis.Addr().String(), attachAddr: attachLis.Addr().String()}
+}
+
+func TestSchemePeer(t *testing.T) {
+	peer := workspacetest.NewPtyScheme("/")
+	dialer := servePeer(t, peer)
+	uri, err := workspaceapi.ParseURI("rune://laptop/home/ernie/code")
+	require.NoError(t, err)
+	s, err := New(Scheme, dialer)(context.Background(), config.NopConfig(), uri)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+	p, ok := s.(workspace.PeerScheme).Peer()
+	require.True(t, ok, "a peer serves every workspace of the scheme")
+	ctx := context.Background()
+
+	require.NoError(t, s.(workspace.RemoteScheme).WaitConnected(ctx))
+	root, err := p.Root(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "/home/ernie/code", root, "the workspace as the peer resolved it")
+	// The peer's terminals are reached over the workspace connection,
+	// which follows its reconnects.
+	host := tworkspacerpc.NewVTEClient(p.Conn(), root)
+	infos, err := host.ListVTEs(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, infos)
+
+	it, err := host.WatchVTEs(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = it.Close() })
+
+	// An attachment is a stream of its own to the peer, in the
+	// workspace the peer knows.
+	rw, err := p.DialAttachment(ctx)
+	require.NoError(t, err)
+	conn := vtewire.NewConn(rw)
+	t.Cleanup(func() { _ = conn.Close() })
+	hello, err := vtewire.Dial(conn, &vtewire.Hello{Root: root, Width: 20, Height: 4})
+	require.NoError(t, err)
+	select {
+	case <-peer.Chrooted(root).Started():
+	case <-time.After(5 * time.Second):
+		t.Fatal("no process started in the workspace on the peer")
+	}
+	id := vte.ID(hello.VTEID)
+	infos, err = host.ListVTEs(ctx)
+	require.NoError(t, err)
+	require.Len(t, infos, 1)
+	assert.Equal(t, id, infos[0].ID)
+	change, ok := it.Next(ctx)
+	require.True(t, ok)
+	assert.Equal(t, id, change.ID)
+	l, err := host.VTELiveness(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, vte.LivenessUnknown, l, "the fake pty host cannot tell")
+
+	// The terminal is the peer's: it survives the workspace connection,
+	// and is reached again, by its id, over the next one.
+	dialer.breakAll()
+	<-s.(workspace.RemoteScheme).OnDisconnect()
+	require.Eventually(t, func() bool {
+		infos, err := host.ListVTEs(ctx)
+		return err == nil && len(infos) == 1 && infos[0].ID == id
+	}, 10*time.Second, 20*time.Millisecond, "the terminal is listed over the next connection")
+	rw, err = p.DialAttachment(ctx)
+	require.NoError(t, err)
+	again := vtewire.NewConn(rw)
+	t.Cleanup(func() { _ = again.Close() })
+	_, err = vtewire.Dial(again, &vtewire.Hello{Root: root, VTEID: string(id)})
+	require.NoError(t, err)
+
+	require.NoError(t, host.DeleteVTE(ctx, id))
+	assert.ErrorIs(t, host.DeleteVTE(ctx, id), vte.ErrNotFound)
+	infos, err = host.ListVTEs(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, infos)
+}
+
+func TestSchemePeerBeforeConnected(t *testing.T) {
+	// A peer that never answers cannot say what the workspace's root is
+	// on it, and the scheme says so instead of guessing.
+	dialer := dialerFunc(func(ctx context.Context, _ string) (net.Conn, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	uri, err := workspaceapi.ParseURI("rune://laptop/")
+	require.NoError(t, err)
+	s, err := New(Scheme, dialer)(context.Background(), config.NopConfig(), uri)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+	p, _ := s.(workspace.PeerScheme).Peer()
+	_, err = p.Root(context.Background())
+	assert.ErrorIs(t, err, ErrNotConnected)
 }

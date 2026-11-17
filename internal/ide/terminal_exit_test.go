@@ -151,8 +151,8 @@ func newTerminalExitHarness(
 	h.terminal.uri = mustURI(t, "file:///dev/ttys077")
 	h.terminal.title = "make"
 	h.ex.newEmulatorHandler = func([]string) (vte.View, error) {
-		h.av = newAsyncVTE(h.ex.terminals, func() (vte.View, error) {
-			return h.terminal, nil
+		h.av = newAsyncVTE(h.ex.terminals, func() (vte.View, bool, error) {
+			return h.terminal, false, nil
 		})
 		return h.av, nil
 	}

@@ -36,10 +36,12 @@ import (
 	"google.golang.org/grpc"
 	"unstable.build/rune/auth"
 	"unstable.build/rune/cmd/rune/ide/apiclient"
+	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
 	"unstable.build/rune/internal/runenet"
 	"unstable.build/rune/internal/tailnet"
+	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -83,7 +85,8 @@ func runHeadless(
 		return 1
 	}
 	if *flagControlURL != "" {
-		return runHeadlessTailnet(ctx, netCfg, *flagControlURL, host, shellRCDir, os.Stdout)
+		return runHeadlessTailnet(ctx, netCfg, *flagControlURL, host, shellRCDir,
+			ide.HostTerminalConfig(rootCfg), os.Stdout)
 	}
 	// A headless node exists to be on the network and has no console to
 	// bring it up later, so auto_join being off leaves nothing to run.
@@ -141,7 +144,7 @@ func runHeadless(
 // one, including when the machine's key expires long after startup.
 func runHeadlessTailnet(
 	ctx context.Context, netCfg runenet.Config, controlURL string,
-	host *hostenv.Host, shellRCDir string, out io.Writer,
+	host *hostenv.Host, shellRCDir string, terminal vte.Config, out io.Writer,
 ) int {
 	controlURL, err := runenet.ParseControlURL(controlURL)
 	if err != nil {
@@ -178,7 +181,7 @@ func runHeadlessTailnet(
 	// end the wait cleanly.
 	joinCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	server, err := joinHeadlessTailnet(joinCtx, node, &packages,
-		*flagDataPath, shellRCDir, out)
+		*flagDataPath, shellRCDir, terminal, out)
 	stopped := joinCtx.Err() != nil && ctx.Err() == nil
 	stop()
 	if err != nil {
@@ -203,13 +206,14 @@ func runHeadlessTailnet(
 // It returns a nil server, and no error, when ctx ends first.
 func joinHeadlessTailnet(
 	ctx context.Context, node *runenet.Node, packages *servedPackages,
-	dataDir, shellRCDir string, out io.Writer,
+	dataDir, shellRCDir string, terminal vte.Config, out io.Writer,
 ) (*runenet.WorkspaceServer, error) {
 	scheme, dataDir, err := rootWorkspaceScheme(dataDir, shellRCDir)
 	if err != nil {
 		return nil, err
 	}
 	server, err := tailnet.Join(ctx, node, scheme, dataDir,
+		runenet.WithTerminalConfig(terminal),
 		runenet.WithServices(func(r grpc.ServiceRegistrar) {
 			pkgrpc.NewServer(packages).Register(r)
 		}))

@@ -24,14 +24,16 @@ import (
 	"unstable.build/rune/internal/runenet"
 )
 
-// Serve serves scheme to the machines of the tailnet c reaches that may
-// open workspaces on this one, see [Authorizer], whenever the machine's
-// Tailscale client is connected; see [Client.Listen]. Closing the
-// returned server stops serving.
+// Serve serves scheme, and the terminals of its workspaces, to the
+// machines of the tailnet c reaches that may open workspaces on this
+// one, see [Authorizer], whenever the machine's Tailscale client is
+// connected; see [Client.Listen]. Closing the returned server stops
+// serving.
 func Serve(
 	c *Client, scheme schemeapi.Scheme, dataDir string, opts ...runenet.ServeOption,
 ) *runenet.WorkspaceServer {
-	return runenet.Serve(c.Listen(), newAuthorizer(c.lc, c.snaps), scheme, dataDir, opts...)
+	return runenet.Serve(c.Listen(), c.ListenAttachments(),
+		newAuthorizer(c.lc, c.snaps), scheme, dataDir, opts...)
 }
 
 // Join brings node, which joins the user's tailnet as a machine of its
@@ -49,12 +51,18 @@ func Join(
 	if err != nil {
 		return nil, fmt.Errorf("listen on the tailnet: %w", err)
 	}
+	attachLis, err := node.ListenAttachments()
+	if err != nil {
+		_ = lis.Close()
+		return nil, fmt.Errorf("listen for attachments on the tailnet: %w", err)
+	}
 	lc, err := node.LocalClient()
 	if err != nil {
 		_ = lis.Close()
+		_ = attachLis.Close()
 		return nil, err
 	}
-	server := runenet.Serve(lis, NewAuthorizer(lc), scheme, dataDir, opts...)
+	server := runenet.Serve(lis, attachLis, NewAuthorizer(lc), scheme, dataDir, opts...)
 	if err := node.Up(ctx); err != nil {
 		_ = server.Close()
 		if ctx.Err() != nil {

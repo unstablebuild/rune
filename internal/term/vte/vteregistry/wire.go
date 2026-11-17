@@ -116,6 +116,7 @@ func (r *Registry) resolve(context.Context, string) (*Registry, error) {
 func (r *Registry) attach(
 	ctx context.Context, conn *vtewire.Conn, hello *vtewire.Hello,
 ) error {
+	defer r.serving()()
 	var (
 		a   *attachment
 		err error

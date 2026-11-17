@@ -3812,6 +3812,22 @@ func TelemetryEnabled(cfg config.Config) bool {
 	return c.telemetryEnabled()
 }
 
+// HostTerminalConfig resolves from cfg what the terminals other
+// machines open on this one run: terminal.shell and terminal.max_lines,
+// as this machine's own terminals are configured. Nothing of a display
+// is read: those terminals are shown on the other machine.
+func HostTerminalConfig(cfg config.Config) vte.Config {
+	var raw map[string]any
+	if terminal, err := cfg.GetMap("terminal"); err == nil {
+		raw = map[string]any{"terminal": terminal}
+	}
+	c := ideConfig{cfg: raw, errors: map[string]error{}}
+	ret := vte.DefaultConfig()
+	ret.CommandAndArgs = c.terminalShell()
+	ret.MaxLines = c.terminalMaxLines()
+	return ret
+}
+
 // pkgEditorMode returns the editor mode exposed to package config.star
 // scripts. exo substitutes the configured exo.fallback so packages get a
 // concrete built-in editor mode instead of the meta value "exo".

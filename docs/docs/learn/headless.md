@@ -402,8 +402,8 @@ admin console or with `headscale nodes tag`, and grant them access in
 the policy.
 
 The machine is named after `network.hostname` in the host's
-[config](../config.md), or the OS hostname, and serves on port 7473
-whatever `network.port` says. It keeps its tailnet identity in the data
+[config](../config.md), or the OS hostname, and serves on ports 7473 and
+7474 whatever `network.port` says. It keeps its tailnet identity in the data
 directory, one per coordination server and apart from its Rune network
 identity, so restarts do not sign it in again. When the tailnet expires
 its key, the log prints a new page to sign it in at; turn off [key

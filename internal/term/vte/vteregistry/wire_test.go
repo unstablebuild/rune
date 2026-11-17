@@ -299,6 +299,55 @@ func TestRegistryWireHistoryAndExit(t *testing.T) {
 	require.NoError(t, m.ended(t))
 }
 
+func TestRegistryCloseTellsWireMembers(t *testing.T) {
+	t.Parallel()
+	t.Run("waits for a member to be told", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		v, _ := f.create(t, 10, 4)
+		m, _, _, err := f.dial(t, &vtewire.Hello{VTEID: string(v.ID()), Width: 10, Height: 4})
+		require.NoError(t, err)
+		// The pipe hands a frame over only as it is read, so a member
+		// that reads late is one whose telling takes that long.
+		const late = 200 * time.Millisecond
+		frame := make(chan vtewire.Frame, 1)
+		go debug.CapturePanicReport(func() {
+			time.Sleep(late)
+			f, err := m.conn.ReadFrame()
+			if err == nil {
+				frame <- f
+			}
+			close(frame)
+		})
+
+		start := time.Now()
+		require.NoError(t, f.r.Close())
+		assert.GreaterOrEqual(t, time.Since(start), late, "Close waited for the member")
+		select {
+		case got := <-frame:
+			dropped, ok := got.(*vtewire.Dropped)
+			require.True(t, ok, "expected DROPPED, got %v", got)
+			assert.Equal(t, vtewire.CodeNotFound, dropped.Code)
+		case <-time.After(time.Second):
+			t.Fatal("the member was not told")
+		}
+		require.NoError(t, m.ended(t))
+	})
+	t.Run("gives up on a member that reads nothing", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		v, _ := f.create(t, 10, 4)
+		_, _, _, err := f.dial(t, &vtewire.Hello{VTEID: string(v.ID()), Width: 10, Height: 4})
+		require.NoError(t, err)
+
+		start := time.Now()
+		require.NoError(t, f.r.Close())
+		took := time.Since(start)
+		assert.GreaterOrEqual(t, took, dropGrace)
+		assert.Less(t, took, dropGrace+2*time.Second)
+	})
+}
+
 func TestRegistryWireSlowMemberIsDropped(t *testing.T) {
 	t.Parallel()
 	// More than a member's queue holds, printed while it reads nothing.

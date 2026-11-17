@@ -37,6 +37,7 @@ import (
 	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
 	"unstable.build/rune/internal/runenet"
 	"unstable.build/rune/internal/tailnet"
+	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacerune"
 )
@@ -61,6 +62,8 @@ type network struct {
 	// shellRCDir holds the dotfiles for peers' login shells; see
 	// workspace.NewFileSchemeFunc.
 	shellRCDir string
+	// terminal configures the terminals peers open on this machine.
+	terminal vte.Config
 	// packages is this machine's package manager as served to peers.
 	packages servedPackages
 
@@ -94,6 +97,7 @@ func newNetwork(
 		autoJoin:   cfg.AutoJoin,
 		dataDir:    dataDir,
 		shellRCDir: shellRCDir,
+		terminal:   ide.HostTerminalConfig(rootCfg),
 		// A key configured out of band belongs to a debug build
 		// driving a coordination server of its own, which the paid
 		// mesh must not be mixed up with.
@@ -105,7 +109,7 @@ func newNetwork(
 	}
 	ret.node = runenet.New(cfg)
 	ret.tailscale = newTailscaleNet(
-		tailnet.New(tailnet.Config{}), dataDir, shellRCDir, &ret.packages)
+		tailnet.New(tailnet.Config{}), dataDir, shellRCDir, ret.terminal, &ret.packages)
 	return ret
 }
 
@@ -206,6 +210,7 @@ func (n *network) join(ctx context.Context) error {
 		return nil
 	}
 	server, err := serveNetworkWorkspaces(n.node, n.dataDir, n.shellRCDir,
+		runenet.WithTerminalConfig(n.terminal),
 		runenet.WithServices(func(r grpc.ServiceRegistrar) {
 			pkgrpc.NewServer(&n.packages).Register(r)
 		}))
@@ -286,7 +291,7 @@ func rootWorkspaceScheme(
 func (n *network) completerOptions() []ide.Option {
 	return []ide.Option{
 		ide.WithWorkspaceOpenCompleter(
-			workspacerune.Scheme, workspacerune.Completer(workspacerune.Scheme, gatedMesh{n})),
+			workspacerune.Scheme, workspacerune.Completer(workspacerune.Scheme, planOnlyNetwork{n})),
 		n.tailscale.completerOption(),
 	}
 }
@@ -351,25 +356,32 @@ func (n *network) joinAsync() {
 	})
 }
 
-// gatedMesh hides the mesh from an account whose plan does not cover
+// planOnlyNetwork hides the mesh from an account whose plan does not cover
 // the network: a completion runs on a keystroke, and a keystroke must
 // not open a modal.
-type gatedMesh struct {
+type planOnlyNetwork struct {
 	n *network
 }
 
-func (g gatedMesh) Peers(ctx context.Context) ([]runenet.Peer, error) {
+func (g planOnlyNetwork) Peers(ctx context.Context) ([]runenet.Peer, error) {
 	if err := g.n.check(ctx); err != nil {
 		return nil, nil
 	}
 	return g.n.node.Peers(ctx)
 }
 
-func (g gatedMesh) Dial(ctx context.Context, peer string) (net.Conn, error) {
+func (g planOnlyNetwork) Dial(ctx context.Context, peer string) (net.Conn, error) {
 	if err := g.n.check(ctx); err != nil {
 		return nil, err
 	}
 	return g.n.node.Dial(ctx, peer)
+}
+
+func (g planOnlyNetwork) DialAttachment(ctx context.Context, peer string) (net.Conn, error) {
+	if err := g.n.check(ctx); err != nil {
+		return nil, err
+	}
+	return g.n.node.DialAttachment(ctx, peer)
 }
 
 // gatedNetwork is what the `network` command operates on: the two

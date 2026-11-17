@@ -161,7 +161,8 @@ func TestVTEClientLifecycle(t *testing.T) {
 	a := f.hosts["/a"]
 	a.infos = []vte.Info{{
 		ID: "one", URI: uri, Title: "vim", CommandAndArgs: []string{"vim", "x"},
-		Width: 80, Height: 24, Attachments: 2, Complete: false, CreatedAt: created,
+		Width: 80, Height: 24, Attachments: 2, Liveness: vte.LivenessRunning,
+		Complete: false, CreatedAt: created,
 	}}
 	a.liveness["one"] = vte.LivenessRunning
 	f.hosts["/b"].liveness["two"] = vte.LivenessIdle

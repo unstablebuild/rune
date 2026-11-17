@@ -593,6 +593,18 @@ func TestClientDial(t *testing.T) {
 		_ = conn.Close()
 		assert.Equal(t, int32(2), f.mapReads.Load(), "a fresh map is reused")
 	})
+
+	t.Run("an attachment goes to the attachment port", func(t *testing.T) {
+		_, lc := newFakeLocalAPI(t, testNode(1, "laptop", alice), testNode(2, "desktop", alice))
+		dialer := &stubDialer{serving: map[netip.Addr]bool{testAddr(2): true}}
+		c := newTestClient(t, lc, dialer)
+		conn, err := c.DialAttachment(context.Background(), "desktop")
+		require.NoError(t, err)
+		_ = conn.Close()
+		want := netip.AddrPortFrom(testAddr(2),
+			uint16(runenet.AttachmentPort(runenet.DefaultPort))).String()
+		assert.Equal(t, []string{want}, dialer.calls())
+	})
 }
 
 // tailnetClient is a Client on m, reaching the tailnet as the
@@ -679,5 +691,34 @@ func TestClientListen(t *testing.T) {
 			assert.False(t, serving(server, addr), "still bound to %s", addr)
 		}
 		assert.Equal(t, runenet.DefaultPort, lis.Addr().(*net.TCPAddr).Port)
+	})
+
+	t.Run("attachments", func(t *testing.T) {
+		lis := tailnetClient(server).ListenAttachments()
+		t.Cleanup(func() { _ = lis.Close() })
+		port := uint16(runenet.AttachmentPort(runenet.DefaultPort))
+		assert.Equal(t, int(port), lis.Addr().(*net.TCPAddr).Port)
+		accepted := make(chan net.Conn, 1)
+		go debug.CapturePanicReport(func() {
+			conn, err := lis.Accept()
+			if err == nil {
+				accepted <- conn
+			}
+		})
+		var conn net.Conn
+		var err error
+		require.Eventually(t, func() bool {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			conn, err = caller.Dial(ctx, "tcp", netip.AddrPortFrom(addrs[0], port).String())
+			return err == nil
+		}, tailnettest.Timeout, 100*time.Millisecond, "dial %s: %v", addrs[0], err)
+		defer conn.Close()
+		select {
+		case got := <-accepted:
+			_ = got.Close()
+		case <-time.After(tailnettest.Timeout):
+			t.Fatal("the attachment listener never accepted the connection")
+		}
 	})
 }

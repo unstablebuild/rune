@@ -70,6 +70,84 @@ func refused(message string) func(OpenResult) bool {
 	}
 }
 
+// terminalTick prints a tick every 200ms, for two minutes.
+const terminalTick = "sh -c 'i=0; while [ $i -lt 600 ]; do i=$((i+1)); echo tick $i; sleep 0.2; done'"
+
+// awaitTerminal lists the terminals of uri from m until what it lists
+// of id satisfies want, and returns it. A nil want waits for id to be
+// gone.
+func awaitTerminal(
+	t *testing.T, m *DockerMachine, uri, id string, want func(Terminal) bool,
+) Terminal {
+	t.Helper()
+	deadline := time.Now().Add(tailnetTimeout)
+	for {
+		var found *Terminal
+		for _, tm := range m.ListTerminals(t, uri) {
+			if tm.ID == id {
+				found = &tm
+			}
+		}
+		switch {
+		case want == nil && found == nil:
+			return Terminal{}
+		case want != nil && found != nil && want(*found):
+			return *found
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("terminal %s of %s never came to what was expected on %s: %+v",
+				id, uri, m.Hostname, found)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+func detachedAnd(liveness string) func(Terminal) bool {
+	return func(tm Terminal) bool { return tm.Attachments == 0 && tm.Liveness == liveness }
+}
+
+// testTerminals opens terminals in the workspace uri from laptop, whose
+// peer owns them: they outlive the tabs that opened them and the
+// connection, and the peer reports what they run.
+func testTerminals(t *testing.T, laptop *DockerMachine, uri string) {
+	var id string
+	t.Run("a terminal outlives the tab that opened it", func(t *testing.T) {
+		var screen string
+		id, screen = laptop.CreateTerminal(t, uri, TerminalOptions{Cmd: terminalTick, Wait: "tick 3"})
+		assert.GreaterOrEqual(t, lastTick(screen), 3, "the program's output reached the tab:\n%s", screen)
+		awaitTerminal(t, laptop, uri, id, detachedAnd("running"))
+	})
+
+	t.Run("it survives its machine leaving the tailnet", func(t *testing.T) {
+		if id == "" {
+			t.Skip("no terminal")
+		}
+		laptop.Reconnect(t)
+		screen := laptop.AttachTerminal(t, uri, id, TerminalOptions{Wait: "tick 10"})
+		assert.GreaterOrEqual(t, lastTick(screen), 10, "the program kept running:\n%s", screen)
+		awaitTerminal(t, laptop, uri, id, detachedAnd("running"))
+	})
+
+	t.Run("ending it ends the program on the peer", func(t *testing.T) {
+		if id == "" {
+			t.Skip("no terminal")
+		}
+		laptop.DeleteTerminal(t, uri, id)
+		awaitTerminal(t, laptop, uri, id, nil)
+	})
+
+	t.Run("a detached shell reports its job done", func(t *testing.T) {
+		id, _ := laptop.CreateTerminal(t, uri, TerminalOptions{
+			Line: "sleep 20; echo slept", Wait: "sleep 20",
+		})
+		awaitTerminal(t, laptop, uri, id, detachedAnd("running"))
+		awaitTerminal(t, laptop, uri, id, detachedAnd("idle"))
+		screen := laptop.AttachTerminal(t, uri, id, TerminalOptions{})
+		assert.Contains(t, screen, "slept", "the output waited in the terminal")
+		laptop.DeleteTerminal(t, uri, id)
+	})
+}
+
 // TestTailscaleUsersMachines runs Rune next to the real Tailscale
 // client on machines owned by users, as the desktop app does.
 func TestTailscaleUsersMachines(t *testing.T) {
@@ -122,6 +200,8 @@ func TestTailscaleUsersMachines(t *testing.T) {
 		require.NotEmpty(t, got.Code, "%+v", got)
 		assert.Contains(t, got.Message, "not found")
 	})
+
+	t.Run("terminals", func(t *testing.T) { testTerminals(t, laptop, uri) })
 }
 
 // TestTailscaleTaggedServer runs Rune next to the real Tailscale client
@@ -206,4 +286,6 @@ func TestTailscaleHeadless(t *testing.T) {
 		got := bobs.Open(t, uri, "hello.txt")
 		assert.True(t, refused("belongs to bob")(got), "%+v", got)
 	})
+
+	t.Run("terminals", func(t *testing.T) { testTerminals(t, laptop, uri) })
 }

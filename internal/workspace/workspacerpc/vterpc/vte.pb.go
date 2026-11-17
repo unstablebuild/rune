@@ -98,6 +98,7 @@ type Info struct {
 	Attachments       int32                  `protobuf:"varint,7,opt,name=attachments,proto3" json:"attachments,omitempty"`
 	Complete          bool                   `protobuf:"varint,8,opt,name=complete,proto3" json:"complete,omitempty"`
 	CreatedAtUnixNano int64                  `protobuf:"varint,9,opt,name=created_at_unix_nano,json=createdAtUnixNano,proto3" json:"created_at_unix_nano,omitempty"`
+	Liveness          Liveness               `protobuf:"varint,10,opt,name=liveness,proto3,enum=workspacevte.Liveness" json:"liveness,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -193,6 +194,13 @@ func (x *Info) GetCreatedAtUnixNano() int64 {
 		return x.CreatedAtUnixNano
 	}
 	return 0
+}
+
+func (x *Info) GetLiveness() Liveness {
+	if x != nil {
+		return x.Liveness
+	}
+	return Liveness_UNKNOWN
 }
 
 // root scopes a request to one workspace: a host serves the terminals
@@ -610,7 +618,7 @@ var File_vterpc_vte_proto protoreflect.FileDescriptor
 
 const file_vterpc_vte_proto_rawDesc = "" +
 	"\n" +
-	"\x10vterpc/vte.proto\x12\fworkspacevte\"\x85\x02\n" +
+	"\x10vterpc/vte.proto\x12\fworkspacevte\"\xb9\x02\n" +
 	"\x04Info\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
 	"\x03uri\x18\x02 \x01(\tR\x03uri\x12\x14\n" +
@@ -620,7 +628,9 @@ const file_vterpc_vte_proto_rawDesc = "" +
 	"\x06height\x18\x06 \x01(\x05R\x06height\x12 \n" +
 	"\vattachments\x18\a \x01(\x05R\vattachments\x12\x1a\n" +
 	"\bcomplete\x18\b \x01(\bR\bcomplete\x12/\n" +
-	"\x14created_at_unix_nano\x18\t \x01(\x03R\x11createdAtUnixNano\"!\n" +
+	"\x14created_at_unix_nano\x18\t \x01(\x03R\x11createdAtUnixNano\x122\n" +
+	"\bliveness\x18\n" +
+	" \x01(\x0e2\x16.workspacevte.LivenessR\bliveness\"!\n" +
 	"\vListRequest\x12\x12\n" +
 	"\x04root\x18\x01 \x01(\tR\x04root\"6\n" +
 	"\fListResponse\x12&\n" +
@@ -681,22 +691,23 @@ var file_vterpc_vte_proto_goTypes = []any{
 	(*Change)(nil),           // 9: workspacevte.Change
 }
 var file_vterpc_vte_proto_depIdxs = []int32{
-	1, // 0: workspacevte.ListResponse.vtes:type_name -> workspacevte.Info
-	0, // 1: workspacevte.LivenessResponse.liveness:type_name -> workspacevte.Liveness
-	0, // 2: workspacevte.Change.liveness:type_name -> workspacevte.Liveness
-	2, // 3: workspacevte.VTE.List:input_type -> workspacevte.ListRequest
-	4, // 4: workspacevte.VTE.Liveness:input_type -> workspacevte.LivenessRequest
-	6, // 5: workspacevte.VTE.Delete:input_type -> workspacevte.DeleteRequest
-	8, // 6: workspacevte.VTE.Watch:input_type -> workspacevte.WatchRequest
-	3, // 7: workspacevte.VTE.List:output_type -> workspacevte.ListResponse
-	5, // 8: workspacevte.VTE.Liveness:output_type -> workspacevte.LivenessResponse
-	7, // 9: workspacevte.VTE.Delete:output_type -> workspacevte.DeleteResponse
-	9, // 10: workspacevte.VTE.Watch:output_type -> workspacevte.Change
-	7, // [7:11] is the sub-list for method output_type
-	3, // [3:7] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	0, // 0: workspacevte.Info.liveness:type_name -> workspacevte.Liveness
+	1, // 1: workspacevte.ListResponse.vtes:type_name -> workspacevte.Info
+	0, // 2: workspacevte.LivenessResponse.liveness:type_name -> workspacevte.Liveness
+	0, // 3: workspacevte.Change.liveness:type_name -> workspacevte.Liveness
+	2, // 4: workspacevte.VTE.List:input_type -> workspacevte.ListRequest
+	4, // 5: workspacevte.VTE.Liveness:input_type -> workspacevte.LivenessRequest
+	6, // 6: workspacevte.VTE.Delete:input_type -> workspacevte.DeleteRequest
+	8, // 7: workspacevte.VTE.Watch:input_type -> workspacevte.WatchRequest
+	3, // 8: workspacevte.VTE.List:output_type -> workspacevte.ListResponse
+	5, // 9: workspacevte.VTE.Liveness:output_type -> workspacevte.LivenessResponse
+	7, // 10: workspacevte.VTE.Delete:output_type -> workspacevte.DeleteResponse
+	9, // 11: workspacevte.VTE.Watch:output_type -> workspacevte.Change
+	8, // [8:12] is the sub-list for method output_type
+	4, // [4:8] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_vterpc_vte_proto_init() }

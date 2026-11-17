@@ -195,6 +195,10 @@ func (w *testLoader) PathCaseSensitive() bool {
 	return true
 }
 
+func (w *testLoader) Peer() (workspace.Peer, bool) {
+	return nil, false
+}
+
 func (w *testLoader) Load(
 	filePath workspaceapi.URI, buf *cell.Buffer,
 	swapDir workspaceapi.URI, readOnly bool,

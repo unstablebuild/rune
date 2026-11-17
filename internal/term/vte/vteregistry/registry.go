@@ -84,6 +84,10 @@ type Registry struct {
 	// notifyMu serializes the changes told to watchers, so each sees
 	// them in the order they happened.
 	notifyMu sync.Mutex
+	// sessions are the wire attachments being served, each closed when
+	// it ends, which Close waits on: a session ends once its member was
+	// told why.
+	sessions map[chan struct{}]struct{}
 }
 
 type watcher struct{ fn func(vte.Change) }
@@ -112,6 +116,7 @@ func New(
 		terminal: terminal, executor: executor, tm: tm, cfg: cfg,
 		entries:  make(map[vte.ID]*canonical),
 		watchers: make(map[*watcher]struct{}),
+		sessions: make(map[chan struct{}]struct{}),
 	}
 }
 
@@ -351,6 +356,11 @@ func (r *Registry) notify(change vte.Change) {
 }
 
 // Close terminates every terminal. Later calls fail with [ErrClosed].
+//
+// It returns once every wire member was told its terminal ended, or
+// gave up being told: a host that exits right after would otherwise
+// leave its peers' views to find out on their own, as from a network
+// partition, which they wait out.
 func (r *Registry) Close() error {
 	r.mu.Lock()
 	r.closed = true
@@ -358,6 +368,10 @@ func (r *Registry) Close() error {
 	for id, c := range r.entries {
 		entries = append(entries, c)
 		delete(r.entries, id)
+	}
+	sessions := make([]chan struct{}, 0, len(r.sessions))
+	for done := range r.sessions {
+		sessions = append(sessions, done)
 	}
 	r.mu.Unlock()
 
@@ -368,7 +382,30 @@ func (r *Registry) Close() error {
 		}
 		c.changed(vte.LivenessUnknown)
 	}
+	grace := time.After(dropGrace)
+	for _, done := range sessions {
+		select {
+		case <-done:
+		case <-grace:
+			return errs
+		}
+	}
 	return errs
+}
+
+// serving registers a wire session being served and returns what ends
+// it, for the session to call once it did.
+func (r *Registry) serving() (ended func()) {
+	done := make(chan struct{})
+	r.mu.Lock()
+	r.sessions[done] = struct{}{}
+	r.mu.Unlock()
+	return func() {
+		r.mu.Lock()
+		delete(r.sessions, done)
+		r.mu.Unlock()
+		close(done)
+	}
 }
 
 func (r *Registry) isClosed() bool {

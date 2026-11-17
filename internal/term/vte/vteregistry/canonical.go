@@ -69,6 +69,10 @@ type canonical struct {
 	width, height int
 	defAttr       term.Attributes
 	destroyed     bool
+	// told is what the watcher of this terminal last told it runs,
+	// unknown while attached, so a listing carries what a watcher
+	// that was not listening missed.
+	told vte.Liveness
 	// stopWatch stops the watcher of a detached terminal, if any.
 	stopWatch chan struct{}
 }
@@ -198,6 +202,7 @@ func (c *canonical) infoLocked() vte.Info {
 		Width:          c.width,
 		Height:         c.height,
 		Attachments:    len(c.attachments),
+		Liveness:       c.told,
 		Complete:       comp.IsComplete(),
 		CreatedAt:      c.createdAt,
 	}
@@ -211,6 +216,7 @@ func (c *canonical) changed(l vte.Liveness) {
 	c.r.notifyMu.Lock()
 	defer c.r.notifyMu.Unlock()
 	c.mu.Lock()
+	c.told = l
 	info := c.infoLocked()
 	deleted := c.destroyed
 	c.mu.Unlock()

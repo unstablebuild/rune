@@ -28,6 +28,7 @@ import (
 	"unstable.build/rune/internal/ide/idepkg/pkgrpc"
 	"unstable.build/rune/internal/runenet"
 	"unstable.build/rune/internal/tailnet"
+	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacerune"
 )
@@ -41,6 +42,7 @@ type tailscaleNet struct {
 	client     *tailnet.Client
 	dataDir    string
 	shellRCDir string
+	terminal   vte.Config
 	packages   *servedPackages
 
 	mu     sync.Mutex
@@ -49,12 +51,14 @@ type tailscaleNet struct {
 }
 
 func newTailscaleNet(
-	client *tailnet.Client, dataDir, shellRCDir string, packages *servedPackages,
+	client *tailnet.Client, dataDir, shellRCDir string, terminal vte.Config,
+	packages *servedPackages,
 ) *tailscaleNet {
 	return &tailscaleNet{
 		client:     client,
 		dataDir:    dataDir,
 		shellRCDir: shellRCDir,
+		terminal:   terminal,
 		packages:   packages,
 	}
 }
@@ -70,6 +74,7 @@ func (t *tailscaleNet) serve() error {
 		return err
 	}
 	t.server = tailnet.Serve(t.client, scheme, dataDir,
+		runenet.WithTerminalConfig(t.terminal),
 		runenet.WithServices(func(r grpc.ServiceRegistrar) {
 			pkgrpc.NewServer(t.packages).Register(r)
 		}))

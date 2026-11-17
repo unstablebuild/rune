@@ -107,20 +107,29 @@ type sessionsFixture struct {
 
 func newSessionsFixture(t *testing.T, reservoirCapacity int) *sessionsFixture {
 	t.Helper()
+	return newSessionsFixtureWith(t, terminalSessionsConfig{ReservoirCapacity: reservoirCapacity})
+}
+
+// newSessionsFixtureWith builds the fixture with cfg's ReservoirCapacity
+// and Durable.
+func newSessionsFixtureWith(t *testing.T, cfg terminalSessionsConfig) *sessionsFixture {
+	t.Helper()
 	f := &sessionsFixture{
 		exe:  &fgPtyExecutor{PtyExecutor: workspacetest.NewPtyExecutor()},
 		loop: newQueuedScheduler(),
 	}
-	cfg := vte.DefaultConfig()
-	cfg.ScheduleNextTick = f.loop.ScheduleNextTick
+	vteCfg := vte.DefaultConfig()
+	vteCfg.ScheduleNextTick = f.loop.ScheduleNextTick
 	var ctx context.Context
 	ctx, f.cancel = context.WithCancel(context.Background())
 	tabs := newTestTerminalTabs(f.loop)
 	vtes := vteregistry.New(nopTerminalHost{}, nopTerminalHost{}, f.exe, f.exe, tabs,
-		vteregistry.Config{VTE: cfg})
+		vteregistry.Config{VTE: vteCfg})
 	f.s = newTerminalSessions(vtes, tabs, terminalSessionsConfig{
 		Ctx: ctx, Publisher: nopTerminalHost{}, Notifications: nopTerminalHost{},
-		Terminal: f.exe, VTE: cfg, ReservoirCapacity: reservoirCapacity,
+		Terminal: f.exe, VTE: vteCfg,
+		ReservoirCapacity: cfg.ReservoirCapacity,
+		Durable:           cfg.Durable,
 	})
 	t.Cleanup(func() {
 		f.cancel()
@@ -795,7 +804,7 @@ func TestTerminalSessionsCandidates(t *testing.T) {
 			f.detach(t, idle)
 			return []string{
 				string(idle.ID())[:terminalIDLength] + " (detached, idle) ",
-				string(shown.ID())[:terminalIDLength] + " (running) ",
+				string(shown.ID())[:terminalIDLength] + " (1 tab, running) ",
 			}
 		},
 	}, {
@@ -804,7 +813,7 @@ func TestTerminalSessionsCandidates(t *testing.T) {
 			ended, p := f.open(t, "make")
 			f.end(t, ended.ID(), p)
 			av, _ := f.open(t, "top")
-			return []string{string(av.ID())[:terminalIDLength] + " (running) "}
+			return []string{string(av.ID())[:terminalIDLength] + " (1 tab, running) "}
 		},
 	}}
 	for _, tc := range cases {
@@ -1307,16 +1316,16 @@ func TestTerminalCandidate(t *testing.T) {
 	}{
 		{desc: "a long id is cut",
 			info: vte.Info{ID: "0123456789abcdef", Title: "vim", Attachments: 1},
-			l:    vte.LivenessRunning, want: "01234567 (running) vim"},
-		{desc: "a short id is whole",
+			l:    vte.LivenessRunning, want: "01234567 (1 tab, running) vim"},
+		{desc: "a short id is whole, and every tab showing it is counted",
 			info: vte.Info{ID: "abc", Title: "vim", Attachments: 2},
-			l:    vte.LivenessIdle, want: "abc (idle) vim"},
+			l:    vte.LivenessIdle, want: "abc (2 tabs, idle) vim"},
 		{desc: "a detached terminal",
 			info: vte.Info{ID: "0123456789", Title: "make"},
 			l:    vte.LivenessRunning, want: "01234567 (detached, running) make"},
 		{desc: "an untitled terminal",
 			info: vte.Info{ID: "0123456789", Attachments: 1},
-			l:    vte.LivenessUnknown, want: "01234567 (unknown) terminal"},
+			l:    vte.LivenessUnknown, want: "01234567 (1 tab, unknown) terminal"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
@@ -1398,4 +1407,98 @@ func TestFailedTerminalKeeper(t *testing.T) {
 			assert.Equal(t, tc.wantExits, rec.exits)
 		})
 	}
+}
+
+// screenText renders what av shows, once it shows something.
+func screenText(t *testing.T, av *asyncVTE) string {
+	t.Helper()
+	snap, err := av.Snapshot()
+	require.NoError(t, err)
+	var b strings.Builder
+	for _, row := range snap.ActiveCells() {
+		for _, c := range row {
+			if c.Ch != 0 {
+				b.WriteRune(c.Ch)
+			}
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func TestTerminalSessionsRestore(t *testing.T) {
+	t.Parallel()
+	saved := vte.Snapshot{
+		Schema: 1, Title: "saved", Width: 40, Height: 10,
+		Primary: vte.ScreenSnapshot{Cells: term.StringToCells("from before")},
+	}
+
+	t.Run("attaches the terminal the session showed", func(t *testing.T) {
+		t.Parallel()
+		f := newSessionsFixtureWith(t, terminalSessionsConfig{Durable: true})
+		before, p := f.open(t)
+		p.Print("still here")
+		require.Eventually(t, func() bool {
+			return strings.Contains(screenText(t, before), "still here")
+		}, 5*time.Second, 5*time.Millisecond)
+		f.detach(t, before)
+
+		av := f.s.restore(before.ID(), saved)
+		assert.Equal(t, before.ID(), av.ID(), "the session's terminal is named while it loads")
+		av.Resize(40, 10)
+		f.settle()
+		require.NotNil(t, av.real)
+		assert.Equal(t, before.ID(), av.ID())
+		assert.True(t, av.existing)
+		assert.Equal(t, 1, f.attachments(before.ID()))
+		text := screenText(t, av)
+		assert.Contains(t, text, "still here", "the live terminal's screen is shown")
+		assert.NotContains(t, text, "from before", "the snapshot does not replace it")
+		assert.Equal(t, before.ID(), f.s.durableID(av), "a hosted terminal is recorded by id")
+	})
+
+	t.Run("replays the snapshot into a new terminal when it is gone", func(t *testing.T) {
+		t.Parallel()
+		f := newSessionsFixtureWith(t, terminalSessionsConfig{Durable: true})
+		av := f.s.restore("gone", saved)
+		av.Resize(40, 10)
+		f.settle()
+		require.NotNil(t, av.real)
+		select {
+		case <-f.exe.Started():
+		case <-time.After(5 * time.Second):
+			t.Fatal("no terminal started")
+		}
+		assert.NotEqual(t, vte.ID("gone"), av.ID(), "a new terminal")
+		assert.False(t, av.existing)
+		assert.Contains(t, screenText(t, av), "from before")
+	})
+
+	t.Run("a terminal that ends with Rune is not recorded by id", func(t *testing.T) {
+		t.Parallel()
+		f := newSessionsFixture(t, 0)
+		av, _ := f.open(t)
+		assert.Empty(t, f.s.durableID(av))
+		assert.False(t, f.s.durable())
+	})
+}
+
+func TestTerminalSessionsHostedOutliveTheWorkspace(t *testing.T) {
+	t.Parallel()
+	const job = 99
+	f := newSessionsFixtureWith(t, terminalSessionsConfig{Durable: true})
+	shown, _ := f.open(t)
+	detached, _ := f.open(t)
+	f.exe.fg.Store(job)
+	f.detach(t, detached)
+
+	n := -1
+	f.s.runningDetached(func(running int) { n = running })
+	assert.Equal(t, 0, n, "exiting ends no terminal of another machine")
+
+	f.cancel()
+	require.NoError(t, shown.Close())
+	f.settle()
+	assert.Equal(t, 0, f.attachments(shown.ID()), "the workspace closing leaves the terminal")
+	assert.Equal(t, 0, f.attachments(detached.ID()))
 }

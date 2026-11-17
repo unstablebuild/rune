@@ -42,7 +42,14 @@ func (t tabManager) OnTabExit(uri workspaceapi.URI) bool {
 	if t.c.exited() {
 		return true
 	}
-	t.c.changed(vte.LivenessUnknown)
+	t.c.mu.Lock()
+	destroyed := t.c.destroyed
+	t.c.mu.Unlock()
+	// A deleted terminal's process exiting is no news: its deletion was
+	// the last change told of it.
+	if !destroyed {
+		t.c.changed(vte.LivenessUnknown)
+	}
 	return t.c.r.tm.OnTabExit(uri)
 }
 

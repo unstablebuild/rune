@@ -33,10 +33,11 @@ import (
 // address it could not, such as one whose port another process holds.
 const rebindRetryInterval = 10 * time.Second
 
-// listener is a net.Listener over the workspace port of every tailnet
-// address this machine has at the moment. See [Client.Listen].
+// listener is a net.Listener over one port of every tailnet address
+// this machine has at the moment. See [Client.Listen].
 type listener struct {
 	c      *Client
+	port   uint16
 	ctx    context.Context
 	cancel func()
 	conns  chan net.Conn
@@ -50,10 +51,11 @@ type listener struct {
 	failed map[netip.Addr]string
 }
 
-func newListener(c *Client) *listener {
+func newListener(c *Client, port uint16) *listener {
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &listener{
 		c:       c,
+		port:    port,
 		ctx:     ctx,
 		cancel:  cancel,
 		conns:   make(chan net.Conn),
@@ -87,10 +89,10 @@ func (l *listener) Close() error {
 	return nil
 }
 
-// Addr is the workspace port on no address in particular: the listener
-// is bound to as many addresses as the machine has on the tailnet.
+// Addr is the port on no address in particular: the listener is bound
+// to as many addresses as the machine has on the tailnet.
 func (l *listener) Addr() net.Addr {
-	return &net.TCPAddr{Port: int(l.c.port)}
+	return &net.TCPAddr{Port: int(l.port)}
 }
 
 // run binds the addresses the machine should serve on whenever they may
@@ -117,10 +119,10 @@ func (l *listener) signal() {
 	}
 }
 
-// rebind binds the workspace port on each of the machine's tailnet
-// addresses while the Tailscale client is connected, and closes the
-// listeners on addresses it no longer has. It reports whether every
-// address it should serve on is bound.
+// rebind binds the port on each of the machine's tailnet addresses
+// while the Tailscale client is connected, and closes the listeners on
+// addresses it no longer has. It reports whether every address it
+// should serve on is bound.
 func (l *listener) rebind() bool {
 	want := make(map[netip.Addr]bool)
 	st, err := l.c.lc.StatusWithoutPeers(l.ctx)
@@ -144,7 +146,7 @@ func (l *listener) rebind() bool {
 		if _, ok := l.bound[addr]; ok {
 			continue
 		}
-		lis, err := l.c.listen(l.ctx, "tcp", l.c.addrPort(addr))
+		lis, err := l.c.listen(l.ctx, "tcp", netip.AddrPortFrom(addr, l.port).String())
 		if err != nil {
 			// Retried on every rebind, but reported once: another Rune
 			// on this machine may hold the port for good.

@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -57,11 +58,18 @@ var ErrConnectionClosed = errors.New("network connection closed unexpectedly")
 var _ workspace.RemoteScheme = (*scheme)(nil)
 var _ workspace.InstallDataDirProvider = (*scheme)(nil)
 var _ workspace.PackageHost = (*scheme)(nil)
+var _ workspace.PeerScheme = (*scheme)(nil)
 
-// Dialer opens a connection to a peer's workspace server. It is
-// satisfied by [runenet.Node].
+// ErrNotConnected is reported by the [workspace.Peer] of a workspace
+// that has not reached its peer yet.
+var ErrNotConnected = errors.New("not connected to the peer yet")
+
+// Dialer opens connections to a peer's workspace server: one to its
+// RPC surface and, per terminal attachment, one to its attachment
+// port. It is satisfied by [runenet.Node] and tailnet.Client.
 type Dialer interface {
 	Dial(ctx context.Context, peer string) (net.Conn, error)
+	DialAttachment(ctx context.Context, peer string) (net.Conn, error)
 }
 
 // New returns a scheme constructor for the workspaces that URIs on
@@ -91,6 +99,10 @@ type scheme struct {
 
 	ctx       context.Context
 	cancelCtx func()
+
+	// root is path as the peer resolved it, known once connected. It
+	// names the workspace to the peer's terminal services.
+	root atomic.Pointer[string]
 
 	schemeapi.Scheme
 }
@@ -198,6 +210,8 @@ func (s *scheme) connectScheme(
 		_ = conn.Close()
 		return nil, fmt.Errorf("open %s on %s: %w", s.path, s.peer, err)
 	}
+	root := remote.Root()
+	s.root.Store(&root)
 	return &connScheme{Scheme: workspaceCwd{Scheme: remote}, conn: conn}, nil
 }
 
@@ -281,6 +295,37 @@ func (s *scheme) WaitConnected(ctx context.Context) error {
 // connection, following its reconnects.
 func (s *scheme) HostConn() (grpc.ClientConnInterface, bool) {
 	return s.Scheme.(workspace.PackageHost).HostConn()
+}
+
+// Peer satisfies workspace.PeerScheme: a Rune serves every workspace
+// of the scheme, and owns its terminals for as long as it serves,
+// whatever happens to the connection to it.
+func (s *scheme) Peer() (workspace.Peer, bool) {
+	return workspacePeer{s}, true
+}
+
+// workspacePeer is the Rune serving the workspace of s.
+type workspacePeer struct{ s *scheme }
+
+func (p workspacePeer) Conn() grpc.ClientConnInterface {
+	conn, _ := p.s.HostConn()
+	return conn
+}
+
+// Root is the workspace's path as the peer resolved it, which it is
+// not until connected once.
+func (p workspacePeer) Root(context.Context) (string, error) {
+	root := p.s.root.Load()
+	if root == nil {
+		return "", fmt.Errorf("%s on %s: %w", p.s.path, p.s.peer, ErrNotConnected)
+	}
+	return *root, nil
+}
+
+// DialAttachment needs no workspace connection: what it reaches on the
+// peer outlives the connection, whichever side dropped it.
+func (p workspacePeer) DialAttachment(ctx context.Context) (io.ReadWriteCloser, error) {
+	return p.s.dialer.DialAttachment(ctx, p.s.peer)
 }
 
 // installRootTimeout bounds the PeerInfo round-trip so resolving the

@@ -36,8 +36,9 @@ import (
 
 // ProbePort is the mesh port every instance started by [StartInstance]
 // accepts bare connections on, so a test can observe whether a peer's
-// packets reach it independently of the workspace server.
-const ProbePort = 7474
+// packets reach it independently of the workspace server. It is clear
+// of the workspace port and the attachment port after it.
+const ProbePort = 7480
 
 // Instance is a Rune instance running in its own process.
 type Instance struct {
@@ -98,11 +99,25 @@ func (i *Instance) SetGUIEnv(t *testing.T, env string) {
 	}
 }
 
+// InstanceOption configures [StartInstance].
+type InstanceOption func(*exec.Cmd)
+
+// WithInstanceEnv adds KEY=VALUE entries to the instance's environment,
+// over this process's, which it inherits otherwise.
+func WithInstanceEnv(env ...string) InstanceOption {
+	return func(cmd *exec.Cmd) {
+		if cmd.Env == nil {
+			cmd.Env = os.Environ()
+		}
+		cmd.Env = append(cmd.Env, env...)
+	}
+}
+
 // StartInstance launches a Rune instance as its own process, joined to
 // control under hostname with authKey and serving its workspaces. It
 // returns once the instance reports itself reachable.
 func StartInstance(
-	t *testing.T, control ControlPlane, hostname, authKey string,
+	t *testing.T, control ControlPlane, hostname, authKey string, opts ...InstanceOption,
 ) *Instance {
 	t.Helper()
 
@@ -116,6 +131,9 @@ func StartInstance(
 		"-datadir", dataDir,
 		"-probe-port", fmt.Sprint(ProbePort),
 	)
+	for _, opt := range opts {
+		opt(cmd)
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatalf("stdout pipe: %v", err)

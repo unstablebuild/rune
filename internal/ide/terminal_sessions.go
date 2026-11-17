@@ -60,6 +60,10 @@ type terminalSessionsConfig struct {
 	// ScheduleNextTick runs on the host event loop.
 	VTE               vte.Config
 	ReservoirCapacity int
+	// Durable is whether the terminals outlive this process: those of
+	// the peer serving the workspace do, so a session records them by
+	// id and attaches to them again.
+	Durable bool
 }
 
 // terminalSessions keeps the terminals of a workspace and the views
@@ -184,14 +188,16 @@ func (s *terminalSessions) open(cmdAndArgs []string) *asyncVTE {
 	if !argsMatchEmulatorShell(cmdAndArgs, s.cfg.VTE.CommandAndArgs) {
 		pool = nil
 	}
-	av := newAsyncVTE(s, func() (vte.View, error) {
+	av := newAsyncVTE(s, func() (vte.View, bool, error) {
 		if pool != nil {
 			s.log(log.TraceLevel, "getting vte instance from reservoir")
-			return pool.Get()
+			v, err := pool.Get()
+			return v, false, err
 		}
-		return vtes.CreateVTE(ctx, vte.CreateOptions{
+		v, err := vtes.CreateVTE(ctx, vte.CreateOptions{
 			CommandAndArgs: cmdAndArgs,
 		})
+		return v, false, err
 	})
 	av.pool = pool
 	return av
@@ -200,11 +206,49 @@ func (s *terminalSessions) open(cmdAndArgs []string) *asyncVTE {
 // attach returns another view of the terminal id.
 func (s *terminalSessions) attach(id vte.ID) *asyncVTE {
 	vtes, ctx := s.vtes, s.cfg.Ctx
-	av := newAsyncVTE(s, func() (vte.View, error) {
-		return vtes.AttachVTE(ctx, id)
+	av := newAsyncVTE(s, func() (vte.View, bool, error) {
+		v, err := vtes.AttachVTE(ctx, id)
+		return v, err == nil, err
 	})
 	av.existing = true
 	return av
+}
+
+// restore returns a view of the terminal id a session showed before
+// this process started, or, when the owner no longer has it, of a new
+// terminal showing snap.
+func (s *terminalSessions) restore(id vte.ID, snap vte.Snapshot) *asyncVTE {
+	vtes, ctx := s.vtes, s.cfg.Ctx
+	av := newAsyncVTE(s, func() (vte.View, bool, error) {
+		v, err := vtes.AttachVTE(ctx, id)
+		if err == nil {
+			return v, true, nil
+		}
+		if !errors.Is(err, vte.ErrNotFound) {
+			return nil, false, err
+		}
+		v, err = vtes.CreateVTE(ctx, vte.CreateOptions{})
+		return v, false, err
+	})
+	av.existing = true
+	av.pendingID = id
+	_ = av.RestoreFromSnapshot(snap)
+	return av
+}
+
+// durableID is the id a session records v under: that of a terminal
+// that outlives this process, none for one that ends with it.
+func (s *terminalSessions) durableID(v vte.View) vte.ID {
+	if !s.cfg.Durable {
+		return ""
+	}
+	return v.ID()
+}
+
+// durable is whether the terminals outlive this process; see
+// [terminalSessionsConfig.Durable].
+func (s *terminalSessions) durable() bool {
+	return s.cfg.Durable
 }
 
 // info describes the terminal id, which is false when there is none
@@ -296,13 +340,16 @@ func (s *terminalSessions) liveness(id vte.ID, then func(vte.Liveness)) {
 }
 
 // runningDetached tells then, on the event loop, how many listed
-// terminals no view attaches run something. Without any such
-// terminal, it tells it at once.
+// terminals no view attaches run something that ends with this
+// process. Without any such terminal, or when the terminals are
+// another machine's and outlive it, it tells it at once.
 func (s *terminalSessions) runningDetached(then func(int)) {
 	var ids []vte.ID
-	for _, info := range s.list() {
-		if info.Attachments == 0 {
-			ids = append(ids, info.ID)
+	if !s.cfg.Durable {
+		for _, info := range s.list() {
+			if info.Attachments == 0 {
+				ids = append(ids, info.ID)
+			}
 		}
 	}
 	if len(ids) == 0 {
@@ -357,12 +404,17 @@ func (s *terminalSessions) end(v vte.View) error {
 // something for the user or another view shows it; any other goes back
 // to the reservoir it came from, or ends. Telling what it runs asks the
 // host of its pty off the event loop, so av may outlive the call.
+//
+// A workspace that is closing ends the terminals that end with this
+// process anyway, and leaves another machine's as they are.
 func (s *terminalSessions) closeView(av *asyncVTE) error {
 	switch {
 	case av.closeMode == vteCloseDetach:
 		return s.detachView(av)
-	case av.closeMode != vteCloseAuto || s.closing():
+	case av.closeMode != vteCloseAuto:
 		return s.endView(av)
+	case s.closing():
+		return s.leaveView(av)
 	}
 	id := av.real.ID()
 	info, ok := s.info(id)
@@ -376,10 +428,13 @@ func (s *terminalSessions) closeView(av *asyncVTE) error {
 		var err error
 		// Another view may have attached it, or something deleted it,
 		// while it was asked.
-		if info, ok := s.info(id); ok && !s.closing() &&
-			(info.Attachments > 1 || l != vte.LivenessIdle) {
+		info, ok := s.info(id)
+		switch {
+		case s.closing():
+			err = s.leaveView(av)
+		case ok && (info.Attachments > 1 || l != vte.LivenessIdle):
 			err = s.detachView(av)
-		} else {
+		default:
 			err = s.endView(av)
 		}
 		if err != nil {
@@ -387,6 +442,15 @@ func (s *terminalSessions) closeView(av *asyncVTE) error {
 		}
 	})
 	return nil
+}
+
+// leaveView drops av as the workspace closes: its terminal ends with
+// this process unless another machine owns it.
+func (s *terminalSessions) leaveView(av *asyncVTE) error {
+	if s.cfg.Durable {
+		return s.detachView(av)
+	}
+	return s.endView(av)
 }
 
 // detachView drops av and leaves its terminal running. What the
@@ -555,21 +619,28 @@ func argsMatchEmulatorShell(cmdAndArgs, configured []string) bool {
 }
 
 // terminalCandidate names info by the prefix of its id lookup takes,
-// followed by what tells it apart for the user.
+// followed by what tells it apart for the user: how many tabs show it,
+// on this machine or, for a terminal another machine owns, on any, and
+// what it runs.
 func terminalCandidate(info vte.Info, l vte.Liveness) string {
 	id := string(info.ID)
 	if len(id) > terminalIDLength {
 		id = id[:terminalIDLength]
 	}
-	state := l.String()
-	if info.Attachments == 0 {
-		state = "detached, " + state
+	var shown string
+	switch info.Attachments {
+	case 0:
+		shown = "detached"
+	case 1:
+		shown = "1 tab"
+	default:
+		shown = fmt.Sprintf("%d tabs", info.Attachments)
 	}
 	title := info.Title
 	if title == "" {
 		title = "terminal"
 	}
-	return command.ShellQuote(fmt.Sprintf("%s (%s) %s", id, state, title))
+	return command.ShellQuote(fmt.Sprintf("%s (%s, %s) %s", id, shown, l, title))
 }
 
 // terminalCloseWarning asks whether to end the terminal info describes,

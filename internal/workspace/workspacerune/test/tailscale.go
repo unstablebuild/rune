@@ -27,6 +27,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -50,9 +51,10 @@ const runeUser = "rune"
 
 // Lines tailscalesvc prints for the harness.
 const (
-	svcReadyLine    = "tailscalesvc: ready"
-	svcSignInPrefix = "tailscalesvc: sign in at "
-	svcErrorPrefix  = "tailscalesvc: error "
+	svcReadyLine      = "tailscalesvc: ready"
+	svcSignInPrefix   = "tailscalesvc: sign in at "
+	svcErrorPrefix    = "tailscalesvc: error "
+	svcTerminalPrefix = "tailscalesvc: terminal "
 )
 
 // tailnetTimeout bounds how long a machine of a DockerTailnet takes to
@@ -248,6 +250,99 @@ func (m *DockerMachine) Peers(t *testing.T) []string {
 		t.Fatalf("peers on %s: %v: %s", m.Hostname, err, line)
 	}
 	return strings.Fields(stdoutOf(out))
+}
+
+// TerminalOptions is what a machine does with a terminal of a
+// tailscale:// workspace while attached to it.
+type TerminalOptions struct {
+	// Cmd is the program a created terminal runs, the peer's login
+	// shell when empty.
+	Cmd string
+	// Line is typed into the terminal, followed by a return.
+	Line string
+	// Wait is text the screen must show before the machine detaches.
+	Wait string
+}
+
+// Terminal is what a machine lists of a terminal of a tailscale://
+// workspace.
+type Terminal struct {
+	ID          string
+	Attachments int
+	Liveness    string
+}
+
+// CreateTerminal creates a terminal in the workspace uri from m, as a
+// tab does, and closes the tab: it returns the terminal's id and the
+// screen it showed, and leaves the terminal running on the peer.
+func (m *DockerMachine) CreateTerminal(t *testing.T, uri string, opts TerminalOptions) (string, string) {
+	t.Helper()
+	return m.terminal(t, uri, "create", "-cmd", opts.Cmd, "-line", opts.Line, "-wait", opts.Wait)
+}
+
+// AttachTerminal attaches to the terminal id of the workspace uri from
+// m, as a tab does, and closes the tab: it returns the screen it showed.
+func (m *DockerMachine) AttachTerminal(t *testing.T, uri, id string, opts TerminalOptions) string {
+	t.Helper()
+	_, screen := m.terminal(t, uri, "attach", "-id", id, "-line", opts.Line, "-wait", opts.Wait)
+	return screen
+}
+
+// ListTerminals lists the terminals of the workspace uri as the peer
+// reports them to m.
+func (m *DockerMachine) ListTerminals(t *testing.T, uri string) []Terminal {
+	t.Helper()
+	out, err := m.exec(t, runeUser, "tailscalesvc", "terminal", "list",
+		"-uri", uri, "-timeout", tailnetTimeout.String())
+	if line, ok := svcError(out); ok || err != nil {
+		t.Fatalf("list terminals of %s on %s: %v: %s\n%s", uri, m.Hostname, err, line, out)
+	}
+	var ret []Terminal
+	for line := range strings.Lines(out) {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), svcTerminalPrefix)
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(rest)
+		if len(fields) != 3 {
+			t.Fatalf("list terminals of %s on %s: unexpected line %q", uri, m.Hostname, line)
+		}
+		n, err := strconv.Atoi(strings.TrimPrefix(fields[1], "attachments="))
+		if err != nil {
+			t.Fatalf("list terminals of %s on %s: unexpected line %q", uri, m.Hostname, line)
+		}
+		ret = append(ret, Terminal{
+			ID: fields[0], Attachments: n,
+			Liveness: strings.TrimPrefix(fields[2], "liveness="),
+		})
+	}
+	return ret
+}
+
+// DeleteTerminal ends the terminal id of the workspace uri from m.
+func (m *DockerMachine) DeleteTerminal(t *testing.T, uri, id string) {
+	t.Helper()
+	out, err := m.exec(t, runeUser, "tailscalesvc", "terminal", "delete",
+		"-uri", uri, "-id", id, "-timeout", tailnetTimeout.String())
+	if line, ok := svcError(out); ok || err != nil {
+		t.Fatalf("delete terminal %s of %s on %s: %v: %s\n%s", id, uri, m.Hostname, err, line, out)
+	}
+}
+
+// terminal runs `tailscalesvc terminal sub` on m and returns the id and
+// screen it printed.
+func (m *DockerMachine) terminal(t *testing.T, uri, sub string, args ...string) (string, string) {
+	t.Helper()
+	out, err := m.exec(t, runeUser, append([]string{"tailscalesvc", "terminal", sub,
+		"-uri", uri, "-timeout", tailnetTimeout.String()}, args...)...)
+	if line, ok := svcError(out); ok || err != nil {
+		t.Fatalf("terminal %s of %s on %s: %v: %s\n%s", sub, uri, m.Hostname, err, line, out)
+	}
+	id, screen, ok := strings.Cut(stdoutOf(out), "\n")
+	if !ok || !strings.HasPrefix(id, svcTerminalPrefix) {
+		t.Fatalf("terminal %s of %s on %s printed no id:\n%s", sub, uri, m.Hostname, out)
+	}
+	return strings.TrimPrefix(id, svcTerminalPrefix), screen
 }
 
 // exec runs args on m as user, root when empty, and returns its

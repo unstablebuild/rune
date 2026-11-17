@@ -35,6 +35,7 @@ import (
 	"google.golang.org/grpc/status"
 	"unstable.build/rune/internal/tailnet"
 	"unstable.build/rune/internal/tailnet/tailnettest"
+	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacerune"
 )
@@ -76,11 +77,13 @@ func TestTailscaleNet(t *testing.T) {
 	laptop := tn.Join(t, "laptop")
 
 	dataDir := t.TempDir()
-	served := newTailscaleNet(tailnetClient(t, workstation), dataDir, "", &servedPackages{})
+	served := newTailscaleNet(tailnetClient(t, workstation), dataDir, "", vte.DefaultConfig(),
+		&servedPackages{})
 	t.Cleanup(func() { _ = served.Close() })
 	require.NoError(t, served.serve())
 	require.NoError(t, served.serve(), "serving again is a no-op")
-	opener := newTailscaleNet(tailnetClient(t, laptop), t.TempDir(), "", &servedPackages{})
+	opener := newTailscaleNet(tailnetClient(t, laptop), t.TempDir(), "", vte.DefaultConfig(),
+		&servedPackages{})
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hi"), 0o600))

@@ -33,8 +33,11 @@ import (
 	"google.golang.org/grpc/status"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/runenet/runenetpb"
+	"unstable.build/rune/internal/term/vte"
+	"unstable.build/rune/internal/term/vte/vteregistry"
 	"unstable.build/rune/internal/workspace/remotescheme"
 	tworkspacerpc "unstable.build/rune/internal/workspace/workspacerpc"
+	"unstable.build/rune/internal/workspace/workspacerpc/vterpc"
 )
 
 // WhoIs resolves a mesh address to the machine behind it. It is the
@@ -55,10 +58,14 @@ type Caller struct {
 }
 
 // WorkspaceServer serves this machine's filesystem, processes and
-// terminals to authorized mesh peers.
+// terminals to authorized mesh peers. The terminals peers open are its
+// own: they outlive the connection that opened them, and end with it.
 type WorkspaceServer struct {
 	grpcServer *grpc.Server
 	rpcServer  *tworkspacerpc.Server
+	terminals  *vteregistry.Set
+	attachLis  net.Listener
+	cancel     context.CancelFunc
 }
 
 // ServeOption configures ServeWorkspace.
@@ -66,6 +73,7 @@ type ServeOption func(*serveOptions)
 
 type serveOptions struct {
 	register []func(grpc.ServiceRegistrar)
+	terminal vte.Config
 }
 
 // WithServices registers more services next to the workspace's own,
@@ -77,6 +85,15 @@ func WithServices(register func(grpc.ServiceRegistrar)) ServeOption {
 	}
 }
 
+// WithTerminalConfig configures the terminals peers open on this
+// machine: the shell they run and the scrollback they keep, as the
+// host's own terminals are configured. The default is vte.DefaultConfig.
+func WithTerminalConfig(cfg vte.Config) ServeOption {
+	return func(o *serveOptions) {
+		o.terminal = cfg
+	}
+}
+
 // Authorizer decides whether the peer behind a request may issue it.
 // It reads the peer from the request context with [peer.FromContext],
 // and its error is the gRPC status the request fails with.
@@ -85,8 +102,9 @@ type Authorizer interface {
 }
 
 // ServeWorkspace starts serving scheme to mesh peers on the node's
-// workspace port. Only machines owned by the same account as this node
-// are allowed to issue requests; see [Node.WhoIs] and [Serve].
+// workspace port, and its terminals on the node's attachment port. Only
+// machines owned by the same account as this node are allowed to issue
+// requests; see [Node.WhoIs] and [Serve].
 func ServeWorkspace(
 	node *Node, scheme schemeapi.Scheme, dataDir string, opts ...ServeOption,
 ) (*WorkspaceServer, error) {
@@ -94,22 +112,29 @@ func ServeWorkspace(
 	if err != nil {
 		return nil, fmt.Errorf("listen on network: %w", err)
 	}
+	attachLis, err := node.ListenAttachments()
+	if err != nil {
+		_ = lis.Close()
+		return nil, fmt.Errorf("listen for attachments on network: %w", err)
+	}
 	auth := NewPeerAuthorizer(node.WhoIs, node.LoginName)
-	return Serve(lis, auth, scheme, dataDir, opts...), nil
+	return Serve(lis, attachLis, auth, scheme, dataDir, opts...), nil
 }
 
-// Serve starts serving scheme on lis to the peers auth admits. Closing
-// the returned server closes lis.
+// Serve starts serving scheme on lis to the peers auth admits, and the
+// terminals they open in its workspaces on attachLis, behind the same
+// authorizer; see [AttachmentPort]. Closing the returned server closes
+// both listeners and ends the terminals.
 //
 // dataDir is this instance's Rune data directory, advertised to peers
 // through the PeerInfo service so a client can provision and resolve
 // toolchains under the peer's actual install root rather than guessing
 // it from its own datadir. It must be an absolute path on this host.
 func Serve(
-	lis net.Listener, auth Authorizer, scheme schemeapi.Scheme, dataDir string,
-	opts ...ServeOption,
+	lis, attachLis net.Listener, auth Authorizer, scheme schemeapi.Scheme,
+	dataDir string, opts ...ServeOption,
 ) *WorkspaceServer {
-	var o serveOptions
+	o := serveOptions{terminal: vte.DefaultConfig()}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -126,17 +151,30 @@ func Serve(
 	workspacerpc.RegisterExecutorServer(grpcServer, rpcServer)
 	workspacerpc.RegisterTerminalServer(grpcServer, rpcServer)
 	runenetpb.RegisterPeerInfoServer(grpcServer, peerInfoServer{dataDir: dataDir})
+	terminals := vteregistry.NewSet(scheme, vteregistry.Config{VTE: o.terminal})
+	vterpc.RegisterVTEServer(grpcServer, tworkspacerpc.NewVTEServer(terminals.Host))
 	for _, register := range o.register {
 		register(grpcServer)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	go debug.CapturePanicReport(func() {
+		err := terminals.Serve(ctx, &authorizedListener{Listener: attachLis, auth: auth})
+		if err != nil && ctx.Err() == nil {
+			log.WithField(logging.KeyClass, "runenet").
+				Warnf("network attachment server stopped: %v", err)
+		}
+	})
 	go debug.CapturePanicReport(func() {
 		if err := grpcServer.Serve(lis); err != nil {
 			log.WithField(logging.KeyClass, "runenet").
 				Warnf("network workspace server stopped: %v", err)
 		}
 	})
-	return &WorkspaceServer{grpcServer: grpcServer, rpcServer: rpcServer}
+	return &WorkspaceServer{
+		grpcServer: grpcServer, rpcServer: rpcServer,
+		terminals: terminals, attachLis: attachLis, cancel: cancel,
+	}
 }
 
 // peerInfoServer answers PeerInfo requests with this instance's data
@@ -153,10 +191,13 @@ func (s peerInfoServer) Get(
 	return &runenetpb.PeerInfoResponse{DataDir: s.dataDir}, nil
 }
 
-// Close stops serving and drops every in-flight peer request.
+// Close stops serving, drops every in-flight peer request and ends the
+// terminals peers opened.
 func (s *WorkspaceServer) Close() error {
+	s.cancel()
+	err := s.attachLis.Close()
 	s.grpcServer.Stop()
-	return s.rpcServer.Stop()
+	return errors.Join(err, s.terminals.Close(), s.rpcServer.Stop())
 }
 
 // WhoIs resolves a mesh address to the machine behind it.
@@ -270,5 +311,37 @@ func streamInterceptor(auth Authorizer) grpc.StreamServerInterceptor {
 			return err
 		}
 		return handler(srv, ss)
+	}
+}
+
+// authorizedListener hands out only the connections auth admits, so a
+// raw byte stream gets the same gate as an RPC: the connection's
+// remote address stands for the peer of a request. A rejected
+// connection is closed and the next one awaited: one stranger must not
+// stop the listener serving the owner's machines.
+type authorizedListener struct {
+	net.Listener
+	auth Authorizer
+}
+
+func (l *authorizedListener) Accept() (net.Conn, error) {
+	for {
+		conn, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		addr := conn.RemoteAddr()
+		if addr == nil {
+			_ = conn.Close()
+			continue
+		}
+		ctx := peer.NewContext(context.Background(), &peer.Peer{Addr: addr})
+		if err := l.auth.Authorize(ctx); err != nil {
+			log.WithField(logging.KeyClass, "runenet").
+				Warnf("rejected network attachment from %s: %v", addr, err)
+			_ = conn.Close()
+			continue
+		}
+		return conn, nil
 	}
 }

@@ -425,11 +425,12 @@ func (p *wirePty) markExited(exitErr error) {
 }
 
 // end is the error the stream ends with for err: a terminal the host
-// confirmed gone ended as a process does, and anything else is the
-// failure it is.
+// confirmed gone ended as a process does, and is listed no more; anything
+// else is the failure it is.
 func (p *wirePty) end(err error) error {
 	if errors.Is(err, vte.ErrNotFound) {
 		p.markExited(nil)
+		p.v.o.mirror.gone(p.v.id)
 		return io.EOF
 	}
 	return err

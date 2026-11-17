@@ -22,6 +22,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -200,15 +201,19 @@ func (h *replicaHost) exited() int {
 type fakeHost struct {
 	r *vteregistry.Registry
 
-	mu    sync.Mutex
-	down  bool
-	conns []net.Conn
-	dials int
+	mu      sync.Mutex
+	down    bool
+	conns   []net.Conn
+	streams []context.CancelFunc
+	dials   int
 }
 
 var _ host = (*fakeHost)(nil)
 
 func (h *fakeHost) Root(context.Context) (string, error) {
+	if h.isDown() {
+		return "", errUnreachable
+	}
 	return "/work", nil
 }
 
@@ -235,6 +240,9 @@ func (h *fakeHost) WatchVTEs(ctx context.Context) (iterator.Iterator[vte.Change]
 	}
 	ch := make(chan vte.Change, 256)
 	wctx, cancel := context.WithCancel(ctx)
+	h.mu.Lock()
+	h.streams = append(h.streams, cancel)
+	h.mu.Unlock()
 	h.r.Watch(wctx, func(change vte.Change) {
 		select {
 		case ch <- change:
@@ -283,8 +291,8 @@ func (h *fakeHost) setDown(down bool) {
 	h.down = down
 }
 
-// cut closes every connection the host accepted so far, as a network
-// loss does.
+// cut closes every connection the host accepted so far and ends every
+// stream of changes, as a network loss does.
 func (h *fakeHost) cut() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -292,6 +300,22 @@ func (h *fakeHost) cut() {
 		_ = c.Close()
 	}
 	h.conns = nil
+	h.cutStreamsLocked()
+}
+
+// cutStreams ends every stream of changes, as the lifecycle link
+// dropping does, and leaves the attachments.
+func (h *fakeHost) cutStreams() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cutStreamsLocked()
+}
+
+func (h *fakeHost) cutStreamsLocked() {
+	for _, cancel := range h.streams {
+		cancel()
+	}
+	h.streams = nil
 }
 
 func (h *fakeHost) dialed() int {
@@ -398,11 +422,19 @@ func TestOwnerViews(t *testing.T) {
 	assert.Equal(t, 1, f.info(t, v.ID()).Attachments)
 	assert.Equal(t, f.info(t, v.ID()).URI, v.URI(), "a replica has the terminal's uri")
 	assert.False(t, v.IsComplete())
+	listed, err := f.o.ListVTEs(ctx)
+	require.NoError(t, err)
+	require.Len(t, listed, 1, "a terminal just created is listed at once")
+	assert.Equal(t, v.ID(), listed[0].ID)
 
 	other, err := f.o.AttachVTE(ctx, v.ID())
 	require.NoError(t, err)
 	assert.Equal(t, v.ID(), other.ID())
 	assert.Equal(t, 2, f.info(t, v.ID()).Attachments)
+	require.Eventually(t, func() bool {
+		listed, _ := f.o.ListVTEs(ctx)
+		return len(listed) == 1 && listed[0].Attachments == 2
+	}, 5*time.Second, 5*time.Millisecond, "the listing follows the host's changes")
 	p.Print(" again")
 	shows(t, other.(*replica), "hello again")
 	shows(t, v, "hello again")
@@ -433,6 +465,34 @@ func TestOwnerViews(t *testing.T) {
 		5*time.Second, 5*time.Millisecond, "closing the owner detaches its replicas")
 	_, err = f.o.CreateVTE(ctx, vte.CreateOptions{})
 	require.ErrorIs(t, err, ErrClosed)
+}
+
+func TestOwnerListsWhatTheHostHas(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := context.Background()
+	// A terminal made before this Owner looked, as one another Rune
+	// opened, or one left over from before a restart.
+	v, err := f.host.r.CreateVTE(ctx, vte.CreateOptions{Width: 20, Height: 4})
+	require.NoError(t, err)
+	<-f.term.Started()
+	require.Eventually(t, func() bool {
+		listed, _ := f.o.ListVTEs(ctx)
+		return len(listed) == 1 && listed[0].ID == v.ID() && listed[0].Width == 20
+	}, 5*time.Second, 5*time.Millisecond, "the host's listing is mirrored")
+
+	// While the host is unreachable the listing stands as it was.
+	f.host.setDown(true)
+	f.host.cut()
+	require.NoError(t, f.host.r.DeleteVTE(ctx, v.ID()))
+	listed, err := f.o.ListVTEs(ctx)
+	require.NoError(t, err)
+	assert.Len(t, listed, 1)
+	f.host.setDown(false)
+	require.Eventually(t, func() bool {
+		listed, _ := f.o.ListVTEs(ctx)
+		return len(listed) == 0
+	}, 10*time.Second, 5*time.Millisecond, "a deletion missed is caught up with")
 }
 
 func TestReplicaInputAndSize(t *testing.T) {
@@ -542,6 +602,34 @@ func TestReplicaDeletedTerminal(t *testing.T) {
 	assert.Empty(t, f.shown.notices, "a terminal ending is no error")
 }
 
+func TestReplicaDeletedTerminalIsUnlistedWithoutTheHost(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	v, _ := f.create(t, 20, 4)
+	require.Eventually(t, func() bool {
+		infos, _ := f.o.ListVTEs(t.Context())
+		return len(infos) == 1
+	}, 5*time.Second, 5*time.Millisecond)
+
+	var deleted atomic.Bool
+	f.o.Watch(t.Context(), func(change vte.Change) {
+		if change.ID == v.ID() && change.Deleted {
+			deleted.Store(true)
+		}
+	})
+	// The lifecycle link is down, as it is once the host exits: only
+	// the attachment carries the host's last word on the terminal.
+	f.host.setDown(true)
+	f.host.cutStreams()
+	require.NoError(t, f.host.r.DeleteVTE(t.Context(), v.ID()))
+	require.Eventually(t, v.IsComplete, 5*time.Second, 5*time.Millisecond)
+	require.Eventually(t, deleted.Load, 5*time.Second, 5*time.Millisecond,
+		"the host told the terminal is gone, so it is")
+	infos, err := f.o.ListVTEs(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, infos)
+}
+
 func TestReplicaProcessExit(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
@@ -603,6 +691,49 @@ func TestOwnerWatch(t *testing.T) {
 	}, 10*time.Second, 5*time.Millisecond, "the deletion is told after the stream resumes")
 }
 
+func TestOwnerWatchCatchesUpWhatWasToldWhileDown(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	v, _ := f.create(t, 20, 4)
+
+	var mu sync.Mutex
+	var changes []vte.Change
+	f.o.Watch(t.Context(), func(change vte.Change) {
+		mu.Lock()
+		defer mu.Unlock()
+		changes = append(changes, change)
+	})
+	told := func(want func(vte.Change) bool) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.ContainsFunc(changes, want)
+	}
+	running := func(c vte.Change) bool {
+		return c.ID == v.ID() && c.Attachments == 0 && c.Liveness == vte.LivenessRunning
+	}
+
+	// The shell takes a job up; then the link drops, and the tab is
+	// closed while it is down. The host finds the detached terminal
+	// running and tells it, but nobody is listening.
+	f.term.fg.Store(99)
+	f.host.setDown(true)
+	f.host.cut()
+	require.NoError(t, v.Close())
+	require.Eventually(t, func() bool {
+		info := f.info(t, v.ID())
+		return info.Attachments == 0 && info.Liveness == vte.LivenessRunning
+	}, 5*time.Second, 5*time.Millisecond, "the host found it running")
+	assert.False(t, told(running))
+
+	f.host.setDown(false)
+	require.Eventually(t, func() bool { return told(running) },
+		10*time.Second, 5*time.Millisecond, "the listing the stream resumes from tells it")
+	infos, err := f.o.ListVTEs(t.Context())
+	require.NoError(t, err)
+	require.Len(t, infos, 1)
+	assert.Equal(t, vte.LivenessRunning, infos[0].Liveness)
+}
+
 func TestOwnerVersionMismatch(t *testing.T) {
 	t.Parallel()
 	loop := newLoop(t)
@@ -622,8 +753,19 @@ func TestOwnerVersionMismatch(t *testing.T) {
 }
 
 // refusingHost answers every attachment as a host speaking an older
-// protocol would.
+// protocol would, and lists nothing.
 type refusingHost struct{ fakeHost }
+
+func (*refusingHost) ListVTEs(context.Context) ([]vte.Info, error) {
+	return nil, nil
+}
+
+func (*refusingHost) WatchVTEs(ctx context.Context) (iterator.Iterator[vte.Change], error) {
+	return iterator.FromFunc(func(ctx context.Context) (vte.Change, bool, error) {
+		<-ctx.Done()
+		return vte.Change{}, false, nil
+	}, func() error { return nil }), nil
+}
 
 func (h *refusingHost) DialVTE(context.Context) (io.ReadWriteCloser, error) {
 	client, server := net.Pipe()

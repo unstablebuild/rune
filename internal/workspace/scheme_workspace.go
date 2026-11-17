@@ -89,6 +89,18 @@ func hostConn(v any) (grpc.ClientConnInterface, bool) {
 	return nil, false
 }
 
+// Peer forwards [PeerScheme.Peer] when the embedded scheme supports it.
+func (w *schemeWorkspace) Peer() (Peer, bool) {
+	return peer(w.Scheme)
+}
+
+func peer(v any) (Peer, bool) {
+	if p, ok := v.(PeerScheme); ok {
+		return p.Peer()
+	}
+	return nil, false
+}
+
 // PathCaseSensitive defers to the scheme when it knows the answer;
 // otherwise it probes the host through the scheme on the first call, so
 // a remote host answers for its own filesystem.

@@ -41,6 +41,12 @@ var asyncVTEURICounter atomic.Uint64
 
 var _ vte.View = (*asyncVTE)(nil)
 
+// vteFactory brings the terminal an asyncVTE stands in for. attached
+// reports that the terminal ran before this view asked for it, which
+// abandoning the view must not end, and whose screen a snapshot the
+// view was given must not replace.
+type vteFactory func() (v vte.View, attached bool, err error)
+
 // tabNameAliaser routes the tab and status calls a terminal makes under
 // its own URI to the tabs showing it, through the placeholder and
 // session URIs in between. A terminal shown by no tab keeps its own URI,
@@ -266,6 +272,9 @@ type asyncVTE struct {
 	// running before, which abandoning the placeholder must not end.
 	existing  bool
 	closeMode vteCloseMode
+	// pendingID names the terminal the factory attaches while it
+	// loads, so a state save meanwhile keeps the session's terminal.
+	pendingID vte.ID
 
 	width, height int
 	resized       bool
@@ -278,7 +287,7 @@ type asyncVTE struct {
 	errComp component.String
 }
 
-func newAsyncVTE(s *terminalSessions, factory func() (vte.View, error)) *asyncVTE {
+func newAsyncVTE(s *terminalSessions, factory vteFactory) *asyncVTE {
 	av := &asyncVTE{s: s}
 	uri, err := workspaceapi.ParseURI(fmt.Sprintf(
 		"terminal://loading/%d", asyncVTEURICounter.Add(1)))
@@ -292,8 +301,8 @@ func newAsyncVTE(s *terminalSessions, factory func() (vte.View, error)) *asyncVT
 	s.inflight.Add(1)
 	go debug.CapturePanicReport(func() {
 		defer s.inflight.Done()
-		v, ferr := factory()
-		if !s.cfg.VTE.ScheduleNextTick(func() { av.complete(v, ferr) }) {
+		v, attached, ferr := factory()
+		if !s.cfg.VTE.ScheduleNextTick(func() { av.complete(v, attached, ferr) }) {
 			// The event loop is gone: nothing will ever install the
 			// result, so release the freshly-built VTE.
 			if ferr == nil && v != nil {
@@ -306,7 +315,10 @@ func newAsyncVTE(s *terminalSessions, factory func() (vte.View, error)) *asyncVT
 }
 
 // complete installs the factory result. It runs on the host event loop.
-func (av *asyncVTE) complete(v vte.View, err error) {
+func (av *asyncVTE) complete(v vte.View, attached bool, err error) {
+	if err == nil {
+		av.existing = attached
+	}
 	if av.closed {
 		// Only a successful build hands over an owned, fully
 		// initialized VTE; closing anything else is unsafe.
@@ -328,13 +340,15 @@ func (av *asyncVTE) complete(v vte.View, err error) {
 	}
 	av.real = v
 	av.s.aliasTab(v.URI(), av.uri)
-	if av.pendingSnapshot != nil {
+	// A terminal that ran before shows its own screen; the snapshot
+	// is what the session had when the terminal could not be reached.
+	if av.pendingSnapshot != nil && !attached {
 		if rerr := v.RestoreFromSnapshot(*av.pendingSnapshot); rerr != nil {
 			_, _ = av.s.cfg.Notifications.Notify(browserapi.LevelError,
 				"restore terminal session: %v", rerr)
 		}
-		av.pendingSnapshot = nil
 	}
+	av.pendingSnapshot = nil
 	if av.resized {
 		v.Resize(av.width, av.height)
 	}
@@ -544,12 +558,13 @@ func (av *asyncVTE) ClearPrimaryBuffer() bool {
 	return false
 }
 
-// ID returns the terminal's id, empty while it loads.
+// ID returns the terminal's id: while it loads, that of the terminal
+// the view restores, if any.
 func (av *asyncVTE) ID() vte.ID {
 	if av.real != nil {
 		return av.real.ID()
 	}
-	return ""
+	return av.pendingID
 }
 
 // Close drops this view of the terminal. See

@@ -230,7 +230,7 @@ config["network"] = {
 | --- | --- | --- | --- |
 | `auto_join` | bool | `true` | Join the network when Rune starts. With it off, the network stays one `network up` away, with no restart needed. |
 | `hostname` | string | the machine's own hostname | The name this machine advertises, and the name used in its `rune://` addresses. |
-| `port` | int | `7473` | The port workspaces are served on. It is reachable only from the network, never from the machine's other interfaces. |
+| `port` | int | `7473` | The port workspaces are served on; their terminals are served on the port after it. Both are reachable only from the network, never from the machine's other interfaces. |
 
 Names are made unique when a machine joins, so a second machine with the
 same hostname is given a suffixed name. `network peers` always shows the
@@ -250,7 +250,8 @@ and talk directly, encrypted end to end, and fall back to an encrypted
 relay only when no direct path can be established.
 
 Each machine serves its workspaces on port 7473 of its network address
-only. Every request carries the identity of the machine behind it, and
+only, and [their terminals](./terminal/detached-terminals.md#terminals-on-another-machine)
+on port 7474. Every request carries the identity of the machine behind it, and
 Rune refuses any whose owning account is not yours, so sharing a network
 is never enough to read a machine's files or run commands on it.
 

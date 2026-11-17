@@ -31,7 +31,7 @@ that holds the code.
   while it runs; a server nobody sits at runs [`rune
   --headless`](./headless.md).
 - A tailnet policy that lets the two machines reach each other on TCP
-  port 7473. The policy a new tailnet starts with does.
+  ports 7473 and 7474. The policy a new tailnet starts with does.
 - A Tailscale client that routes tailnet traffic through the operating
   system. The macOS apps, the Windows app and `tailscaled` on Linux all
   do; a client in [userspace networking
@@ -97,7 +97,7 @@ already open is checked against it again every 10 seconds.
 
 Grant the [app capability](https://tailscale.com/docs/features/access-control/grants/grants-app-capabilities)
 `rune.build/cap/workspace` to the machines that may open workspaces on
-a tagged one, and let them reach its port 7473:
+a tagged one, and let them reach its ports 7473 and 7474:
 
 ```json
 {
@@ -105,7 +105,7 @@ a tagged one, and let them reach its port 7473:
     {
       "src": ["group:dev"],
       "dst": ["tag:buildbox"],
-      "ip": ["tcp:7473"],
+      "ip": ["tcp:7473", "tcp:7474"],
       "app": {"rune.build/cap/workspace": [{}]}
     }
   ]
@@ -114,7 +114,7 @@ a tagged one, and let them reach its port 7473:
 
 Or let them log in as the user Rune runs as, here `rune`, as you would
 for Tailscale SSH. An `ssh` rule does not open the port by itself, so the
-policy must still let them reach port 7473:
+policy must still let them reach ports 7473 and 7474:
 
 ```json
 {
@@ -137,11 +137,12 @@ when Rune would let it in:
 
 - **The policy does not let them reach each other.** A connection that
   no rule allows is dropped, and opening the workspace times out. Allow
-  TCP port 7473 to the serving machine in the policy's
+  TCP ports 7473 and 7474 to the serving machine in the policy's
   [ACLs](https://tailscale.com/docs/features/access-control/acls) or
   [grants](https://tailscale.com/docs/features/access-control/grants).
   [The ACL examples](https://tailscale.com/docs/reference/examples/acls)
-  show common setups.
+  show common setups. A policy that allows 7473 alone opens the
+  workspace but no terminal in it.
 - **The serving machine blocks incoming connections.** Turn on "Allow
   incoming connections", the opposite of shields up, in its [client
   preferences](https://tailscale.com/docs/features/client/manage-preferences).
@@ -185,8 +186,11 @@ this machine. Any local process may read these, and Rune changes
 nothing in the client.
 
 Each machine serves its workspaces on port 7473 of its tailnet addresses
-only, never on its other networks, and starts and stops serving as
-Tailscale connects and disconnects. For every request, Rune asks the
+only, never on its other networks, and the [terminals of those
+workspaces](./terminal/detached-terminals.md#terminals-on-another-machine)
+on port 7474, so a terminal's output never delays files and commands. It
+starts and stops serving as Tailscale connects and disconnects. For
+every request on either port, Rune asks the
 client which machine it comes from. That answer cannot be forged:
 packets only arrive from a tailnet address once the machine behind it
 proved its identity to Tailscale.

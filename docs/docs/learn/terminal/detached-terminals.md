@@ -51,7 +51,7 @@ exits while detached, the terminal goes away along with its records.
 `terminalattach` shows a detached terminal without the inbox. Without an
 argument it shows the first detached terminal. Press `<tab>` after the command
 to pick one: every terminal of the workspace is listed, detached ones first,
-by the start of its id, its state, and its title.
+by the start of its id, how many tabs show it, what it runs, and its title.
 
 | Command | What it does |
 | --- | --- |
@@ -73,10 +73,42 @@ terminal its size.
 
 ## Terminals end with Rune
 
-A terminal lives as long as the Rune that runs it. Quitting Rune ends every
-terminal, detached ones included, so `quit` warns you when a detached terminal
-is still running a program. `forcequit!` and `writeforcequit!` do not ask.
+A terminal of a local workspace, or of an `ssh://` one, lives as long as the
+Rune that runs it. Quitting Rune ends every such terminal, detached ones
+included, so `quit` warns you when a detached terminal is still running a
+program. `forcequit!` and `writeforcequit!` do not ask.
 
 On the next start, the output of a detached terminal comes back in a hidden
 tab, next to a fresh shell, the same way Rune restores the terminals you left
 open.
+
+## Terminals on another machine
+
+The terminals of a `rune://` or `tailscale://` workspace run on the machine
+that serves it, and belong to the Rune serving there: the `rune --headless`
+node, or the Rune a user runs on that machine. What you see is a live copy of
+each terminal, fed over the mesh.
+
+- **They survive the connection.** When the link drops, your laptop sleeps,
+  or you switch networks, the program keeps running on the other machine and
+  its terminal keeps reading its output. The tab keeps showing what it had,
+  and catches up with the terminal's screen once the machine is reachable
+  again. A terminal whose output outruns a slow link is caught up with the
+  same way, in a jump, rather than left behind.
+- **They survive Rune.** Quitting Rune leaves them running, so `quit` does not
+  warn about them. On the next start, the tabs you left open attach to the
+  same terminals again, with their programs still running; a terminal the
+  machine no longer has comes back as a fresh shell showing the output you
+  left.
+- **They end with the machine.** Restarting the Rune serving the workspace
+  ends its terminals, as does `terminalclose`.
+
+A detached terminal on the other machine is listed in the status inbox and by
+`terminalattach` as any other, and reported `working` and `done` the same way.
+Another machine attached to the same terminal counts as a view of it:
+`terminalattach` completion counts that machine's tab among the tabs showing
+the terminal, and closing your tab leaves the terminal to that machine.
+
+An `ssh://` workspace's terminals are not served this way: their shells run
+on the remote host, but their terminals live in your Rune and end with the
+connection.

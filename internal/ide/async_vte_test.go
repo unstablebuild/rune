@@ -115,9 +115,9 @@ func TestAsyncVTE(t *testing.T) {
 
 		release := make(chan struct{})
 		tv := newTestVte()
-		av := newAsyncVTE(b.ex.terminals, func() (vte.View, error) {
+		av := newAsyncVTE(b.ex.terminals, func() (vte.View, bool, error) {
 			<-release
-			return tv, nil
+			return tv, false, nil
 		})
 
 		assert.False(t, av.IsComplete())
@@ -145,9 +145,9 @@ func TestAsyncVTE(t *testing.T) {
 
 		release := make(chan struct{})
 		rv := &replayVTE{testVte: newTestVte()}
-		av := newAsyncVTE(b.ex.terminals, func() (vte.View, error) {
+		av := newAsyncVTE(b.ex.terminals, func() (vte.View, bool, error) {
 			<-release
-			return rv, nil
+			return rv, false, nil
 		})
 
 		av.Resize(42, 17)
@@ -195,9 +195,9 @@ func TestAsyncVTE(t *testing.T) {
 
 		release := make(chan struct{})
 		rv := &replayVTE{testVte: newTestVte()}
-		av := newAsyncVTE(b.ex.terminals, func() (vte.View, error) {
+		av := newAsyncVTE(b.ex.terminals, func() (vte.View, bool, error) {
 			<-release
-			return rv, nil
+			return rv, false, nil
 		})
 
 		// The WM lays out the placeholder at the pane dimensions before
@@ -230,9 +230,9 @@ func TestAsyncVTE(t *testing.T) {
 
 		release := make(chan struct{})
 		tv := newTestVte()
-		av := newAsyncVTE(b.ex.terminals, func() (vte.View, error) {
+		av := newAsyncVTE(b.ex.terminals, func() (vte.View, bool, error) {
 			<-release
-			return tv, nil
+			return tv, false, nil
 		})
 
 		require.NoError(t, b.ex.tm.SetTabStatus(tv.URI(), programstatus.Report{
@@ -263,8 +263,8 @@ func TestAsyncVTE(t *testing.T) {
 		rec := &recordingNotifications{inner: b.ex.notifications}
 		b.ex.terminals.cfg.Notifications = rec
 
-		av := newAsyncVTE(b.ex.terminals, func() (vte.View, error) {
-			return nil, errors.New("stalled transport")
+		av := newAsyncVTE(b.ex.terminals, func() (vte.View, bool, error) {
+			return nil, false, errors.New("stalled transport")
 		})
 		av.Resize(40, 3)
 
@@ -288,9 +288,9 @@ func TestAsyncVTE(t *testing.T) {
 		defer b.Close()
 
 		release := make(chan struct{})
-		av := newAsyncVTE(b.ex.terminals, func() (vte.View, error) {
+		av := newAsyncVTE(b.ex.terminals, func() (vte.View, bool, error) {
 			<-release
-			return newTestVte(), nil
+			return newTestVte(), false, nil
 		})
 		defer func() {
 			close(release)
@@ -319,23 +319,23 @@ func TestAsyncVTEPointerLeaves(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 	for _, tc := range []struct {
 		name    string
-		factory func() (vte.View, error)
+		factory func() (vte.View, bool, error)
 	}{
-		{name: "loading", factory: func() (vte.View, error) {
+		{name: "loading", factory: func() (vte.View, bool, error) {
 			<-release
-			return nil, errors.New("abandoned")
+			return nil, false, errors.New("abandoned")
 		}},
-		{name: "failed", factory: func() (vte.View, error) {
-			return nil, errors.New("stalled transport")
+		{name: "failed", factory: func() (vte.View, bool, error) {
+			return nil, false, errors.New("stalled transport")
 		}},
-		{name: "running", factory: func() (vte.View, error) {
-			return &replayVTE{testVte: newTestVte()}, nil
+		{name: "running", factory: func() (vte.View, bool, error) {
+			return &replayVTE{testVte: newTestVte()}, false, nil
 		}},
-		{name: "exited with an error", factory: func() (vte.View, error) {
+		{name: "exited with an error", factory: func() (vte.View, bool, error) {
 			return &exitingVTE{
 				testVte: newTestVte(), exitErr: errors.New("exit status 2"),
 				screen: terminalScreen{rows: []string{"$ make", "Error 2", ""}, cursorRow: 2},
-			}, nil
+			}, false, nil
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -679,7 +679,7 @@ func TestAsyncVTETabNameAliasing(t *testing.T) {
 					require.NoError(t, err)
 					tv := newTestVte()
 					tv.uri = pty
-					av.complete(tv, nil)
+					av.complete(tv, false, nil)
 					if closeBeforeReplay {
 						require.NoError(t, tab.Close())
 					} else {
@@ -710,9 +710,9 @@ func TestAsyncVTETabNameAliasing(t *testing.T) {
 		tv := newTestVte()
 		tv.uri = mustURI("file:///dev/ttys042")
 		tv.title = "vim"
-		av := newAsyncVTE(b.ex.terminals, func() (vte.View, error) {
+		av := newAsyncVTE(b.ex.terminals, func() (vte.View, bool, error) {
 			<-release
-			return tv, nil
+			return tv, false, nil
 		})
 		tab, err := b.comp.Tab(av.URI(), 'x', av.Title(), av)
 		require.NoError(t, err)
@@ -768,9 +768,9 @@ func TestAsyncVTETabNameAliasing(t *testing.T) {
 		tv.uri = mustURI("file:///dev/ttys043")
 		tv.title = "vim"
 		b.ex.newEmulatorHandler = func([]string) (vte.View, error) {
-			return newAsyncVTE(b.ex.terminals, func() (vte.View, error) {
+			return newAsyncVTE(b.ex.terminals, func() (vte.View, bool, error) {
 				<-release
-				return tv, nil
+				return tv, false, nil
 			}), nil
 		}
 
@@ -813,8 +813,8 @@ func TestAsyncVTETabNameAliasing(t *testing.T) {
 
 		tv := newTestVte()
 		tv.uri = mustURI("file:///dev/ttys044")
-		av := newAsyncVTE(b.ex.terminals, func() (vte.View, error) {
-			return tv, nil
+		av := newAsyncVTE(b.ex.terminals, func() (vte.View, bool, error) {
+			return tv, false, nil
 		})
 		_, err := b.comp.Tab(av.URI(), 'x', av.Title(), av)
 		require.NoError(t, err)

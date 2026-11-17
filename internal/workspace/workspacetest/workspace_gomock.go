@@ -287,6 +287,21 @@ func (mr *MockWorkspaceMockRecorder) PathCaseSensitive() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PathCaseSensitive", reflect.TypeOf((*MockWorkspace)(nil).PathCaseSensitive))
 }
 
+// Peer mocks base method.
+func (m *MockWorkspace) Peer() (workspace.Peer, bool) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Peer")
+	ret0, _ := ret[0].(workspace.Peer)
+	ret1, _ := ret[1].(bool)
+	return ret0, ret1
+}
+
+// Peer indicates an expected call of Peer.
+func (mr *MockWorkspaceMockRecorder) Peer() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Peer", reflect.TypeOf((*MockWorkspace)(nil).Peer))
+}
+
 // ReadDir mocks base method.
 func (m *MockWorkspace) ReadDir(path string) ([]fs.DirEntry, error) {
 	m.ctrl.T.Helper()
@@ -702,6 +717,44 @@ func (m *MockPeer) Root(arg0 context.Context) (string, error) {
 func (mr *MockPeerMockRecorder) Root(arg0 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Root", reflect.TypeOf((*MockPeer)(nil).Root), arg0)
+}
+
+// MockPeerScheme is a mock of PeerScheme interface.
+type MockPeerScheme struct {
+	ctrl     *gomock.Controller
+	recorder *MockPeerSchemeMockRecorder
+}
+
+// MockPeerSchemeMockRecorder is the mock recorder for MockPeerScheme.
+type MockPeerSchemeMockRecorder struct {
+	mock *MockPeerScheme
+}
+
+// NewMockPeerScheme creates a new mock instance.
+func NewMockPeerScheme(ctrl *gomock.Controller) *MockPeerScheme {
+	mock := &MockPeerScheme{ctrl: ctrl}
+	mock.recorder = &MockPeerSchemeMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockPeerScheme) EXPECT() *MockPeerSchemeMockRecorder {
+	return m.recorder
+}
+
+// Peer mocks base method.
+func (m *MockPeerScheme) Peer() (workspace.Peer, bool) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Peer")
+	ret0, _ := ret[0].(workspace.Peer)
+	ret1, _ := ret[1].(bool)
+	return ret0, ret1
+}
+
+// Peer indicates an expected call of Peer.
+func (mr *MockPeerSchemeMockRecorder) Peer() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Peer", reflect.TypeOf((*MockPeerScheme)(nil).Peer))
 }
 
 // MockLoader is a mock of Loader interface.

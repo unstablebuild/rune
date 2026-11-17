@@ -51,6 +51,10 @@ func (m stubMesh) Dial(ctx context.Context, _ string) (net.Conn, error) {
 	return d.DialContext(ctx, "tcp", m.addr)
 }
 
+func (m stubMesh) DialAttachment(context.Context, string) (net.Conn, error) {
+	return nil, errors.ErrUnsupported
+}
+
 // countingMesh is a stubMesh that counts its connections and can break
 // them.
 type countingMesh struct {

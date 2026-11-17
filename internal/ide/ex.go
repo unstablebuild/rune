@@ -75,6 +75,7 @@ import (
 	tterm "unstable.build/rune/internal/term"
 	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte"
+	"unstable.build/rune/internal/term/vte/vteclient"
 	"unstable.build/rune/internal/term/vte/vteregistry"
 	"unstable.build/rune/internal/text"
 	"unstable.build/rune/internal/text/cmdenv"
@@ -408,12 +409,25 @@ func (e *ex) init(
 	tabs := failedTerminalKeeper{tabNameAliaser: e.tabAliases, keep: e.keepFailedTerminalTab}
 	e.tm = tabs
 	e.comp.SubscribeWindow((*windowSubscriber)(e))
-	vtes := vteregistry.New(e.Browser(), e.Browser(), e.terminal, e.executor, e.tm,
-		vteregistry.Config{VTE: e.emulatorConfig})
-	e.terminals = newTerminalSessions(vtes, tabs, terminalSessionsConfig{
+	sessionsCfg := terminalSessionsConfig{
 		Ctx: e.bgCtx, Publisher: e.Browser(), Notifications: e.notifications,
 		Terminal: e.terminal, VTE: e.emulatorConfig, ReservoirCapacity: initialVTECapacity,
-	})
+	}
+	var vtes vte.Host
+	if peer, ok := m.Peer(); ok {
+		// The peer serving the workspace owns its terminals, which
+		// outlive this process: this process shows replicas of them,
+		// and keeps none warm.
+		vtes = vteclient.New(peer, e.Browser(), e.notifications, e.tm, vteclient.Config{
+			VTE: e.emulatorConfig, Machine: uri.Host(),
+		})
+		sessionsCfg.ReservoirCapacity = 0
+		sessionsCfg.Durable = true
+	} else {
+		vtes = vteregistry.New(e.Browser(), e.Browser(), e.terminal, e.executor, e.tm,
+			vteregistry.Config{VTE: e.emulatorConfig})
+	}
+	e.terminals = newTerminalSessions(vtes, tabs, sessionsCfg)
 	// Spawns can block on transport RPCs (reservoir warm-up waits,
 	// NewPty/StartCommand); they run off the event loop behind a
 	// placeholder so the UI stays responsive even when the workspace

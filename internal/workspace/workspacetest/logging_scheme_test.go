@@ -68,6 +68,9 @@ func TestLoggingSchemeKeepsHostCapabilities(t *testing.T) {
 			cc, ok := w.(workspace.PackageHost).HostConn()
 			require.True(t, ok)
 			require.Same(t, capableHostConn, cc)
+			peer, ok := w.Peer()
+			require.True(t, ok)
+			require.Same(t, capablePeer, peer)
 		},
 	}, {
 		name:  "a plain scheme still lacks them",
@@ -83,6 +86,8 @@ func TestLoggingSchemeKeepsHostCapabilities(t *testing.T) {
 			_, err = w.InstallDataDir(ctx)
 			require.ErrorIs(t, err, errors.ErrUnsupported)
 			_, ok = w.(workspace.PackageHost).HostConn()
+			require.False(t, ok)
+			_, ok = w.Peer()
 			require.False(t, ok)
 		},
 	}} {
@@ -107,10 +112,14 @@ func TestLoggingSchemeKeepsHostCapabilities(t *testing.T) {
 var (
 	errCapableConnect = errors.New("connected by the wrapped scheme")
 	capableHostConn   = new(capableConn)
+	capablePeer       = new(capableHost)
 )
 
 // capableConn is the connection to the host of a capableScheme.
 type capableConn struct{ grpc.ClientConnInterface }
+
+// capableHost is the Rune serving a capableScheme.
+type capableHost struct{ workspace.Peer }
 
 // capableScheme has every optional host capability, each answering in
 // a way only it could.
@@ -129,6 +138,10 @@ func (*capableScheme) InstallDataDir(context.Context) (string, error) {
 
 func (*capableScheme) HostConn() (grpc.ClientConnInterface, bool) {
 	return capableHostConn, true
+}
+
+func (*capableScheme) Peer() (workspace.Peer, bool) {
+	return capablePeer, true
 }
 
 func (*capableScheme) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {

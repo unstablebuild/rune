@@ -41,6 +41,9 @@ type Workspace interface {
 	// true when the host cannot tell, so callers keep comparing paths
 	// exactly. The answer is fixed for the workspace's lifetime.
 	PathCaseSensitive() bool
+	// Peer is [PeerScheme.Peer]: the Rune serving the workspace from
+	// another machine, false when none does.
+	Peer() (Peer, bool)
 }
 
 // RemoteScheme is implemented by schemes whose underlying transport
@@ -77,6 +80,14 @@ type Peer interface {
 	// workspace connection, so that a terminal's flood of output does
 	// not delay the workspace's calls.
 	DialAttachment(context.Context) (io.ReadWriteCloser, error)
+}
+
+// PeerScheme is a scheme whose workspaces a Rune may serve from another
+// machine.
+type PeerScheme interface {
+	// Peer returns the Rune serving the scheme's workspace, false when
+	// none does.
+	Peer() (Peer, bool)
 }
 
 // Loader abstracts the ability to load resource data into a working buffer

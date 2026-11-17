@@ -45,6 +45,7 @@ import (
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/runenet"
 	"unstable.build/rune/internal/tailnet/tailnettest"
+	"unstable.build/rune/internal/term/vte"
 )
 
 type stubHeadlessClient struct {
@@ -599,7 +600,7 @@ func TestJoinHeadlessTailnet(t *testing.T) {
 		serverc := make(chan *runenet.WorkspaceServer, 1)
 		go debug.CapturePanicReport(func() {
 			server, err := joinHeadlessTailnet(ctx, node, &servedPackages{},
-				t.TempDir(), "", out)
+				t.TempDir(), "", vte.DefaultConfig(), out)
 			assert.NoError(t, err)
 			if server != nil {
 				t.Cleanup(func() { _ = server.Close() })

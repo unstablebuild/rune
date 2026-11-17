@@ -99,7 +99,13 @@ type File struct {
 
 // TerminalSession is a serialized open-terminal session.
 type TerminalSession struct {
-	Name     string
+	Name string
+	// VTEID names the terminal the session showed, when the terminal
+	// outlives Rune: one owned by the machine hosting the workspace.
+	// Restoring attaches to it again; Snapshot is replayed into a new
+	// terminal only when the host no longer has it. Empty for a
+	// terminal that ended with Rune.
+	VTEID    vte.ID
 	Snapshot vte.Snapshot
 	Tab      bool
 	Visible  bool
@@ -502,6 +508,7 @@ type fileDoc struct {
 
 type terminalDoc struct {
 	Name     string
+	VTEID    vte.ID
 	Snapshot vte.Snapshot
 	Tab      bool
 	Visible  bool

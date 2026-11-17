@@ -294,3 +294,8 @@ func (t loggingScheme) InstallDataDir(ctx context.Context) (dir string, err erro
 func (t loggingScheme) HostConn() (grpc.ClientConnInterface, bool) {
 	return hostConn(t.other)
 }
+
+// Peer satisfies [PeerScheme].
+func (t loggingScheme) Peer() (Peer, bool) {
+	return peer(t.other)
+}

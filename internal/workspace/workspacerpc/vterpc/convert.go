@@ -32,6 +32,7 @@ func (x *Info) FromModel(info vte.Info) {
 	x.Width = int32(info.Width)
 	x.Height = int32(info.Height)
 	x.Attachments = int32(info.Attachments)
+	x.Liveness = LivenessFromModel(info.Liveness)
 	x.Complete = info.Complete
 	x.CreatedAtUnixNano = info.CreatedAt.UnixNano()
 }
@@ -48,6 +49,7 @@ func (x *Info) ToModel() vte.Info {
 		Width:          int(x.GetWidth()),
 		Height:         int(x.GetHeight()),
 		Attachments:    int(x.GetAttachments()),
+		Liveness:       x.GetLiveness().ToModel(),
 		Complete:       x.GetComplete(),
 		CreatedAt:      time.Unix(0, x.GetCreatedAtUnixNano()),
 	}

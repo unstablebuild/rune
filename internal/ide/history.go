@@ -54,7 +54,9 @@ func (s exSnapshotter) Name() string {
 
 // Terminals snapshots every open terminal in the ex into
 // idehistory.TerminalSession records. A detached terminal comes back as
-// a hidden tab: terminals end with Rune, so only their output can.
+// a hidden tab: terminals end with Rune, so only their output can. The
+// terminals of another machine outlive Rune: they are recorded by id,
+// to attach to again, and the detached ones are left to that machine.
 func (s exSnapshotter) Terminals() []idehistory.TerminalSession {
 	e := s.ex
 	tabs, terminals := openTerminalSessionWindowsForState(e)
@@ -77,6 +79,7 @@ func (s exSnapshotter) Terminals() []idehistory.TerminalSession {
 		}
 		ret = append(ret, idehistory.TerminalSession{
 			Name:     "", // auto-generated at restore time
+			VTEID:    e.terminals.durableID(terminal),
 			Snapshot: snap,
 			Tab:      window.tab,
 			Visible:  window.visible,
@@ -93,12 +96,16 @@ func (s exSnapshotter) Terminals() []idehistory.TerminalSession {
 			snap.Title = openTerminalSessionTitle(e, nil, win.terminal, "")
 		}
 		ret = append(ret, idehistory.TerminalSession{
+			VTEID:    e.terminals.durableID(win.terminal),
 			Snapshot: snap,
 			Tab:      win.window.tab,
 			Visible:  win.window.visible,
 			Focus:    win.window.focus,
 			WindowID: win.window.windowID,
 		})
+	}
+	if e.terminals.durable() {
+		return ret
 	}
 	for _, snap := range e.terminals.detachedSnapshots() {
 		ret = append(ret, idehistory.TerminalSession{Snapshot: snap, Tab: true})
@@ -389,13 +396,9 @@ func restoreOpenTerminalSessionSequential(
 func newTerminalSessionContentFromState(
 	e *ex, doc idehistory.TerminalSession,
 ) (browserapi.Handler, error) {
-	h, err := e.newEmulatorHandler(nil)
+	h, err := e.restoreTerminal(doc)
 	if err != nil {
 		return nil, err
-	}
-	if err := h.RestoreFromSnapshot(doc.Snapshot); err != nil {
-		_ = h.Close()
-		return nil, fmt.Errorf("restore terminal session %q: %w", doc.Name, err)
 	}
 	if !doc.Tab {
 		return h, nil
@@ -405,6 +408,24 @@ func newTerminalSessionContentFromState(
 		return nil, err
 	}
 	return tab, nil
+}
+
+// restoreTerminal is the terminal a session shows again: the one it
+// showed, when its machine still has it, else a new one showing what
+// the session saved.
+func (e *ex) restoreTerminal(doc idehistory.TerminalSession) (vte.View, error) {
+	if doc.VTEID != "" && e.terminals.durable() {
+		return e.terminals.restore(doc.VTEID, doc.Snapshot), nil
+	}
+	h, err := e.newEmulatorHandler(nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.RestoreFromSnapshot(doc.Snapshot); err != nil {
+		_ = h.Close()
+		return nil, fmt.Errorf("restore terminal session %q: %w", doc.Name, err)
+	}
+	return h, nil
 }
 
 func newTerminalSessionTabFromState(

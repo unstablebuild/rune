@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -61,6 +62,10 @@ type Config struct {
 // Owner reaches the terminals a workspace's host owns and shows them as
 // replicas. The host decides what terminals exist; closing the Owner
 // detaches its replicas and ends nothing on the host.
+//
+// What the host lists is mirrored here, fed by the host's stream of
+// changes, so ListVTEs answers on the event loop without a round trip
+// and is empty until the host first answered.
 type Owner struct {
 	host          host
 	publisher     browser.EventPublisher
@@ -69,6 +74,7 @@ type Owner struct {
 	cfg           Config
 	ctx           context.Context
 	cancel        context.CancelFunc
+	mirror        *mirror
 
 	mu       sync.Mutex
 	replicas map[*replica]struct{}
@@ -93,11 +99,14 @@ func newOwner(
 		panic("vteclient: Config.VTE.ScheduleNextTick is required")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Owner{
+	o := &Owner{
 		host: host, publisher: publisher, notifications: n, tm: tm, cfg: cfg,
 		ctx: ctx, cancel: cancel,
 		replicas: make(map[*replica]struct{}),
 	}
+	o.mirror = newMirror(o)
+	go debug.CapturePanicReport(func() { o.mirror.run(ctx) })
+	return o
 }
 
 // CreateVTE creates a terminal on the host and returns a replica
@@ -125,10 +134,12 @@ func (o *Owner) PreviewVTE(ctx context.Context, id vte.ID) (vte.View, error) {
 	return o.open(ctx, &vtewire.Hello{VTEID: string(id), Preview: true})
 }
 
-// ListVTEs reports the host's terminals. It asks the host, so the
-// event loop must not call it.
+// ListVTEs reports the host's terminals as last told by the host: it
+// asks nothing, so the event loop may call it. It is empty until the
+// host first answered, and a terminal this Owner just attached is
+// listed at once.
 func (o *Owner) ListVTEs(ctx context.Context) ([]vte.Info, error) {
-	return o.host.ListVTEs(ctx)
+	return o.mirror.list(), nil
 }
 
 // VTELiveness tells whether the host's terminal id runs something for
@@ -145,18 +156,12 @@ func (o *Owner) DeleteVTE(ctx context.Context, id vte.ID) error {
 }
 
 // Watch calls fn with what the host tells of its terminals until ctx
-// ends or the Owner closes. Whenever the host's stream of changes is
-// opened, what the host lists is told as changes too, so what was
-// missed while it was down is caught up with.
+// ends or the Owner closes, starting with what is listed now. Whenever
+// the host's stream of changes is opened again after it dropped, what
+// the host lists is told as changes too, so what was missed while it
+// was down is caught up with.
 func (o *Owner) Watch(ctx context.Context, fn func(vte.Change)) {
-	ctx, cancel := context.WithCancel(ctx)
-	stop := context.AfterFunc(o.ctx, cancel)
-	w := &watch{o: o, fn: fn, known: make(map[vte.ID]struct{})}
-	go debug.CapturePanicReport(func() {
-		defer stop()
-		defer cancel()
-		w.run(ctx)
-	})
+	o.mirror.subscribe(ctx, fn)
 }
 
 // Close detaches every replica. The host's terminals keep running.
@@ -229,6 +234,9 @@ func (o *Owner) open(ctx context.Context, hello *vtewire.Hello) (vte.View, error
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("parse terminal uri %q: %w", ok.URI, err)
+	}
+	if !hello.Preview {
+		o.mirror.attached(vte.ID(ok.VTEID), uri, ok.Width, ok.Height)
 	}
 
 	v := &replica{
@@ -392,21 +400,179 @@ func (e *VersionError) Error() string {
 	}
 }
 
-// watchRetry is how long a watch waits before opening the host's
+// watchRetry is how long the mirror waits before opening the host's
 // stream of changes again after it failed.
 const watchRetry = time.Second
 
-// watch relays the host's changes to one Watch caller, catching up from
-// a listing whenever the stream is (re)opened.
-type watch struct {
-	o     *Owner
-	fn    func(vte.Change)
-	known map[vte.ID]struct{}
+// mirror is what the host lists, as its stream of changes last told
+// it, and the Watch callers those changes are relayed to. Changes are
+// applied and told under one lock, so every caller sees them in the
+// order the host told them, after what was listed when it subscribed.
+type mirror struct {
+	o *Owner
+
+	mu    sync.Mutex
+	infos map[vte.ID]vte.Info
+	subs  map[*subscriber]struct{}
 }
 
-func (w *watch) run(ctx context.Context) {
+type subscriber struct{ fn func(vte.Change) }
+
+func newMirror(o *Owner) *mirror {
+	return &mirror{
+		o:     o,
+		infos: make(map[vte.ID]vte.Info),
+		subs:  make(map[*subscriber]struct{}),
+	}
+}
+
+// list is what the host lists, in the order it was created.
+func (m *mirror) list() []vte.Info {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.listLocked()
+}
+
+func (m *mirror) listLocked() []vte.Info {
+	ret := make([]vte.Info, 0, len(m.infos))
+	for _, info := range m.infos {
+		ret = append(ret, info)
+	}
+	sort.Slice(ret, func(i, j int) bool {
+		if !ret[i].CreatedAt.Equal(ret[j].CreatedAt) {
+			return ret[i].CreatedAt.Before(ret[j].CreatedAt)
+		}
+		return ret[i].ID < ret[j].ID
+	})
+	return ret
+}
+
+// subscribe tells fn what is listed now, then every change until ctx
+// ends or the Owner closes.
+func (m *mirror) subscribe(ctx context.Context, fn func(vte.Change)) {
+	s := &subscriber{fn: fn}
+	m.mu.Lock()
+	for _, info := range m.listLocked() {
+		fn(changeOf(info))
+	}
+	m.subs[s] = struct{}{}
+	m.mu.Unlock()
+	unsubscribe := func() {
+		m.mu.Lock()
+		delete(m.subs, s)
+		m.mu.Unlock()
+	}
+	context.AfterFunc(ctx, unsubscribe)
+	context.AfterFunc(m.o.ctx, unsubscribe)
+}
+
+// changeOf is info told as a change.
+func changeOf(info vte.Info) vte.Change {
+	return vte.Change{
+		ID: info.ID, URI: info.URI, Title: info.Title,
+		Attachments: info.Attachments, Liveness: info.Liveness,
+		Complete: info.Complete,
+	}
+}
+
+// tellLocked relays change to every subscriber.
+func (m *mirror) tellLocked(change vte.Change) {
+	for s := range m.subs {
+		s.fn(change)
+	}
+}
+
+// attached notes a terminal this Owner attached, so it is listed before
+// the host's change arrives: a view closed meanwhile must find its
+// terminal listed, or it would take it for gone.
+func (m *mirror) attached(id vte.ID, uri workspaceapi.URI, width, height int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.infos[id]; ok {
+		return
+	}
+	info := vte.Info{
+		ID: id, URI: uri, Width: width, Height: height,
+		Attachments: 1, CreatedAt: time.Now(),
+	}
+	m.infos[id] = info
+	m.tellLocked(changeOf(info))
+}
+
+// apply folds change into what is listed and tells it. It reports
+// whether the terminal was unknown: a change tells less of one than a
+// listing does.
+func (m *mirror) apply(change vte.Change) (unknown bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if change.Deleted {
+		delete(m.infos, change.ID)
+	} else {
+		info, ok := m.infos[change.ID]
+		if !ok {
+			unknown = true
+			info = vte.Info{ID: change.ID, CreatedAt: time.Now()}
+		}
+		info.URI, info.Title = change.URI, change.Title
+		info.Attachments, info.Complete = change.Attachments, change.Complete
+		info.Liveness = change.Liveness
+		m.infos[change.ID] = info
+	}
+	m.tellLocked(change)
+	return unknown
+}
+
+// gone drops the terminal id, which the host confirmed it no longer
+// has, over an attachment rather than the stream of changes: the one
+// may carry the news when the other is down, as once the host exited.
+func (m *mirror) gone(id vte.ID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.infos[id]; !ok {
+		return
+	}
+	delete(m.infos, id)
+	m.tellLocked(vte.Change{ID: id, Deleted: true})
+}
+
+// fill completes what is listed with infos, a listing taken after a
+// change told of an unknown terminal. Nothing is told: the change was,
+// and a terminal the listing lacks was deleted since, which its change
+// tells.
+func (m *mirror) fill(infos []vte.Info) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, info := range infos {
+		if _, ok := m.infos[info.ID]; ok {
+			m.infos[info.ID] = info
+		}
+	}
+}
+
+// reconcile replaces what is listed with infos, telling the deletion
+// of whatever is no longer listed and then every listed terminal.
+func (m *mirror) reconcile(infos []vte.Info) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	listed := make(map[vte.ID]struct{}, len(infos))
+	for _, info := range infos {
+		listed[info.ID] = struct{}{}
+	}
+	for id := range m.infos {
+		if _, ok := listed[id]; !ok {
+			delete(m.infos, id)
+			m.tellLocked(vte.Change{ID: id, Deleted: true})
+		}
+	}
+	for _, info := range infos {
+		m.infos[info.ID] = info
+		m.tellLocked(changeOf(info))
+	}
+}
+
+func (m *mirror) run(ctx context.Context) {
 	for ctx.Err() == nil {
-		err := w.stream(ctx)
+		err := m.stream(ctx)
 		if ctx.Err() != nil {
 			return
 		}
@@ -422,60 +588,29 @@ func (w *watch) run(ctx context.Context) {
 	}
 }
 
-// stream relays one run of the host's stream, until it ends.
-func (w *watch) stream(ctx context.Context) error {
-	it, err := w.o.host.WatchVTEs(ctx)
+// stream follows one run of the host's stream, until it ends.
+func (m *mirror) stream(ctx context.Context) error {
+	it, err := m.o.host.WatchVTEs(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = it.Close() }()
-	if err := w.reconcile(ctx); err != nil {
+	infos, err := m.o.host.ListVTEs(ctx)
+	if err != nil {
 		return err
 	}
+	m.reconcile(infos)
 	for {
 		change, ok := it.Next(ctx)
 		if !ok {
 			return it.Err()
 		}
-		w.note(change)
-		w.fn(change)
-	}
-}
-
-// reconcile tells what the host lists, and the deletion of whatever it
-// told of before that the host no longer lists.
-func (w *watch) reconcile(ctx context.Context) error {
-	infos, err := w.o.host.ListVTEs(ctx)
-	if err != nil {
-		return err
-	}
-	listed := make(map[vte.ID]struct{}, len(infos))
-	for _, info := range infos {
-		listed[info.ID] = struct{}{}
-	}
-	for id := range w.known {
-		if _, ok := listed[id]; !ok {
-			delete(w.known, id)
-			w.fn(vte.Change{ID: id, Deleted: true})
+		if m.apply(change) {
+			if infos, err := m.o.host.ListVTEs(ctx); err == nil {
+				m.fill(infos)
+			}
 		}
 	}
-	for _, info := range infos {
-		change := vte.Change{
-			ID: info.ID, URI: info.URI, Title: info.Title,
-			Attachments: info.Attachments, Complete: info.Complete,
-		}
-		w.note(change)
-		w.fn(change)
-	}
-	return nil
-}
-
-func (w *watch) note(change vte.Change) {
-	if change.Deleted {
-		delete(w.known, change.ID)
-		return
-	}
-	w.known[change.ID] = struct{}{}
 }
 
 // maxCellPixels bounds the size of a cell in pixels a display may

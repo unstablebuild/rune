@@ -45,6 +45,7 @@ message Info {
 	int32 attachments = 7;
 	bool complete = 8;
 	int64 created_at_unix_nano = 9;
+	Liveness liveness = 10;
 }
 
 // root scopes a request to one workspace: a host serves the terminals

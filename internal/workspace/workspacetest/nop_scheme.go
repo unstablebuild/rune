@@ -30,6 +30,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/workspace"
 )
 
 // NewNopScheme returns a scheme that does nothing and workspace.Executor API panics.
@@ -210,6 +211,12 @@ func (t *NopScheme) ReadDir(string) (
 // NopScheme, keeping exact path matching.
 func (t *NopScheme) PathCaseSensitive() bool {
 	return true
+}
+
+// Peer satisfies workspace.Workspace for fakes embedding NopScheme:
+// no Rune serves them.
+func (t *NopScheme) Peer() (workspace.Peer, bool) {
+	return nil, false
 }
 
 // MkdirAll satisfies schemeapi.Scheme

@@ -509,11 +509,21 @@ func label(p tailcfg.NodeView) string {
 // address. A name the tailnet does not know fails with
 // [runenet.ErrPeerNotFound].
 func (c *Client) Dial(ctx context.Context, peer string) (net.Conn, error) {
+	return c.dialPort(ctx, peer, c.port)
+}
+
+// DialAttachment opens a connection to the terminal attachment port of
+// peer, named as for [Client.Dial]; see [runenet.AttachmentPort].
+func (c *Client) DialAttachment(ctx context.Context, peer string) (net.Conn, error) {
+	return c.dialPort(ctx, peer, uint16(runenet.AttachmentPort(int(c.port))))
+}
+
+func (c *Client) dialPort(ctx context.Context, peer string, port uint16) (net.Conn, error) {
 	addr, err := c.resolve(ctx, peer)
 	if err != nil {
 		return nil, err
 	}
-	return c.dial(ctx, "tcp", c.addrPort(addr))
+	return c.dial(ctx, "tcp", netip.AddrPortFrom(addr, port).String())
 }
 
 func (c *Client) resolve(ctx context.Context, peer string) (netip.Addr, error) {
@@ -561,5 +571,14 @@ func (c *Client) addrPort(addr netip.Addr) string {
 // them when it disconnects, so it may be created before Tailscale runs.
 func (c *Client) Listen() net.Listener {
 	c.start()
-	return newListener(c)
+	return newListener(c, c.port)
+}
+
+// ListenAttachments accepts terminal attachment connections on the
+// attachment port of this machine's tailnet addresses, as
+// [Client.Listen] does on the workspace port; see
+// [runenet.AttachmentPort].
+func (c *Client) ListenAttachments() net.Listener {
+	c.start()
+	return newListener(c, uint16(runenet.AttachmentPort(int(c.port))))
 }
