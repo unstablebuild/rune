@@ -14,26 +14,20 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//go:build e2e
-
 package vte
 
 import (
-	"context"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
-	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/handler/searchbox"
+	"unstable.build/rune/internal/term/vsh/vshtest"
 	"unstable.build/rune/internal/text/standard"
-	"unstable.build/rune/internal/workspace"
 )
 
 var (
@@ -304,20 +298,11 @@ func TestVTESearchIsFindOnly(t *testing.T) {
 
 func newSearchHandler(t *testing.T, cfg Config) *Handler {
 	t.Helper()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	uri, err := workspaceapi.CurrentUserHostURI(os.TempDir())
-	require.NoError(t, err)
-	scheme, err := workspace.NewFileScheme(ctx, config.NopConfig(), uri)
-	require.NoError(t, err)
-	t.Cleanup(func() { scheme.Close() })
-
+	f := vshtest.New(t, vshtest.Options{})
 	cfg.WidthHint, cfg.HeightHint = 20, 10
 	cfg.CommandAndArgs = []string{"sh"}
 	handler, err := NewHandler(nopEventPublisher{}, nopNotifications{},
-		scheme, scheme, nopTabManager{}, cfg)
+		f.Exec, f.Exec, nopTabManager{}, cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { handler.Close() })
 	handler.Resize(20, 10)
@@ -653,7 +638,7 @@ func TestHandlerSearchOverlayHidesContentUnderneath(t *testing.T) {
 	handler.Resize(80, 24)
 
 	_, err := handler.comp.pty.Master.Write(
-		[]byte("yes " + strings.Repeat("x", 70) + " | head -40\n"))
+		[]byte("i=0; while [ $i -lt 40 ]; do echo " + strings.Repeat("x", 70) + "; i=$((i+1)); done\n"))
 	require.NoError(t, err)
 	// The echoed command line also contains the needle, so wait for the
 	// output lines themselves rather than the first occurrence.

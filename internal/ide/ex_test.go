@@ -4177,6 +4177,16 @@ func newExForTestingVTECapacity(
 	t *testing.T, ws workspace.Workspace, initialVTECapacity int,
 ) testEx {
 	t.Helper()
+	return newExForTestingVTEConfig(t, ws, initialVTECapacity, vte.DefaultConfig())
+}
+
+// newExForTestingVTEConfig is newExForTestingVTECapacity with the
+// terminal configuration its terminals are created with.
+func newExForTestingVTEConfig(
+	t *testing.T, ws workspace.Workspace, initialVTECapacity int,
+	emulatorCfg vte.Config,
+) testEx {
+	t.Helper()
 	e := new(ex)
 	e.syncCommandPrompt = true
 	opts := defCommandKeyBindings()
@@ -4190,7 +4200,6 @@ func newExForTestingVTECapacity(
 	uri, err := ws.URI(".")
 	require.NoError(t, err)
 
-	emulatorCfg := vte.DefaultConfig()
 	scheduler, mu := installDefaultTestScheduler(&emulatorCfg)
 	require.NoError(t, e.init(
 		func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) {
@@ -4304,6 +4313,143 @@ func TestExResizeDoesNotBlockOnPtyResize(t *testing.T) {
 		ws.armFor(80, 24)
 		assertResizeReturns(t, b)
 		assert.Equal(t, [2]int{80, 24}, ws.waitEntered(t))
+	})
+}
+
+// newMemoryShellEx builds an ex on a memory workspace holding notes.txt
+// whose terminals, created through the production spawn path, run the
+// Rune shell.
+func newMemoryShellEx(t *testing.T, capacity int, cfg vte.Config) testEx {
+	t.Helper()
+	uri, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	scheme, err := workspace.NewMemoryScheme(context.Background(), config.NopConfig(), uri)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = scheme.Close() })
+	touchTestFile(t, scheme, "notes.txt")
+	b := newExForTestingVTEConfig(t,
+		workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule), capacity, cfg)
+	t.Cleanup(func() { _ = b.Close() })
+	return b
+}
+
+// typeShell types s into the focused terminal a key at a time, with the
+// bytes the host terminal reports for each.
+func typeShell(b testEx, s string) {
+	for _, r := range s {
+		ev := term.Event{Type: term.EventKey, Ch: r, Raw: []byte(string(r))}
+		switch r {
+		case '\n':
+			ev = term.Event{Type: term.EventKey, Key: term.KeyEnter}
+		case '\x1b':
+			ev = term.Event{Type: term.EventKey, Key: term.KeyEsc}
+		}
+		b.Handle(ev)
+	}
+}
+
+// waitShellDrawn runs what the terminal scheduled until the frame shows
+// substr, and returns the frame.
+func waitShellDrawn(t *testing.T, b testEx, width, height int, substr string) string {
+	t.Helper()
+	var frame string
+	require.Eventuallyf(t, func() bool {
+		b.flushScheduled()
+		frame = handlertest.DrawHandler(b, width, height)
+		return strings.Contains(frame, substr)
+	}, 10*time.Second, 5*time.Millisecond, "%q never drawn, last frame:\n%s", substr, frame)
+	return frame
+}
+
+func TestExRunsTheRuneShellInMemoryWorkspaces(t *testing.T) {
+	const width, height = 40, 10
+	ctx := context.Background()
+
+	openTerminal := func(t *testing.T, b testEx, open func(context.Context, ...string) error) {
+		t.Helper()
+		b.Resize(width, height)
+		require.NoError(t, open(ctx))
+		b.waitAsyncVTELoads()
+		b.flushScheduled()
+		require.True(t, terminalLive(b))
+		waitShellDrawn(t, b, width, height, "$ ▐")
+	}
+
+	t.Run("terminalnewtab lists the workspace", func(t *testing.T) {
+		b := newMemoryShellEx(t, 0, vte.DefaultConfig())
+		openTerminal(t, b, b.ex.terminalnewtab)
+		require.NoError(t, b.ex.tabrename(ctx, "shell"))
+		typeShell(b, "ls\n")
+		waitShellDrawn(t, b, width, height, "notes.txt")
+		frame := waitShellDrawn(t, b, width, height, "$ ▐")
+		assert.Equal(t, `┌━━━━━━━───────────────────────────────┐
+│$ shell                               │
+├──────────────────────────────────────┤
+│Rune's built-in in-memory shell — type│
+│ 'help' for the available commands.   │
+│memory:/// $ ls                       │
+│bin        notes.txt                  │
+│memory:/// $ ▐                        │
+│                                      │
+└──────────────────────────────────────┘`, frame)
+	})
+
+	t.Run("terminalnew lists the workspace", func(t *testing.T) {
+		b := newMemoryShellEx(t, 0, vte.DefaultConfig())
+		openTerminal(t, b, b.ex.terminalnew)
+		typeShell(b, "ls\n")
+		assert.Contains(t, waitShellDrawn(t, b, width, height, "notes.txt"), "$ ls")
+	})
+
+	t.Run("a warm reservoir terminal", func(t *testing.T) {
+		b := newMemoryShellEx(t, 1, vte.DefaultConfig())
+		require.NotNil(t, b.terminals.reservoir)
+		b.terminals.reservoir.WaitForInitialFill()
+		openTerminal(t, b, b.ex.terminalnewtab)
+		typeShell(b, "ls\n")
+		assert.Contains(t, waitShellDrawn(t, b, width, height, "notes.txt"), "$ ls")
+	})
+
+	t.Run("exit drops the tab", func(t *testing.T) {
+		b := newMemoryShellEx(t, 0, vte.DefaultConfig())
+		openTerminal(t, b, b.ex.terminalnewtab)
+		content, err := b.ex.invokeWindow().Content()
+		require.NoError(t, err)
+		uri := content.(*browser.Tab).URI()
+		typeShell(b, "exit\n")
+		require.Eventually(t, func() bool {
+			b.flushScheduled()
+			return !terminalLive(b)
+		}, 10*time.Second, 5*time.Millisecond, "the terminal outlived its shell")
+		_, open := b.comp.Browser().Tab(uri)
+		assert.False(t, open, "a shell that exited cleanly leaves no tab behind")
+	})
+
+	t.Run("modal mode", func(t *testing.T) {
+		cfg := vte.DefaultConfig()
+		cfg.Modal = true
+		b := newMemoryShellEx(t, 0, cfg)
+		openTerminal(t, b, b.ex.terminalnewtab)
+		typeShell(b, "echo bla\n")
+		waitShellDrawn(t, b, width, height, "│bla ")
+		typeShell(b, "\x1b")
+		require.Eventually(t, func() bool {
+			b.flushScheduled()
+			_, style, _ := b.Cursor()
+			return style != term.CursorStyleSteadyBar
+		}, 10*time.Second, 5*time.Millisecond,
+			"<esc> must enter vi mode once the shell rings the bell")
+		typeShell(b, "k0")
+		// vi keys at the prompt line apply once the shell rings the bell.
+		waitShellDrawn(t, b, width, height, "│▐la ")
+	})
+
+	t.Run("console", func(t *testing.T) {
+		b := newMemoryShellEx(t, 0, vte.DefaultConfig())
+		b.Resize(width, height)
+		require.NoError(t, b.ex.consolenewtab(ctx, "ls"))
+		b.ex.companionConsole.Wait()
+		assert.Contains(t, waitShellDrawn(t, b, width, height, "notes.txt"), "ls")
 	})
 }
 

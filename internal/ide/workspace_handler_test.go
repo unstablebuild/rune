@@ -5953,28 +5953,32 @@ func TestWorkspaceManagerRestoresOpenTerminalSessions(t *testing.T) {
 		m := newTestWorkspaceManagerHandlerWithDir(t, cfg, dir, nopShutdownShaderConfig())
 
 		ex1 := m.exHandler(m.focusHandler())
-		fileURI, err := ex1.workspace.URI("restored-with-floating.txt")
-		require.NoError(t, err)
-		_, err = ex1.editFileURI(fileURI, ex1.invokeWindow(), false)
-		require.NoError(t, err)
-		_, err = ex1.comp.Floating(
-			browser.NopFloatingHandler(handler.StaticFloating(handler.Nop(), 10, 4)),
-			browserapi.FloatingConfig{Alignment: component.AlignmentCentered},
-		)
-		require.NoError(t, err)
-		require.Equal(t, 1, ex1.comp.Browser().FloatingWindows())
+		m.locked(func() {
+			fileURI, err := ex1.workspace.URI("restored-with-floating.txt")
+			require.NoError(t, err)
+			_, err = ex1.editFileURI(fileURI, ex1.invokeWindow(), false)
+			require.NoError(t, err)
+			_, err = ex1.comp.Floating(
+				browser.NopFloatingHandler(handler.StaticFloating(handler.Nop(), 10, 4)),
+				browserapi.FloatingConfig{Alignment: component.AlignmentCentered},
+			)
+			require.NoError(t, err)
+			require.Equal(t, 1, ex1.comp.Browser().FloatingWindows())
+		})
 
 		m.mu.Lock()
 		err = m.commandReloadWorkspace()
 		m.mu.Unlock()
 		require.NoError(t, err)
 		m.quiesce()
-		m.Resize(80, 24)
-		ex2 := m.exHandler(m.focusHandler())
-		require.Equal(t, 0, ex2.comp.Browser().FloatingWindows())
-		tabs := ex2.comp.Tabs()
-		require.Len(t, tabs, 1)
-		require.Equal(t, "restored-with-floating.txt", tabs[0].URI().Name())
+		m.locked(func() {
+			m.Resize(80, 24)
+			ex2 := m.exHandler(m.focusHandler())
+			require.Equal(t, 0, ex2.comp.Browser().FloatingWindows())
+			tabs := ex2.comp.Tabs()
+			require.Len(t, tabs, 1)
+			require.Equal(t, "restored-with-floating.txt", tabs[0].URI().Name())
+		})
 
 		require.NoError(t, m.Close())
 	})
@@ -8354,6 +8358,14 @@ func (t *testWorkspaceManagerHandler) locked(fn func()) {
 	t.workspaceManagerHandler.mu.Lock()
 	defer t.workspaceManagerHandler.mu.Unlock()
 	fn()
+}
+
+// openFile shadows the embedded handler method to take the event-loop
+// lock first, as addOrCreateWorkspace does: opening a file touches the
+// tabs the fs-watcher goroutine reads under mu.
+func (t *testWorkspaceManagerHandler) openFile(file string, focus bool) (err error) {
+	t.locked(func() { err = t.workspaceManagerHandler.openFile(file, focus) })
+	return err
 }
 
 // addOrCreateWorkspace shadows the embedded handler method to take

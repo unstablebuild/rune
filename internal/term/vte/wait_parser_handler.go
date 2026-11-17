@@ -18,6 +18,7 @@ package vte
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -32,6 +33,13 @@ type waitParserHandler struct {
 	ch      chan func()
 	trigger func()
 	vteparser.Handler
+	// pending counts the callbacks scheduled and not yet done, queued or
+	// running. Whoever moves it off zero, or leaves it above zero when a
+	// callback is done, asks for the next bell: each add returns to one
+	// caller only, so exactly one bell is outstanding while callbacks
+	// wait. Deciding from len(ch) instead lets a callback scheduled while
+	// the parser answers a bell go unasked for by both sides.
+	pending atomic.Int32
 }
 
 func newWaitParserHandler(ctx context.Context, h vteparser.Handler) *waitParserHandler {
@@ -82,6 +90,7 @@ func (w *waitParserHandler) drop() {
 	for {
 		select {
 		case <-w.ch:
+			w.pending.Add(-1)
 			continue
 		default:
 		}
@@ -98,26 +107,25 @@ func (w *waitParserHandler) scheduleBellCallback(callback func()) (ok bool) {
 		panic("must install first a trigger via useTrigger")
 	}
 
-	first := len(w.ch) == 0
 	select {
 	case w.ch <- callback:
-		if first && len(w.ch) == 1 {
-			w.trigger()
-		}
-		ok = true
 	default:
 		// don't block
+		return false
 	}
-
-	return
+	// Only once queued, or the bell could find no callback to run.
+	if w.pending.Add(1) == 1 {
+		w.trigger()
+	}
+	return true
 }
 
 func (w *waitParserHandler) Bell() {
-	isLast := len(w.ch) == 1
 	select {
 	case cb := <-w.ch:
 		cb()
-		if lenCh := len(w.ch); !isLast && lenCh > 0 {
+		// After cb, so the bell is ordered after what it wrote to the pty.
+		if w.pending.Add(-1) > 0 {
 			w.trigger()
 		}
 	default:

@@ -31,7 +31,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacetest"
 )
 
@@ -138,11 +141,69 @@ func TestExecutableResolverHostID(t *testing.T) {
 		"ssh://host/ws":        "ssh://host",
 		"ssh://u@host:2222/ws": "ssh://u@host:2222",
 		"rune://peer/ws":       "rune://peer",
+		"memory:///":           "memory://",
 	} {
 		parsed, err := workspaceapi.ParseURI(uri)
 		require.NoError(t, err)
 		assert.Equal(t, want, newExecutableResolver(newFakeHost(), parsed).hostID, uri)
 	}
+}
+
+func TestExecutableResolverOverTheMemoryScheme(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	uri, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	mem, err := workspace.NewMemoryScheme(ctx, config.NopConfig(), uri)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = mem.Close() })
+	f, err := mem.Create("/build.sh")
+	require.NoError(t, err)
+	_, err = f.Write([]byte("echo built\n"))
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	r := newExecutableResolver(mem, uri)
+	for name, want := range map[string]string{
+		"ls":         "/bin/ls",
+		"bash":       "/bin/bash",
+		"./build.sh": "/build.sh",
+	} {
+		got, err := r.resolve(ctx, name, "", nil)
+		require.NoError(t, err, name)
+		assert.Equal(t, want, got, name)
+	}
+	_, err = r.resolve(ctx, "git", "", nil)
+	assert.ErrorIs(t, err, errExecutableNotFound, "the host's tools are not the memory workspace's")
+	assert.NotErrorIs(t, err, errExecutableUnknown)
+
+	fp, err := r.fingerprint(ctx, "/bin/ls")
+	require.NoError(t, err)
+	assert.Equal(t, sha256Hex("#!/bin/sh\n# ls: Rune built-in command, run in-process by the Rune shell.\nexec ls \"$@\"\n"), fp.SHA256,
+		"the shell's programs are files an approval can be bound to")
+}
+
+func TestCheckCommandBindsTheMemorySchemePrograms(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	uri, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	mem, err := workspace.NewMemoryScheme(ctx, config.NopConfig(), uri)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = mem.Close() })
+
+	a := newTestAuthorizerCore(&stubPromptOpener{decision: PermissionAllowOnce}, storagestub.NewInMemoryService())
+	a.resolver = newExecutableResolver(mem, uri)
+	c, err := a.checkCommand(ctx, "prefix", pluginPermissionCommandDetail{
+		Path: "bash", Args: []string{"-c", "ls | grep x"},
+	}, nil)
+	require.NoError(t, err)
+	assert.False(t, c.unbound, "every program resolves to a file of the Rune shell")
+	var paths []string
+	for _, exe := range c.executables {
+		paths = append(paths, exe.Path)
+	}
+	assert.ElementsMatch(t, []string{"/bin/bash", "/bin/ls", "/bin/grep"}, paths)
 }
 
 func TestExecutableResolverFingerprint(t *testing.T) {

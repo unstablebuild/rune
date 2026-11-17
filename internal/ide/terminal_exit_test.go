@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/component/shader/shaderutils"
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/idehistory"
@@ -132,6 +133,20 @@ type terminalExitHarness struct {
 	testEx
 	terminal *exitingVTE
 	av       *asyncVTE
+}
+
+// terminalLive reports whether a running terminal is in the focused
+// window, in a tab or directly.
+func terminalLive(b testEx) bool {
+	content, err := b.ex.invokeWindow().Content()
+	if err != nil {
+		return false
+	}
+	if tab, ok := content.(*browser.Tab); ok {
+		content = tab.Handler()
+	}
+	av, ok := content.(*asyncVTE)
+	return ok && av.real != nil && !av.closed
 }
 
 // newTerminalExitHarness builds an ex editing with ed whose next

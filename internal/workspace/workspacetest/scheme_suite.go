@@ -909,6 +909,27 @@ func TestWorkspaceSchemeRemove(
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, os.ErrNotExist))
 	})
+	t.Run("removes an empty directory", func(t *testing.T) {
+		scheme := schemeFn(t)
+		defer scheme.Close()
+		require.NoError(t, scheme.MkdirAll("./emptydir", 0o777))
+		require.NoError(t, scheme.Remove("./emptydir"))
+		_, err := scheme.Stat("./emptydir")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, os.ErrNotExist))
+	})
+	t.Run("fails to remove a non-empty directory", func(t *testing.T) {
+		scheme := schemeFn(t)
+		defer scheme.Close()
+		require.NoError(t, scheme.MkdirAll("./fulldir", 0o777))
+		_, cleanup := createTestFile(t, scheme, "./fulldir/file", "")
+		defer cleanup()
+		err := scheme.Remove("./fulldir")
+		require.Error(t, err)
+		info, serr := scheme.Stat("./fulldir/file")
+		require.NoError(t, serr, "the directory's content must survive the failed Remove")
+		assert.False(t, info.IsDir())
+	})
 }
 
 func TestWorkspaceSchemeRename(
@@ -1546,6 +1567,53 @@ func TestWorkspaceSchemeMkdirAll(
 		file, werr := scheme.OpenFile("./nested/directory/very/nested/file", os.O_CREATE, 0666)
 		require.NoError(t, werr)
 		require.NoError(t, file.Close())
+	})
+
+	t.Run("creates an empty directory that Stat and ReadDir report", func(t *testing.T) {
+		scheme := schemeFn(t)
+		defer scheme.Close()
+
+		require.NoError(t, scheme.MkdirAll("./empty/inner", 0o755))
+
+		for _, p := range []string{"./empty", "./empty/inner"} {
+			info, err := scheme.Stat(p)
+			require.NoErrorf(t, err, "Stat(%q)", p)
+			assert.Truef(t, info.IsDir(), "Stat(%q).IsDir", p)
+			assert.Truef(t, info.Mode().IsDir(), "Stat(%q).Mode().IsDir", p)
+		}
+
+		entries, err := scheme.ReadDir(".")
+		require.NoError(t, err)
+		var found bool
+		for _, e := range entries {
+			if e.Name() == "empty" {
+				found = true
+				assert.True(t, e.IsDir())
+				assert.True(t, e.Type().IsDir())
+			}
+		}
+		assert.True(t, found, "the parent must list the empty directory")
+
+		inner, err := scheme.ReadDir("./empty")
+		require.NoError(t, err)
+		require.Len(t, inner, 1)
+		assert.Equal(t, "inner", inner[0].Name())
+		assert.True(t, inner[0].IsDir())
+
+		leaf, err := scheme.ReadDir("./empty/inner")
+		require.NoError(t, err)
+		assert.Empty(t, leaf)
+	})
+
+	t.Run("opening a directory as a file fails", func(t *testing.T) {
+		scheme := schemeFn(t)
+		defer scheme.Close()
+
+		require.NoError(t, scheme.MkdirAll("./dir", 0o755))
+		_, err := scheme.OpenFile("./dir", os.O_RDWR, 0)
+		require.Error(t, err)
+		_, err = scheme.OpenFile("./dir", os.O_RDWR|os.O_CREATE, 0o644)
+		require.Error(t, err)
 	})
 }
 

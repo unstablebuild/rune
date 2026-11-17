@@ -97,6 +97,22 @@ func TestPtyWriteQueueSkipsNonLocalMaster(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestPtyWriteQueueSkipsNonLocalMasterNamingTtyDescriptor(t *testing.T) {
+	t.Parallel()
+	master, slave, err := pty.Open()
+	require.NoError(t, err)
+	defer master.Close()
+	defer slave.Close()
+	_, ok := newPtyWriteQueue(t.Context(), &fdFile{File: &workspacetest.File{}, fd: master.Fd()})
+	assert.False(t, ok)
+}
+
+func TestPtyWriteQueueAcceptsFileSchemeMaster(t *testing.T) {
+	t.Parallel()
+	_, ok := newPtyWriteQueue(t.Context(), fileSchemePty(t).Master)
+	assert.True(t, ok)
+}
+
 func TestPtyWriteQueueDeliversLargeWriteToSlowReader(t *testing.T) {
 	t.Parallel()
 	master, slave := newNonPollableMaster(t)

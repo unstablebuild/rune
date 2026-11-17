@@ -81,10 +81,8 @@ func (c *memFile) Write(p []byte) (n int, err error) {
 	c.locker.Lock()
 	defer c.locker.Unlock()
 
-	if c.offset+int64(len(p)) > int64(len(*c.data)) {
-		diff := c.offset + int64(len(p)) - int64(len(*c.data))
-		*c.data = append(*c.data, make([]byte, diff)...)
-		copy((*c.data)[diff:], *c.data)
+	if end := c.offset + int64(len(p)); end > int64(len(*c.data)) {
+		*c.data = append(*c.data, make([]byte, end-int64(len(*c.data)))...)
 	}
 	copy((*c.data)[c.offset:], p)
 	n = len(p)
@@ -113,6 +111,7 @@ func (c *memFile) Stat() (os.FileInfo, error) {
 		filename: filepath.Base(c.filename),
 		modTime:  c.modTime,
 		mode:     c.mode,
+		isDir:    c.mode.IsDir(),
 		offset:   c.offset,
 	}
 	return finfo, nil

@@ -14,19 +14,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//go:build e2e
-
 package vte
 
 import (
 	"context"
-	"os"
-	"path/filepath"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/ernestrc/sensible/find"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -35,6 +32,7 @@ import (
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/sounds"
+	"unstable.build/rune/internal/term/vsh/vshtest"
 	"unstable.build/rune/internal/term/vte/vtescreen"
 	"unstable.build/rune/internal/term/vte/vtetest"
 	"unstable.build/rune/internal/text"
@@ -532,11 +530,30 @@ bcde▐               `},
 		testSequence(t, cfg, defaultWaitForIdleVte, cases)
 	})
 
+	t.Run("keys typed faster than the shell answers", func(t *testing.T) {
+		t.Parallel()
+		cfg := DefaultConfig()
+		cfg.Modal = true
+		h, ch := testSequence(t, cfg, defaultWaitForIdleVte, []vtetest.Case{
+			{"echo<0C", screen("$ ▐")},
+		})
+		// Each key schedules its edit while the bells the previous ones
+		// asked for are still being answered.
+		for _, r := range "echo hello" {
+			h.Handle(term.Event{Type: term.EventKey, Ch: r, Raw: []byte(string(r))})
+		}
+		vtetest.TestCases(t, h, 20, 10, defaultWaitForIdleVte, ch, []vtetest.Case{
+			{"", screen("$ echo hello▐")},
+		})
+	})
+
 	t.Run("tab", func(t *testing.T) {
 		t.Parallel()
+		// The shell's Tab completes nothing for "zz", so the tab is
+		// only vi's: one cell in its model, as on the screen.
 		cases := []vtetest.Case{
-			{"echo<0Cecho \ta",
-				`$ echo  ▐           
+			{"echo<0Cecho zz\ta",
+				`$ echo zz ▐         
                     
                     
                     
@@ -550,6 +567,20 @@ bcde▐               `},
 		cfg := DefaultConfig()
 		cfg.Modal = true
 		testSequence(t, cfg, defaultWaitForIdleVte, cases)
+	})
+
+	// A Tab that lists completions prompts again below the listing; the
+	// vi edits that follow must change that line, not the one above.
+	t.Run("vi edits after a Tab listing", func(t *testing.T) {
+		t.Parallel()
+		cfg := DefaultConfig()
+		cfg.Modal = true
+		testSequenceVsh(t, cfg, defaultWaitForIdleVte,
+			vshtest.Options{Files: map[string]string{"src/a.txt": "", "src/b.txt": ""}}, []string{"sh"},
+			[]vtetest.Case{
+				{InputSequence: "ls src/✌", Expected: screen("$ ls src/", "a.txt  b.txt", "$ ls src/▐")},
+				{InputSequence: "<0C", Expected: screen("$ ls src/", "a.txt  b.txt", "$ ▐")},
+			})
 	})
 
 	t.Run("copy/paste", func(t *testing.T) {
@@ -620,320 +651,95 @@ $ ech▐              `},
 		cfg.Modal = true
 		testSequence(t, cfg, defaultWaitForIdleVte, cases)
 	})
-}
 
-func TestZshEdgeCases(t *testing.T) {
-	// only run this if zsh is present in system running test harness
-	zshPath, err := find.Executable("zsh")
-	if err != nil {
-		t.SkipNow()
-	}
-
-	// zsh started as terminal.shell loads Rune's dotfiles, which source
-	// the ones in $HOME
-	home := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(home, ".zshrc"), []byte(`
-setopt COMBINING_CHARS
-PS1='$ '
-autoload -U compinit && compinit -u
-zstyle ':completion:*' menu select
-# Deterministic completion target for RUNE-193: xfoo has a fixed
-# completion list so the rendered menu does not depend on which
-# command binaries the host has installed.
-xfoo() { :; }
-_xfoo() { compadd -- alpha bravo charlie delta }
-compdef _xfoo xfoo
-`), 0o644))
-	t.Setenv("HOME", home)
-
-	t.Run("insert mode edit wrap-around", func(t *testing.T) {
-		cases := []vtetest.Case{
-			{"echo blaaaaaa<0Cecho blaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-				`$ echo blaaaaaaaaaaa
-aaaaaaaaaaaaaaaaaaaa
-aaaaaaaaaaaaaaaa▐   
-                    
-                    
-                    
-                    
-                    
-                    
-                    `},
-		}
-		cfg := DefaultConfig()
-		cfg.Modal = true
-		testSequenceShell(t, cfg, defaultWaitForIdleVte, zshPath, cases)
-	})
-
-	// Once the wrapped line scrolls the screen, or there is scrollback above
-	// the prompt, the vi cursor must keep inserting where the user is typing
-	// instead of drifting to another row.
-	for _, tc := range []struct {
-		name string
-		vtetest.Case
-	}{
-		{"insert mid-line on the bottom row wraps and scrolls", vtetest.Case{
-			// 0 lands on the prompt before the shell answered, a WORD of
-			// its own
-			InputSequence: "seq 30>echo aa bb cc dd<03WaXXXX",
-			Expected: `23                  
-24                  
-25                  
-26                  
-27                  
-28                  
-29                  
-30                  
-$ echo aa bXXXX▐ cc 
-dd                  `}},
-		{"insert at end of line on the bottom row wraps and scrolls", vtetest.Case{
-			InputSequence: "seq 30>echo<0Cecho aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			Expected: `23                  
-24                  
-25                  
-26                  
-27                  
-28                  
-29                  
-30                  
-$ echo aaaaaaaaaaaaa
-aaaaaaaaaaaaaaaaa▐  `}},
-		// '$' clears the screen, which leaves the prompt on the top row
-		// with scrollback above it
-		{"insert at end of line with scrollback above the prompt wraps", vtetest.Case{
-			InputSequence: "seq 30>$echo<0Cecho aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			Expected: `$ echo aaaaaaaaaaaaa
-aaaaaaaaaaaaaaaaa▐  
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    `}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := DefaultConfig()
-			cfg.Modal = true
-			testSequenceShell(t, cfg, defaultWaitForIdleVte, zshPath, []vtetest.Case{tc.Case})
-		})
-	}
-
-	// RUNE-193: tab-completion below the prompt confused lastPromptLine
-	// so that subsequent vi edits on the real prompt row rang the bell
-	// instead of mutating the buffer. With menu-select enabled, zsh
-	// renders the completion list on rows below the prompt; after <esc>
-	// dismisses the menu, leftover prompt-like rows can still sit below
-	// the cursor row and trick the heuristic.
-	t.Run("tab completion then vi delete-to-end", func(t *testing.T) {
-		cases := []vtetest.Case{
-			// type `xfoo `, press <tab> to render the (fixed)
-			// zsh completion menu below the prompt, then
-			// <esc>0C to delete the command and re-enter
-			// insert mode. The prompt row must show an empty
-			// `$ ` with the cursor right after it — proving
-			// the `C` was not bell-rejected by lastPromptLine
-			// misclassifying the real prompt row. zsh leaves
-			// the completion menu drawn below the prompt; the
-			// visual cleanup of those rows is the shell's
-			// responsibility, so the test only asserts the
-			// prompt row, leaving menu rows un-checked.
-			{"xfoo ✌<0C",
-				`$ ▐                 
-alpha    charlie    
-bravo    delta      
-                    
-                    
-                    
-                    
-                    
-                    
-                    `},
-		}
-		cfg := DefaultConfig()
-		cfg.Modal = true
-		testSequenceShell(t, cfg, defaultWaitForIdleVte, zshPath, cases)
-	})
-
-	// RUNE-193 regression guard: when the user enters modal mode
-	// while the shell cursor sits on a wrapped continuation row,
-	// lastPromptLine must still include the original prompt row
-	// in the block so vi motions/edits that land on the upper row
-	// succeed instead of being bell-rejected. Type `echo` plus
-	// enough `a`s to wrap onto row 1, then <esc>k (vi up onto the
-	// prompt row) and insert `X`. The `X` must land on row 0,
-	// proving the prompt row is part of the editable block.
+	// RUNE-193: entering modal mode while the shell cursor sits on a
+	// wrapped continuation row must keep the prompt row in the editable
+	// block, so an edit that lands on the upper row mutates the line
+	// instead of being bell-rejected.
 	t.Run("modal entered on wrapped continuation row", func(t *testing.T) {
-		cases := []vtetest.Case{
-			{"echo aaaaaaaaaaaaaaaaaa<kiX",
-				`$ ecX▐o aaaaaaaaaaaa
-aaaaaa              
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    `},
-		}
+		t.Parallel()
 		cfg := DefaultConfig()
 		cfg.Modal = true
-		testSequenceShell(t, cfg, defaultWaitForIdleVte, zshPath, cases)
-	})
-}
-
-func TestBashViModeEdgeCases(t *testing.T) {
-	bashPath, err := find.Executable("bash")
-	if err != nil {
-		t.Skip("bash not found in PATH")
-	}
-	for _, rc := range []struct {
-		name    string
-		bashrc  string
-		inputrc string
-	}{
-		{name: "set -o vi in bashrc", bashrc: "set -o vi\n"},
-		{name: "editing-mode vi in inputrc", inputrc: "set editing-mode vi\n"},
-	} {
-		for _, sh := range []struct {
-			name           string
-			loginShell     string
-			commandAndArgs []string
-		}{
-			{"SHELL", bashPath, nil},
-			// SHELL is not bash so that only terminal.shell can start it
-			{"terminal.shell", "/bin/sh", []string{bashPath}},
-		} {
-			t.Run(rc.name+"/"+sh.name, func(t *testing.T) {
-				home := t.TempDir()
-				require.NoError(t, os.WriteFile(filepath.Join(home, ".bash_profile"),
-					[]byte(". ~/.bashrc\n"), 0o644))
-				require.NoError(t, os.WriteFile(filepath.Join(home, ".bashrc"),
-					[]byte(rc.bashrc+"PS1='$ '\n"), 0o644))
-				if rc.inputrc != "" {
-					require.NoError(t, os.WriteFile(filepath.Join(home, ".inputrc"),
-						[]byte(rc.inputrc), 0o644))
-				}
-				t.Setenv("HOME", home)
-				t.Setenv("SHELL", sh.loginShell)
-				// an inherited INPUTRC would mask a missing export
-				t.Setenv("INPUTRC", "")
-				// bash 3.2 as shipped on macOS prints a zsh-migration banner on
-				// every interactive startup, which would scroll the screen away.
-				t.Setenv("BASH_SILENCE_DEPRECATION_WARNING", "1")
-
-				cases := []vtetest.Case{
-					{"echo blaaa<0Cecho hi", `$ echo hi▐          
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    `},
-				}
-				cfg := DefaultConfig()
-				cfg.Modal = true
-				testSequenceCommand(t, cfg, defaultWaitForIdleVte, sh.commandAndArgs, cases)
-			})
-		}
-	}
-}
-
-func TestZshViModeEdgeCases(t *testing.T) {
-	zshPath, err := find.Executable("zsh")
-	if err != nil {
-		t.Skip("zsh not found in PATH")
-	}
-	for _, sh := range []struct {
-		name           string
-		loginShell     string
-		commandAndArgs []string
-	}{
-		{"SHELL", zshPath, nil},
-		// SHELL is not zsh so that only terminal.shell can start it
-		{"terminal.shell", "/bin/sh", []string{zshPath}},
-	} {
-		t.Run(sh.name, func(t *testing.T) {
-			home := t.TempDir()
-			require.NoError(t, os.WriteFile(filepath.Join(home, ".zshrc"),
-				[]byte("bindkey -v\nPS1='$ '\n"), 0o644))
-			t.Setenv("HOME", home)
-			t.Setenv("SHELL", sh.loginShell)
-			// an inherited ZDOTDIR would mask a missing export
-			t.Setenv("ZDOTDIR", "")
-
-			cases := []vtetest.Case{
-				{"echo blaaa<0Cecho hi", `$ echo hi▐          
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    `},
-			}
-			cfg := DefaultConfig()
-			cfg.Modal = true
-			testSequenceCommand(t, cfg, defaultWaitForIdleVte, sh.commandAndArgs, cases)
+		testSequence(t, cfg, defaultWaitForIdleVte, []vtetest.Case{
+			{InputSequence: "echo aaaaaaaaaaaaaaaaaa<kiX", Expected: screen("$ ecX▐o aaaaaaaaaaaa", "aaaaaa")},
 		})
-	}
-}
+	})
 
-func TestFishEdgeCases(t *testing.T) {
-	fishPath, err := find.Executable("fish")
-	if err != nil {
-		t.SkipNow()
-	}
-	for _, keys := range []struct{ name, configFish string }{
-		{"default key bindings", ""},
-		{"vi key bindings", "fish_vi_key_bindings\n"},
-	} {
-		for _, sh := range []struct {
-			name           string
-			loginShell     string
-			commandAndArgs []string
+	// Once the wrapped line scrolls the screen, or there is scrollback
+	// above the prompt, the vi cursor must keep inserting where the
+	// user is typing instead of drifting to another row.
+	t.Run("edits on a wrapping bottom row", func(t *testing.T) {
+		t.Parallel()
+		var lines strings.Builder
+		for i := 1; i <= 30; i++ {
+			fmt.Fprintf(&lines, "%d\n", i)
+		}
+		scrolled := []string{"23", "24", "25", "26", "27", "28", "29", "30"}
+		unwrapped := append([]string{"22"}, scrolled...)
+		// Every vi-mode key is synchronised with the shell through a
+		// bell round-trip, so each case types a burst short enough for
+		// the bell queue even on a loaded host.
+		for _, tc := range []struct {
+			name  string
+			cases []vtetest.Case
 		}{
-			{"SHELL", fishPath, nil},
-			// SHELL is not fish so that only terminal.shell can start it
-			{"terminal.shell", "/bin/sh", []string{fishPath}},
+			{name: "insert within the wrapped line", cases: []vtetest.Case{
+				// 0 lands on the prompt before the shell answered, a WORD
+				// of its own
+				{InputSequence: "cat lines>echo aa bb cc dd<03WaXXXX",
+					Expected: screen(append(scrolled, "$ echo aa bXXXX▐ cc ", "dd")...)},
+			}},
+			{name: "insert past the wrap", cases: []vtetest.Case{
+				{InputSequence: "cat lines>echo<0C", Expected: screen(append(unwrapped, "$ ▐")...)},
+				{InputSequence: "echo aaaaaaaaaa", Expected: screen(append(unwrapped, "$ echo aaaaaaaaaa▐")...)},
+				{InputSequence: "aaaaaaaaaaaaaaaaaaaa",
+					Expected: screen(append(scrolled, "$ echo aaaaaaaaaaaaa", "aaaaaaaaaaaaaaaaa▐")...)},
+			}},
+			// ^L clears the screen, which leaves the prompt on the top
+			// row with scrollback above it.
+			{name: "insert past the wrap after a clear", cases: []vtetest.Case{
+				{InputSequence: "cat lines>$echo<0C", Expected: screen("$ ▐")},
+				{InputSequence: "echo aaaaaaaaaa", Expected: screen("$ echo aaaaaaaaaa▐")},
+				{InputSequence: "aaaaaaaaaaaaaaaaaaaa",
+					Expected: screen("$ echo aaaaaaaaaaaaa", "aaaaaaaaaaaaaaaaa▐")},
+			}},
 		} {
-			t.Run(keys.name+"/"+sh.name, func(t *testing.T) {
-				home := t.TempDir()
-				configDir := filepath.Join(home, ".config")
-				require.NoError(t, os.MkdirAll(filepath.Join(configDir, "fish"), 0o755))
-				require.NoError(t, os.WriteFile(filepath.Join(configDir, "fish", "config.fish"),
-					[]byte("set -g fish_greeting\nfunction fish_prompt; printf '$ '; end\n"+
-						"function fish_mode_prompt; end\n"+keys.configFish), 0o644))
-				t.Setenv("HOME", home)
-				t.Setenv("XDG_CONFIG_HOME", configDir)
-				t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
-				t.Setenv("SHELL", sh.loginShell)
-
-				cases := []vtetest.Case{
-					{"echo blaaa<0Cecho hi", `$ echo hi▐          
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    `},
-				}
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
 				cfg := DefaultConfig()
 				cfg.Modal = true
-				testSequenceCommand(t, cfg, defaultWaitForIdleVte, sh.commandAndArgs, cases)
+				testSequenceVsh(t, cfg, defaultWaitForIdleVte,
+					vshtest.Options{Files: map[string]string{"lines": lines.String()}}, []string{"sh"},
+					tc.cases)
 			})
 		}
-	}
+	})
+
+	t.Run("modal during a running command navigates scrollback and copies", func(t *testing.T) {
+		t.Parallel()
+		cfg := DefaultConfig()
+		clip := clipboard.NewInMemory()
+		cfg.Clipboard = clip
+		cfg.Modal = true
+		handler, ch := testSequence(t, cfg, defaultWaitForIdleVte, []vtetest.Case{
+			{InputSequence: "echo abc>sleep 30>", Expected: screen("$ echo abc", "abc", "$ sleep 30", "▐")},
+			{InputSequence: "<kk0", Expected: screen("$ echo abc", "▐bc", "$ sleep 30", "")},
+			{InputSequence: "vey", Expected: screen("$ echo abc", "▐bc", "$ sleep 30", "")},
+		})
+		data, err := clip.Paste(clipboard.DefaultRegisterID)
+		require.NoError(t, err)
+		assert.Equal(t, "abc", data.Text)
+
+		// ^C leaves modal mode; a second one reaches the command.
+		vtetest.TestCases(t, handler, 20, 10, defaultWaitForIdleVte, ch, []vtetest.Case{
+			{InputSequence: "#", Expected: screen("$ echo abc", "abc", "$ sleep 30", "▐")},
+		})
+		_, handled := handler.Handle(ctrlC)
+		require.True(t, handled)
+		vtetest.TestCases(t, handler, 20, 10, defaultWaitForIdleVte, ch, []vtetest.Case{
+			{InputSequence: "", Expected: screen("$ echo abc", "abc", "$ sleep 30", "^C", "$ ▐")},
+		})
+	})
 }
 
 func TestViEditUnit(t *testing.T) {

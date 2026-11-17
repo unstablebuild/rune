@@ -20,8 +20,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/term/vte/vteparser"
 )
 
@@ -112,6 +115,64 @@ func TestWaitParserHandler(t *testing.T) {
 
 		wg.Wait()
 		assert.Equal(t, n, int(callbackCalled.Load()))
+	})
+
+	t.Run("runs callbacks scheduled while the parser rings the bell", func(t *testing.T) {
+		t.Parallel()
+		ph := newWaitParserHandler(t.Context(), newMockBellHandler())
+
+		const n = 20000
+		// The trigger only asks for a bell; the parser rings it on its
+		// own goroutine, the way the shell's answer comes back.
+		bells := make(chan struct{}, n)
+		ph.useTrigger(func() { bells <- struct{}{} })
+		go debug.CapturePanicReport(func() {
+			for {
+				select {
+				case <-bells:
+					ph.Bell()
+				case <-t.Context().Done():
+					return
+				}
+			}
+		})
+
+		var called atomic.Int32
+		done := make(chan struct{})
+		go debug.CapturePanicReport(func() {
+			defer close(done)
+			for range n / 2 {
+				// A vi key schedules its edit and then the cursor fix.
+				for range 2 {
+					for !ph.scheduleBellCallback(func() { called.Add(1) }) {
+						if t.Context().Err() != nil {
+							return
+						}
+						time.Sleep(time.Millisecond)
+					}
+				}
+			}
+		})
+		require.Eventually(t, func() bool { return called.Load() == n }, 10*time.Second,
+			time.Millisecond, "a callback was left without a bell to run it")
+		<-done
+	})
+
+	t.Run("asks for a bell again after dropping unanswered callbacks", func(t *testing.T) {
+		t.Parallel()
+		ph := newWaitParserHandler(t.Context(), newMockBellHandler())
+		var triggers atomic.Int32
+		ph.useTrigger(func() { triggers.Add(1) })
+
+		require.True(t, ph.scheduleBellCallback(func() { t.Error("ran a dropped callback") }))
+		require.Eventually(t, func() bool { return ph.pendingCallbacks() == 0 }, 5*time.Second,
+			10*time.Millisecond, "the unanswered callback was not dropped")
+
+		var ran bool
+		require.True(t, ph.scheduleBellCallback(func() { ran = true }))
+		assert.Equal(t, int32(2), triggers.Load())
+		ph.Bell()
+		assert.True(t, ran)
 	})
 }
 

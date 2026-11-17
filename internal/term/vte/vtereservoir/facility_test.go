@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -35,6 +36,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/term/programstatus"
+	"unstable.build/rune/internal/term/vsh/vshtest"
 	"unstable.build/rune/internal/term/vte"
 	"unstable.build/rune/internal/term/vte/vteregistry"
 	"unstable.build/rune/internal/workspace/workspacetest"
@@ -921,3 +923,38 @@ func (r *recordingVTE) ClearPrimaryBuffer() bool               { return true }
 func (r *recordingVTE) ExitErr() error                         { return nil }
 func (r *recordingVTE) CursorAtScroll() term.Coordinates       { return term.Coordinates{} }
 func (r *recordingVTE) Close() error                           { r.closed.Store(true); return nil }
+
+func TestFacilityWarmsAndServesTheRuneShell(t *testing.T) {
+	t.Parallel()
+	fx := vshtest.New(t, vshtest.Options{})
+	cfg := vte.DefaultConfig()
+	cfg.CommandAndArgs = []string{"sh"}
+	cfg.WidthHint, cfg.HeightHint = 20, 10
+	f := New(newTestRegistry(t, fx.Exec, cfg), fx.Exec, cfg, 2)
+	t.Cleanup(func() { _ = f.Close() })
+	f.WaitForInitialFill()
+	assert.Equal(t, 2, f.Capacity(), "the warm-up started two shells")
+
+	v, err := f.Get()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = v.Close() })
+	v.Resize(20, 10)
+	w := term.NewStringWriter(20, 10)
+	waitScreen := func(prefix string) {
+		t.Helper()
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			require.NoError(c, w.Clear(term.Attributes{}))
+			v.Draw(w)
+			require.NoError(c, w.Flush())
+			assert.True(c, strings.HasPrefix(w.String(), prefix), "screen was:\n%s", w.String())
+		}, 5*time.Second, 5*time.Millisecond)
+	}
+	// Keys typed before the shell draws its prompt are echoed above it,
+	// as on any tty.
+	waitScreen("$ ")
+	for _, b := range []byte("echo hi\n") {
+		v.Handle(term.Event{Type: term.EventKey, Ch: rune(b), Raw: []byte{b}})
+	}
+	waitScreen("$ echo hi           \nhi                  \n$ ")
+	assert.NoError(t, v.ExitErr())
+}

@@ -20,18 +20,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"unstable.build/rune/internal/term/vsh"
+	"unstable.build/rune/internal/term/vsh/coreutils"
 )
 
 const (
@@ -41,22 +46,22 @@ const (
 	DocsScheme = "docs"
 )
 
-var (
-	errExecute = errors.New("cannot execute commands on in-memory scheme")
-)
+// vshBanner greets an interactive shell in a memory workspace.
+const vshBanner = "Rune's built-in in-memory shell — type 'help' for the available commands."
 
 // IsInMemoryScheme reports whether workspaces under scheme live only in
-// the IDE's memory, so no process can run against their files. It is
-// keyed on the scheme name because that is all an extension, running in
-// its own process, can see of its workspace.
+// the IDE's memory. Their commands run in-process in the Rune shell,
+// so no host toolchain or language server can serve them. It is keyed
+// on the scheme name because that is all an extension, running in its
+// own process, can see of its workspace.
 func IsInMemoryScheme(scheme string) bool {
 	return scheme == MemoryScheme || scheme == DocsScheme
 }
 
 // NewMemoryScheme returns a Scheme that manages resources in a temporary
 // in-memory file system. It does not enforce O_RDONLY, O_WRONLY, O_RDWR Open flags
-// as well as O_SYNC and O_APPEND. Seek operations on the underlying files
-// only support seeking to the beginning of the file.
+// and rejects O_SYNC. O_APPEND positions the file's offset at its end, which
+// every handle of the file shares.
 func NewMemoryScheme(
 	ctx context.Context, cfg config.Config, workspace workspaceapi.URI,
 ) (schemeapi.Scheme, error) {
@@ -99,6 +104,11 @@ type memoryScheme struct {
 	watchpoints    map[schemeapi.Event][]chan<- schemeapi.EventInfo
 	watchpointIDs  map[int64]chan<- schemeapi.EventInfo
 	nextWatchpoint *atomic.Int64
+
+	// vshMu guards vsh apart from mu: installing the shell's /bin
+	// calls back into the filesystem.
+	vshMu sync.Mutex
+	vsh   *vsh.Executor
 }
 
 func (m *memoryScheme) init(scheme string, workspace workspaceapi.URI) error {
@@ -158,6 +168,9 @@ func (m *memoryScheme) sendWatchEvents(
 }
 
 func (m *memoryScheme) NewFile(fd uintptr, filename string) workspaceapi.File {
+	if f := m.ptyFile(fd, filename); f != nil {
+		return f
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -171,6 +184,48 @@ func (m *memoryScheme) NewFile(fd uintptr, filename string) workspaceapi.File {
 	}
 
 	return InvalidFile(fd, filename, errors.New("invalid file descriptor"))
+}
+
+// ptyFile resolves a descriptor the shell handed out for a pty, or
+// nil. It never starts the shell: a pty needs one to exist first.
+func (m *memoryScheme) ptyFile(fd uintptr, filename string) workspaceapi.File {
+	m.vshMu.Lock()
+	e := m.vsh
+	m.vshMu.Unlock()
+	if e == nil {
+		return nil
+	}
+	return e.NewFile(fd, filename)
+}
+
+// executor returns the Rune shell serving this workspace, starting it
+// on first use so that workspaces never opening a terminal pay
+// nothing.
+func (m *memoryScheme) executor() (*vsh.Executor, error) {
+	m.vshMu.Lock()
+	defer m.vshMu.Unlock()
+	if m.vsh != nil {
+		return m.vsh, nil
+	}
+	m.mu.Lock()
+	closed := m.closed
+	m.mu.Unlock()
+	if closed {
+		return nil, os.ErrClosed
+	}
+	e, err := vsh.NewExecutor(vsh.Config{
+		Scheme:   m.scheme,
+		Root:     m.workspace.Path(),
+		FS:       m,
+		AllocFd:  func() uintptr { return uintptr(m.fd.Add(1)) },
+		Banner:   vshBanner,
+		Commands: coreutils.Commands(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	m.vsh = e
+	return e, nil
 }
 
 func getUserError() (*user.User, error) {
@@ -197,13 +252,16 @@ func (m *memoryScheme) OpenFile(path string, flag int, mode os.FileMode) (
 	if !ok && flag&os.O_CREATE == 0 {
 		return nil, os.ErrNotExist
 	}
+	if ok && f.mode.IsDir() {
+		return nil, &os.PathError{Op: "open", Path: path, Err: syscall.EISDIR}
+	}
 	if ok && flag&os.O_CREATE != 0 && flag&os.O_EXCL != 0 {
 		return nil, os.ErrExist
 	}
 	if ok && flag&os.O_TRUNC != 0 {
 		ok = false // force re-create
 	}
-	if flag&os.O_APPEND != 0 || flag&os.O_SYNC != 0 {
+	if flag&os.O_SYNC != 0 {
 		return nil, errors.New("unsupported Open flag")
 	}
 
@@ -233,6 +291,8 @@ func (m *memoryScheme) OpenFile(path string, flag int, mode os.FileMode) (
 			event: schemeapi.Create,
 			uri:   uri,
 		})
+	} else if flag&os.O_APPEND != 0 {
+		_, _ = f.Seek(0, io.SeekEnd)
 	} else {
 		_, _ = f.Seek(0, 0)
 	}
@@ -249,7 +309,11 @@ func (m *memoryScheme) Remove(path string) error {
 	m.mu.Lock()
 
 	uriStr := uri.String()
-	_, ok := m.files[uriStr]
+	f, ok := m.files[uriStr]
+	if (!ok || f.mode.IsDir()) && m.hasChildrenLocked(uriStr) {
+		m.mu.Unlock()
+		return &os.PathError{Op: "remove", Path: path, Err: syscall.ENOTEMPTY}
+	}
 	if !ok {
 		m.mu.Unlock()
 		return os.ErrNotExist
@@ -262,8 +326,21 @@ func (m *memoryScheme) Remove(path string) error {
 	m.sendWatchEvents(copied, watchFileInfo{
 		event: schemeapi.Remove,
 		uri:   uri,
+		isDir: f.mode.IsDir(),
 	})
 	return nil
+}
+
+// hasChildrenLocked reports whether any entry is stored beneath the
+// directory at uriStr. It must be called with m.mu held.
+func (m *memoryScheme) hasChildrenLocked(uriStr string) bool {
+	prefix := uriStr + "/"
+	for other := range m.files {
+		if strings.HasPrefix(other, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *memoryScheme) Rename(old, new string) error {
@@ -284,6 +361,12 @@ func (m *memoryScheme) Rename(old, new string) error {
 	if !ok {
 		m.mu.Unlock()
 		return os.ErrNotExist
+	}
+	if f.mode.IsDir() {
+		// Renaming a directory would have to move every entry stored
+		// beneath it; the scheme only renames files.
+		m.mu.Unlock()
+		return &os.PathError{Op: "rename", Path: old, Err: syscall.EISDIR}
 	}
 	delete(m.files, oldURIStr)
 	f.filename = filepath.Base(new)
@@ -335,15 +418,12 @@ func (m *memoryScheme) Lstat(path string) (os.FileInfo, error) {
 	// implicit directory: a directory exists iff at least one file URI
 	// is stored beneath it. We hold the lock while scanning to keep
 	// observation consistent with concurrent Create/Remove.
-	prefix := uriStr + "/"
-	for other := range m.files {
-		if strings.HasPrefix(other, prefix) {
-			m.mu.Unlock()
-			return memFileInfo{
-				filename: filepath.Base(uri.Path()),
-				isDir:    true,
-			}, nil
-		}
+	if m.hasChildrenLocked(uriStr) {
+		m.mu.Unlock()
+		return memFileInfo{
+			filename: filepath.Base(uri.Path()),
+			isDir:    true,
+		}, nil
 	}
 	m.mu.Unlock()
 	return nil, os.ErrNotExist
@@ -398,32 +478,65 @@ func (m *memoryScheme) URI(path string) (workspaceapi.URI, error) {
 func (m *memoryScheme) StartCommand(ctx context.Context, cmd workspaceapi.Cmd) (
 	workspaceapi.Pid, error,
 ) {
-	return 0, errExecute
+	e, err := m.executor()
+	if err != nil {
+		return 0, err
+	}
+	return e.StartCommand(ctx, cmd)
 }
 
 func (m *memoryScheme) Signal(pid workspaceapi.Pid, signal syscall.Signal) error {
-	return errExecute
+	m.vshMu.Lock()
+	e := m.vsh
+	m.vshMu.Unlock()
+	if e == nil {
+		return os.ErrProcessDone
+	}
+	return e.Signal(pid, signal)
 }
 
-// LookPath reports that the scheme cannot tell: it runs no files.
-func (m *memoryScheme) LookPath(context.Context, string, string) (string, error) {
-	return "", fmt.Errorf("%w: %w", errExecute, errors.ErrUnsupported)
+// LookPath resolves name among the Rune shell's programs.
+func (m *memoryScheme) LookPath(ctx context.Context, name, dir string) (string, error) {
+	e, err := m.executor()
+	if err != nil {
+		return "", err
+	}
+	return e.LookPath(ctx, name, dir)
 }
 
 func (m *memoryScheme) NewPty(ctx context.Context) (workspaceapi.Pty, error) {
-	return workspaceapi.Pty{}, errExecute
+	e, err := m.executor()
+	if err != nil {
+		return workspaceapi.Pty{}, err
+	}
+	return e.NewPty(ctx)
 }
 
-func (m *memoryScheme) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
-	return errExecute
+func (m *memoryScheme) SetPtySize(pty workspaceapi.Pty, size workspaceapi.PtySize) error {
+	m.vshMu.Lock()
+	e := m.vsh
+	m.vshMu.Unlock()
+	if e == nil {
+		return ErrInvalidMasterPtyFd
+	}
+	if err := e.SetPtySize(pty, size); err != nil {
+		if errors.Is(err, vsh.ErrPtyClosed) {
+			return ErrInvalidMasterPtyFd
+		}
+		return err
+	}
+	return nil
 }
 
-// ForegroundProcessGroup reports that the scheme cannot tell: it opens
-// no ptys.
 func (m *memoryScheme) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
-	return 0, fmt.Errorf("%w: %w", errExecute, errors.ErrUnsupported)
+	// The Rune shell has no job control, so its ptys have no foreground
+	// group to report.
+	return 0, fmt.Errorf("memory scheme: no job control: %w", errors.ErrUnsupported)
 }
 
+// Chroot returns a scheme rooted at path over the same files. Its
+// shell starts in and treats path as home; the /bin it installs is the
+// shared one.
 func (m *memoryScheme) Chroot(path string) (schemeapi.Scheme, error) {
 	uri, err := m.URI(path)
 	if err != nil {
@@ -535,11 +648,11 @@ func (m *memoryScheme) ReadDir(name string) (
 	// Walk every file URI and bucket immediate children. A grandchild
 	// like prefix + "a/b" contributes an immediate-child directory
 	// entry "a"; a direct child like prefix + "leaf" contributes a
-	// regular file entry. seen dedupes when multiple files live under
-	// the same immediate child directory.
+	// file or directory entry according to its mode. seen dedupes when
+	// multiple files live under the same immediate child directory.
 	seen := make(map[string]bool)
 	var ret []os.DirEntry
-	for uri := range m.files {
+	for uri, f := range m.files {
 		u, err := workspaceapi.ParseURI(uri)
 		if err != nil {
 			panic("could not parse internal uri")
@@ -553,6 +666,9 @@ func (m *memoryScheme) ReadDir(name string) (
 			continue
 		}
 		childName, _, isDir := strings.Cut(rest, "/")
+		if !isDir {
+			isDir = f.mode.IsDir()
+		}
 		if seen[childName] {
 			continue
 		}
@@ -570,11 +686,55 @@ func (m *memoryScheme) ReadDir(name string) (
 }
 
 func (m *memoryScheme) MkdirAll(path string, perm os.FileMode) error {
-	// no-op, but provide error if file exists
-	finfo, err := m.Stat(path)
-	if err == nil && !finfo.IsDir() {
-		return &os.PathError{Op: "mkdir", Path: path, Err: syscall.ENOTDIR}
+	uri, err := m.URI(path)
+	if err != nil {
+		return err
 	}
+	// "/" and the workspace root always exist (Lstat special-cases
+	// them), so entries are stored only for the components below "/".
+	var components []string
+	for p := uri.Path(); p != "/" && p != "."; p = filepath.Dir(p) {
+		components = append(components, p)
+	}
+
+	var created []watchFileInfo
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return os.ErrClosed
+	}
+	for _, p := range slices.Backward(components) {
+		if p == m.workspace.Path() {
+			continue
+		}
+		uriStr := m.scheme + "://" + p
+		if f, ok := m.files[uriStr]; ok {
+			if !f.mode.IsDir() {
+				m.mu.Unlock()
+				return &os.PathError{Op: "mkdir", Path: path, Err: syscall.ENOTDIR}
+			}
+			continue
+		}
+		dir := NewMemoryFile(p, uintptr(m.fd.Add(1)), perm|os.ModeDir, nil, m.mu).(*memFile)
+		dir.m = m
+		dir.modTime = time.Now()
+		m.files[uriStr] = dir
+		dirURI, err := workspaceapi.ParseURI(uriStr)
+		if err != nil {
+			panic("could not parse internal uri")
+		}
+		created = append(created, watchFileInfo{
+			event: schemeapi.Create,
+			uri:   dirURI,
+			isDir: true,
+		})
+	}
+	var copied []chan<- schemeapi.EventInfo
+	if len(created) > 0 {
+		copied = m.copyWatchpoints(schemeapi.Create)
+	}
+	m.mu.Unlock()
+	m.sendWatchEvents(copied, created...)
 	return nil
 }
 
@@ -620,6 +780,16 @@ func (m *memoryScheme) StopWatch(id int) error {
 }
 
 func (m *memoryScheme) Close() error {
+	m.vshMu.Lock()
+	e := m.vsh
+	m.vsh = nil
+	m.vshMu.Unlock()
+	if e != nil {
+		// Processes write through the filesystem as they wind down,
+		// so it must still be there.
+		_ = e.Close()
+	}
+
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -651,6 +821,7 @@ func (m *memoryScheme) Close() error {
 type watchFileInfo struct {
 	event schemeapi.Event
 	uri   workspaceapi.URI
+	isDir bool
 }
 
 func (w watchFileInfo) Event() schemeapi.Event {
@@ -665,4 +836,4 @@ func (w watchFileInfo) Sys() any {
 	return nil
 }
 
-func (w watchFileInfo) IsDir() (bool, error) { return false, nil }
+func (w watchFileInfo) IsDir() (bool, error) { return w.isDir, nil }

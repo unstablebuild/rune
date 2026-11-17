@@ -538,8 +538,60 @@ func TestServerLookPath(t *testing.T) {
 	memClient, memCleanup := setupClientServerIntegrationTest(t, mem)
 	defer memCleanup()
 	_, err = memClient.LookPath(ctx, "tool", "")
-	assert.ErrorIs(t, err, errors.ErrUnsupported,
-		"a scheme that cannot tell is not taken to run nothing")
+	assert.ErrorIs(t, err, os.ErrNotExist, "the host's PATH is not the memory workspace's")
+	got, err = memClient.LookPath(ctx, "tool", "")
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	assert.Empty(t, got)
+	got, err = memClient.LookPath(ctx, "ls", "")
+	require.NoError(t, err)
+	assert.Equal(t, "/bin/ls", got, "the Rune shell's programs resolve")
+}
+
+func TestServerRunsTheRuneShellOnAPty(t *testing.T) {
+	ctx := context.Background()
+	memURI, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	mem, err := workspace.NewMemoryScheme(ctx, config.NopConfig(), memURI)
+	require.NoError(t, err)
+	defer mem.Close()
+	client, cleanup := setupClientServerIntegrationTest(t, mem)
+	defer cleanup()
+
+	pty, err := client.NewPty(ctx)
+	require.NoError(t, err)
+	ch := make(chan error, 1)
+	pid, err := client.StartCommand(ctx, workspaceapi.Cmd{
+		Path: "sh", Stdin: pty.Slave, Stdout: pty.Slave, Stderr: pty.Slave,
+		Watcher: workspaceapi.ChanProcessWatcher(ch),
+	})
+	require.NoError(t, err)
+	require.NotZero(t, pid)
+	require.NoError(t, pty.Slave.Close())
+	require.NoError(t, client.SetPtySize(pty, workspaceapi.PtySize{Columns: 40, Rows: 10}))
+
+	_, err = pty.Master.Write([]byte("echo over rpc\rexit 4\r"))
+	require.NoError(t, err)
+	var out strings.Builder
+	buf := make([]byte, 4096)
+	for {
+		n, err := pty.Master.Read(buf)
+		out.Write(buf[:n])
+		if err != nil {
+			break
+		}
+	}
+	assert.Contains(t, out.String(), "\r\nover rpc\r\n", "the pty's output crosses the RPC boundary")
+	select {
+	case err := <-ch:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exit status 4")
+	case <-time.After(10 * time.Second):
+		t.Fatal("the shell did not exit")
+	}
+	require.NoError(t, pty.Master.Close())
+	// The terminal matches the message across the RPC boundary.
+	assert.ErrorContains(t, client.SetPtySize(pty, workspaceapi.PtySize{Columns: 1, Rows: 1}),
+		workspace.ErrInvalidMasterPtyFd.Error())
 }
 
 func TestServerChrootErrorPropagation(t *testing.T) {
