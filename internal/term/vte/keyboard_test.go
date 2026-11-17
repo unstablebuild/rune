@@ -116,8 +116,13 @@ func (h *modalHarness) press(t *testing.T, keys string) {
 	require.NoError(t, err)
 	for _, k := range combs {
 		ev := term.Event{Type: term.EventKey, Key: k.Key, Ch: k.Ch, Mod: k.Mod}
-		if k.Ch != 0 {
+		// the GUI gives a plain key its bytes
+		switch {
+		case k.Mod != 0:
+		case k.Ch != 0:
 			ev.Raw = []byte(string(k.Ch))
+		case k.Key == term.KeyEsc:
+			ev.Raw = []byte{0x1b}
 		}
 		h.Handle(ev)
 	}
@@ -156,6 +161,19 @@ func (h *modalHarness) errorSounds() int {
 		}
 	}
 	return n
+}
+
+// screen returns what the terminal draws, with the rows trimmed.
+func (h *modalHarness) screen(t *testing.T) []string {
+	t.Helper()
+	w := term.NewStringWriter(80, 24)
+	h.Draw(w)
+	require.NoError(t, w.Flush())
+	rows := strings.Split(w.String(), "\n")
+	for i, row := range rows {
+		rows[i] = strings.TrimRight(row, " ")
+	}
+	return rows
 }
 
 func keyEv(key term.Key, mod term.Modifier) term.Event {
@@ -413,6 +431,134 @@ func TestHandlerKeyboardProtocols(t *testing.T) {
 			_, handled := h.Handle(tc.ev)
 			assert.True(t, handled)
 			assert.Equal(t, tc.want, h.written())
+		})
+	}
+}
+
+func TestHandlerShiftEsc(t *testing.T) {
+	t.Parallel()
+	const (
+		command = "\x1b]133;C\x1b\\"
+		// a full-screen program draws two rows and leaves its cursor on
+		// the second
+		altScreen = "\x1b[?1049h\x1b[Hfirst row\r\nsecond row\x1b[2;3H"
+		altCursor = "\x1b[2;3H"
+	)
+	cases := []struct {
+		name       string
+		output     string
+		steps      []modalStep
+		wantViMode bool
+		wantCursor *term.Coordinates
+		wantScreen []string
+		wantErrors int
+		// wantYanked is what yy copies after the steps, empty to not yank.
+		wantYanked string
+	}{
+		{
+			name:       "enters modal mode",
+			steps:      []modalStep{{keys: "<s-esc>"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 8},
+		},
+		{
+			name:       "enters modal mode under kitty",
+			output:     "\x1b[>1u",
+			steps:      []modalStep{{keys: "<s-esc>"}},
+			wantViMode: true,
+		},
+		{
+			name:       "stays in modal mode",
+			steps:      []modalStep{{keys: "<s-esc>h<s-esc>"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 7},
+		},
+		{
+			name:       "does not arm esc for the command",
+			output:     command,
+			steps:      []modalStep{{keys: "<s-esc><esc>"}},
+			wantViMode: true,
+		},
+		{
+			name:       "esc arms after it",
+			output:     command,
+			steps:      []modalStep{{keys: "<s-esc>i<esc><esc>", want: "\x1b"}},
+			wantViMode: true,
+		},
+		{
+			name:   "esc stays with a full-screen program",
+			output: altScreen,
+			steps:  []modalStep{{keys: "<esc>", want: "\x1b"}},
+		},
+		{
+			name:       "enters modal mode over a full-screen program",
+			output:     altScreen,
+			steps:      []modalStep{{keys: "<s-esc>"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 2, Y: 1},
+			wantScreen: []string{"first row", "second row"},
+		},
+		{
+			name:   "no key reaches the full-screen program",
+			output: altScreen,
+			steps: []modalStep{
+				{keys: "<s-esc>kx<enter>$a1<esc>dd<up>"},
+			},
+			wantViMode: true, wantErrors: 5, wantScreen: []string{"first row", "second row"},
+		},
+		{
+			name:   "the screen does not follow the program",
+			output: altScreen,
+			steps: []modalStep{
+				{keys: "<s-esc>", output: "\x1b[Hdrawn later"},
+			},
+			wantViMode: true, wantScreen: []string{"first row", "second row"},
+		},
+		{
+			name:       "yanks from the screen",
+			output:     altScreen,
+			steps:      []modalStep{{keys: "<s-esc>k0"}},
+			wantViMode: true, wantYanked: "first row",
+		},
+		{
+			name:   "leaving shows the program again",
+			output: altScreen,
+			steps: []modalStep{
+				{keys: "<s-esc>", output: "\x1b[Hdrawn later"},
+				{keys: "i"},
+			},
+			wantScreen: []string{"drawn later", "second row"},
+		},
+		{
+			name:   "leaving writes nothing",
+			output: altScreen,
+			steps:  []modalStep{{keys: "<s-esc>kk<c-c>"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newModalHarness(t, DefaultConfig())
+			h.output(tc.output)
+			h.written()
+			for i, step := range tc.steps {
+				h.press(t, step.keys)
+				h.output(step.output)
+				h.drain()
+				assert.Equal(t, step.want, h.written(), "step %d", i)
+			}
+			assert.Equal(t, tc.wantViMode, h.viMode)
+			if tc.wantCursor != nil {
+				assert.Equal(t, *tc.wantCursor, h.vi.cursorAtScroll())
+			}
+			if tc.wantScreen != nil {
+				assert.Equal(t, tc.wantScreen, h.screen(t)[:len(tc.wantScreen)])
+			}
+			assert.Equal(t, tc.wantErrors, h.errorSounds())
+			if tc.wantYanked != "" {
+				h.press(t, "yy")
+				data, err := h.vi.config.Clipboard.Paste(h.vi.config.ClipboardRegister)
+				require.NoError(t, err)
+				assert.Equal(t, tc.wantYanked, strings.TrimRight(data.Text, " \x00\n"))
+				assert.Empty(t, h.written())
+			}
 		})
 	}
 }

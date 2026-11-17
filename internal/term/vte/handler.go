@@ -384,6 +384,9 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 				e.sendEsc()
 				return false, true
 			}
+			if isShiftEsc(ev) {
+				return false, true
+			}
 			exit, handled := e.vi.Handle(ev)
 			if exit {
 				e.exitViMode()
@@ -391,9 +394,10 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 			return false, handled
 		}
 
-		if isPlainEsc(ev) && !e.comp.IsAltBuffer() {
+		// a full-screen program keeps <esc> for its own
+		if isShiftEsc(ev) || isPlainEsc(ev) && !e.comp.IsAltBuffer() {
 			e.enterViMode(e.comp.CursorAtScroll())
-			e.escArmed = true
+			e.escArmed = isPlainEsc(ev)
 			return false, true
 		}
 	}
@@ -449,6 +453,10 @@ func (e *Handler) isPointerLeave(ev term.Event) bool {
 
 func isPlainEsc(ev term.Event) bool {
 	return ev.Type == term.EventKey && ev.Key == term.KeyEsc && ev.Mod == 0
+}
+
+func isShiftEsc(ev term.Event) bool {
+	return ev.Type == term.EventKey && ev.Key == term.KeyEsc && ev.Mod == term.ModShift
 }
 
 // keepsEscArmed reports whether ev leaves Handler.escArmed set: among
@@ -728,11 +736,19 @@ func (e *Handler) notify(level browserapi.NotificationLevel, msg string, args ..
 func (e *Handler) enterViMode(cursor term.Coordinates) {
 	e.viMode = true
 	e.comp.Unselect()
+	if e.comp.IsAltBuffer() {
+		// the program keeps drawing the screen, so modal mode works on a
+		// copy of it
+		snap, _ := e.comp.Snapshot()
+		e.vi.freeze(snap.Alternate.Cells, snap.Alternate.Cursor)
+		return
+	}
 	e.vi.enterViMode(cursor)
 }
 
 func (e *Handler) exitViMode() {
 	e.viMode = false
+	e.vi.thaw()
 	if !e.searchViewing() {
 		e.vi.deactivate()
 	}

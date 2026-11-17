@@ -43,7 +43,10 @@ motions, operators, and text objects on this page work everywhere:
 Press `<esc>` to enter a terminal's modal mode, whatever runs in it. Moving
 around, searching, selecting and copying work on what the terminal shows and
 never reach the program. Full-screen programs, such as vim itself, keep
-`<esc>` for their own.
+`<esc>` for their own: press `<shift-esc>` to enter modal mode over them. It
+shows a copy of their screen to move around, search and copy in, and nothing
+reaches the program until you leave with `i`. `rune --tui` cannot tell
+`<shift-esc>` from `<esc>`, so it is only available in the GUI.
 
 Editing the input, `<enter>` and the history keys need the shell to answer
 Rune first. When the program does not answer, or reports its status the way
