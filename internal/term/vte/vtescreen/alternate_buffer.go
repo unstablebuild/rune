@@ -65,6 +65,35 @@ type CursorState struct {
 	Charsets map[vteparser.CharsetIndex]vteparser.StandardCharset
 }
 
+// NewCursorState builds a cursor state from its parts. It is the
+// inverse of the CursorState accessors and exists so a cursor can be
+// restored from a serialized snapshot.
+func NewCursorState(
+	position term.Coordinates,
+	attr term.Attributes,
+	hidden bool,
+	charsets map[vteparser.CharsetIndex]vteparser.StandardCharset,
+) CursorState {
+	if charsets == nil {
+		charsets = make(map[vteparser.CharsetIndex]vteparser.StandardCharset)
+	}
+	return CursorState{
+		position: position,
+		attr:     attr,
+		hidden:   hidden,
+		Charsets: charsets,
+	}
+}
+
+// Position returns the cursor position.
+func (c CursorState) Position() term.Coordinates { return c.position }
+
+// Attributes returns the attributes new cells are written with.
+func (c CursorState) Attributes() term.Attributes { return c.attr }
+
+// Hidden reports whether the cursor is hidden.
+func (c CursorState) Hidden() bool { return c.hidden }
+
 // NewAltBuffer allocates storage for a new AltBuffer and initializes it.
 func NewAltBuffer() *AltBuffer {
 	ret := new(AltBuffer)
@@ -91,9 +120,9 @@ func (b *AltBuffer) Init() {
 	b.ctx = NewContext(context.Background())
 }
 
-// restore replaces this buffer's rendered cells and cursor with a saved
+// Restore replaces this buffer's rendered cells and cursor with a saved
 // snapshot while keeping the buffer usable for subsequent VTE writes.
-func (b *AltBuffer) restore(cells [][]term.Cell, cursor term.Coordinates, width, height int) {
+func (b *AltBuffer) Restore(cells [][]term.Cell, cursor term.Coordinates, width, height int) {
 	if width <= 0 {
 		width = max(1, maxColumns(cells))
 	}
@@ -392,6 +421,29 @@ func (b *AltBuffer) SetScrollableRegion(top int, bottom int, end bool) {
 // BottomScrollableRegion returns the bottom margin, set by SetVerticalScrollableRegions.
 func (b *AltBuffer) BottomScrollableRegion() int {
 	return b.bottomScrollableRegion
+}
+
+// SetScrollableRegionExact restores both margins verbatim. Unlike
+// SetScrollableRegion it does not clamp to the current height, so a
+// snapshot decoded before the buffer is resized keeps its margins.
+func (b *AltBuffer) SetScrollableRegionExact(top, bottom int) {
+	b.topScrollableRegion = top
+	b.bottomScrollableRegion = bottom
+}
+
+// SetSizeExact restores the dimensions a snapshot recorded, without
+// touching content. Restore infers a usable size when it is given
+// none; a replica must instead reproduce the size of the emulator it
+// replicates, including a terminal nobody has sized yet.
+func (b *AltBuffer) SetSizeExact(width, height int) {
+	b.width = width
+	b.height = height
+	b.scroll.Resize(width, height)
+}
+
+// SavedCursor returns the cursor state stored by SaveCursor.
+func (b *AltBuffer) SavedCursor() CursorState {
+	return b.savedCursor
 }
 
 // TopScrollableRegion returns the bottom margin, set by SetVerticalScrollableRegions.

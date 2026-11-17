@@ -21,6 +21,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -2133,6 +2134,11 @@ func TestHandlerExitStatus(t *testing.T) {
 					"the terminal reported its exit before the status arrived")
 				require.Empty(t, h.tm.exits(),
 					"the terminal asked to be dropped before the status arrived")
+				select {
+				case <-h.handler.Component().Exited():
+					t.Fatal("the status was final before it arrived")
+				default:
+				}
 			}
 			if tc.closeWaiting {
 				require.NoError(t, h.handler.Close())
@@ -2157,6 +2163,11 @@ func TestHandlerExitStatus(t *testing.T) {
 			assert.Equal(t, tc.wantExitErr, h.handler.ExitErr())
 			assert.Equal(t, []error{tc.wantExitErr}, h.tm.exits(),
 				"the terminal must ask to be dropped once, with its status final")
+			select {
+			case <-h.handler.Component().Exited():
+			case <-time.After(5 * time.Second):
+				t.Fatal("the status is final but Exited was never closed")
+			}
 			assert.True(t, h.pub.sawEventNone(),
 				"the terminal must wake the event loop once it exited")
 			if tc.watched {
@@ -2404,4 +2415,74 @@ func TestComponentClipboardAccess(t *testing.T) {
 
 	reply := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte("secret")) + "\x07"
 	assert.Equal(t, reply+reply, ptyOutput(pty), "a reset must keep the access")
+}
+
+// batchFile is a pty master that hands out output as a BatchReader: each
+// batch a test puts is what one ReadBatch returns, however large.
+type batchFile struct {
+	*pipeFile
+	batches chan []byte
+}
+
+func (f *batchFile) Fd() uintptr { return 0 }
+
+func (f *batchFile) ReadBatch() ([]byte, error) {
+	batch, ok := <-f.batches
+	if !ok {
+		return nil, io.EOF
+	}
+	return batch, nil
+}
+
+type batchTerminal struct {
+	*pipeTerminal
+	file *batchFile
+}
+
+func (p *batchTerminal) NewPty(context.Context) (workspaceapi.Pty, error) {
+	return workspaceapi.Pty{Master: p.file, Slave: pipeSlave{p.file.pipeFile}}, nil
+}
+
+func TestRunParsesEachBatchWhole(t *testing.T) {
+	t.Parallel()
+
+	file := &batchFile{pipeFile: newPipeFile(t), batches: make(chan []byte)}
+	pt := &batchTerminal{pipeTerminal: &pipeTerminal{pty: file.pipeFile}, file: file}
+	cfg := DefaultConfig()
+	cfg.WidthHint, cfg.HeightHint = 80, 24
+	comp, err := NewComponent(pt, pt, nopTabManager{}, cfg)
+	require.NoError(t, err)
+
+	var mu sync.Mutex
+	var fed []int
+	comp.TeeStream(func(batch []byte) {
+		mu.Lock()
+		fed = append(fed, len(batch))
+		mu.Unlock()
+	})
+	done := make(chan error, 1)
+	go debug.CapturePanicReport(func() {
+		done <- comp.Run(dropEventPublisher{make(chan struct{}, 1)})
+	})
+	t.Cleanup(func() { _ = comp.Close() })
+
+	// Far larger than any read buffer, so a reader that split batches
+	// would feed the parser more than once.
+	big := []byte(strings.Repeat("x", 256<<10) + "\r\n")
+	sizes := []int{len(big), 1, 5}
+	file.batches <- big
+	file.batches <- []byte("y")
+	file.batches <- []byte("z\x1b[0m")
+	close(file.batches)
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, io.EOF)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run loop did not end with the batches")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, sizes, fed, "each batch is one feed")
+	assert.True(t, comp.IsComplete())
 }

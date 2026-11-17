@@ -828,3 +828,25 @@ func filterSyncModeEvents(events []parserRunEvent) []parserRunEvent {
 	}
 	return filtered
 }
+
+func TestParserReset(t *testing.T) {
+	t.Parallel()
+
+	h := new(parserRunHandler)
+	p := NewParser(h)
+	tracker := NewContinuationTracker(DefaultContinuationBytes)
+	p.TrackContinuation(tracker)
+
+	p.AdvanceBytes([]byte("\x1b[1"))
+	assert.False(t, p.Grounded())
+	assert.Equal(t, []byte("\x1b[1"), tracker.Bytes())
+
+	p.Reset()
+	assert.True(t, p.Grounded())
+	assert.Empty(t, tracker.Bytes(), "the tracker forgets the abandoned sequence")
+
+	p.AdvanceBytes([]byte("m"))
+	assert.Equal(t, []parserRunEvent{inputEvent('m')}, normalizeParserRunEvents(h.events),
+		"the next byte is read at ground, not as the end of the abandoned sequence")
+	assert.False(t, tracker.Broken())
+}

@@ -17,6 +17,7 @@
 package vteregistry
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"slices"
@@ -44,6 +45,9 @@ type fgTerminal struct {
 	*workspacetest.PtyExecutor
 	fg   atomic.Int64
 	hold sync.RWMutex
+	// input is what was typed into its ptys.
+	mu    sync.Mutex
+	input bytes.Buffer
 }
 
 var errNoForeground = errors.New("no foreground")

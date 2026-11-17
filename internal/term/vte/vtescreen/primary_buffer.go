@@ -56,7 +56,7 @@ func (b *PrimaryBuffer) Init(minWidth int, maxHistory int) {
 // Restore replaces this primary buffer's rendered cells and cursor with a
 // saved snapshot while preserving primary-buffer configuration.
 func (b *PrimaryBuffer) Restore(cells [][]term.Cell, cursor term.Coordinates, width, height int) {
-	b.AltBuffer.restore(cells, cursor, max(b.minWidth, width), height)
+	b.AltBuffer.Restore(cells, cursor, max(b.minWidth, width), height)
 }
 
 // ScrollUpHistory scrolls the visible screen up by count lines by

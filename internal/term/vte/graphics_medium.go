@@ -22,6 +22,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -174,4 +175,72 @@ func isGraphicsTempFile(fs schemeapi.FileSystem, p, tempDir string) bool {
 		}
 	}
 	return false
+}
+
+// graphicsRelay carries what a canonical emulator read for each
+// file-backed transmission (t=f, t=t, t=s) to the replicas of its
+// stream.
+//
+// Reading the file is not repeatable: a temporary file or shared
+// memory object is deleted by its first reader, and a replica on
+// another machine could not reach it at all. So only the canonical
+// emulator reads, and a replica takes its outcome instead. Both parse
+// the same transmissions in the same order, so the outcomes are
+// matched to them by position alone.
+type graphicsRelay struct {
+	mu       sync.Mutex
+	sink     func(data []byte, ok bool)
+	maxBytes int
+	pending  []relayedMedium
+}
+
+type relayedMedium struct {
+	data []byte
+	ok   bool
+}
+
+func (r *graphicsRelay) tee(maxBytes int, sink func(data []byte, ok bool)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.maxBytes, r.sink = maxBytes, sink
+}
+
+// publish hands a canonical emulator's read to the sink and returns
+// the outcome the emulator must act on.
+func (r *graphicsRelay) publish(data []byte, err error) ([]byte, error) {
+	r.mu.Lock()
+	sink, maxBytes := r.sink, r.maxBytes
+	r.mu.Unlock()
+	if sink == nil {
+		return data, err
+	}
+	// A replica fails whatever it is not given, so a transmission the
+	// sink cannot carry is refused here too.
+	if err == nil && maxBytes > 0 && len(data) > maxBytes {
+		data, err = nil, errRefused
+	}
+	sink(data, err == nil)
+	return data, err
+}
+
+func (r *graphicsRelay) push(data []byte, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pending = append(r.pending, relayedMedium{data: data, ok: ok})
+}
+
+// take returns the outcome relayed for a replica's next transmission.
+func (r *graphicsRelay) take() ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.pending) == 0 {
+		return nil, errRefused
+	}
+	m := r.pending[0]
+	r.pending[0] = relayedMedium{}
+	r.pending = r.pending[1:]
+	if !m.ok {
+		return nil, errRefused
+	}
+	return m.data, nil
 }

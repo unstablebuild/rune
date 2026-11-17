@@ -11,6 +11,7 @@ package workspacetest
 
 import (
 	context "context"
+	io "io"
 	fs "io/fs"
 	reflect "reflect"
 	syscall "syscall"
@@ -634,6 +635,73 @@ func (m *MockPackageHost) HostConn() (grpc.ClientConnInterface, bool) {
 func (mr *MockPackageHostMockRecorder) HostConn() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HostConn", reflect.TypeOf((*MockPackageHost)(nil).HostConn))
+}
+
+// MockPeer is a mock of Peer interface.
+type MockPeer struct {
+	ctrl     *gomock.Controller
+	recorder *MockPeerMockRecorder
+}
+
+// MockPeerMockRecorder is the mock recorder for MockPeer.
+type MockPeerMockRecorder struct {
+	mock *MockPeer
+}
+
+// NewMockPeer creates a new mock instance.
+func NewMockPeer(ctrl *gomock.Controller) *MockPeer {
+	mock := &MockPeer{ctrl: ctrl}
+	mock.recorder = &MockPeerMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockPeer) EXPECT() *MockPeerMockRecorder {
+	return m.recorder
+}
+
+// Conn mocks base method.
+func (m *MockPeer) Conn() grpc.ClientConnInterface {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Conn")
+	ret0, _ := ret[0].(grpc.ClientConnInterface)
+	return ret0
+}
+
+// Conn indicates an expected call of Conn.
+func (mr *MockPeerMockRecorder) Conn() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Conn", reflect.TypeOf((*MockPeer)(nil).Conn))
+}
+
+// DialAttachment mocks base method.
+func (m *MockPeer) DialAttachment(arg0 context.Context) (io.ReadWriteCloser, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DialAttachment", arg0)
+	ret0, _ := ret[0].(io.ReadWriteCloser)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DialAttachment indicates an expected call of DialAttachment.
+func (mr *MockPeerMockRecorder) DialAttachment(arg0 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DialAttachment", reflect.TypeOf((*MockPeer)(nil).DialAttachment), arg0)
+}
+
+// Root mocks base method.
+func (m *MockPeer) Root(arg0 context.Context) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Root", arg0)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Root indicates an expected call of Root.
+func (mr *MockPeerMockRecorder) Root(arg0 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Root", reflect.TypeOf((*MockPeer)(nil).Root), arg0)
 }
 
 // MockLoader is a mock of Loader interface.

@@ -87,6 +87,12 @@ func (p *Scanner) Advance(ch byte) {
 	p.performStateChange(State(state), Action(action), ch)
 }
 
+// State reports the state machine state the scanner is currently in.
+// Ground means no escape sequence or UTF-8 codepoint is in progress.
+func (p *Scanner) State() State {
+	return p.state
+}
+
 // GroundRun reports how many leading bytes of buf the scanner would
 // print without leaving ground state. Bytes 0x20..0x7E take the Print
 // action directly, and a complete well-formed UTF-8 sequence takes the

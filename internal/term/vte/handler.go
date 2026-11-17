@@ -38,6 +38,7 @@ import (
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/handler/searchbox"
+	"unstable.build/rune/internal/term/vte/vtesnap"
 )
 
 var _ tui.Handler = (*Handler)(nil)
@@ -190,6 +191,24 @@ func (e *Handler) CursorAtScroll() term.Coordinates {
 	return e.comp.CursorAtScroll()
 }
 
+// MarkExited records that the terminal's process ended with exitErr,
+// which ExitErr then reports. A replica is told so by its stream, which
+// stays open afterwards: the final output still reflows when the
+// terminal is resized. The replica has no pty run loop ending on its
+// own to report the exit, so it is reported from here.
+func (e *Handler) MarkExited(exitErr error) {
+	e.comp.mu.Lock()
+	e.comp.exitErr = exitErr
+	e.comp.mu.Unlock()
+	e.comp.markExited()
+	e.exit.Store(true)
+	e.comp.MarkComplete()
+	e.comp.notifyTabExit()
+	if err := e.publisher.PublishEvent(term.Event{Type: term.EventNone}); err != nil {
+		e.log(log.ErrorLevel, "terminal exit publish: %s", err)
+	}
+}
+
 // Snapshot returns a durable snapshot of the terminal's rendered
 // buffers. It captures output/history, not the live pty process.
 func (e *Handler) Snapshot() (Snapshot, error) {
@@ -233,6 +252,21 @@ func (e *Handler) RestoreFromSnapshot(snapshot Snapshot) error {
 	}
 	if e.viEnabled {
 		e.vi.setCursorAtScroll(cursor)
+	}
+	return nil
+}
+
+// ApplySnapshot replaces the emulator's state with snap; see
+// Component.ApplySnapshot. The handler takes the snapshot's size too:
+// a replica whose window already has that size is never resized, and
+// its modal view would otherwise stay empty. A snapshot of an unsized
+// terminal leaves the handler's size as it was.
+func (e *Handler) ApplySnapshot(snap *vtesnap.Snapshot) error {
+	if err := e.comp.ApplySnapshot(snap); err != nil {
+		return err
+	}
+	if snap.Terminal.Width > 0 && snap.Terminal.Height > 0 {
+		e.Resize(snap.Terminal.Width, snap.Terminal.Height)
 	}
 	return nil
 }

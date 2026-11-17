@@ -144,6 +144,21 @@ type Config struct {
 	// serves, when known. A t=t graphics transmission is deleted after
 	// it is read only from there, /tmp or /dev/shm.
 	TempDir string
+
+	// Observer makes this emulator a passive replica of a byte stream
+	// that another emulator already interprets. Replies to terminal
+	// queries (device attributes, device status, mode reports, area
+	// size, clipboard reads) are suppressed so the program receives
+	// exactly one answer no matter how many replicas are watching.
+	//
+	// An observer also starts no process: the bytes it reads are
+	// produced by the terminal it replicates.
+	Observer bool
+
+	// URI names the terminal. An observer takes its identity from the
+	// terminal it replicates, which may live on another host, so it
+	// cannot be derived from the local pty stand-in it reads.
+	URI workspaceapi.URI
 }
 
 // ClipboardAccess is what a program running in the terminal may do

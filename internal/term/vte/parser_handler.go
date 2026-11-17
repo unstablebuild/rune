@@ -120,6 +120,14 @@ type parserHandler struct {
 	// shellMark is the last OSC 133 mark the shell sent, zero for none.
 	shellMark vteparser.ShellMark
 
+	// observer suppresses replies to terminal queries because another
+	// emulator is the canonical responder for this byte stream.
+	observer bool
+
+	// relay outlives ResetState, which must not drop the outcomes a
+	// replica has yet to take.
+	relay *graphicsRelay
+
 	// clusterBuf is reused scratch for the mergeContinuation probe.
 	clusterBuf []byte
 	// glyphBuf is reused scratch for the batched non-ASCII write.
@@ -216,6 +224,7 @@ func newParserHandler(
 		needsAttentionAttr, useTitleAsTabname, maxScrollLength, minWidth,
 		cellPixelSize, fs, tempDir)
 	ret.keyboard = new(keyboardState)
+	ret.relay = new(graphicsRelay)
 	return ret
 }
 
@@ -669,23 +678,19 @@ func (t *parserHandler) MoveDown(rows int) {
 
 // IdentifyTerminal identifies the terminal implementatino.
 func (t *parserHandler) IdentifyTerminal(secondary bool) {
-	var err error
 	if secondary {
-		_, err = fmt.Fprintf(t.ptyIn, "\x1b[>0;%d;1c", pkgVersion)
-	} else {
-		_, err = t.ptyIn.Write([]byte("\x1b[?6c"))
+		t.respond("identify terminal",
+			fmt.Sprintf("\x1b[>0;%d;1c", pkgVersion))
+		return
 	}
-	if err != nil {
-		t.log(log.ErrorLevel, "identify terminal: write to master: %v", err)
-	}
+	t.respond("identify terminal", "\x1b[?6c")
 }
 
 // Report device status.
 func (t *parserHandler) DeviceStatus(status int) {
-	var err error
 	switch status {
 	case 5:
-		_, err = t.ptyIn.Write([]byte("\x1b[0n"))
+		t.respond("device status", "\x1b[0n")
 	case 6:
 		t.sync.mu.Lock()
 		pos := t.sync.buf.CursorAtScreen()
@@ -693,13 +698,10 @@ func (t *parserHandler) DeviceStatus(status int) {
 			pos.Y -= min(pos.Y, t.sync.buf.TopScrollableRegion())
 		}
 		t.sync.mu.Unlock()
-		text := fmt.Sprintf("\x1b[%d;%dR", pos.Y+1, pos.X+1)
-		_, err = t.ptyIn.Write([]byte(text))
+		t.respond("device status",
+			fmt.Sprintf("\x1b[%d;%dR", pos.Y+1, pos.X+1))
 	default:
 		t.log(log.WarnLevel, "unknown device status query: %d", status)
-	}
-	if err != nil {
-		t.log(log.ErrorLevel, "device status: write to master: %v", err)
 	}
 }
 
@@ -1070,6 +1072,8 @@ func (t *parserHandler) ResetState() {
 	if t.modeSyncUpdate {
 		host.syncUpdateLocked(false)
 	}
+	observer := t.observer
+	relay := t.relay
 	*t = parserHandler{}
 	t.init(mu, ptyIn, host, tm, clipboard, bell, uri,
 		needsAttentionAttr, useTitleAsTabname, maxScrollLength, minWidth,
@@ -1080,6 +1084,8 @@ func (t *parserHandler) ResetState() {
 	t.historyScrolled = historyScrolled
 	t.pointer = pointer
 	t.showPointerShape()
+	t.observer = observer
+	t.relay = relay
 
 	// resize
 	t.sync.altBuf.Resize(width, height)
@@ -1495,11 +1501,7 @@ func (t *parserHandler) ClipboardLoad(register int, terminator string) {
 	}
 
 	encodedCmd := fmt.Sprintf("\x1b]52;%c;%s%s", rune(register), buf.String(), terminator)
-	if _, err := t.ptyIn.Write([]byte(encodedCmd)); err != nil {
-		t.log(log.WarnLevel, "write encoded clipboard data to pty "+
-			"for ClipboardLoad: %v", err)
-		return
-	}
+	t.respond("clipboard load", encodedCmd)
 }
 
 // termcapMs is the terminfo Ms capability, the sequence that sets the
@@ -1521,9 +1523,7 @@ func (t *parserHandler) RequestTermcap(names []string) {
 			fmt.Fprintf(&b, "\x1bP0+r%x\x1b\\", name)
 		}
 	}
-	if _, err := t.ptyIn.Write(b.Bytes()); err != nil {
-		t.log(log.WarnLevel, "write termcap reply to pty: %v", err)
-	}
+	t.respond("write termcap reply", b.String())
 }
 
 // termcap returns the value of the named terminfo capability, when the
@@ -1583,10 +1583,7 @@ func (t *parserHandler) TextAreaSizeChars() {
 	data := fmt.Sprintf("\x1b[8;%d;%dt", t.height, t.width)
 	t.sync.mu.Unlock()
 
-	if _, err := t.ptyIn.Write([]byte(data)); err != nil {
-		t.log(log.WarnLevel, "write text area size in chars: %v", err)
-		return
-	}
+	t.respond("text area size in chars", data)
 }
 
 // Set hyperlink.
@@ -1596,10 +1593,8 @@ func (t *parserHandler) SetHyperlink(link *vteparser.Hyperlink) {
 
 // ReportKeyboardMode reports current keyboard mode.
 func (t *parserHandler) ReportKeyboardMode() {
-	_, err := fmt.Fprintf(t.ptyIn, "\x1b[?%du", t.keyboard.kittyFlags(t.useAlt))
-	if err != nil {
-		t.log(log.WarnLevel, "report keyboard mode: %v", err)
-	}
+	t.respond("report keyboard mode",
+		fmt.Sprintf("\x1b[?%du", t.keyboard.kittyFlags(t.useAlt)))
 }
 
 // PushKeyboardMode pushes the keyboard mode into the keyboard mode stack.
@@ -1628,9 +1623,7 @@ func (t *parserHandler) SetModifyOtherKeys(mode vteparser.ModifyOtherKeysMode) {
 // ReportModifyOtherKeys report XTerm's [`ModifyOtherKeys`] state.
 func (t *parserHandler) ReportModifyOtherKeys() {
 	mode := t.keyboard.encoding().modifyOtherKeys
-	if _, err := fmt.Fprintf(t.ptyIn, "\x1b[>4;%dm", mode); err != nil {
-		t.log(log.WarnLevel, "report modifyOtherKeys: %v", err)
-	}
+	t.respond("report modifyOtherKeys", fmt.Sprintf("\x1b[>4;%dm", mode))
 }
 
 func (t *parserHandler) log(level log.Level, line string, params ...any) {
@@ -1651,9 +1644,21 @@ func (t *parserHandler) reportMode(template string, mode int, modeVar *bool) {
 		rep = 2
 	}
 
-	_, err := fmt.Fprintf(t.ptyIn, template, mode, rep)
-	if err != nil {
-		t.log(log.WarnLevel, "report mode with template %q: %v", template, err)
+	t.respond("report mode", fmt.Sprintf(template, mode, rep))
+}
+
+// respond answers a terminal query by writing back to the program.
+//
+// An observer handler mirrors a byte stream that another emulator is
+// already interpreting and answering. Letting it reply too would send
+// the program a duplicate answer, so observers stay silent and the
+// canonical emulator remains the single responder.
+func (t *parserHandler) respond(what, data string) {
+	if t.observer {
+		return
+	}
+	if _, err := t.ptyIn.Write([]byte(data)); err != nil {
+		t.log(log.WarnLevel, "%s: write to master: %v", what, err)
 	}
 }
 
@@ -2026,9 +2031,7 @@ func (t *parserHandler) GraphicsCommand(data []byte) {
 	// (spec §6.2), which holds because the parse stage is what writes
 	// it.
 	if ok {
-		if _, err := t.ptyIn.Write(resp); err != nil {
-			t.log(log.WarnLevel, "write graphics response: %v", err)
-		}
+		t.respond("graphics response", string(resp))
 	}
 }
 
@@ -2135,9 +2138,7 @@ func (t *parserHandler) TextAreaSizePixels() {
 	t.sync.mu.Lock()
 	data := fmt.Sprintf("\x1b[4;%d;%dt", t.height*cell.Height, t.width*cell.Width)
 	t.sync.mu.Unlock()
-	if _, err := t.ptyIn.Write([]byte(data)); err != nil {
-		t.log(log.WarnLevel, "write text area size in pixels: %v", err)
-	}
+	t.respond("text area size in pixels", data)
 }
 
 // CellSizePixels satisfies vteparser.Handler.
@@ -2148,9 +2149,7 @@ func (t *parserHandler) CellSizePixels() {
 		return
 	}
 	data := fmt.Sprintf("\x1b[6;%d;%dt", cell.Height, cell.Width)
-	if _, err := t.ptyIn.Write([]byte(data)); err != nil {
-		t.log(log.WarnLevel, "write cell size in pixels: %v", err)
-	}
+	t.respond("cell size in pixels", data)
 }
 
 // drawGraphics draws the active buffer's placements and placeholder
@@ -2217,11 +2216,22 @@ func (t *parserHandler) scanPlaceholders(w term.Writer, scrolledBy int) []vtegra
 	return runs
 }
 
-// readGraphicsMedium implements vtegraphics.ReadTransmission over the
-// workspace filesystem, so a file transmitted by a program running on a
-// remote workspace is read there (spec §4.4). It runs without t.sync.mu
-// held, so it must not touch the state that lock guards.
+// readGraphicsMedium implements vtegraphics.ReadTransmission. It runs
+// without t.sync.mu held, so it must not touch the state that lock
+// guards.
 func (t *parserHandler) readGraphicsMedium(
+	medium byte, name string, offset, size int64,
+) ([]byte, error) {
+	if t.observer {
+		return t.relay.take()
+	}
+	return t.relay.publish(t.readWorkspaceMedium(medium, name, offset, size))
+}
+
+// readWorkspaceMedium reads a transmission from the workspace
+// filesystem, so a file transmitted by a program running on a remote
+// workspace is read there (spec §4.4).
+func (t *parserHandler) readWorkspaceMedium(
 	medium byte, name string, offset, size int64,
 ) ([]byte, error) {
 	if t.fs == nil {
@@ -2261,9 +2271,7 @@ func (t *parserHandler) ProgramStatus(report programstatus.Report) {
 // ProgramStatusQuery satisfies vteparser.Handler. The reply is the
 // fixed query body: nothing a program reported is ever written back.
 func (t *parserHandler) ProgramStatusQuery(terminator string) {
-	if _, err := t.ptyIn.Write([]byte("\x1b]7501;?" + terminator)); err != nil {
-		t.log(log.WarnLevel, "write program status reply to pty: %v", err)
-	}
+	t.respond("write program status reply", "\x1b]7501;?"+terminator)
 }
 
 // ShellMark satisfies vteparser.Handler. A new prompt means the

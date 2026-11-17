@@ -39,7 +39,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
-	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vte/vtetest"
 	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacetest"
@@ -265,28 +264,6 @@ func TestHandlerPublishesEventOnPtyExit(t *testing.T) {
 			"pty child exits so the host event loop can route a "+
 			"Handle call and trigger tab auto-close without "+
 			"further user input")
-}
-
-type tabExiterRecorder struct {
-	nopTabManager
-	mu     sync.Mutex
-	exited []workspaceapi.URI
-}
-
-func (r *tabExiterRecorder) OnTabExit(uri workspaceapi.URI) bool {
-	r.mu.Lock()
-	r.exited = append(r.exited, uri)
-	r.mu.Unlock()
-	return true
-}
-
-func (r *tabExiterRecorder) SetTabStatus(workspaceapi.URI, programstatus.Report) error { return nil }
-func (r *tabExiterRecorder) EndTabStatus(workspaceapi.URI) error                       { return nil }
-
-func (r *tabExiterRecorder) ExitedURIs() []workspaceapi.URI {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]workspaceapi.URI(nil), r.exited...)
 }
 
 func TestHandlerCallsTabExiterOnPtyExit(t *testing.T) {
@@ -608,27 +585,6 @@ type chanEventPublisher struct {
 
 func (p chanEventPublisher) PublishEvent(term.Event) error {
 	p.ch <- struct{}{}
-	return nil
-}
-
-type nopNotifications struct {
-}
-
-func (nopNotifications) Notify(
-	level browserapi.NotificationLevel, msg string, args ...any,
-) (string, error) {
-	return "", nil
-}
-
-func (nopNotifications) NotifyOnce(
-	level browserapi.NotificationLevel, msg string, args ...any,
-) (string, error) {
-	return "", nil
-}
-
-func (n nopNotifications) UpdateNotificationProgress(
-	id, message string, progress, total int64,
-) error {
 	return nil
 }
 

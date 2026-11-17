@@ -25,6 +25,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/term/vte"
+	"unstable.build/rune/internal/term/vte/vtewire"
 )
 
 // canonical is a terminal and the state its attachments share.
@@ -40,6 +41,18 @@ type canonical struct {
 	createdAt      time.Time
 	// poke tells the watcher of a detached terminal that it printed.
 	poke chan struct{}
+	// hub fans the terminal's raw pty stream out to its wire members.
+	hub teeHub
+	// cell is the size of a cell in pixels in force when the registry
+	// has no display of its own: that of the wire member whose size
+	// the pty follows. The emulator reads it from its parse goroutine,
+	// which a resize holding mu waits on.
+	cell atomicCellSize
+	// pixels reports the cell size the emulator uses: the registry's
+	// display when it has one, else cell.
+	pixels func() (width, height int)
+	// wireCells is whether wire members decide the cell size.
+	wireCells bool
 
 	mu  sync.Mutex
 	h   *vte.Handler
@@ -117,13 +130,42 @@ func (c *canonical) nextResizeOwnerLocked() *attachment {
 	return ret
 }
 
-// followLocked gives the pty the size a was last given.
+// followLocked gives the pty the size a was last given. Whatever a has
+// not named stays in force.
+//
+// The emulator is resized while its feed is held still, so every wire
+// member sees the resize at the same point in the byte stream it
+// happened for this emulator, which is what makes the replicas reflow
+// identically.
 func (c *canonical) followLocked(a *attachment) {
-	if a.width <= 0 || a.height <= 0 || (a.width == c.width && a.height == c.height) {
+	if a.width <= 0 || a.height <= 0 {
+		return
+	}
+	cell := c.cell.load()
+	if a.cell != (cellSize{}) && c.wireCells {
+		cell = a.cell
+	}
+	if a.width == c.width && a.height == c.height && cell == c.cell.load() {
 		return
 	}
 	c.width, c.height = a.width, a.height
-	c.h.Resize(a.width, a.height)
+	c.h.Component().WithFeedHeld(func() {
+		// The cell changes between two feeds, as the grid does, so
+		// every replica places an image at the size this emulator did.
+		c.cell.store(cell)
+		c.h.Resize(a.width, a.height)
+		g := c.geometryLocked()
+		c.hub.broadcast(&g)
+	})
+}
+
+// geometryLocked reports the size in force for every view.
+func (c *canonical) geometryLocked() vtewire.Resize {
+	w, h := c.pixels()
+	return vtewire.Resize{
+		Width: c.width, Height: c.height,
+		CellPixelWidth: w, CellPixelHeight: h,
+	}
 }
 
 // liveness asks the host of the terminal's pty what it runs. Neither
@@ -272,5 +314,8 @@ func (c *canonical) destroy() error {
 	clear(c.attachments)
 	clear(c.previews)
 	c.resizeOwner = nil
+	c.hub.close(&vtewire.Dropped{
+		Code: vtewire.CodeNotFound, Message: "terminal deleted",
+	})
 	return c.h.Close()
 }

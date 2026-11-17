@@ -16,7 +16,10 @@
 
 // Package vteregistry keeps the terminals of a workspace apart from the
 // tabs that show them, so a terminal can be shown in several tabs at
-// once, or in none and keep running.
+// once, or in none and keep running. Served over vtewire, its terminals
+// are shown by replicas in another process too, on another machine:
+// a wire member is an attachment like a tab's, fed the terminal's byte
+// stream from a snapshot on.
 package vteregistry
 
 import (
@@ -31,6 +34,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/term/vte"
+	"unstable.build/rune/internal/term/vte/vtewire"
 )
 
 const defaultPollInterval = time.Second
@@ -117,6 +121,16 @@ func New(
 func (r *Registry) CreateVTE(
 	ctx context.Context, opts vte.CreateOptions,
 ) (vte.View, error) {
+	a, err := r.createVTE(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+func (r *Registry) createVTE(
+	ctx context.Context, opts vte.CreateOptions,
+) (*attachment, error) {
 	if r.isClosed() {
 		return nil, ErrClosed
 	}
@@ -146,11 +160,28 @@ func (r *Registry) CreateVTE(
 	if opts.Width > 0 && opts.Height > 0 {
 		cfg.WidthHint, cfg.HeightHint = opts.Width, opts.Height
 	}
+	// Without a display of its own, the registry's terminals take the
+	// cell size of the wire member whose size the pty follows.
+	if cfg.CellPixelSize == nil {
+		cfg.CellPixelSize = c.cell.pixels
+		c.wireCells = true
+	}
+	c.pixels = cfg.CellPixelSize
 	h, err := vte.NewHandler(publisher{c}, r.notifications,
 		r.terminal, r.executor, tabManager{c}, cfg)
 	if err != nil {
 		return nil, err
 	}
+	// The process may already be writing, but no wire member exists
+	// yet: each one starts from a snapshot taken after this, so output
+	// that predates the tees is in that snapshot rather than lost.
+	h.Component().TeeStream(func(batch []byte) {
+		c.hub.broadcast(&vtewire.Output{Data: batch})
+	})
+	h.Component().TeeGraphicsMedia(vtewire.MaxGraphicsMediumLen,
+		func(data []byte, ok bool) {
+			c.hub.broadcast(&vtewire.GraphicsMedium{OK: ok, Data: data})
+		})
 	c.mu.Lock()
 	c.h = h
 	c.uri = h.Component().URI()
@@ -178,6 +209,14 @@ func (r *Registry) CreateVTE(
 func (r *Registry) AttachVTE(
 	_ context.Context, id vte.ID,
 ) (vte.View, error) {
+	a, err := r.attachVTE(id)
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+func (r *Registry) attachVTE(id vte.ID) (*attachment, error) {
 	c, ok := r.lookup(id)
 	if !ok {
 		return nil, vte.ErrNotFound
@@ -203,6 +242,14 @@ func (r *Registry) AttachVTE(
 func (r *Registry) PreviewVTE(
 	_ context.Context, id vte.ID,
 ) (vte.View, error) {
+	a, err := r.previewVTE(id)
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+func (r *Registry) previewVTE(id vte.ID) (*attachment, error) {
 	c, ok := r.lookup(id)
 	if !ok {
 		return nil, vte.ErrNotFound

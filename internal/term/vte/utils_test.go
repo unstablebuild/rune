@@ -18,12 +18,57 @@ package vte
 
 import (
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/term/programstatus"
 )
+
+type nopTabManager struct {
+}
+
+func (nopTabManager) Tab(
+	uri workspaceapi.URI, icon rune, name string, h browserapi.Handler,
+) (browserapi.Handler, error) {
+	panic("not implemented")
+}
+
+func (nopTabManager) SetTabName(workspaceapi.URI, string, term.Attributes) error {
+	return nil
+}
+
+func (nopTabManager) OnTabExit(workspaceapi.URI) bool {
+	return false
+}
+
+func (nopTabManager) SetTabStatus(workspaceapi.URI, programstatus.Report) error { return nil }
+func (nopTabManager) EndTabStatus(workspaceapi.URI) error                       { return nil }
+
+type nopNotifications struct {
+}
+
+func (nopNotifications) Notify(
+	level browserapi.NotificationLevel, msg string, args ...any,
+) (string, error) {
+	return "", nil
+}
+
+func (nopNotifications) NotifyOnce(
+	level browserapi.NotificationLevel, msg string, args ...any,
+) (string, error) {
+	return "", nil
+}
+
+func (n nopNotifications) UpdateNotificationProgress(
+	id, message string, progress, total int64,
+) error {
+	return nil
+}
 
 func TestLastPromptLine(t *testing.T) {
 	t.Parallel()
@@ -232,4 +277,26 @@ $ aaaaaaaa`,
 			assert.Equal(t, test.expectedEnd, actualEnd, "end")
 		})
 	}
+}
+
+type tabExiterRecorder struct {
+	nopTabManager
+	mu     sync.Mutex
+	exited []workspaceapi.URI
+}
+
+func (r *tabExiterRecorder) OnTabExit(uri workspaceapi.URI) bool {
+	r.mu.Lock()
+	r.exited = append(r.exited, uri)
+	r.mu.Unlock()
+	return true
+}
+
+func (r *tabExiterRecorder) SetTabStatus(workspaceapi.URI, programstatus.Report) error { return nil }
+func (r *tabExiterRecorder) EndTabStatus(workspaceapi.URI) error                       { return nil }
+
+func (r *tabExiterRecorder) ExitedURIs() []workspaceapi.URI {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]workspaceapi.URI(nil), r.exited...)
 }

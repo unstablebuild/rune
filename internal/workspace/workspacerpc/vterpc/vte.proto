@@ -1,0 +1,96 @@
+// Copyright (C) 2017-2026 The Rune Authors
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or (at
+// your option) any later version.
+//
+// This program is distributed in the hope that it will be useful, but
+// WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+// General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+syntax = "proto3";
+option go_package = "/vterpc";
+
+package workspacevte;
+
+// VTE is the lifecycle of the terminals a workspace's host owns, as a
+// client on another machine reaches it. It is an implementation detail
+// beneath vte.Host and is absent from the public SDK.
+//
+// Only lifecycle lives here, because only lifecycle is request and
+// response. An attachment is a raw byte stream between a client's
+// emulator and a pty; it has a transport of its own (see vtewire).
+service VTE {
+	rpc List(ListRequest) returns (ListResponse) {};
+	rpc Liveness(LivenessRequest) returns (LivenessResponse) {};
+	rpc Delete(DeleteRequest) returns (DeleteResponse) {};
+	// Watch streams every change the host tells of the workspace's
+	// terminals until the client ends the call.
+	rpc Watch(WatchRequest) returns (stream Change) {};
+}
+
+message Info {
+	string id = 1;
+	string uri = 2;
+	string title = 3;
+	repeated string command_and_args = 4;
+	int32 width = 5;
+	int32 height = 6;
+	int32 attachments = 7;
+	bool complete = 8;
+	int64 created_at_unix_nano = 9;
+}
+
+// root scopes a request to one workspace: a host serves the terminals
+// of every workspace on its machine, and each only sees its own. Empty
+// means the host's own root.
+message ListRequest {
+	string root = 1;
+}
+
+message ListResponse {
+	repeated Info vtes = 1;
+}
+
+message LivenessRequest {
+	string id = 1;
+	string root = 2;
+}
+
+// Liveness is what a terminal runs, as vte.Liveness numbers it.
+enum Liveness {
+	UNKNOWN = 0;
+	IDLE = 1;
+	RUNNING = 2;
+}
+
+message LivenessResponse {
+	Liveness liveness = 1;
+}
+
+message DeleteRequest {
+	string id = 1;
+	string root = 2;
+}
+
+message DeleteResponse {}
+
+message WatchRequest {
+	string root = 1;
+}
+
+message Change {
+	string id = 1;
+	string uri = 2;
+	string title = 3;
+	int32 attachments = 4;
+	Liveness liveness = 5;
+	bool complete = 6;
+	bool deleted = 7;
+}

@@ -64,6 +64,21 @@ type PackageHost interface {
 	HostConn() (cc grpc.ClientConnInterface, ok bool)
 }
 
+// Peer is a Rune serving a workspace from another machine. It owns the
+// workspace's terminals, which outlive the connection to it.
+type Peer interface {
+	// Conn reaches the peer's services over the workspace connection,
+	// following its reconnects.
+	Conn() grpc.ClientConnInterface
+	// Root is the workspace's root as the peer names it. It fails until
+	// the peer resolved it.
+	Root(context.Context) (string, error)
+	// DialAttachment opens a byte stream to the peer apart from the
+	// workspace connection, so that a terminal's flood of output does
+	// not delay the workspace's calls.
+	DialAttachment(context.Context) (io.ReadWriteCloser, error)
+}
+
 // Loader abstracts the ability to load resource data into a working buffer
 // and provide a FlusherCloser to manage flushing data to storage.
 type Loader interface {

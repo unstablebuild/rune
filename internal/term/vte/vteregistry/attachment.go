@@ -23,6 +23,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/term/vte"
+	"unstable.build/rune/internal/term/vte/vtewire"
 )
 
 // attachment is one view of a canonical terminal. Close detaches it.
@@ -39,6 +40,10 @@ type attachment struct {
 	seq           uint64
 	focusedAt     uint64
 	width, height int
+	// cell is the size of a cell on the display of a wire member, which
+	// the pty takes with its size when the member owns it. An in-process
+	// view leaves it zero: its display is the registry's.
+	cell cellSize
 }
 
 var _ vte.View = (*attachment)(nil)
@@ -72,14 +77,28 @@ func (a *attachment) live() bool {
 // Resize satisfies tui.Component. The pty only follows the resize
 // owner's size.
 func (a *attachment) Resize(width, height int) {
+	a.resize(vtewire.Resize{Width: width, Height: height})
+}
+
+// resize records the size this view asks for, with the cell size of its
+// display when it names one, and gives it to the pty when this view
+// owns the pty's size. It reports the size in force, and false when
+// the terminal is gone.
+func (a *attachment) resize(req vtewire.Resize) (vtewire.Resize, bool) {
 	if !a.live() {
-		return
+		return vtewire.Resize{}, false
 	}
 	defer a.c.mu.Unlock()
-	a.width, a.height = width, height
+	if req.Width > 0 && req.Height > 0 {
+		a.width, a.height = req.Width, req.Height
+	}
+	if cell := cellSizeOf(req.CellPixelWidth, req.CellPixelHeight); cell != (cellSize{}) {
+		a.cell = cell
+	}
 	if a.c.resizeOwner == a {
 		a.c.followLocked(a)
 	}
+	return a.c.geometryLocked(), true
 }
 
 // offsetLocked is where the grid's top-left corner shows in this view,

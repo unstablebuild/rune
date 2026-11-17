@@ -34,6 +34,12 @@ type Parser struct {
 	state   parserState
 	scanner *vtescanner.Scanner
 	handler Handler
+	// scratch backs the single-byte Advance entry point so it can hand
+	// the continuation tracker a slice without allocating.
+	scratch [1]byte
+	// continuation, when set, retains the bytes needed to resume this
+	// parser's unfinished state in another emulator.
+	continuation *ContinuationTracker
 }
 
 // NewParser returns a new Parser instance.
@@ -54,9 +60,38 @@ func (p *Parser) Init(handler Handler) {
 	p.scanner = vtescanner.NewScanner(driver)
 }
 
+// TrackContinuation makes the parser retain replay-safe bytes for its
+// unfinished state, so a snapshot taken at a feed boundary can be
+// resumed byte-exactly elsewhere.
+func (p *Parser) TrackContinuation(t *ContinuationTracker) {
+	p.continuation = t
+}
+
+// Reset returns the parser to ground with no unfinished state, as a
+// fresh parser is, keeping its handler and continuation tracker. It is
+// what lets an emulator take a snapshot of another's state partway
+// through its own stream and continue from the snapshot's position.
+func (p *Parser) Reset() {
+	p.Init(p.handler)
+	if p.continuation != nil {
+		p.continuation.Reset()
+	}
+}
+
+// Grounded reports whether the parser holds no unfinished state: no
+// escape sequence and no partial UTF-8 codepoint. It is the state in
+// which a continuation is empty.
+func (p *Parser) Grounded() bool {
+	return p.scanner.State() == vtescanner.Ground
+}
+
 // Advance processes a new byte from the PTY.
 func (p *Parser) Advance(ch byte) {
 	p.scanner.Advance(ch)
+	if p.continuation != nil {
+		p.scratch[0] = ch
+		p.continuation.track(p.scanner.State(), p.scratch[:])
+	}
 }
 
 // AdvanceBytes processes a batch of bytes from the PTY. Runs of
@@ -64,6 +99,7 @@ func (p *Parser) Advance(ch byte) {
 // delivered to the handler in one InputRun call instead of per-byte
 // dispatch, which dominates bulk output streams.
 func (p *Parser) AdvanceBytes(buf []byte) {
+	batch := buf
 	for len(buf) > 0 {
 		if n := p.scanner.GroundRun(buf); n > 0 {
 			p.handler.InputRun(buf[:n])
@@ -73,5 +109,8 @@ func (p *Parser) AdvanceBytes(buf []byte) {
 		}
 		p.scanner.Advance(buf[0])
 		buf = buf[1:]
+	}
+	if p.continuation != nil {
+		p.continuation.track(p.scanner.State(), batch)
 	}
 }
