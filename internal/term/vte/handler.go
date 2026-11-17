@@ -73,8 +73,12 @@ type Handler struct {
 
 	modalEnabled bool
 	viMode       bool
-	mouse        *mouse.Mouse
-	mouseDriver  *mouseDriver
+	// escArmed is set from the <esc> that entered modal mode until a key
+	// or click other than <esc>: while it is, <esc> goes to a running
+	// command.
+	escArmed    bool
+	mouse       *mouse.Mouse
+	mouseDriver *mouseDriver
 
 	// viEnabled tracks whether the vi handler was initialized: both modal
 	// mode and the scrollback search render through it.
@@ -358,7 +362,11 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 	if ev.Type == term.EventMouse {
 		e.setPointerShape(ev)
 	}
+	if !keepsEscArmed(ev) {
+		e.escArmed = false
+	}
 	if e.handleSearch(ev) {
+		e.escArmed = false
 		return false, true
 	}
 	if !e.viMode && e.searchViewing() && ev.Type == term.EventMouse {
@@ -370,6 +378,12 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 	}
 	if e.modalEnabled {
 		if e.viMode {
+			if e.escArmed && isPlainEsc(ev) && e.vi.escReachesCommand() {
+				// a lone <esc> is what the user means for the program:
+				// interrupt it, close its dialog
+				e.sendEsc()
+				return false, true
+			}
 			exit, handled := e.vi.Handle(ev)
 			if exit {
 				e.exitViMode()
@@ -377,8 +391,9 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 			return false, handled
 		}
 
-		if ev.Key == term.KeyEsc && ev.Mod == 0 && !e.comp.IsAltBuffer() {
+		if isPlainEsc(ev) && !e.comp.IsAltBuffer() {
 			e.enterViMode(e.comp.CursorAtScroll())
+			e.escArmed = true
 			return false, true
 		}
 	}
@@ -432,6 +447,38 @@ func (e *Handler) isPointerLeave(ev term.Event) bool {
 		(ev.MouseX < 0 || ev.MouseY < 0 || ev.MouseX >= e.width || ev.MouseY >= e.height)
 }
 
+func isPlainEsc(ev term.Event) bool {
+	return ev.Type == term.EventKey && ev.Key == term.KeyEsc && ev.Mod == 0
+}
+
+// keepsEscArmed reports whether ev leaves Handler.escArmed set: among
+// what the user does, only <esc> and moving the pointer do.
+func keepsEscArmed(ev term.Event) bool {
+	switch ev.Type {
+	case term.EventKey:
+		return isPlainEsc(ev)
+	case term.EventMouse:
+		return ev.Key == 0
+	case term.EventInterrupt, term.EventNone, term.EventResize, term.EventError:
+		return true
+	}
+	return false
+}
+
+// sendEsc writes a plain <esc> to the program, in the encoding it asked
+// for.
+func (e *Handler) sendEsc() {
+	esc := term.Event{Type: term.EventKey, Key: term.KeyEsc, Raw: []byte{0x1b}}
+	handled, raw := e.handleInput(esc, e.comp.keyboard.encoding())
+	if handled || len(raw) == 0 {
+		return
+	}
+	if err := e.comp.WriteToPty(raw); err != nil {
+		e.log(log.ErrorLevel, "write to pty: %s", err)
+		e.notify(browserapi.LevelError, "write to pty: %v", err)
+	}
+}
+
 // copyPassesThrough reports whether ev is cmd+c with nothing selected to
 // copy, which then goes to a program that enabled the kitty keyboard
 // protocol so that it can copy a selection of its own, such as the page
@@ -463,6 +510,7 @@ func Whitelisted(k term.KeyComb) bool {
 
 // OnFocusChange allows clients to report whether this vte.Handler is on focus or not.
 func (e *Handler) OnFocusChange(inFocus bool) {
+	e.escArmed = false
 	err := e.comp.OnFocusChange(inFocus)
 	if err != nil {
 		e.notify(browserapi.LevelError, "failed to report focus changed: %v", err)
@@ -701,8 +749,20 @@ func (e *Handler) modalRefused(probed bool) {
 			"edit its input or move its cursor."
 	}
 	e.notify(browserapi.LevelWarn, "%s You can still move around, search and copy, "+
-		"or press i to type again.", cause)
+		"or press i to type again.%s", cause, e.modalRefusedEscHint())
 }
+
+// modalRefusedEscHint tells the user who pressed <esc> for the program,
+// as to interrupt it, how to send it one, when there is a way: a
+// command must be running for <esc> to reach it.
+func (e *Handler) modalRefusedEscHint() string {
+	if _, running, _ := e.comp.ShellCommand(); !running {
+		return ""
+	}
+	return " " + modalRefusedEscHint
+}
+
+const modalRefusedEscHint = "To send <esc> to the program instead, press i, then <esc> twice."
 
 // searchViewing reports whether the scrollback search results are on
 // screen instead of the live terminal view.

@@ -417,9 +417,11 @@ func TestHandlerKeyboardProtocols(t *testing.T) {
 	}
 }
 
-// modalStep presses keys, then the program prints output, then, with
-// timeout, the probe times out; want is what reached the program.
+// modalStep handles events, presses keys, then the program prints
+// output, then, with timeout, the probe times out; want is what reached
+// the program.
 type modalStep struct {
+	events  []term.Event
 	keys    string
 	output  string
 	timeout bool
@@ -436,7 +438,9 @@ func TestHandlerModalEsc(t *testing.T) {
 		del     = "\x1b[3~"
 		command = "\x1b]133;C\x1b\\"
 		working = "\x1b]7501;state=working\x1b\\"
+		prompt  = "\x1b]133;A\x1b\\"
 	)
+	hover := term.Event{Type: term.EventMouse, MouseX: 3, MouseY: 0}
 	cases := []struct {
 		name       string
 		output     string
@@ -446,6 +450,8 @@ func TestHandlerModalEsc(t *testing.T) {
 		wantCursor *term.Coordinates
 		wantErrors int
 		wantNotes  int
+		// wantHint is whether the notes tell how to send <esc>.
+		wantHint bool
 	}{
 		{
 			name:       "esc enters at once",
@@ -484,7 +490,16 @@ func TestHandlerModalEsc(t *testing.T) {
 			name:       "a program that reported a status is not rung",
 			output:     command + working,
 			steps:      []modalStep{{keys: "<esc>x"}, {keys: "x"}},
-			wantViMode: true, wantErrors: 2, wantNotes: 1,
+			wantViMode: true, wantErrors: 2, wantNotes: 1, wantHint: true,
+		},
+		{
+			name:   "a command that does not answer gets the hint",
+			output: command,
+			steps: []modalStep{
+				{keys: "<esc>x", want: probe},
+				{timeout: true},
+			},
+			wantViMode: true, wantErrors: 1, wantNotes: 1, wantHint: true,
 		},
 		{
 			name:       "a program that reported no status is rung",
@@ -514,6 +529,65 @@ func TestHandlerModalEsc(t *testing.T) {
 				{output: answer, want: "\r"},
 			},
 		},
+		{
+			name:       "esc again sends esc to a running command",
+			output:     command,
+			steps:      []modalStep{{keys: "<esc><esc>", want: "\x1b"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 8},
+		},
+		{
+			name:       "esc again sends esc in the command's encoding",
+			output:     "\x1b[>1u" + command,
+			steps:      []modalStep{{keys: "<esc><esc>", want: "\x1b[27u"}},
+			wantViMode: true,
+		},
+		{
+			name:       "every esc after the first is sent",
+			output:     command,
+			steps:      []modalStep{{keys: "<esc><esc><esc>", want: "\x1b\x1b"}},
+			wantViMode: true,
+		},
+		{
+			name:       "a key between keeps esc in modal mode",
+			output:     command,
+			steps:      []modalStep{{keys: "<esc>j<esc>"}},
+			wantViMode: true,
+		},
+		{
+			name:   "moving the pointer between sends esc",
+			output: command,
+			steps: []modalStep{
+				{keys: "<esc>"},
+				{events: []term.Event{hover}, keys: "<esc>", want: "\x1b"},
+			},
+			wantViMode: true,
+		},
+		{
+			name:       "esc again at the prompt stays in modal mode",
+			output:     command + prompt,
+			steps:      []modalStep{{keys: "<esc><esc>"}},
+			wantViMode: true,
+		},
+		{
+			name:       "esc again without marks stays in modal mode",
+			steps:      []modalStep{{keys: "<esc><esc>"}},
+			wantViMode: true,
+		},
+		{
+			name:   "a probe answered in the command keeps esc in modal mode",
+			output: command,
+			steps: []modalStep{
+				{keys: "<esc>x", want: probe},
+				{output: answer, want: strings.Repeat(right, 6) + del + probe},
+				{output: "\a"},
+				{keys: "i", want: probe},
+				{output: answer, want: strings.Repeat(right, 6)},
+				{keys: "<esc><esc>"},
+				{output: command},
+				{keys: "<esc>", want: "\x1b"},
+			},
+			wantViMode: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -522,6 +596,9 @@ func TestHandlerModalEsc(t *testing.T) {
 			h.output(tc.output)
 			h.written()
 			for i, step := range tc.steps {
+				for _, ev := range step.events {
+					h.Handle(ev)
+				}
 				h.press(t, step.keys)
 				h.output(step.output)
 				h.drain()
@@ -535,7 +612,11 @@ func TestHandlerModalEsc(t *testing.T) {
 				assert.Equal(t, *tc.wantCursor, h.vi.cursorAtScroll())
 			}
 			assert.Equal(t, tc.wantErrors, h.errorSounds())
-			assert.Len(t, h.notes.Messages(), tc.wantNotes)
+			notes := h.notes.Messages()
+			assert.Len(t, notes, tc.wantNotes)
+			for _, note := range notes {
+				assert.Equal(t, tc.wantHint, strings.Contains(note, modalRefusedEscHint), note)
+			}
 		})
 	}
 }

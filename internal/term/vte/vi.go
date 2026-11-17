@@ -80,6 +80,9 @@ type viHandler struct {
 	// refused is told, on the event loop, that the session turned
 	// read-only; probed is whether the program was rung first.
 	refused func(probed bool)
+	// syncedCommand is the Component.ShellCommand seq of the last command
+	// a probe succeeded in, zero for none.
+	syncedCommand uint64
 
 	// keeep a copy of vi, which reads the same contents but edits
 	// nothing, so it can be accessed synchronously and provide
@@ -762,6 +765,9 @@ func (v *viHandler) probed(err error) {
 		return
 	}
 	v.probe = viSynced
+	if seq, running, _ := v.comp.shellCommand(); running {
+		v.syncedCommand = seq
+	}
 	// the bell left the shell's cursor at the start of its input: keep
 	// the vi cursor off the prompt before it, as entering always did
 	v.moveViToBounds()
@@ -790,6 +796,17 @@ func (v *viHandler) cancelCommand() {
 	v.copy.vi.SetNormalMode()
 	v.copy.mu.Unlock()
 	v.viSetCursorAtScroll(v.sync.vi.CursorAtScroll())
+}
+
+// escReachesCommand reports whether a lone <esc> may go to the command
+// running at the shell's prompt: no probe succeeded in it, which proves
+// that a line editor reads the keys, where a lone <esc> is a Meta
+// prefix.
+func (v *viHandler) escReachesCommand() bool {
+	v.sync.mu.Lock()
+	defer v.sync.mu.Unlock()
+	seq, running, _ := v.comp.shellCommand()
+	return running && seq != v.syncedCommand
 }
 
 func (v *viHandler) enterViMode(pos term.Coordinates) {
