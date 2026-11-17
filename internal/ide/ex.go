@@ -63,6 +63,7 @@ import (
 	"unstable.build/rune/internal/debug"
 	thandler "unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/handler/command"
+	"unstable.build/rune/internal/handler/locationsearch"
 	hmarkdown "unstable.build/rune/internal/handler/markdown"
 	"unstable.build/rune/internal/ide/console/ideconsole"
 	"unstable.build/rune/internal/ide/console/ideconsole/workspaceshell"
@@ -1444,6 +1445,72 @@ func (e *ex) editFilesReadOnly(readOnly bool, args ...string) error {
 	}
 
 	return nil
+}
+
+// editFileOnCursor implements gf: it opens the file whose path is under
+// the cursor, honoring a :line[:column] suffix. When there is a visual
+// selection its text is used verbatim.
+func (e *ex) editFileOnCursor(_ context.Context, _ ...string) error {
+	current, h, ok := e.handlerInFocus()
+	if !ok {
+		return errors.New("no file name under cursor")
+	}
+	token := ""
+	if sel, sok := h.Selection(); sok {
+		token = strings.TrimSpace(sel)
+	}
+	if token == "" {
+		token = text.PathAtCursor(h.CellView(), h.CursorAtScroll())
+	}
+	p, coords, _, ok := locationsearch.ParseLocationLine(token)
+	if !ok {
+		return errors.New("no file name under cursor")
+	}
+	uri, isDir, ok := e.resolvePathOnCursor(current, p)
+	if !ok {
+		return fmt.Errorf("can't find file %q", token)
+	}
+	if isDir {
+		return e.openDirectory(uri)
+	}
+	tab, err := e.editFileURI(uri, e.invokeWindow(), false)
+	if err != nil {
+		return err
+	}
+	if coords != (term.Coordinates{}) {
+		if th, ok := tab.Handler().(text.Handler); ok {
+			th.SetCursorAtScroll(coords)
+		}
+	}
+	return nil
+}
+
+// resolvePathOnCursor stats path as given — absolute or ~ — then
+// relative to the current file's directory, then relative to the
+// workspace root, in vim's gf order, and returns the first candidate
+// that exists. Stat and URI go through the workspace's file system so
+// remote workspaces resolve on their own host.
+func (e *ex) resolvePathOnCursor(
+	current workspaceapi.URI, p string,
+) (uri workspaceapi.URI, isDir, ok bool) {
+	var candidates []string
+	if path.IsAbs(p) || strings.HasPrefix(p, "~") {
+		candidates = []string{p}
+	} else if dir := path.Dir(current.Path()); dir != "." && dir != "" {
+		candidates = []string{path.Join(dir, p), p}
+	} else {
+		candidates = []string{p}
+	}
+	for _, c := range candidates {
+		fi, err := e.workspace.Stat(c)
+		if err != nil {
+			continue
+		}
+		if uri, err = e.workspace.URI(c); err == nil {
+			return uri, fi.IsDir(), true
+		}
+	}
+	return workspaceapi.URI{}, false, false
 }
 
 var _ browser.ResourceOpener = (*ex)(nil)

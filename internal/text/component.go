@@ -25,6 +25,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1121,6 +1122,20 @@ func (c *Component) CommandAliases() map[string]CommandAlias {
 }
 
 func wordAtCursor(view cell.View, pos term.Coordinates) string {
+	return tokenAtCursor(view, pos, isWordRune)
+}
+
+// PathAtCursor returns the path-like token under pos in view, the way
+// vim's gf reads a file name: word runes plus the punctuation paths
+// carry (see isPathRune). Runes that only act as prose punctuation
+// where a path cannot end are trimmed off the tail.
+func PathAtCursor(view cell.View, pos term.Coordinates) string {
+	return strings.TrimRight(tokenAtCursor(view, pos, isPathRune), ":.,")
+}
+
+func tokenAtCursor(
+	view cell.View, pos term.Coordinates, include func(rune) bool,
+) string {
 	if view == nil {
 		return ""
 	}
@@ -1132,15 +1147,15 @@ func wordAtCursor(view cell.View, pos term.Coordinates) string {
 	if pos.X < 0 || pos.X >= len(row) {
 		return ""
 	}
-	if !isWordRune(row[pos.X].Ch) {
+	if !include(row[pos.X].Ch) {
 		return ""
 	}
 	start := pos.X
-	for start > 0 && isWordRune(row[start-1].Ch) {
+	for start > 0 && include(row[start-1].Ch) {
 		start--
 	}
 	end := pos.X
-	for end < len(row) && isWordRune(row[end].Ch) {
+	for end < len(row) && include(row[end].Ch) {
 		end++
 	}
 	var b strings.Builder
@@ -1153,6 +1168,22 @@ func wordAtCursor(view cell.View, pos term.Coordinates) string {
 
 func isWordRune(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+}
+
+// isPathRune reports whether r may appear inside a file path, roughly
+// vim's isfname: word runes plus / . - ~ + @ = , : — and \ on Windows,
+// where it separates directories rather than escaping.
+func isPathRune(r rune) bool {
+	if isWordRune(r) {
+		return true
+	}
+	switch r {
+	case '/', '.', '-', '~', '+', '@', '=', ',', ':':
+		return true
+	case '\\':
+		return runtime.GOOS == "windows"
+	}
+	return false
 }
 
 // DispatchCommand dispatches a EventTypeCommand with cmd to subscribers

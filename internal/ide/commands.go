@@ -514,6 +514,17 @@ var (
 				return e.completeFileURI(ctx, cmd.Args)
 			},
 		},
+		"editfileoncursor": {
+			man: textapi.CommandManual{
+				Summary: "Open the file whose path is under the cursor, like " +
+					"vim's gf. An optional :line[:column] suffix positions " +
+					"the cursor in the opened file. Relative paths resolve " +
+					"against the current file's directory first, then the " +
+					"workspace root.",
+				Synopsis: "",
+			},
+			handler: (*ex).editFileOnCursor,
+		},
 		"view": {
 			man: textapi.CommandManual{
 				Summary:  "Like `edit` but opens the file in read-only mode.",

@@ -1973,7 +1973,7 @@ func mustLegacyModelessConfigFromGit(t *testing.T) map[string]any {
 				"<m-\\\\>":              "searchtext",
 				"<m-enter>":             "terminalneworsplit",
 				"<s-m-enter>":           "!",
-				"gf":                    "editfileoncursor",
+				"<c-x>f":                "editfileoncursor",
 				"<m-1>":                 "workspacefocus 1",
 				"<m-2>":                 "workspacefocus 2",
 				"<m-3>":                 "workspacefocus 3",

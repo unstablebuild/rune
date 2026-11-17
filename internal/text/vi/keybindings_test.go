@@ -126,3 +126,13 @@ func TestKeyBindingsLetterMarks(t *testing.T) {
 		}, cmds)
 	}
 }
+
+func TestKeyBindingsGoFile(t *testing.T) {
+	seq := handler.Sequence{
+		First: term.KeyComb{Ch: 'g'},
+		Last:  term.KeyComb{Ch: 'f'},
+	}
+	cmds, ok := KeyBindings()[seq]
+	require.True(t, ok, "gf should be bound")
+	assert.Equal(t, [][]string{{"editfileoncursor"}}, cmds)
+}
