@@ -694,6 +694,9 @@ func (nopTerminal) NewPty(context.Context) (workspaceapi.Pty, error) {
 	return workspaceapi.Pty{}, nil
 }
 func (nopTerminal) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error { return nil }
+func (nopTerminal) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 0, errors.ErrUnsupported
+}
 
 var _ VTE = (*testVte)(nil)
 

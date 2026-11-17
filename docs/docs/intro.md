@@ -42,8 +42,8 @@ your platform below for the specifics.
   newer versions are fine. musl-based distributions such as Alpine are not
   supported.
 - **Graphics:** a graphical environment (X11, or Wayland via XWayland) with
-  an OpenGL-capable driver. Only Rune's GUI needs one: `rune --headless`
-  loads no graphical library and runs on a machine that has none.
+  an OpenGL-capable driver, except if running: `rune --headless`,
+  which loads no graphical library and runs on a machine that has none.
 
 ## Install
 
@@ -175,12 +175,6 @@ docs show. Click it until it matches the editor you picked, and every key on
 every page will match your setup.
 :::
 
-If the text is too small, press `<meta>` and `=` to make the font bigger, or
-`<meta>` and `-` to make it smaller.
-
-Whichever you pick, the rest is already wired: language intelligence,
-debugging, terminals, and tasks ship in the box.
-
 <video
   className="docs-figure"
   autoPlay
@@ -199,8 +193,7 @@ debugging, terminals, and tasks ship in the box.
 Rune starts the **basics** tutorial for you right after the first-run setup.
 It runs in a pane beside the real IDE, using your bindings and your
 theme, and it advances when you actually run the command it asks for, not when
-you click through a slideshow. **Skip** moves past a step; **Stop** ends the
-lesson.
+you click through a slideshow.
 
 Have a project directory handy. The first step asks you to open it as a
 workspace.
@@ -242,8 +235,29 @@ configuration change instead of searching a site.
 <div className="docs-figure help-command-figure" role="img" aria-label="Running help in the command prompt to open the docs and ask the agent a question" />
 
 After that, the [Command Prompt](./learn/command-prompt.md) guide covers the
-prompt in depth, [Configuration](./config.md) covers making Rune yours, and the
+prompt in depth, [Configuration](./config.md) covers where your settings live, and the
 [Docs Workspace](./learn/docs-workspace.md) guide covers reading the
-documentation offline. You can also
+documentation offline. [Make Rune Yours](./appearance/styling.md) takes the
+themes from the basics tutorial further, up to a look of your own that Rune
+Agent draws for you. You can also
 [write your own tutorials](./develop/tutorials.md) to onboard your team into a
 repository.
+
+## The big idea
+
+Vim showed a generation of programmers how productive a small, spatial keyboard language
+can be. Directions stay under your fingers, combinations have consistent meanings, and
+repeated actions become muscle memory instead of trips through menus and buttons.
+
+Rune's keybinding system brings that advantage to the entire workspace, not just the text
+editor, and you do not have to use vim mode to get it. Each preset starts with a
+directional vocabulary suited to one of the four editors
+([standard](./learn/standard-editor.md), [vim](./learn/vim-editor.md),
+[helix](./learn/helix-editor.md), [emacs](./learn/emacs-editor.md)). The physical keys
+differ, but the patterns stay the same.
+
+Once the relationships are in muscle memory, the same small set of ideas controls Rune's
+full virtualized [tiling environment](./learn/layout-management.md). Every layout action
+is also a [command](./learn/command-prompt.md) you can type at the prompt or bind under
+[`command.key_bindings`](./learn/command-prompt.md#bind-a-command-to-a-key), so you can
+keep the grammar while changing any physical key.

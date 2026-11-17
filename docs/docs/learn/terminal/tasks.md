@@ -4,20 +4,19 @@ sidebar_position: 1
 
 # Tasks
 
-A task in Rune is a long-running shell command that you launch from the
-command prompt and keep around as a first-class window. Unlike a one-shot `!`
-command, a task stays mounted in the workspace: you can stop it, re-run it,
-scroll back through its output, and read it like any other buffer once it
-exits.
+A task in Rune is a long-running shell command that you launch from the command prompt and
+once it exits, runs again as files change. Unlike a one-shot `!` command, a task stays
+minimized in the workspace: you can maximize it, stop it with `<ctrl-c>`, re-start it with `<ctrl-r>`,
+scroll back through its output, and read it like any other buffer once it exits.
 
 Tasks are how you keep recurring side-channel work (builds, linters, test
 suites, dev servers, file watchers, log tails) visible without giving up the
 main editor area. The two commands that create them, `tasknew` and
 `tasknewtab`, differ only in where the task lives once it has been created.
 
-## When to reach for a task
+## When to use tasks
 
-- A command you re-run dozens of times a day (`go build ./...`, `npm run
+- A one-shot command you re-run dozens of times a day (`go build ./...`, `npm run
   test`, `cargo check`, `pytest -q`). Bind it to a task and you stop retyping
   it.
 - A command whose *status* matters more than its live output: a build that
@@ -31,12 +30,12 @@ main editor area. The two commands that create them, `tasknew` and
   pane just to watch its exit code.
 
 If you only need to run a command once and read its output, dispatch it with
-`!` instead. Tasks are for commands that earn their keep by being re-run.
+`!` instead. Tasks are for commands that often need to be re-run.
 
-## `tasknew`: a minimized status window
+## As a minimized window
 
 ```
-:tasknew <name> <left|right> [filter] -- <cmd> [<args>...]
+tasknew <name> <left|right> [filter] -- <cmd> [<args>...]
 ```
 
 `tasknew` creates a task and minimizes it to the side of the screen you
@@ -70,28 +69,28 @@ the rest are arguments.
 Watch a Go build on the right, re-running on every `.go` change:
 
 ```
-:tasknew build right *.go -- go build ./...
+tasknew build right *.go -- go build ./...
 ```
 
 Run the test suite once and pin its result to the left side:
 
 ```
-:tasknew test left -- go test ./...
+tasknew test left -- go test ./...
 ```
 
 Lint a frontend project on every relevant edit:
 
 ```
-:tasknew lint left *.ts,*.tsx,*.css -- npm run lint
+tasknew lint left *.ts,*.tsx,*.css -- npm run lint
 ```
 
 After the command exits, the minimized window turns green or red, and you can
 un-minimize it to read the full output without losing your place.
 
-## `tasknewtab`: a live tab
+## As a tab
 
 ```
-:tasknewtab <name> [filter] -- <cmd> [<args>...]
+tasknewtab <name> [filter] -- <cmd> [<args>...]
 ```
 
 `tasknewtab` creates the same task, but instead of leaving it minimized it
@@ -116,16 +115,16 @@ underlying process is still healthy.
 Run the dev server as a live tab:
 
 ```
-:tasknewtab devserver -- npm run dev
+tasknewtab devserver -- npm run dev
 ```
 
 Run the test suite as a tab and rerun it whenever Go sources change:
 
 ```
-:tasknewtab tests *.go -- go test ./...
+tasknewtab tests *.go -- go test ./...
 ```
 
-## Driving a running task
+## Managing tasks
 
 Once a task is focused (whether through `taskfocus`, by un-minimizing it, or
 because it lives in a tab) three key bindings drive its lifecycle:
@@ -140,7 +139,7 @@ because it lives in a tab) three key bindings drive its lifecycle:
 - `<ctrl-r>` after a `<ctrl-c>` starts the task again. A cancelled task is
   still a task; it just is not running right now.
 
-## Reading the output after the task exits
+### Reading the output after the task exits
 
 When a task finishes (successfully, with an error, or because you cancelled
 it) Rune installs the editor on top of the captured output. The output
@@ -153,7 +152,7 @@ This is why tasks are a better fit than ad-hoc `!` invocations for anything
 whose output you might want to grep through later: the moment the command
 exits, its log is a buffer.
 
-## Managing tasks
+### More task commands
 
 Tasks are identified by the `name` you give them at creation time, and that
 name is what the rest of the task commands take as an argument:

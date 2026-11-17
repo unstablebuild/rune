@@ -358,7 +358,7 @@ models:
 Rune indexes the code of every workspace you open, so you can describe
 the code you are looking for instead of guessing the words it uses.
 Search from the command prompt with
-[`searchsemantic`](../learn/search.md#search-by-meaning), which floats the
+[`searchsemantic`](../learn/search.md#search-with-natural-language), which floats the
 results in a picker with a preview of why each matched:
 
 ```

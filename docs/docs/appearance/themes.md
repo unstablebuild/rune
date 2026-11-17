@@ -1,5 +1,5 @@
 ---
-sidebar_position: 45
+sidebar_position: 1
 sidebar_label: Themes
 ---
 
@@ -155,7 +155,7 @@ readers how to install and activate it. You do not need an extension or a
 build step for a theme package. Add the `rune` and `theme` **GitHub repository
 topics** so we can automatically include your theme in the packages section
 of the Rune website. After pushing the repository, others can install it from
-the [Rune console](./console.md):
+the [Rune console](../learn/console.md):
 
 ```
 pkg install github.com/ernestrc/rune-theme-redmond95

@@ -4,13 +4,10 @@ sidebar_position: 20
 
 # Standard Editor
 
-Rune's standard editor follows the modeless conventions used by Sublime Text,
-VS Code, Zed, IntelliJ, and native text controls. Typing inserts text, arrow
-keys move the caret, and the ordinary `<shift>` movement keys extend the
-selection through the same movement. Semantic-selection shortcuts are listed
-separately below.
-
-## Preset
+Rune's standard editor follows the standard cursor movements used by Sublime Text, VS
+Code, Zed, IntelliJ, and native text controls. Typing inserts text, arrow keys move the
+cursor, and the ordinary `<shift>` movement keys extend the selection through the same
+movement.
 
 Enable it in `config.yaml`:
 
@@ -19,39 +16,13 @@ editor:
   mode: "standard"
 ```
 
+```python tab
+config["editor"]["mode"] = "standard"
+```
+
 The preset adapts application shortcuts to the operating system. Pick macOS or
 Linux with the platform switch at the top of the page; every key on this page
 follows that choice and uses Rune's [key syntax](./key-syntax.md).
-
-<Platform when="darwin">
-
-`<meta>` is Command and `<alt>` is Option. Editing keys use `<meta>`, with
-`<ctrl>` twins for the common ones, and Rune's own commands sit on `<alt>`.
-
-</Platform>
-
-<Platform when="linux">
-
-Editing keys use `<ctrl>`, as in Sublime Text and VS Code for Linux, and every
-Rune command sits on `<meta>`. The editor handles no `<meta>` key, so Rune's
-commands work from any buffer. First-run setup asks whether `<meta>` should be
-Super or Alt. Change it later with
-[`gui.meta_key`](./key-syntax.md#what-meta-means). With Alt, the editor's own
-Alt keys, such as `<alt-left>`, still come first.
-
-</Platform>
-
-## Remapping keys
-
-Most editing and movement keys are built into the editor, not Rune commands,
-so they cannot be rebound through `command.key_bindings`. To swap the physical
-keys that trigger them, use [`gui.key_mapping`](./key-mapping.md), which rewrites
-a key combination before it reaches the editor.
-
-Application and layout shortcuts are Rune commands and can be changed through
-`command.key_bindings`. The editor receives ordinary keys before the command
-layer, so a command binding does not replace a key that the standard editor
-already handles. Choose an unused chord when remapping a command.
 
 ## Windows and tabs
 

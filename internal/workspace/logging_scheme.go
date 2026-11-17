@@ -18,6 +18,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"os"
 	"syscall"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"google.golang.org/grpc"
 )
 
 // LoggingScheme wraps a SchemeFunc with a constructor
@@ -207,6 +209,12 @@ func (t loggingScheme) SetPtySize(p workspaceapi.Pty, size workspaceapi.PtySize)
 	return
 }
 
+func (t loggingScheme) ForegroundProcessGroup(p workspaceapi.Pty) (pgrp int, err error) {
+	pgrp, err = t.other.ForegroundProcessGroup(p)
+	t.trace("ForegroundProcessGroup(%v): %d, %v", p, pgrp, err)
+	return
+}
+
 func (t loggingScheme) ReadDir(name string) (
 	ret []os.DirEntry, err error,
 ) {
@@ -244,4 +252,45 @@ func (t loggingScheme) Close() (err error) {
 	err = t.other.Close()
 	t.trace("Close: %q", err)
 	return
+}
+
+// The optional host capabilities are forwarded rather than promoted:
+// tracing a scheme must not change what it can do.
+
+// OnDisconnect satisfies [RemoteScheme]; it is nil for a scheme whose
+// transport cannot drop.
+func (t loggingScheme) OnDisconnect() <-chan struct{} {
+	if rs, ok := t.other.(RemoteScheme); ok {
+		return rs.OnDisconnect()
+	}
+	return nil
+}
+
+// WaitConnected satisfies [RemoteScheme].
+func (t loggingScheme) WaitConnected(ctx context.Context) (err error) {
+	rs, ok := t.other.(RemoteScheme)
+	if !ok {
+		return nil
+	}
+	t.trace("WaitConnected()")
+	err = rs.WaitConnected(ctx)
+	t.trace("WaitConnected(): %v", err)
+	return
+}
+
+// InstallDataDir satisfies [InstallDataDirProvider].
+func (t loggingScheme) InstallDataDir(ctx context.Context) (dir string, err error) {
+	p, ok := t.other.(InstallDataDirProvider)
+	if !ok {
+		return "", errors.ErrUnsupported
+	}
+	t.trace("InstallDataDir()")
+	dir, err = p.InstallDataDir(ctx)
+	t.trace("InstallDataDir(): %q, %v", dir, err)
+	return
+}
+
+// HostConn satisfies [PackageHost].
+func (t loggingScheme) HostConn() (grpc.ClientConnInterface, bool) {
+	return hostConn(t.other)
 }

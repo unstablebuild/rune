@@ -4,21 +4,15 @@ sidebar_position: 15
 
 # Helix Editor
 
-A cheatsheet for Rune's [Helix](https://helix-editor.com)-style editor.
-Helix inverts the vi grammar: a motion first **selects** the text you mean,
-then an operator acts on that selection. You press `w` then `d` to delete a
-word, not `dw`, and you always see what an operator is about to touch.
-
-The `:` command mode lives at the [Command Prompt](./command-prompt.md):
-same prompt, broader scope.
-
-## Preset
-
 Enable it in `config.yaml`:
 
 ```yaml tab
 editor:
   mode: "helix"
+```
+
+```python tab
+config["editor"]["mode"] = "helix"
 ```
 
 ## Where the helix editor applies

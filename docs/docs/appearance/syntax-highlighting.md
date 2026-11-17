@@ -1,5 +1,5 @@
 ---
-sidebar_position: 47
+sidebar_position: 2
 sidebar_label: Syntax Highlighting
 ---
 
@@ -193,7 +193,7 @@ Older upstream queries use the `text.*` family instead of `markup.*`.
 ## Beyond colors
 
 Capture names are not only about rendering. The same vocabulary drives
-[structural search and navigation](./search.md): `jumptoast` and
+[structural search and navigation](../learn/search.md): `jumptoast` and
 `searchast` take a query file and a capture name, so learning the capture
 names your language emits pays off twice.
 

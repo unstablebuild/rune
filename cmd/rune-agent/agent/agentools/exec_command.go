@@ -186,7 +186,7 @@ func (t *execCommandTool) Execute(ctx context.Context, arguments string) agent.T
 	}
 	yieldMs = clamp(yieldMs, minYieldTimeMs, maxYieldTimeMs)
 
-	sess, err := t.mgr.Create(args.Cmd, workDir, args.Shell, tty, nil)
+	sess, err := t.mgr.Create(args.Cmd, workDir, args.Shell, tty, runeEnv(t.cwd))
 	if err != nil {
 		return agent.ToolResult{Content: fmt.Sprintf("error: %v", err), IsError: true}
 	}

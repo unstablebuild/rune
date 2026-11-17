@@ -171,9 +171,3 @@ you:
 If you spend the day in `services/api`, opening the workspace at
 `services/api` instead of `my-monorepo` keeps searches scoped to that
 service while everything above still works exactly the same way.
-
-:::note[GOPATH projects]
-Go's pre-modules GOPATH layout has no `go.mod` marker and is not
-supported for code intelligence. Run `go mod init <name>` at each Go
-project's root to convert it. See the [Go guide](./go.md) for details.
-:::

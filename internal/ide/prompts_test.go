@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/term"
 
 	"unstable.build/rune/internal/text/texttest"
 )
@@ -105,4 +106,32 @@ func TestCreatingAWorkspaceLeavesNoAncestorWorkspaceRegistered(t *testing.T) {
 	assert.False(t, manager.HasWorkspace(ancestorURI),
 		"the ancestor used to create the directory is held by nobody "+
 			"once the directory exists")
+}
+
+func TestCloseDirtyTabsPromptEnterKeepsTabOpen(t *testing.T) {
+	b := newExForTesting(t, texttest.NopEditor())
+	defer b.Close()
+
+	var closed bool
+	b.ex.openCloseDirtyTabsPrompt("close dirty tabs?", func() error {
+		closed = true
+		return nil
+	})
+	require.Equal(t, 1, b.comp.Browser().FloatingWindows())
+
+	exit, handled := b.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	assert.False(t, exit)
+	assert.True(t, handled)
+	assert.False(t, closed, "the default option must keep the tab open")
+	assert.Equal(t, 0, b.comp.Browser().FloatingWindows())
+
+	b.ex.openCloseDirtyTabsPrompt("close dirty tabs?", func() error {
+		closed = true
+		return nil
+	})
+	exit, handled = b.Handle(term.Event{Type: term.EventKey, Ch: 'y'})
+	assert.False(t, exit)
+	assert.True(t, handled)
+	assert.True(t, closed, "the y binding must still close the tab")
+	assert.Equal(t, 0, b.comp.Browser().FloatingWindows())
 }

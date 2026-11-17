@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 )
 
 func TestSessionManager_Create_and_exit(t *testing.T) {
@@ -165,6 +166,43 @@ func TestSessionManager_custom_shell(t *testing.T) {
 	exited := sess.Wait(5 * time.Second)
 	assert.True(t, exited)
 	assert.Contains(t, sess.Output(), "shell_test")
+}
+
+func TestSessionManager_Create_env(t *testing.T) {
+	tests := []struct {
+		name string
+		env  []string
+		want []string
+	}{
+		{
+			name: "nil adds nothing to the host environment",
+		},
+		{
+			name: "explicit is passed through",
+			env:  []string{"FOO=bar"},
+			want: []string{"FOO=bar"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PATH", "/stale")
+			t.Setenv("RUNE_SOCKET", "unix:///tmp/rune.sock")
+
+			recorded := make(chan workspaceapi.Cmd, 1)
+			rec := &recordingExec{startFn: func(_ context.Context, cmd workspaceapi.Cmd) (workspaceapi.Pid, error) {
+				recorded <- cmd
+				cmd.Watcher.WatchProcess() <- nil
+				return 1, nil
+			}}
+			mgr := NewSessionManager(context.Background(), rec, nil)
+			defer func() { _ = mgr.Close() }()
+
+			_, err := mgr.Create("true", t.TempDir(), "", false, tt.env)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.want, (<-recorded).Env)
+		})
+	}
 }
 
 func TestSession_WallTime(t *testing.T) {

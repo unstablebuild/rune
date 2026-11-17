@@ -79,6 +79,12 @@ func (e *PtyExecutor) SetPtySize(workspaceapi.Pty, workspaceapi.PtySize) error {
 	return nil
 }
 
+// ForegroundProcessGroup satisfies schemeapi.Terminal. Its fake
+// processes have no process groups, so it cannot tell.
+func (e *PtyExecutor) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
+	return 0, errors.ErrUnsupported
+}
+
 // StartCommand satisfies schemeapi.Executor. It fails with
 // ErrNotPtyCommand unless cmd's Stdin is a pty slave from NewPty.
 func (e *PtyExecutor) StartCommand(

@@ -1267,7 +1267,7 @@ config = {
         "max_lines":          1000,
         # Number of pre-initialized emulator instances kept in the reservoir.
         # A value of 0 disables the reservoir.
-        "initial_reservoir":  0,
+        "initial_reservoir":  1,
         "attr":               attr(fg = "default", bg = "default"),
         "selection_attr":     attr(flags = "reverse"),
         # The sound a program ringing the bell plays: a name from `sounds`,

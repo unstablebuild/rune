@@ -19,6 +19,7 @@ package workspacerpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -372,6 +373,43 @@ func TestClientServer(t *testing.T) {
 			err = c.SetPtySize(pty, workspaceapi.PtySize{Columns: 1, Rows: 1})
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), "bummer")
+		}},
+		{"ForegroundProcessGroup", func(t *testing.T, mock *workspaceapitest.MockFile, c *workspacerpc.Client, s *Server) {
+			ctrl := gomock.NewController(t)
+			mockFile := workspaceapitest.NewMockFile(ctrl)
+			mockFile.EXPECT().Name().Return("bla").AnyTimes()
+			mockFile.EXPECT().Fd().Return(uintptr(1)).AnyTimes()
+			mockFile.EXPECT().Close().Return(nil).
+				AnyTimes( /* Close runs in runtime.Finalizer */ )
+			slaveMockFile := workspaceapitest.NewMockFile(ctrl)
+			slaveMockFile.EXPECT().Name().Return("blo").AnyTimes()
+			slaveMockFile.EXPECT().Fd().Return(uintptr(2)).AnyTimes()
+			ws := s.s.(*workspacetest.MockWorkspace)
+			ws.EXPECT().NewPty(gomock.Any()).
+				Return(workspaceapi.Pty{Slave: slaveMockFile, Master: mockFile}, nil)
+			pty, err := c.NewPty(ctx)
+			require.NoError(t, err)
+			ws.EXPECT().NewFile(gomock.Any(), gomock.Any()).Return(mockFile).AnyTimes()
+
+			ws.EXPECT().ForegroundProcessGroup(gomock.Any()).
+				DoAndReturn(func(pty workspaceapi.Pty) (int, error) {
+					assert.Equal(t, mockFile, pty.Master,
+						"the server asks with the master its scheme opened")
+					return 4242, nil
+				})
+			pgrp, err := c.ForegroundProcessGroup(pty)
+			require.NoError(t, err)
+			assert.Equal(t, 4242, pgrp)
+
+			ws.EXPECT().ForegroundProcessGroup(gomock.Any()).
+				Return(0, fmt.Errorf("tcgetpgrp: %w", errors.ErrUnsupported))
+			_, err = c.ForegroundProcessGroup(pty)
+			assert.ErrorIs(t, err, errors.ErrUnsupported,
+				"a host that cannot tell says so across the wire")
+
+			ws.EXPECT().ForegroundProcessGroup(gomock.Any()).Return(0, errors.New("bummer"))
+			_, err = c.ForegroundProcessGroup(pty)
+			assert.ErrorContains(t, err, "bummer")
 		}},
 		{"Remove error", func(t *testing.T, mock *workspaceapitest.MockFile, c *workspacerpc.Client, s *Server) {
 			s.s.(*workspacetest.MockWorkspace).EXPECT().

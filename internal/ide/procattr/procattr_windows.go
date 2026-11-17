@@ -96,3 +96,9 @@ func Signal(pid int, sig syscall.Signal) error {
 	defer func() { _ = proc.Release() }()
 	return proc.Signal(sig)
 }
+
+// ForegroundProcessGroup returns errors.ErrUnsupported: Windows has no
+// terminal process groups.
+func ForegroundProcessGroup(uintptr) (int, error) {
+	return 0, errors.ErrUnsupported
+}

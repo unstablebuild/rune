@@ -790,6 +790,27 @@ func (p *fileScheme) SetPtySize(pp workspaceapi.Pty, size workspaceapi.PtySize) 
 	return nil
 }
 
+// ForegroundProcessGroup satisfies [schemeapi.Terminal].
+func (p *fileScheme) ForegroundProcessGroup(pp workspaceapi.Pty) (int, error) {
+	ptyFile, ok := pp.Master.(*fileSchemeFile)
+	if !ok {
+		return 0, fmt.Errorf("extraneous pty: %+v", pp)
+	}
+	// As SetPtySize: a closed master's descriptor number may already
+	// belong to an unrelated file.
+	if !p.registered(ptyFile) {
+		return 0, ErrInvalidMasterPtyFd
+	}
+	pgrp, err := procattr.ForegroundProcessGroup(ptyFile.Fd())
+	if err != nil {
+		if !p.registered(ptyFile) {
+			return 0, ErrInvalidMasterPtyFd
+		}
+		return 0, fmt.Errorf("foreground process group: %w", err)
+	}
+	return pgrp, nil
+}
+
 // registered reports whether f is still the file registered under its
 // descriptor number, i.e. it has not been closed.
 func (p *fileScheme) registered(f *fileSchemeFile) bool {

@@ -125,6 +125,9 @@ The segments are separated with dots:
 | Zig | `geometry.Shape`, `geometry.Shape.area` |
 | TypeScript and JavaScript | `geometry.Shape`, `geometry.Shape.area`, `utils.slugify` for a re-export from `utils/index.ts` |
 
+Private and unexported declarations are indexed like public ones, so internal
+helpers resolve and appear in completion by their qualified name.
+
 The qualifier is what makes the lookup efficient and avoids confusing unrelated
 symbols that share a short name. Direct editor lookup therefore requires at
 least one dot. For example:
@@ -164,11 +167,10 @@ against that syntax tree as one batch:
 3. Rune combines those results into qualified names and source positions.
 
 For example, syntax can show that `Client` is a type definition, but the
-language rules determine whether its indexed name is `http.Client`, whether it
-is visible outside the current package, and whether `h.Client` is a reference
-through an import alias. Python's rules additionally derive dotted modules from
-paths and recognize package re-exports; method rules attach a receiver or class
-name to the method.
+language rules determine whether its indexed name is `http.Client` and whether
+`h.Client` is a reference through an import alias. Python's rules additionally
+derive dotted modules from paths and recognize package re-exports; method rules
+attach a receiver or class name to the method.
 
 ### What is stored
 
@@ -287,9 +289,9 @@ Keep these boundaries in mind when interpreting results:
 - **It is selective.** Cross-file definitions focus on functions, types,
   methods, and supported re-exports. Variables and constants are not generally
   indexed as definitions.
-- **Visibility is language-specific and sometimes approximate.** For example,
-  Go filters definitions by exported-name rules, while languages whose syntax
-  captures do not expose visibility may admit more candidates.
+- **Definitions are indexed regardless of visibility.** A language's visibility
+  rules only decide whether a qualified use counts as a reference to a symbol
+  in another package or module.
 - **It stores candidates, not a complete reference graph.** Repeated uses in one
   file are collapsed, and dynamic or ambiguous constructs may remain unresolved.
 - **Git-ignored paths and hidden directories are skipped.** This keeps dependency

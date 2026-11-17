@@ -53,7 +53,7 @@ type SymbolKind int
 const (
 	// SymbolRef is a package-qualified reference site.
 	SymbolRef SymbolKind = iota
-	// SymbolDef is an exported function or type definition.
+	// SymbolDef is a function or type definition.
 	SymbolDef
 	// SymbolMethodDef is a method definition, named pkg.Type.Method.
 	SymbolMethodDef
@@ -81,8 +81,8 @@ type FileExtraction struct {
 // resolver: references are filtered by the spec's export predicate
 // and, when a reference query requires it, by the file's resolved
 // imports; definitions are qualified by the package clause (or the
-// spec's path-derived qualifier) and filtered by the export predicate;
-// method definitions are emitted as pkg.Type.Method. Definitions of
+// spec's path-derived qualifier) regardless of visibility; method
+// definitions are emitted as pkg.Type.Method. Definitions of
 // nested-module specs are emitted once per dotted suffix of the
 // file's module path, so a symbol is addressable by any trailing run
 // of module segments. Re-export bindings in the spec's re-export
@@ -196,7 +196,7 @@ func ExtractFile(
 				Name: p0.Text + "." + p1.Text, Pos: p1.From, Kind: SymbolRef,
 			})
 		case r.QueryID == defsID:
-			if pkg == "" || !spec.exported(r.Match[0].Text) {
+			if pkg == "" {
 				continue
 			}
 			for _, q := range pkgs {
@@ -207,7 +207,7 @@ func ExtractFile(
 				})
 			}
 		case r.QueryID == methodID:
-			if pkg == "" || !spec.exported(r.Match[1].Text) {
+			if pkg == "" {
 				continue
 			}
 			for _, q := range pkgs {
@@ -228,7 +228,7 @@ func ExtractFile(
 				})
 			}
 		case r.QueryID == reexportID:
-			if pkg == "" || !isReexportFile || !spec.exported(r.Match[0].Text) {
+			if pkg == "" || !isReexportFile {
 				continue
 			}
 			for _, q := range pkgs {

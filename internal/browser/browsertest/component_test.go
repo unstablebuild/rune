@@ -388,6 +388,71 @@ func TestComponentSetContentUnmount(t *testing.T) {
 	assert.Equal(t, c.Focus(), win1)
 }
 
+func TestComponentCloseReleasesEveryWindow(t *testing.T) {
+	uri, err := workspaceapi.ParseURI("file:///tab")
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name string
+		open func(*testing.T, *browser.Component, func() func() error)
+	}{{
+		name: "the last tiled window",
+		open: func(t *testing.T, c *browser.Component, closer func() func() error) {
+			require.NoError(t, c.Focus().SetContent(closingHandler(closer())))
+		},
+	}, {
+		name: "every tiled window",
+		open: func(t *testing.T, c *browser.Component, closer func() func() error) {
+			require.NoError(t, c.Focus().SetContent(closingHandler(closer())))
+			_, ok := c.Split(browserapi.OrientationBottom, c.Focus(),
+				closingHandler(closer()))
+			require.True(t, ok)
+			_, ok = c.Split(browserapi.OrientationRight, c.Focus(),
+				closingHandler(closer()))
+			require.True(t, ok)
+		},
+	}, {
+		name: "a tab in the last tiled window",
+		open: func(t *testing.T, c *browser.Component, closer func() func() error) {
+			tab := c.NewTab(uri, 'x', "tab", closingHandler(closer()), nil)
+			require.NoError(t, c.Focus().SetContent(tab))
+		},
+	}, {
+		name: "tiled beside floating windows",
+		open: func(t *testing.T, c *browser.Component, closer func() func() error) {
+			require.NoError(t, c.Focus().SetContent(closingHandler(closer())))
+			c.Floating(browser.FuncFloatingHandler(
+				handler.NewTestFloating(10, 5), closer()),
+				browserapi.FloatingConfig{})
+		},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := browser.NewComponent(browserConfig())
+			var closes []*int
+			tc.open(t, c, func() func() error {
+				n := new(int)
+				closes = append(closes, n)
+				return func() error {
+					*n++
+					return nil
+				}
+			})
+			for _, n := range closes {
+				require.Zero(t, *n)
+			}
+			require.NoError(t, c.Close())
+			for i, n := range closes {
+				assert.Equal(t, 1, *n, "handler %d", i)
+			}
+		})
+	}
+}
+
+func closingHandler(closeFn func() error) *TestHandler {
+	h := NewTestHandler()
+	h.CloseCallback = closeFn
+	return h
+}
+
 func TestComponentHandlerClose(t *testing.T) {
 	cfg := browser.DefaultConfig()
 

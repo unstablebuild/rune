@@ -147,7 +147,8 @@ func NewSessionManager(
 
 // Create starts a new command session. The shell parameter defaults to
 // "bash" if empty. The process runs with a long-lived context that
-// outlives individual tool calls.
+// outlives individual tool calls. env is appended to the host's environment,
+// so a nil env runs the command with the host's environment alone.
 func (m *SessionManager) Create(
 	cmd, workDir, shell string, tty bool, env []string,
 ) (*Session, error) {
@@ -167,9 +168,6 @@ func (m *SessionManager) Create(
 
 	if shell == "" {
 		shell = "bash"
-	}
-	if env == nil {
-		env = os.Environ()
 	}
 
 	id := m.generateIDLocked()

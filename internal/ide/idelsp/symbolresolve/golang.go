@@ -87,7 +87,3 @@ func goPackagePathFromURI(uri string) string {
 func isExported(name string) bool {
 	return len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z'
 }
-
-// IsExported reports whether name starts with an uppercase ASCII
-// letter, matching Go's export rules.
-func IsExported(name string) bool { return isExported(name) }

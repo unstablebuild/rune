@@ -87,6 +87,21 @@ func (mr *MockSchemeMockRecorder) Create(arg0 any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockScheme)(nil).Create), arg0)
 }
 
+// ForegroundProcessGroup mocks base method.
+func (m *MockScheme) ForegroundProcessGroup(arg0 workspaceapi.Pty) (int, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ForegroundProcessGroup", arg0)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ForegroundProcessGroup indicates an expected call of ForegroundProcessGroup.
+func (mr *MockSchemeMockRecorder) ForegroundProcessGroup(arg0 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ForegroundProcessGroup", reflect.TypeOf((*MockScheme)(nil).ForegroundProcessGroup), arg0)
+}
+
 // Join mocks base method.
 func (m *MockScheme) Join(arg0 ...string) string {
 	m.ctrl.T.Helper()

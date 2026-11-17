@@ -120,8 +120,10 @@ type Spec struct {
 	ImportAliasQuery    string
 	ImportAliasCaptures []string
 
-	// IsExported reports whether a bare definition name is visible
-	// outside its package. A nil predicate means every name is visible.
+	// IsExported reports whether name can be the target of a qualified
+	// reference from another package. It filters reference sites only;
+	// definitions are indexed regardless of visibility. A nil predicate
+	// accepts every name.
 	IsExported func(string) bool
 
 	// MethodDefQuery captures method definitions as (receiverType,

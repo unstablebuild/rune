@@ -521,12 +521,12 @@ It cannot, by itself, answer questions such as:
 
 - Does `http.Client` refer to a package, module, type, or field?
 - What local name does an import introduce?
-- Is a declaration visible from another file?
+- Can a qualified name refer to a declaration in another package or module?
 - Which type owns a method?
 - Does an index file re-export a name from another module?
 
 Those rules live in a language-specific
-[`symbolresolve.Spec`](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/spec.go#L82-L165)
+[`symbolresolve.Spec`](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/spec.go#L82-L167)
 inside Rune core. Copy the existing spec closest to your language's module
 system, rename it, and replace its queries and callbacks. Then add it to the
 [`registry`](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/registry.go#L26-L39).
@@ -534,8 +534,8 @@ system, rename it, and replace its queries and callbacks. Then add it to the
 Choose examples by semantics, not syntax:
 
 - [Go](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/golang.go#L26-L59)
-  is useful for package clauses, import aliases, exported-name rules, and
-  receiver methods.
+  is useful for package clauses, import aliases, exported-name rules for
+  qualified references, and receiver methods.
 - [Python](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/python.go#L27-L56)
   demonstrates dotted modules, file-derived qualifiers, and re-exports from
   `__init__.py`.
@@ -554,6 +554,8 @@ Add focused fixtures while writing the spec. Test imports with and without
 aliases, two symbols with the same name, nested modules, private declarations,
 methods, unresolved references, and incomplete code. It is better to leave a
 dynamic or ambiguous construct unresolved than to jump to the wrong definition.
+Private declarations must still resolve as definitions; visibility rules filter
+only qualified references.
 
 Put those cases in
 `internal/ide/idelsp/symbolresolve/<file-id>_test.go`, backed by a committed,

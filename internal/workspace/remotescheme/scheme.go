@@ -603,6 +603,21 @@ func (s *remoteScheme) SetPtySize(pty workspaceapi.Pty, size workspaceapi.PtySiz
 	return scheme.SetPtySize(pty, size)
 }
 
+func (s *remoteScheme) ForegroundProcessGroup(pty workspaceapi.Pty) (int, error) {
+	scheme, generation, err := s.stateWithGeneration()
+	if err != nil {
+		return 0, err
+	}
+	if master, ok := pty.Master.(*remoteFile); ok && master.generation != generation {
+		return 0, errInvalidFd
+	}
+	// As SetPtySize: the underlying scheme expects its own file.
+	pty.Master = scheme.NewFile(pty.Master.Fd(), pty.Master.Name())
+	runtime.SetFinalizer(pty.Master, nil)
+	pty.Slave = nil
+	return scheme.ForegroundProcessGroup(pty)
+}
+
 func (s *remoteScheme) Close() (ret error) {
 	// Mark closed before touching state so any concurrent
 	// closeHook fired by the underlying transport observes the

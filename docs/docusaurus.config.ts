@@ -87,6 +87,7 @@ const config: Config = {
         docs: {
           sidebarPath: './sidebars.ts',
           routeBasePath: '/',
+          editUrl: 'https://github.com/unstablebuild/rune/edit/main/docs/',
           // The left sidebar already shows location, so drop the breadcrumbs.
           breadcrumbs: false,
           remarkPlugins: [

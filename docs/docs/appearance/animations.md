@@ -1,5 +1,5 @@
 ---
-sidebar_position: 48
+sidebar_position: 4
 ---
 
 # Animations
@@ -22,7 +22,9 @@ reads them when it starts, so restart it after changing them.
 
 Run `shaderrun <name> [<duration>] [<fps>]` to play any of them over the
 screen, such as `shaderrun thunderstorm 10s`. They play for 1s at 30 frames per
-second unless you say otherwise.
+second unless you say otherwise. Click a shader's name below to watch it play
+over two editor windows, or see them all side by side in
+[Make Rune Yours](./styling.md#cell-shaders).
 
 ### Reveals
 
@@ -31,51 +33,51 @@ they suit [opening a workspace](#when-a-workspace-opens).
 
 | Shader | What it does |
 | --- | --- |
-| `beams` | Beams of light sweep along the rows and columns, uncovering the text dimmed, then a diagonal wipe brings back its colors. |
-| `binaryPath` | The binary code of each character snakes in from outside the screen and collapses into the character. |
-| `burn` | Sets the screen alight character by character, the fire spreading from a random cell. |
-| `decrypt` | Types the text out as ciphertext, then decrypts it character by character. |
-| `expand` | Bursts the text out of the center of the screen, each character traveling to its place. |
-| `matrix` | Rains streaks of symbols down the columns until they fill the screen, then resolves it cell by cell into the text. |
-| `middleOut` | Spreads the text along the middle row, then moves each character up or down to its place. |
-| `pour` | Pours the text in from one edge, line by line. |
-| `print` | Prints the text row by row like a line printer, scrolling up as it goes. |
-| `rain` | Rains the characters down from the top, row by row. |
-| `slide` | Slides each line in from an edge, one character after another. |
+| [`beams`](https://assets.rune.build/images/docs-rune/styling/shader-beams.webp) | Beams of light sweep along the rows and columns, uncovering the text dimmed, then a diagonal wipe brings back its colors. |
+| [`binaryPath`](https://assets.rune.build/images/docs-rune/styling/shader-binaryPath.webp) | The binary code of each character snakes in from outside the screen and collapses into the character. |
+| [`burn`](https://assets.rune.build/images/docs-rune/styling/shader-burn.webp) | Sets the screen alight character by character, the fire spreading from a random cell. |
+| [`decrypt`](https://assets.rune.build/images/docs-rune/styling/shader-decrypt.webp) | Types the text out as ciphertext, then decrypts it character by character. |
+| [`expand`](https://assets.rune.build/images/docs-rune/styling/shader-expand.webp) | Bursts the text out of the center of the screen, each character traveling to its place. |
+| [`matrix`](https://assets.rune.build/images/docs-rune/styling/shader-matrix.webp) | Rains streaks of symbols down the columns until they fill the screen, then resolves it cell by cell into the text. |
+| [`middleOut`](https://assets.rune.build/images/docs-rune/styling/shader-middleOut.webp) | Spreads the text along the middle row, then moves each character up or down to its place. |
+| [`pour`](https://assets.rune.build/images/docs-rune/styling/shader-pour.webp) | Pours the text in from one edge, line by line. |
+| [`print`](https://assets.rune.build/images/docs-rune/styling/shader-print.webp) | Prints the text row by row like a line printer, scrolling up as it goes. |
+| [`rain`](https://assets.rune.build/images/docs-rune/styling/shader-rain.webp) | Rains the characters down from the top, row by row. |
+| [`slide`](https://assets.rune.build/images/docs-rune/styling/shader-slide.webp) | Slides each line in from an edge, one character after another. |
 
 ### Fire
 
 | Shader | What it does |
 | --- | --- |
-| `blaze` | A fire that loops seamlessly. |
-| `blazeBlue` | `blaze` with blue flames. |
-| `embers` | Embers burn in ring-like blobs and turn to ash under glittering sparks. |
-| `flames` | Flames cross the screen from bottom to top. |
-| `incendium` | `flames` and `embers` together, the rising sparks dragging characters along. |
-| `inferno` | Another fire that loops seamlessly. |
-| `infernoBlue` | `inferno` with blue flames. |
+| [`blaze`](https://assets.rune.build/images/docs-rune/styling/shader-blaze.webp) | A fire that loops seamlessly. |
+| [`blazeBlue`](https://assets.rune.build/images/docs-rune/styling/shader-blazeBlue.webp) | `blaze` with blue flames. |
+| [`embers`](https://assets.rune.build/images/docs-rune/styling/shader-embers.webp) | Embers burn in ring-like blobs and turn to ash under glittering sparks. |
+| [`flames`](https://assets.rune.build/images/docs-rune/styling/shader-flames.webp) | Flames cross the screen from bottom to top. |
+| [`incendium`](https://assets.rune.build/images/docs-rune/styling/shader-incendium.webp) | `flames` and `embers` together, the rising sparks dragging characters along. |
+| [`inferno`](https://assets.rune.build/images/docs-rune/styling/shader-inferno.webp) | Another fire that loops seamlessly. |
+| [`infernoBlue`](https://assets.rune.build/images/docs-rune/styling/shader-infernoBlue.webp) | `inferno` with blue flames. |
 
 ### Over the text
 
 | Shader | What it does |
 | --- | --- |
-| `bomb` | A ring expands from the center, pushing the characters under it outward like a magnifying glass. |
-| `crumble` | The characters crumble to dust and fall, are swept up, then drop back into place. |
-| `rings` | Gathers the characters into concentric rings that spin, scatter and condense, then sends them home. |
-| `spotlights` | Dims the screen and sweeps spotlights over it. |
-| `thunderstorm` | Darkens the screen and lets a storm loose over it, with lightning that lights up the text. |
-| `unstable` | Shuffles the characters, which rumble and heat up until they blow apart, then reassemble. |
-| `vhsTape` | Plays the screen back like a worn tape, with tearing, glitches and snow. |
+| [`bomb`](https://assets.rune.build/images/docs-rune/styling/shader-bomb.webp) | A ring expands from the center, pushing the characters under it outward like a magnifying glass. |
+| [`crumble`](https://assets.rune.build/images/docs-rune/styling/shader-crumble.webp) | The characters crumble to dust and fall, are swept up, then drop back into place. |
+| [`rings`](https://assets.rune.build/images/docs-rune/styling/shader-rings.webp) | Gathers the characters into concentric rings that spin, scatter and condense, then sends them home. |
+| [`spotlights`](https://assets.rune.build/images/docs-rune/styling/shader-spotlights.webp) | Dims the screen and sweeps spotlights over it. |
+| [`thunderstorm`](https://assets.rune.build/images/docs-rune/styling/shader-thunderstorm.webp) | Darkens the screen and lets a storm loose over it, with lightning that lights up the text. |
+| [`unstable`](https://assets.rune.build/images/docs-rune/styling/shader-unstable.webp) | Shuffles the characters, which rumble and heat up until they blow apart, then reassemble. |
+| [`vhsTape`](https://assets.rune.build/images/docs-rune/styling/shader-vhsTape.webp) | Plays the screen back like a worn tape, with tearing, glitches and snow. |
 
 ### Color and frames
 
 | Shader | What it does |
 | --- | --- |
-| `grayFade` | Fades the colors of the screen to gray. |
-| `pulse` | Pulses every cell toward a color and back. |
-| `shine` | Sweeps a band of light diagonally across the screen. |
-| `shineFrame` | `shine`, over the frames of windows only. |
-| `radarFrame` | A radar sweep circles the frames of windows. |
+| [`grayFade`](https://assets.rune.build/images/docs-rune/styling/shader-grayFade.webp) | Fades the colors of the screen to gray. |
+| [`pulse`](https://assets.rune.build/images/docs-rune/styling/shader-pulse.webp) | Pulses every cell toward a color and back. |
+| [`shine`](https://assets.rune.build/images/docs-rune/styling/shader-shine.webp) | Sweeps a band of light diagonally across the screen. |
+| [`shineFrame`](https://assets.rune.build/images/docs-rune/styling/shader-shineFrame.webp) | `shine`, over the frames of windows only. |
+| [`radarFrame`](https://assets.rune.build/images/docs-rune/styling/shader-radarFrame.webp) | A radar sweep circles the frames of windows. |
 | `nop` | Draws nothing. |
 
 With the built-in logo as your [wallpaper](./wallpaper.md), `shaderrun intro`
@@ -117,7 +119,9 @@ config["animations"]["open_workspace"]["duration"] = "1500ms"
 ### Over the command prompt
 
 `animations.command_prompt` sends a radar sweep round the frame of the command
-prompt while it is open.
+prompt while it is open. Here is
+[a yellow sweep that goes round twice](https://assets.rune.build/images/docs-rune/styling/anim-prompt.webp),
+from the settings below with `color: yellow`.
 
 - `color`: the color the sweep lights the frame in.
 - `angular_width`: more than 0 and up to 1: how much of a full turn the sweep
@@ -141,7 +145,7 @@ config["animations"]["command_prompt"]["cycles"] = 2
 ### Over working tabs
 
 `animations.active_content_tab` plays over content tabs whose program reports
-it is [working](./terminal/program-status.md), and
+it is [working](../learn/terminal/program-status.md), and
 `animations.active_workspace_tab` over the workspace tabs that own one. Both
 take the same keys:
 
@@ -186,6 +190,11 @@ config["animations"]["active_workspace_tab"]["shine"] = {
     "band_width": 0.4,
 }
 ```
+
+See them on a working tab: a yellow
+[`shine`](https://assets.rune.build/images/docs-rune/styling/anim-tab-shine.webp),
+and a [`blaze`](https://assets.rune.build/images/docs-rune/styling/anim-tab-blaze.webp)
+with `fps: 20` and `loop: 300ms`.
 
 ### Screensaver
 
@@ -238,8 +247,10 @@ config["animations"]["screensaver"]["time_shader"] = "ping_pong"
 `animations.cursor` plays a shader over the window for a moment every time the
 cursor jumps, such as to another window or another part of the file. It's off
 by default, unlike the other animations, and plays in the GUI only. The
-built-in shader is a flame that trails the cursor from where it jumped. Typing
-plays nothing. Set it to `true` to play the flame, or set these keys:
+built-in shader is
+[a flame that trails the cursor](https://assets.rune.build/images/docs-rune/styling/cursor-fire-trail.webp)
+from where it jumped. Typing plays nothing. Set it to `true` to play the
+flame, or set these keys:
 
 - `enabled`: set to `true` to turn it on, or `false` to turn it off without
   removing your other settings.
@@ -265,17 +276,22 @@ config["animations"]["cursor"]["duration"] = "400ms"
 ### More cursor shaders
 
 The [cursor pack](https://github.com/unstablebuild/rune-cursor-pack) bundles
-more cursor shaders, such as a bolt of lightning that strikes the cursor, with
-a preview of each. To install it, run this in the
-[console](./console.md), then restart Rune:
+more cursor shaders, such as
+[a bolt of lightning](https://assets.rune.build/images/docs-rune/styling/cursor-lightning.webp)
+that strikes the cursor,
+[fire](https://assets.rune.build/images/docs-rune/styling/cursor-fire.webp) and
+[a smear](https://assets.rune.build/images/docs-rune/styling/cursor-smear.webp).
+To install it, run this in the
+[console](../learn/console.md), then restart Rune:
 
 ```text
 pkg install github.com/unstablebuild/rune-cursor-pack
 ```
 
-The install turns the effect on with the lightning shader, unless your config
-already sets `animations.cursor`: Rune keeps the values you set. The pack's
-README lists the path of each shader to set as `shader`.
+The install turns the effect on with the lightning color shader, unless your
+config already sets `animations.cursor`: Rune keeps the values you set. The
+pack's README lists the path of each shader to set as `shader`, and
+[Make Rune Yours](./styling.md#cursor-effect) shows a preview of each.
 
 ### Write your own
 

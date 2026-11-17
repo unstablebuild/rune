@@ -12,7 +12,7 @@ combinations are claimed by the operating system before any application sees the
 `<ctrl-space>`, for example, is bound by default to "Select the previous input source"
 and never makes it through to Rune, even though Rune binds it by default.
 
-### Solution 1: Disable the conflicting shortcut
+### Disable the conflicting shortcut
 
 #### 1. Disable the conflicting macOS shortcut
 
@@ -44,26 +44,6 @@ which key events Rune receives. Press the binding you want to verify. Each keyst
 as it is decoded. If nothing appears, the event is still being swallowed before it
 reaches Rune; revisit step 1 and check for window manager shortcuts that may
 also be claiming the combination.
-
-:::tip
-Press `<ctrl-c>` followed by `<ctrl-d>` to exit `keydump` and return to the normal prompt.
-:::
-
-### Solution 2: Run your OS in Kiosk Mode
-
-In Linux and Ubuntu, you can use [Gnome Kiosk](https://github.com/GNOME/gnome-kiosk)
-out of the box. It runs a minimal display server, so keys like `<meta>` pass through
-into Rune IDE instead of opening the start menu (and, `<alt+tab>` still tabs through OS windows).
-Other OSes may have similar software to run them in Kiosk Mode as well.
-
-Here is a step-by-step guide of how to set up Kiosk Mode for Ubuntu:
-
-1. Install Gnome Kiosk and script session: `sudo apt install gnome-kiosk gnome-kiosk-script-session`
-2. Edit `~/.local/bin/gnome-kiosk-script`, inserting commands to start Rune.
-3. Log out, select a user, then select the Kiosk session in the gear icon at the bottom right, and login.
-4. Rune IDE will start up, alongside any other apps you may have configured in "Startup Applications Preferences".
-
-If you then need to open other applications, you may open them by entering their command line equivalent in Rune terminals.
 
 ## My remapped key is not honored in Rune
 
@@ -106,7 +86,7 @@ Rune; `gui.key_mapping` is the only way to give them an effect. See
 With home-row mods or other tap-hold keys on a QMK, ZMK or Oryx keyboard, the
 firmware decides whether a press is a tap or a modifier before Rune sees it.
 You do not need to remap anything in Rune. Check what Rune receives with
-`keydump`, then follow
+the `keydump` command, then follow
 [Programmable keyboards and home-row mods](./learn/key-mapping.md#programmable-keyboards-and-home-row-mods).
 
 ## Rune will not start on a machine without a display
@@ -120,9 +100,6 @@ with no editor, see Network:
 rune --headless
 ```
 
-If that fails with `error while loading shared libraries`, the binary is an
-older release that still linked `libX11` eagerly; upgrade it.
-
 `rune --gui`, which is also what a plain `rune` starts, is the one mode
 that does need a display. Without one, Rune exits with `no display
 available` followed by the reason, and suggests `--tui` or `--headless`
@@ -133,11 +110,11 @@ not reachable. `X11: Failed to load libX11` means the X11 client
 libraries are missing: install your distribution's Mesa and X11 client
 library packages.
 
-## The command prompt will not open in an external editor
+## The command prompt will not open iwth an external editor
 
 When `editor.mode` is `exo`, Rune embeds a guest editor (such as `vim` or
 `nvim`) and forwards your keystrokes to it. If the command prompt never opens,
-the most likely cause is that the guest editor is swallowing the activation key
+the most likely cause is that the guest editor is swallowing the key
 before Rune can act on it.
 
 The classic case is leaving `command.key` at `:`. Inside `vim`, `:` enters the

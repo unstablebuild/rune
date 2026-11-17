@@ -45,28 +45,6 @@ Higher values rarely pay off in practice: the pool is only consulted
 when you open a terminal that runs your default shell, and most
 sessions do not open many of those back-to-back.
 
-## What gets pooled
-
-The pool only holds terminals that run your **default shell**, the
-same shell Rune launches when you open a terminal with no explicit
-command. Terminals that run a specific command (for example a
-`!`-prefixed alias, an `exo` editor invocation, or anything you start
-with `terminal <cmd>`) always spin up fresh, because their command
-line does not match what the pool warmed up with.
-
-The pool is warmed once, at startup, in the background. From that
-point on the pool is replenished lazily: opening a terminal hands
-you the next warm shell, and when the last warm shell is taken Rune
-allocates exactly one more to keep at least one ready. The pool is
-not automatically refilled back to its configured size after each
-open, so a quick burst of terminal opens can outrun the warm-up and
-fall back to allocating fresh shells.
-
-Closing a default-shell terminal that is still in a clean state
-returns it to the pool instead of discarding it, so terminals you
-open and close repeatedly during a session benefit from the pool
-too.
-
 ## Remote workspaces
 
 The pool works the same way on SSH workspaces: warm shells are

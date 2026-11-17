@@ -45,7 +45,7 @@ Rune offers Tier 3 support for over 300 additional languages through
 downloadable language packages. Each package bundles a Tree-sitter grammar and
 a set of query files, giving Rune a real parse tree for the file instead of
 plain text. That parse tree powers [syntax
-highlighting](../learn/syntax-highlighting.md), code folding,
+highlighting](../appearance/syntax-highlighting.md), code folding,
 indentation, and (most usefully) [structural search and navigation](../learn/search.md).
 
 | | | | |

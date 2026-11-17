@@ -18,18 +18,16 @@ At a glance:
 | [Jump to a function in the current file](#jump-within-the-current-file) | `jumptoast` | <KeyBinding command={'echo {prompt}jumptoast<space>locals.scm<space>local.definition.method' + String.fromCharCode(124) + 'local.definition.function<space>'} /> |
 | [Jump to a variable in the current file](#jump-within-the-current-file) | `jumptoast` | <KeyBinding command="echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>" /> |
 | [Jump to a type in the current file](#jump-within-the-current-file) | `jumptoast` | <KeyBinding command="echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>" /> |
-| [Find a function definition anywhere in the workspace](#search-across-the-workspace) | `searchfunc` | <KeyBinding command="searchfunc" /> |
-| [Find a variable definition anywhere in the workspace](#search-across-the-workspace) | `searchvar` | <KeyBinding command="searchvar" /> |
-| [Find a type definition anywhere in the workspace](#search-across-the-workspace) | `searchtype` | <KeyBinding command="searchtype" /> |
-| [Search a file by name](#search-files) | `searchfile` | <KeyBinding command="searchfile" /> |
-| [Search file contents across the workspace](#search-text) | `searchtext` | <KeyBinding command="searchtext" /> |
-| [Search the workspace for a regular expression](#search-with-a-regular-expression) | `searchregex <pattern>` | (define your own) |
-| [Find code by what it does](#search-by-meaning) | `searchsemantic <query>` | (define your own) |
-| [Jump to an arbitrary symbol's definition](#semantic-symbol-search) | `lsp definition <symbol>` | <KeyBinding command="echo {prompt}lsp<space>definition<space>" /> |
-| [Open an arbitrary symbol's documentation](#semantic-symbol-search) | `lsp hover <symbol>` | <KeyBinding command="echo {prompt}lsp<space>hover<space>" /> |
-| [List an arbitrary symbol's references](#semantic-symbol-search) | `lsp references <symbol>` | <KeyBinding command="echo {prompt}lsp<space>references<space>" /> |
-| [Turn any `grep`/`rg` output into a jump list](#turn-command-output-into-a-jump-list) | `locationpicker <program>` | (define your own) |
-| [Search a terminal's scrollback](#search-a-terminals-scrollback) | (built into the terminal) | `<meta-f>` |
+| [Search the workspace with a regular expression](#regular-expressions) | `searchregex <pattern>` | (define your own) |
+| [Search with natural language](#search-with-natural-language) | `searchsemantic <query>` | (define your own) |
+| [Search an arbitrary symbol's definition](#search-indexed-symbols) | `lsp definition <symbol>` | <KeyBinding command="echo {prompt}lsp<space>definition<space>" /> |
+| [Search an arbitrary symbol's documentation](#search-indexed-symbols) | `lsp hover <symbol>` | <KeyBinding command="echo {prompt}lsp<space>hover<space>" /> |
+| [Search an arbitrary symbol's references](#search-indexed-symbols) | `lsp references <symbol>` | <KeyBinding command="echo {prompt}lsp<space>references<space>" /> |
+| [Fuzzy Search a function definition anywhere in the workspace](#fuzzy-search-across-the-workspace) | `searchfunc` | <KeyBinding command="searchfunc" /> |
+| [Fuzzy Search a variable definition anywhere in the workspace](#fuzzy-search-across-the-workspace) | `searchvar` | <KeyBinding command="searchvar" /> |
+| [Fuzzy Search a type definition anywhere in the workspace](#fuzzy-search-across-the-workspace) | `searchtype` | <KeyBinding command="searchtype" /> |
+| [Fuzzy Search a file by name](#fuzzy-search-files) | `searchfile` | <KeyBinding command="searchfile" /> |
+| [Fuzzy Search file contents across the workspace](#fuzzy-search-text) | `searchtext` | <KeyBinding command="searchtext" /> |
 
 ## Structural search and navigation
 
@@ -61,7 +59,7 @@ the file and jump to the one you pick:
 | <KeyBinding command="echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>" /> | a variable |
 | <KeyBinding command="echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>" /> | a type |
 
-### Search across the workspace
+### Fuzzy search across the workspace
 
 To search every file, use the `searchast` aliases. You can type each alias in
 the command prompt and bind it yourself when the selected preset leaves it
@@ -84,7 +82,7 @@ structural search lights up for any installed language. See
 [Supported Languages](../languages/supported.md) for the full list and
 how packages install.
 
-## The fuzzy file and symbol finders
+## Fuzzy searching
 
 The file finder (`searchfile`) and symbol finder are floating surfaces:
 they appear on top of your windows, take focus while open, and get out
@@ -98,17 +96,17 @@ sequence once and it becomes reflex, the same way the
 [command prompt's fuzzy finder](./command-prompt.md#build-muscle-memory-with-the-fuzzy-finder)
 works for commands.
 
-### Search files
+### Fuzzy search files
 
 `searchfile` (<KeyBinding command="searchfile" />) opens the file finder: type to fuzzy-filter
 files by name across the workspace and press `<enter>` to open the match.
 
-### Search text
+### Fuzzy search text
 
 `searchtext` (<KeyBinding command="searchtext" />) searches file contents across the workspace and
 presents the matches in a fuzzy picker, jumping you to the line you pick.
 
-## Search with a regular expression
+## Regular expressions
 
 `searchregex` searches every file of the workspace for a regular
 expression and floats the matching lines in a picker, one per line, the
@@ -164,12 +162,17 @@ The same index answers the agent's `search_content` tool, and
 runectl search regexp -g '*.go' 'func\s+New\w*\('
 ```
 
-## Search by meaning
+## Search with natural language
 
 Semantic indexing is off by default. Enable `search.semantic_enabled`
 (`true` in YAML, `True` in Starlark) and restart Rune before using
 `searchsemantic`. Regexp and symbol indexing are unaffected by the semantic
 setting, and semantic indexing does not require regexp indexing.
+
+:::warning
+This is currently an experimental feature. The indexing process
+is taxing on the host's resources because it's not optimized yet.
+:::
 
 `searchsemantic` finds code by describing what it does, so you do not
 have to guess the words it uses:
@@ -177,29 +180,6 @@ have to guess the words it uses:
 ```
 searchsemantic where is the retry backoff computed
 ```
-
-The results float in a picker, best first, each at the line it matched.
-The preview above the list highlights the result's line and emphasizes
-the query's words in the stretch of code that matched. The status bar at
-the bottom says how the result ranked: its score, how far its meaning
-stood out (`z`) and how close it came (`cos`), its rank by words, and
-whether it trails far behind the best ones, with the lines that matched
-on the right. Type to narrow the results down and press `<enter>` to
-open one.
-
-While Rune is still indexing the workspace, files it has not reached may
-be missing from the results, and the status bar says so: `1204 files left
-to index`, or `indexing stalled:` and why. When a query could not be
-ranked by meaning, for instance before the embedding model is
-downloaded, the status bar says `matched by words only:` and why.
-
-When the embedding model cannot run, for instance because the local
-model server failed to load it, `searchsemantic` searches the
-workspace's trigram index for the query's words instead. The status bar
-then shows a red `ERROR` label, and Rune's log says why the model could
-not run.
-
-Flags go anywhere in the query:
 
 | Flag | Does |
 | --- | --- |
@@ -242,12 +222,6 @@ Embedding runs on the machine running Rune, including for SSH workspaces.
   workload. The embedding server starts on demand and stops after being
   idle.
 
-Rune adds Google's code-retrieval and document prefixes automatically,
-uses mean pooling, and L2-normalizes the full 768-dimensional vectors.
-You do not need to add a task prefix to your query. The model supports
-8,192 tokens, but Rune currently uses a **2,048-token embedding context**
-and indexes code in smaller chunks rather than embedding whole files.
-
 :::caution[Inference precision]
 Google requires **BF16 or FP32 activations**, not FP16, which can produce
 invalid or silently degraded embeddings. `Q8_0` describes weight
@@ -260,7 +234,7 @@ currently guarantee BF16/FP32-only inference across backends. See the
 See [Workspace search](../agent/local-models.md#workspace-search) for what
 is indexed and how to configure it.
 
-## Semantic symbol search
+## Search Indexed Symbols
 
 For [Tier 1 languages](../languages/supported.md#tier-1-languages)
 such as [Go](../languages/go.md), Rune adds language-server symbol
@@ -268,50 +242,6 @@ search on top of the structural tools. Rune's
 [symbol index](../languages/symbol-index.md) first locates a qualified name,
 then Rune queries the language server from that source position. This lets you
 jump to a definition, list references, or find implementations of a symbol
-**by name** with full code intelligence. See
+**by name**. See
 [Query any symbol by name](../languages/intelligence.md#query-any-symbol-by-name)
 for the commands and bindings.
-
-## Turn command output into a jump list
-
-When the thing you want to find is best expressed as a shell command,
-the [location picker](./location-picker.md) runs any program that prints
-`path:line:col` locations (`grep`, `git grep`, `rg`, `awk`, or your own
-script) and presents every line as a fuzzy-filterable entry with a live
-preview. It is the bridge between Rune's structured search and the
-text-search tools you already know.
-
-## Search a terminal's scrollback
-
-Terminals get their own find, independent of everything else on this page.
-`<meta-f>` opens a floating find box over the focused terminal and searches
-its entire scrollback, not just the visible screen. `<enter>` or `<meta-f>`
-again jumps to the next match, and `<esc>` or `<ctrl-c>` closes the box and
-leaves the current match selected, so a follow-up copy shortcut copies it.
-It works whether or not the terminal is in [modal mode](./vim-editor.md).
-There is no replace: a shell has no buffer to write into.
-
-### Search configuration
-
-`find_key` is the only part of the terminal's find box you can configure;
-the rest of its appearance always follows
-[`editor.standard.search`](./standard-editor.md#search-configuration). Leave
-it unset and the terminal follows whatever `find_key` you configured there.
-
-```yaml tab
-terminal:
-  search:
-    find_key: "<meta-f>"
-```
-
-```python tab
-"terminal": {
-    "search": {
-        "find_key": "<meta-f>",
-    },
-},
-```
-
-The [emacs preset](./emacs-editor.md#incremental-search) rebinds it to
-`<ctrl-s>`, isearch-forward's key, so it shares muscle memory with the
-editor's own incremental search.

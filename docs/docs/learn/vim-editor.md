@@ -4,18 +4,15 @@ sidebar_position: 10
 
 # Vim Editor
 
-A vi-style cheatsheet for Rune's vim editor. The motion grammar,
-operators, text objects, marks, registers, and macros are all here.
-The `:` ex mode lives at the [Command Prompt](./command-prompt.md):
-same prompt, broader scope.
-
-## Preset
-
 Enable it in `config.yaml`:
 
 ```yaml tab
 editor:
   mode: "vim"
+```
+
+```python tab
+config["editor"]["mode"] = "vim"
 ```
 
 Older configs say `mode: "modal"`, which still selects the vim editor as a
@@ -50,8 +47,9 @@ combination into another before it reaches the editor.
 
 ## Message bar appearance
 
-The vim editor displays messages over the bottom row of the editor. Configure
-its base attributes and layout under `editor.vim.message_bar`:
+The vim editor displays messages over the bottom row of the editor. This is not to be
+confused with the status bar. Configure its base attributes and layout under
+`editor.vim.message_bar`:
 
 ```yaml tab
 editor:

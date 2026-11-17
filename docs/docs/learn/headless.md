@@ -10,8 +10,8 @@ means `rune --headless`, and the way to keep it running is to hand it to
 the machine's service manager: it starts at boot, restarts if it fails,
 and its output lands in the system log. This page is a recipe per
 service manager, and a ready-made [Docker image](#docker) for hosts that
-run containers. Read [Running a machine without the
-editor](./network.md#running-a-machine-without-the-editor) first if you
+run containers. Read [Connecting to a server with no
+display](./network.md#connecting-to-a-server-with-no-display) first if you
 have not.
 
 To serve on your own Tailscale or Headscale tailnet instead of the Rune
@@ -64,8 +64,7 @@ start instead: the code shows up in its log, and the node joins once you
 have entered it.
 
 The sign-in is a serve-only one: the node can serve your other machines
-but not reach them (see [Headless machines only
-serve](./network.md#headless-machines-only-serve)). A sign-in with full
+but not reach them. A sign-in with full
 account access is never kept. A node that finds one in its data
 directory, from a node set up before headless machines were serve-only
 or a data directory copied from a desktop install, says so, discards it,
@@ -84,8 +83,7 @@ a startup file such as `/etc/profile` resets `PATH`.
 
 Language packages need no setup. When a workspace you open on this
 machine needs one it does not have, Rune asks you in your own window and
-installs it here (see [Installing packages on another
-machine](./network.md#installing-packages-on-another-machine)). The
+installs it here. The
 environment a package sets up, such as `GOROOT`, applies to the
 terminals and tools started after the install, with no restart.
 
@@ -485,7 +483,7 @@ service](#before-you-install-the-service) or [Docker](#docker), and
 joins as a new machine:
 the old one stays in `network machines` as offline until you
 `network remove` it, and on Free or Rune Pro holds its slot until then.
-The [network limits](./network.md#how-many-machines-you-can-have) are
+The [network limits](./network.md#what-you-need) are
 2 nodes on Free, 10 on Rune Pro, and unlimited on Enterprise.
 
 ## Troubleshooting

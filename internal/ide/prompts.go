@@ -43,6 +43,10 @@ const (
 
 var yesNoKeyCombs = []term.KeyComb{{Ch: 'y'}, {Ch: 'n'}}
 
+// noYesKeyCombs keeps the same option letters for prompts that list the
+// safe option first: bindings select options by position.
+var noYesKeyCombs = []term.KeyComb{{Ch: 'n'}, {Ch: 'y'}}
+
 func (h *workspaceManagerHandler) openRestorePrompt(
 	ex *ex,
 	workspaceURI workspaceapi.URI,
@@ -336,8 +340,8 @@ func (ex *ex) openCloseDirtyTabsPrompt(message string, close func() error) {
 	promptHandler := &closeDirtyTabsPrompt{ex: ex, close: close}
 	promptWindow := ex.comp.Prompt(
 		message,
-		[]string{yesOpt, noOpt},
-		yesNoKeyCombs,
+		[]string{noOpt, yesOpt},
+		noYesKeyCombs,
 		promptHandler,
 	)
 	promptHandler.promptWindow = promptWindow

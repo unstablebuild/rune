@@ -91,6 +91,21 @@ func (mr *MockWorkspaceMockRecorder) Create(filename any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockWorkspace)(nil).Create), filename)
 }
 
+// ForegroundProcessGroup mocks base method.
+func (m *MockWorkspace) ForegroundProcessGroup(p workspaceapi.Pty) (int, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ForegroundProcessGroup", p)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ForegroundProcessGroup indicates an expected call of ForegroundProcessGroup.
+func (mr *MockWorkspaceMockRecorder) ForegroundProcessGroup(p any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ForegroundProcessGroup", reflect.TypeOf((*MockWorkspace)(nil).ForegroundProcessGroup), p)
+}
+
 // InstallDataDir mocks base method.
 func (m *MockWorkspace) InstallDataDir(ctx context.Context) (string, error) {
 	m.ctrl.T.Helper()
