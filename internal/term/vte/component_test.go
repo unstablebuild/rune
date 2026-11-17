@@ -33,7 +33,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
@@ -1255,6 +1254,55 @@ func TestComponentShellMark(t *testing.T) {
 	}
 }
 
+func TestComponentShellCommand(t *testing.T) {
+	t.Parallel()
+	const (
+		prompt  = "\x1b]133;A\x07$ \x1b]133;B\x07"
+		command = "\x1b]133;C\x07"
+		done    = "\x1b]133;D;0\x07"
+		working = "\x1b]7501;state=working\x1b\\"
+		cleared = "\x1b]7501;state=clear\x1b\\"
+	)
+	cases := []struct {
+		desc         string
+		output       string
+		wantSeq      uint64
+		wantRunning  bool
+		wantReported bool
+	}{
+		{desc: "a shell without marks runs nothing", output: "$ ls\r\n" + working},
+		{desc: "the prompt runs nothing", output: prompt},
+		{desc: "a command runs", output: prompt + command, wantSeq: 1, wantRunning: true},
+		{desc: "a command ends", output: prompt + command + done, wantSeq: 1},
+		{desc: "the next command is another", output: prompt + command + done + prompt + command,
+			wantSeq: 2, wantRunning: true},
+		{desc: "its program reports a status", output: prompt + command + working,
+			wantSeq: 1, wantRunning: true, wantReported: true},
+		{desc: "clearing the status keeps that it reported", output: prompt + command + working + cleared,
+			wantSeq: 1, wantRunning: true, wantReported: true},
+		{desc: "a status before the command is not its", output: working + prompt + command,
+			wantSeq: 1, wantRunning: true},
+		{desc: "the next command reported none", output: prompt + command + working + done + prompt + command,
+			wantSeq: 2, wantRunning: true},
+		{desc: "a reset keeps counting commands", output: prompt + command + "\x1bc" + prompt + command,
+			wantSeq: 2, wantRunning: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+			comp, err := NewComponent(&testExecutor{}, &testExecutor{},
+				&mockTabManager{}, DefaultConfig())
+			require.NoError(t, err)
+			require.NoError(t, comp.Resize(10, 3))
+			comp.parser.AdvanceBytes([]byte(tc.output))
+			seq, running, reported := comp.ShellCommand()
+			assert.Equal(t, tc.wantSeq, seq)
+			assert.Equal(t, tc.wantRunning, running)
+			assert.Equal(t, tc.wantReported, reported)
+		})
+	}
+}
+
 func TestComponentForegroundProcessGroup(t *testing.T) {
 	t.Parallel()
 	errHost := errors.New("host unreachable")
@@ -2204,7 +2252,7 @@ func newExitStatusHarness(t *testing.T, watched bool) *exitStatusHarness {
 		cfg.Watcher = workspaceapi.ChanProcessWatcher(h.watched)
 	}
 	exe := workspacetest.NewPtyExecutor()
-	handler, err := NewHandler(h.pub, discardNotifications{}, exe, exe, h.tm, cfg)
+	handler, err := NewHandler(h.pub, nopNotifications{}, exe, exe, h.tm, cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = handler.Close() })
 	h.handler = handler
@@ -2269,8 +2317,6 @@ func (p *exitStatusPublisher) sawEventNone() bool {
 	defer p.mu.Unlock()
 	return p.none
 }
-
-type discardNotifications struct{}
 
 func TestHandlerPointerLeaves(t *testing.T) {
 	t.Parallel()
@@ -2359,7 +2405,7 @@ func newLeaveHarness(t *testing.T, modal bool, output string) (*Handler, *worksp
 	cfg.Modal = modal
 	cfg.WidthHint, cfg.HeightHint = 60, 15
 	exe := workspacetest.NewPtyExecutor()
-	h, err := NewHandler(&exitStatusPublisher{}, discardNotifications{}, exe, exe, &mockTabManager{}, cfg)
+	h, err := NewHandler(&exitStatusPublisher{}, nopNotifications{}, exe, exe, &mockTabManager{}, cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = h.Close() })
 	var proc *workspacetest.Process
@@ -2378,24 +2424,6 @@ func newLeaveHarness(t *testing.T, modal bool, output string) (*Handler, *worksp
 		return strings.Contains(w.String(), marker)
 	}, 5*time.Second, 5*time.Millisecond)
 	return h, proc
-}
-
-func (discardNotifications) Notify(
-	browserapi.NotificationLevel, string, ...any,
-) (string, error) {
-	return "", nil
-}
-
-func (discardNotifications) NotifyOnce(
-	browserapi.NotificationLevel, string, ...any,
-) (string, error) {
-	return "", nil
-}
-
-func (discardNotifications) UpdateNotificationProgress(
-	string, string, int64, int64,
-) error {
-	return nil
 }
 
 func TestComponentClipboardAccess(t *testing.T) {

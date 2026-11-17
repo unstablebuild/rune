@@ -127,6 +127,7 @@ func (e *Handler) Init(
 	if config.Modal || config.Search.Editor != nil {
 		e.viEnabled = true
 		e.vi.init(e.comp, config)
+		e.vi.refused = e.modalRefused
 	}
 	if config.Search.Editor != nil {
 		e.searchCtl = &searchController{
@@ -377,26 +378,8 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 		}
 
 		if ev.Key == term.KeyEsc && ev.Mod == 0 && !e.comp.IsAltBuffer() {
-			handled = true
-			cursor := e.comp.CursorAtScroll()
-			e.comp.systemCanDispatchBell(func(err error) {
-				if err == nil {
-					e.enterViMode(cursor)
-					return
-				}
-				msg := "You pressed <esc>, which would enable modal (vi) mode, " +
-					"but the shell did not ring the bell that enables it. " +
-					"Rune sets this up for zsh, bash and fish when they are " +
-					"the terminal's shell, taken from terminal.shell in your config or else $SHELL. " +
-					"To use another of them, set terminal.shell to it and open a new " +
-					"terminal rather than starting it from this one. Otherwise, check " +
-					"that your shell config does not turn off the bell or rebind ctrl-g."
-				e.log(log.WarnLevel, "%s: %v", msg, err)
-				if _, err := e.notifications.NotifyOnce(browserapi.LevelWarn, "%s", msg); err != nil {
-					e.log(log.ErrorLevel, "notify: %v", err)
-				}
-			})
-			return
+			e.enterViMode(e.comp.CursorAtScroll())
+			return false, true
 		}
 	}
 
@@ -705,6 +688,20 @@ func (e *Handler) exitViMode() {
 	if !e.searchViewing() {
 		e.vi.deactivate()
 	}
+}
+
+// modalRefused tells the user that modal mode turned read-only for the
+// rest of the session; probed is whether the program was rung and did
+// not answer.
+func (e *Handler) modalRefused(probed bool) {
+	cause := "Modal mode cannot edit the input of the program running in this terminal " +
+		"or move its cursor."
+	if probed {
+		cause = "The program in this terminal did not answer Rune, so modal mode cannot " +
+			"edit its input or move its cursor."
+	}
+	e.notify(browserapi.LevelWarn, "%s You can still move around, search and copy, "+
+		"or press i to type again.", cause)
 }
 
 // searchViewing reports whether the scrollback search results are on

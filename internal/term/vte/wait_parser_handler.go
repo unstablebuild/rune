@@ -67,19 +67,25 @@ func (w *waitParserHandler) monitorStarvation(ctx context.Context) {
 			// it's possible bell cannot be triggered: drain events to relieve
 			// event loop
 			if prevLength > 0 && currLength == prevLength && w.trigger != nil {
-				// drain
 				w.log(log.DebugLevel, "scheduler is not making progress: draining %d events", len(w.ch))
-				for {
-					select {
-					case <-w.ch:
-						continue
-					default:
-					}
-					break
-				}
+				w.drop()
 			}
 			prevLength = currLength
 		}
+	}
+}
+
+// drop discards every callback waiting for a bell, so that the next
+// scheduleBellCallback rings the shell again, and a bell that arrives
+// late runs none of them.
+func (w *waitParserHandler) drop() {
+	for {
+		select {
+		case <-w.ch:
+			continue
+		default:
+		}
+		return
 	}
 }
 

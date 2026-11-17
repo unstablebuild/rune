@@ -17,6 +17,8 @@
 package vte
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -68,6 +70,34 @@ func (n nopNotifications) UpdateNotificationProgress(
 	id, message string, progress, total int64,
 ) error {
 	return nil
+}
+
+// recordingNotifications records the messages of Notify and NotifyOnce.
+type recordingNotifications struct {
+	nopNotifications
+	mu       sync.Mutex
+	messages []string
+}
+
+func (n *recordingNotifications) Notify(
+	_ browserapi.NotificationLevel, msg string, args ...any,
+) (string, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.messages = append(n.messages, fmt.Sprintf(msg, args...))
+	return "", nil
+}
+
+func (n *recordingNotifications) NotifyOnce(
+	level browserapi.NotificationLevel, msg string, args ...any,
+) (string, error) {
+	return n.Notify(level, msg, args...)
+}
+
+func (n *recordingNotifications) Messages() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return slices.Clone(n.messages)
 }
 
 func TestLastPromptLine(t *testing.T) {

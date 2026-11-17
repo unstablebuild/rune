@@ -21,10 +21,12 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/vte/vteparser"
 	"unstable.build/rune/internal/workspace/workspacetest"
 )
@@ -62,6 +64,98 @@ func (h *keyboardHarness) written() string {
 	}
 	h.pty.Writes = nil
 	return sb.String()
+}
+
+// modalHarness is a keyboardHarness in modal mode whose event loop is the
+// test goroutine: ticks only run when it drains them.
+type modalHarness struct {
+	*keyboardHarness
+	ticks  chan func()
+	notes  *recordingNotifications
+	played []string
+}
+
+// newModalHarness returns a modalHarness showing the prompt "$ echo hi",
+// whose probe times out after 50ms.
+func newModalHarness(t *testing.T, cfg Config) *modalHarness {
+	t.Helper()
+	h := &modalHarness{ticks: make(chan func(), 1000), notes: new(recordingNotifications)}
+	cfg.Modal = true
+	cfg.ScheduleNextTick = func(cb func()) bool {
+		select {
+		case h.ticks <- cb:
+			return true
+		default:
+			return false
+		}
+	}
+	cfg.Sounds = sounds.PlayerFunc(func(name string) { h.played = append(h.played, name) })
+	comp, err := NewComponent(&testExecutor{}, &testExecutor{}, &mockTabManager{}, cfg)
+	require.NoError(t, err)
+	comp.bellProbeTimeout = 50 * time.Millisecond
+	pty, ok := comp.pty.Master.(*workspacetest.File)
+	require.True(t, ok)
+	handler := &Handler{
+		comp: comp, ctx: context.Background(), notifications: h.notes,
+		modalEnabled: true, viEnabled: true,
+	}
+	handler.vi.init(comp, cfg)
+	handler.vi.refused = handler.modalRefused
+	handler.Resize(80, 24)
+	h.keyboardHarness = &keyboardHarness{Handler: handler, pty: pty}
+	h.output("$ echo hi")
+	h.written()
+	return h
+}
+
+// press handles keys, written as in term.ParseKeys, and runs the ticks
+// they schedule.
+func (h *modalHarness) press(t *testing.T, keys string) {
+	t.Helper()
+	combs, err := term.ParseKeys(keys)
+	require.NoError(t, err)
+	for _, k := range combs {
+		ev := term.Event{Type: term.EventKey, Key: k.Key, Ch: k.Ch, Mod: k.Mod}
+		if k.Ch != 0 {
+			ev.Raw = []byte(string(k.Ch))
+		}
+		h.Handle(ev)
+	}
+	h.drain()
+}
+
+func (h *modalHarness) drain() {
+	for {
+		select {
+		case cb := <-h.ticks:
+			cb()
+		default:
+			return
+		}
+	}
+}
+
+// waitTick runs the next tick, which only a timer schedules, and the
+// ticks it schedules.
+func (h *modalHarness) waitTick(t *testing.T) {
+	t.Helper()
+	select {
+	case cb := <-h.ticks:
+		cb()
+	case <-time.After(5 * time.Second):
+		t.Fatal("nothing was scheduled")
+	}
+	h.drain()
+}
+
+func (h *modalHarness) errorSounds() int {
+	var n int
+	for _, name := range h.played {
+		if name == sounds.Error {
+			n++
+		}
+	}
+	return n
 }
 
 func keyEv(key term.Key, mod term.Modifier) term.Event {
@@ -319,6 +413,129 @@ func TestHandlerKeyboardProtocols(t *testing.T) {
 			_, handled := h.Handle(tc.ev)
 			assert.True(t, handled)
 			assert.Equal(t, tc.want, h.written())
+		})
+	}
+}
+
+// modalStep presses keys, then the program prints output, then, with
+// timeout, the probe times out; want is what reached the program.
+type modalStep struct {
+	keys    string
+	output  string
+	timeout bool
+	want    string
+}
+
+func TestHandlerModalEsc(t *testing.T) {
+	t.Parallel()
+	const (
+		probe = "\x01\x07"
+		// the shell's answer to the probe: ctrl-a put its cursor after "$ "
+		answer  = "\x1b[3G\a"
+		right   = "\x1b[C"
+		del     = "\x1b[3~"
+		command = "\x1b]133;C\x1b\\"
+		working = "\x1b]7501;state=working\x1b\\"
+	)
+	cases := []struct {
+		name       string
+		output     string
+		steps      []modalStep
+		wantViMode bool
+		// wantCursor is the vi cursor, nil to not check it.
+		wantCursor *term.Coordinates
+		wantErrors int
+		wantNotes  int
+	}{
+		{
+			name:       "esc enters at once",
+			steps:      []modalStep{{keys: "<esc>"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 8},
+		},
+		{
+			name:       "motions write nothing",
+			steps:      []modalStep{{keys: "<esc>hhh0"}},
+			wantViMode: true, wantCursor: &term.Coordinates{},
+		},
+		{
+			name:       "motions stay on the content",
+			steps:      []modalStep{{keys: "<esc>hG"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 7},
+		},
+		{
+			name: "an edit probes the shell",
+			steps: []modalStep{
+				{keys: "<esc>x", want: probe},
+				{output: answer, want: strings.Repeat(right, 6) + del + probe},
+			},
+			wantViMode: true,
+		},
+		{
+			name: "a shell that does not answer turns modal mode read-only",
+			steps: []modalStep{
+				{keys: "<esc>xh", want: probe},
+				{timeout: true},
+				{output: "\a"},
+				{keys: "x"},
+			},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 7}, wantErrors: 2, wantNotes: 1,
+		},
+		{
+			name:       "a program that reported a status is not rung",
+			output:     command + working,
+			steps:      []modalStep{{keys: "<esc>x"}, {keys: "x"}},
+			wantViMode: true, wantErrors: 2, wantNotes: 1,
+		},
+		{
+			name:       "a program that reported no status is rung",
+			output:     command,
+			steps:      []modalStep{{keys: "<esc>x", want: probe}},
+			wantViMode: true,
+		},
+		{
+			name:  "leaving without moving writes nothing",
+			steps: []modalStep{{keys: "<esc>i"}},
+		},
+		{
+			name:  "leaving at the start of the line probes",
+			steps: []modalStep{{keys: "<esc>0i", want: probe}},
+		},
+		{
+			name: "leaving moves the shell's cursor to the vi cursor",
+			steps: []modalStep{
+				{keys: "<esc>hhi", want: probe},
+				{output: answer, want: strings.Repeat(right, 4)},
+			},
+		},
+		{
+			name: "enter runs the line",
+			steps: []modalStep{
+				{keys: "<esc><enter>", want: probe},
+				{output: answer, want: "\r"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newModalHarness(t, DefaultConfig())
+			h.output(tc.output)
+			h.written()
+			for i, step := range tc.steps {
+				h.press(t, step.keys)
+				h.output(step.output)
+				h.drain()
+				if step.timeout {
+					h.waitTick(t)
+				}
+				assert.Equal(t, step.want, h.written(), "step %d", i)
+			}
+			assert.Equal(t, tc.wantViMode, h.viMode)
+			if tc.wantCursor != nil {
+				assert.Equal(t, *tc.wantCursor, h.vi.cursorAtScroll())
+			}
+			assert.Equal(t, tc.wantErrors, h.errorSounds())
+			assert.Len(t, h.notes.Messages(), tc.wantNotes)
 		})
 	}
 }

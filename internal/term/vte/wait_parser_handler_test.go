@@ -115,6 +115,30 @@ func TestWaitParserHandler(t *testing.T) {
 	})
 }
 
+func TestWaitParserHandlerDrop(t *testing.T) {
+	t.Parallel()
+	ph := newWaitParserHandler(t.Context(), newMockBellHandler())
+	var triggers int
+	ph.useTrigger(func() { triggers++ })
+
+	var dropped int
+	for range 3 {
+		ph.scheduleBellCallback(func() { dropped++ })
+	}
+	assert.Equal(t, 1, triggers)
+	ph.drop()
+	assert.Zero(t, ph.pendingCallbacks())
+	ph.Bell()
+	assert.Zero(t, dropped, "a late bell ran a dropped callback")
+
+	var called bool
+	ph.scheduleBellCallback(func() { called = true })
+	assert.Equal(t, 2, triggers, "the next callback must ring the shell again")
+	ph.Bell()
+	assert.True(t, called)
+	assert.Zero(t, dropped)
+}
+
 type mockBellHandler struct {
 	vteparser.Handler
 }

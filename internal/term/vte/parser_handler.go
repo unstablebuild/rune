@@ -119,6 +119,13 @@ type parserHandler struct {
 
 	// shellMark is the last OSC 133 mark the shell sent, zero for none.
 	shellMark vteparser.ShellMark
+	// commandSeq counts the commands the shell started (OSC 133 C). It
+	// outlives ResetState so that a command after a reset is not taken
+	// for an earlier one.
+	commandSeq uint64
+	// commandStatus is whether the program of the running command
+	// reported a status since it started.
+	commandStatus bool
 
 	// observer suppresses replies to terminal queries because another
 	// emulator is the canonical responder for this byte stream.
@@ -1067,6 +1074,7 @@ func (t *parserHandler) ResetState() {
 	tempDir := t.tempDir
 	keyboard := t.keyboard
 	statusReported := t.statusReported
+	commandSeq := t.commandSeq
 	historyScrolled := t.historyScrolled
 	pointer := t.pointer
 	if t.modeSyncUpdate {
@@ -1081,6 +1089,7 @@ func (t *parserHandler) ResetState() {
 	t.keyboard = keyboard
 	t.keyboard.reset()
 	t.statusReported = statusReported
+	t.commandSeq = commandSeq
 	t.historyScrolled = historyScrolled
 	t.pointer = pointer
 	t.showPointerShape()
@@ -2265,6 +2274,9 @@ func (t *parserHandler) ProgramStatus(report programstatus.Report) {
 	t.sync.mu.Lock()
 	defer t.sync.mu.Unlock()
 	t.statusReported = report.State != programstatus.Clear || report.ID != ""
+	if report.State != programstatus.Clear && t.shellMark == vteparser.ShellMarkCommandStart {
+		t.commandStatus = true
+	}
 	t.reportStatus(report)
 }
 
@@ -2280,8 +2292,12 @@ func (t *parserHandler) ShellMark(mark vteparser.ShellMark) {
 	t.sync.mu.Lock()
 	defer t.sync.mu.Unlock()
 	t.shellMark = mark
-	if mark == vteparser.ShellMarkPromptStart {
+	switch mark {
+	case vteparser.ShellMarkPromptStart:
 		t.endStatus()
+	case vteparser.ShellMarkCommandStart:
+		t.commandSeq++
+		t.commandStatus = false
 	}
 }
 

@@ -384,10 +384,7 @@ func TestHandlerSearchOpensWhileInViMode(t *testing.T) {
 	cfg.Search = testSearchConfig()
 	handler := newSearchHandler(t, cfg)
 
-	// drives the same transition <esc> triggers, without the real bell
-	// round-trip: that entry path is exercised elsewhere, and reading
-	// its unsynchronized completion here would race with this goroutine
-	handler.enterViMode(term.Coordinates{})
+	handler.Handle(term.Event{Type: term.EventKey, Key: term.KeyEsc})
 	require.True(t, handler.viMode)
 
 	_, handled := handler.Handle(term.Event{Type: term.EventKey, Mod: term.ModMeta, Ch: 'f'})

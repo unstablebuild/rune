@@ -120,10 +120,12 @@ $ ▐
                     
                     
                     `},
-			{"<", // cursor should stay the same entering vi mode
+			// entering vi mode moves the cursor back a column, onto the
+			// prompt: its start is only known once the shell answers
+			{"<",
 				`$ echo bla          
 bla                 
-$ ▐                 
+$▐                  
                     
                     
                     
@@ -229,7 +231,7 @@ bla1234567890123456o
 aaaaaaX             
 $                   
 $                   
-$ ▐                 `},
+$▐                  `},
 			{"iclear>",
 				`$ ▐                 
                     
@@ -274,7 +276,9 @@ $ ▐
                     
                     
                     `},
-			{"echo \"<k0llvk0yG0lllllp", // multiline paste lands on its last character
+			// 0 lands on the prompt before the shell answered, so seven l
+			// reach the quote
+			{"echo \"<k0llvk0yG0lllllllp", // multiline paste lands on its last character
 				`$ echo bla          
 bla                 
 $ echo "$ echo blabl
@@ -447,8 +451,10 @@ aaaaaaaaaaaaaaaa▐
                     
                     
                     `},
+			// the prompt start is only known once the shell answers, so
+			// until then nothing keeps the cursor off the prompt
 			{"<0kk",
-				`$ ▐cho blaaaaaaaaaaa
+				`▐ echo blaaaaaaaaaaa
 aaaaaaaaaaaaaaaaaaaa
 aaaaaaaaaaaaaaaa    
                     
@@ -459,7 +465,7 @@ aaaaaaaaaaaaaaaa
                     
                     `},
 			{"\\$\\$0",
-				`$ ▐cho blaaaaaaaaaaa
+				`▐ echo blaaaaaaaaaaa
 aaaaaaaaaaaaaaaaaaaa
 aaaaaaaaaaaaaaaa    
                     
@@ -667,7 +673,9 @@ aaaaaaaaaaaaaaaa▐
 		vtetest.Case
 	}{
 		{"insert mid-line on the bottom row wraps and scrolls", vtetest.Case{
-			InputSequence: "seq 30>echo aa bb cc dd<02WaXXXX",
+			// 0 lands on the prompt before the shell answered, a WORD of
+			// its own
+			InputSequence: "seq 30>echo aa bb cc dd<03WaXXXX",
 			Expected: `23                  
 24                  
 25                  
@@ -1846,6 +1854,14 @@ func (c *testParentComponent) pendingCallbacks() int {
 func (c *testParentComponent) scheduleBellCallback(callback func()) bool {
 	callback()
 	return true
+}
+
+func (c *testParentComponent) systemCanDispatchBell(callback func(error)) {
+	callback(nil)
+}
+
+func (c *testParentComponent) shellCommand() (uint64, bool, bool) {
+	return 0, false, false
 }
 
 type nopLocker struct {

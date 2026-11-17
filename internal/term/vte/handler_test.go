@@ -25,7 +25,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -34,7 +33,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -441,12 +439,14 @@ $ ▐
 	t.Run("on modal mode", func(t *testing.T) {
 		t.Parallel()
 		cases := []vtetest.Case{
+			// entering vi mode moves the cursor back a column, onto the
+			// prompt: its start is only known once the shell answers
 			{"echo bla>echo bla><",
 				`$ echo bla          
 bla                 
 $ echo bla          
 bla                 
-$ ▐                 
+$▐                  
                     
                     
                     
@@ -461,7 +461,8 @@ $ ▐
 		time.Sleep(defaultWaitForIdleVte)
 
 		cases = []vtetest.Case{
-			{"echo XXX><kv0yjP",
+			// l moves off the prompt's space, where entering left the cursor
+			{"echo XXX><klv0yjP",
 				`                    
 $ echo XXX          
 XXX                 
@@ -606,27 +607,6 @@ func (f *recordingPtyFile) Write(data []byte) (int, error) {
 		f.writes <- struct{}{}
 	}
 	return len(data), nil
-}
-
-type recordingNotifications struct {
-	nopNotifications
-	mu       sync.Mutex
-	messages []string
-}
-
-func (n *recordingNotifications) Notify(
-	level browserapi.NotificationLevel, msg string, args ...any,
-) (string, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.messages = append(n.messages, fmt.Sprintf(msg, args...))
-	return "", nil
-}
-
-func (n *recordingNotifications) Messages() []string {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return slices.Clone(n.messages)
 }
 
 func newHandleTestHandler(master workspaceapi.File) *Handler {
