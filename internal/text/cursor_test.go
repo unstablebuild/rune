@@ -36,6 +36,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -2683,6 +2684,31 @@ func TestCursorEmptyFoldsScheduleOperation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("empty fold operation did not run through the scheduler")
 	}
+}
+
+func TestCursorFoldsKeepTheEventLoopFree(t *testing.T) {
+	loop := handlertest.NewEventLoop(t)
+	buf := cell.NewBuffer()
+	fs := &testFoldsService{folds: handlertest.LoopGatedIterator(loop,
+		[]term.Range{{Start: term.Coordinates{Y: 1}, End: term.Coordinates{Y: 4}}},
+		[]term.Range{{Start: term.Coordinates{Y: 7}, End: term.Coordinates{Y: 31}}})}
+	fs.view = buf.WithView(fs)
+	scroll := component.NewScroll(buf)
+	cursor := NewCursor(scroll, loop.Schedule)
+	_, err := scroll.Buffer().ReadFrom(strings.NewReader(sampleSnippet))
+	require.NoError(t, err)
+
+	var ok bool
+	loop.Run(func() {
+		scroll.Resize(100, 100)
+		ok = cursor.CollapseAllFolds(context.Background())
+	})
+	require.True(t, ok)
+	loop.Eventually(func() bool {
+		_, first := scroll.HiddenBlockAt(1)
+		_, second := scroll.HiddenBlockAt(7)
+		return first && second
+	}, "both folds must collapse")
 }
 
 func TestCursorSearch(t *testing.T) {

@@ -4989,22 +4989,22 @@ func (c *Cursor) opFoldsIter(
 	ctx context.Context, op func([]term.Range), folds iterator.Iterator[term.Range],
 ) {
 	go debug.CapturePanicReport(func() {
-		folds, isEmpty := iterator.IsEmpty(ctx, folds)
-		if isEmpty {
-			c.scheduleNextTick(func() {
-				op(nil)
-			})
-			return
-		}
+		defer folds.Close()
+		// Any fold may wait on work the event loop does, such as the parse
+		// of a composite tree's section, so they are all gathered here
+		// rather than on the loop.
+		all, err := iterator.ToSlice(ctx, folds)
 		c.scheduleNextTick(func() {
-			defer folds.Close()
+			if err != nil {
+				if ctx.Err() == nil {
+					c.log(log.ErrorLevel, "error getting folds: %v", err)
+				}
+				op(nil)
+				return
+			}
 			// this needs to roughly follow the same algorithm used by aux_bar
 			m := make(map[term.Coordinates]term.Coordinates)
-			for {
-				fold, ok := folds.Next(ctx)
-				if !ok {
-					break
-				}
+			for _, fold := range all {
 				if fold.Start.Y >= fold.End.Y {
 					continue
 				}
@@ -5013,11 +5013,6 @@ func (c *Cursor) opFoldsIter(
 					continue
 				}
 				m[fold.Start] = fold.End
-			}
-			if err := folds.Err(); err != nil {
-				c.log(log.ErrorLevel, "error getting folds: %v", err)
-				op(nil)
-				return
 			}
 			seq := maps.All(m)
 			slice := make([]term.Range, 0, len(m))

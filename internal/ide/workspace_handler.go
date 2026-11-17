@@ -98,6 +98,7 @@ import (
 	"unstable.build/rune/internal/ide/idetask"
 	"unstable.build/rune/internal/ide/regexsearch"
 	"unstable.build/rune/internal/ide/semanticsearch"
+	"unstable.build/rune/internal/ide/syntax/multitree"
 	"unstable.build/rune/internal/ide/syntax/symboldb"
 	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/ide/vctrl"
@@ -1794,8 +1795,8 @@ func (h *workspaceManagerHandler) textOpts(
 		text.WithPackageManager(h.pkgmanager),
 		text.WithSyntaxConfig(cfg.syntaxConfig()),
 		text.WithMaxSyntaxParseSize(cfg.editorMaxSizeForSyntax()),
-		text.WithSyntaxTree(treesitter.New),
-		text.WithSyntaxParse(treesitter.Parse),
+		text.WithSyntaxTree(multitree.New),
+		text.WithSyntaxParse(multitree.Parse),
 		text.WithSwapDirectory(h.swapDirectory(cfg, ws, uri)),
 		text.WithMarkdownConfig(markdownConfig),
 		text.WithMarkdownImageStorage(

@@ -1742,23 +1742,22 @@ func (h *emacsHandler) hideInitialFolds() {
 	scroll := h.less.Scroll()
 
 	go debug.CapturePanicReport(func() {
-		folds, isEmpty := iterator.IsEmpty(context.Background(), folds)
-		if isEmpty {
-			folds.Close()
+		defer folds.Close()
+		// Any fold may wait on work the event loop does, such as the parse
+		// of a composite tree's section, so they are all gathered here
+		// rather than on the loop.
+		all, err := iterator.ToSlice(context.Background(), folds)
+		if err != nil {
+			h.log(log.ErrorLevel, "error hiding initial folds: %v", err)
+			return
+		}
+		if len(all) == 0 {
 			return
 		}
 		h.cfg.scheduleNextTick(func() {
-			defer folds.Close()
 			cursor := h.CursorAtScroll()
-			for {
-				fold, ok := folds.Next(context.Background())
-				if !ok {
-					break
-				}
+			for _, fold := range all {
 				scroll.MarkHidden(fold.Start.Y, fold.End.Y)
-			}
-			if err := folds.Err(); err != nil {
-				h.log(log.ErrorLevel, "error hiding initial folds: %v", err)
 			}
 			h.SetCursorAtScroll(cursor)
 		})

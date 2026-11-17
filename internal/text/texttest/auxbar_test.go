@@ -477,6 +477,44 @@ func TestAuxBarEditContextCancelledKeepsFolds(t *testing.T) {
 		"folds must survive an edit whose context is already cancelled")
 }
 
+func TestAuxBarFoldsKeepTheEventLoopFree(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		cfg  text.AuxBarConfig
+	}{
+		{name: "absolute lines", cfg: text.AuxBarConfig{LinesEnabled: true, AbsoluteLines: true}},
+		{name: "relative lines", cfg: text.AuxBarConfig{LinesEnabled: true}},
+		{name: "no lines"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			loop := handlertest.NewEventLoop(t)
+			buf := cell.NewBuffer()
+			buf.WriteString(copy)
+			fs := &loopGatedFoldsService{loop: loop}
+			fs.view = buf.WithView(fs)
+			scroll := component.NewScroll(buf)
+			cfg := tt.cfg
+			cfg.FoldsEnabled = true
+			cfg.ScheduleNextTick = loop.Schedule
+
+			var bar text.Handler
+			loop.Run(func() {
+				bar = text.WithAuxBar(newTestHandler(scroll), buf, scroll, cfg)
+				bar.Resize(20, 10)
+			})
+			loop.Eventually(func() bool {
+				w := term.NewStringWriter(20, 10)
+				if w.Clear(term.Attributes{}) != nil {
+					return false
+				}
+				bar.Draw(w)
+				return w.Flush() == nil &&
+					strings.Count(w.String(), string(auxBarVisibleFoldIcon)) == 2
+			}, "both folds must be drawn")
+		})
+	}
+}
+
 func TestAuxBarGitEventSubscriptions(t *testing.T) {
 	fixture := newAuxBarEventFixture(t)
 	defer fixture.close(t)
@@ -907,6 +945,26 @@ func (f blockingFoldsService) FoldsFrom(term.Coordinates) (
 	iterator.Iterator[term.Range], bool,
 ) {
 	return blockingIterator(), true
+}
+
+// loopGatedFoldsService answers like a composite syntax tree whose host is
+// parsed while a section still waits for its parse to finish on the event
+// loop: the host's fold is at hand, the section's only once the loop runs.
+type loopGatedFoldsService struct {
+	testFoldsService
+	loop *handlertest.EventLoop
+}
+
+func (f loopGatedFoldsService) Folds() (iterator.Iterator[term.Range], bool) {
+	return handlertest.LoopGatedIterator(f.loop,
+		[]term.Range{{Start: term.Coordinates{Y: 2}, End: term.Coordinates{Y: 6}}},
+		[]term.Range{{Start: term.Coordinates{Y: 8}, End: term.Coordinates{Y: 13}}}), true
+}
+
+func (f loopGatedFoldsService) FoldsFrom(term.Coordinates) (
+	iterator.Iterator[term.Range], bool,
+) {
+	return f.Folds()
 }
 
 type testHandler struct {

@@ -34,6 +34,7 @@ import (
 	ebiten "github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/benchdraw"
 	log "github.com/sirupsen/logrus"
+	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
 
@@ -432,7 +433,13 @@ func (s *guiBenchSession) settle(timeout time.Duration) {
 	}
 }
 
-func (s *guiBenchSession) focusedSyntaxTree() (*treesitter.Tree, error) {
+// syntaxStateTree is the part of the installed syntax tree the benchmark
+// waits on.
+type syntaxStateTree interface {
+	State() iterator.Iterator[syntax.State]
+}
+
+func (s *guiBenchSession) focusedSyntaxTree() (syntaxStateTree, error) {
 	win, err := s.root.browser().Focus()
 	if err != nil {
 		return nil, fmt.Errorf("focused window: %w", err)
@@ -449,9 +456,9 @@ func (s *guiBenchSession) focusedSyntaxTree() (*treesitter.Tree, error) {
 	if !ok {
 		return nil, fmt.Errorf("focused tab handler is %T, want text.Handler", tab.Handler())
 	}
-	tree, ok := h.CellView().(*treesitter.Tree)
+	tree, ok := h.CellView().(syntaxStateTree)
 	if !ok {
-		return nil, fmt.Errorf("focused editor view is %T, want *treesitter.Tree", h.CellView())
+		return nil, fmt.Errorf("focused editor view is %T, want a syntax tree", h.CellView())
 	}
 	return tree, nil
 }
@@ -459,7 +466,7 @@ func (s *guiBenchSession) focusedSyntaxTree() (*treesitter.Tree, error) {
 func (s *guiBenchSession) waitSyntaxReady(expectedLang string, timeout time.Duration) {
 	s.tb.Helper()
 	deadline := time.Now().Add(timeout)
-	var tree *treesitter.Tree
+	var tree syntaxStateTree
 	var lastErr error
 	for time.Now().Before(deadline) {
 		tree, lastErr = s.focusedSyntaxTree()

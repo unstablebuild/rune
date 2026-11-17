@@ -136,7 +136,9 @@ indentation, and (most usefully) [structural search and navigation](../learn/sea
 You do not install these ahead of time. When you open a file in a
 language whose package is not yet installed, Rune offers to download and
 install it, so the right grammar is always ready when you open the
-matching file type. This is governed by the `updates.auto_install`
+matching file type. The same applies to a language embedded in the file,
+such as the TypeScript of a Svelte component's `<script lang="ts">` block or
+the CSS of an HTML `<style>` block. This is governed by the `updates.auto_install`
 setting, which is `False` by default: Rune prompts before installing.
 During first-run onboarding, Rune installs packages without prompting
 regardless of this setting.
