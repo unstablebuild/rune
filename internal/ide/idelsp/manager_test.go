@@ -144,6 +144,8 @@ func TestServersReportsRunningServer(t *testing.T) {
 func TestRestartBringsUpNewProcessAndReopensFiles(t *testing.T) {
 	t.Parallel()
 	exec := newFakeProcExecutor()
+	restarted := make(chan struct{})
+	exec.resumeAfterShutdown = restarted
 	m := newLifecycleTestManager(t, exec, &mockNotifications{}, Config{})
 	_, err := m.Initialize(t.Context(), goInitParams(t, "/bin/gopls serve"))
 	require.NoError(t, err)
@@ -153,13 +155,15 @@ func TestRestartBringsUpNewProcessAndReopensFiles(t *testing.T) {
 		serverKey{languageID: "go", rootURI: lifecycleRoot})
 	m.mu.Unlock()
 
-	require.NoError(t, m.Restart(t.Context(), "go", lifecycleRoot))
+	err = m.Restart(t.Context(), "go", lifecycleRoot)
+	close(restarted)
+	require.NoError(t, err)
 
 	st := onlyServer(t, m)
 	assert.Equal(t, ServerRunning, st.State)
 	assert.Equal(t, workspaceapi.Pid(2), st.Pid)
 	assert.Equal(t, 1, st.Restarts)
-	// exit is a notification, so the old process may read it after Restart returns.
+	// The old process must be able to read exit after Restart returns.
 	assert.Eventually(t, func() bool {
 		oldMethods, _ := exec.proc(1).received()
 		return slices.Contains(oldMethods, "shutdown") && slices.Contains(oldMethods, "exit")
