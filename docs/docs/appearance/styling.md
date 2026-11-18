@@ -320,11 +320,14 @@ The scroll bar works the same way, with `top_char`, `middle_char`,
 ### Tabs
 
 `browser.tab_images` draws every tab with a `left`, `middle` and `right`
-image, for each of `focus`, `non_focus`, `hover` and `pressed`. Tabs in focus
-always draw their `focus` images, or the `non_focus` ones without them. The
-other tabs draw `hover` and `pressed` under the pointer, falling back to
-`non_focus`. Violet Ledger lets its tabs reach one cell past each side of the
-label, and turns off the line the tab bar draws over the focused tab:
+image, for each of `focus`, `focus_window`, `non_focus`, `hover` and
+`pressed`. Tabs in focus always draw their `focus` images, or the `non_focus`
+ones without them. The tab of the focused window draws `focus_window`
+instead, falling back to `focus`, so it can stand out from the tabs shown in
+other windows. The other tabs draw `hover` and `pressed` under the pointer,
+falling back to `non_focus`. Violet Ledger lets its tabs reach one cell past
+each side of the label, and turns off the line the tab bar draws over the
+focused tab:
 
 ```yaml tab
 browser:
@@ -714,7 +717,7 @@ theme's surroundings.
 | Window frames | `browser.window_manager.frame_charset.graphics`, `focus_frame_charset.graphics` | The eight frame slots. | |
 | Scroll bar | `browser.window_manager.scroll_bar_charset.graphics` | `top_char`, `middle_char`, `bottom_char` and their `hover_` versions. | `left` |
 | Floating window bar | `browser.window_manager.window_bar_charset.graphics` | `left`, `horizontal` and `right`. | `top`, `bottom`, `sides`, `inward`, `horizontal_top` |
-| Tabs | `browser.tab_images`, `workspace.tab_images` | `left`, `middle` and `right` for `focus`, `non_focus`, `hover` and `pressed`. | `top`, `bottom`, `sides` |
+| Tabs | `browser.tab_images`, `workspace.tab_images` | `left`, `middle` and `right` for `focus`, `focus_window`, `non_focus`, `hover` and `pressed`. | `top`, `bottom`, `sides` |
 | Tab highlight | `browser.focus_tab_highlight_graphics`, `workspace.focus_tab_highlight_graphics` | `left`, `horizontal` and `right`. | |
 | Command prompt | `command.frame_charset.graphics`, `command.separator_charset.graphics` | The eight frame slots; the separator's `left`, `horizontal` and `right`. | separator: `top`, `bottom`, `inward` |
 | Dialog buttons | `browser.prompt.images` | `left`, `middle` and `right` for `idle`, `selected`, `hover` and `pressed`. | `top`, `bottom`, `sides` |

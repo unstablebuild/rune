@@ -436,13 +436,16 @@ func TestTabsDrawGraphics(t *testing.T) {
 		border, bottom bool
 		height         int
 		noChar         bool
-		// idle and selected name the picture of every image of the state.
-		idle, selected rune
-		sides          int
-		highlight      LineGraphics
-		noGraphics     bool
-		noImages       bool
-		expected       string
+		// idle, selected and highlighted name the picture of every image
+		// of the state.
+		idle, selected, highlighted rune
+		// alsoFocus puts the first tab in focus too, without the highlight.
+		alsoFocus  bool
+		sides      int
+		highlight  LineGraphics
+		noGraphics bool
+		noImages   bool
+		expected   string
 		// highlightImages counts the images drawn over the highlight.
 		highlightImages int
 	}{
@@ -546,13 +549,41 @@ iiiii  LhhhR        `,
 iiiiiiis━━━━━s      
 i1iONEis2sTWOs      `,
 		},
+		{
+			name: "the highlighted tab is drawn over its own images", height: 2,
+			idle: 'i', selected: 's', highlighted: 'v', alsoFocus: true,
+			expected: `
+sssss  ━━━━━        
+1sONE  2vTWO        `,
+		},
+		{
+			name: "the highlighted tab without its own images is drawn as any in focus", height: 2,
+			idle: 'i', selected: 's', alsoFocus: true,
+			expected: `
+sssss  ━━━━━        
+1sONE  2sTWO        `,
+		},
+		{
+			name: "only the highlighted tab has images", height: 2,
+			highlighted: 'v', alsoFocus: true,
+			expected: `
+       ━━━━━        
+1 ONE  2vTWO        `,
+		},
+		{
+			name: "the highlighted tab's images reach past it by the outset", height: 2,
+			idle: 'i', highlighted: 'v', sides: 1,
+			expected: `
+iiiiiiiv━━━━━v      
+i1iONEiv2vTWOv      `,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
 			t.Cleanup(func() { assert.NoError(t, g.Close()) })
 			loaded := make(map[string]image.Image)
-			for _, name := range "LRisht" {
+			for _, name := range "LRishtv" {
 				loaded[pics.uris[string(name)]] = pics.imgs[name]
 			}
 			g.Reload(loaded)
@@ -563,10 +594,13 @@ i1iONEis2sTWOs      `,
 				img := g.Image(pics.uris[string(name)])
 				return component.ButtonImage{Left: img, Middle: img, Right: img}
 			}
-			images := &component.ButtonImages{
-				Idle:     state(tt.idle),
-				Selected: state(tt.selected),
-				Outset:   component.ButtonOutset{Sides: tt.sides},
+			images := &TabImages{
+				ButtonImages: component.ButtonImages{
+					Idle:     state(tt.idle),
+					Selected: state(tt.selected),
+					Outset:   component.ButtonOutset{Sides: tt.sides},
+				},
+				Highlighted: state(tt.highlighted),
 			}
 			highlight := tt.highlight
 			for _, uri := range []*string{&highlight.Start, &highlight.Middle, &highlight.End} {
@@ -583,6 +617,9 @@ i1iONEis2sTWOs      `,
 			l.Add('1', "ONE")
 			l.Add('2', "TWO")
 			l.ResetFocus()
+			if tt.alsoFocus {
+				l.SetFocus(0)
+			}
 			l.SetFocus(1)
 			if !tt.noGraphics {
 				l.SetGraphics(g, images, highlight)
@@ -746,12 +783,12 @@ iiiii  ━━━━━  vvvvv
 			l.Add('3', "SIX")
 			l.ResetFocus()
 			l.SetFocus(1)
-			l.SetGraphics(g, &component.ButtonImages{
+			l.SetGraphics(g, &TabImages{ButtonImages: component.ButtonImages{
 				Idle:     state(tt.idle),
 				Selected: state(tt.selected),
 				Hover:    state(tt.hover),
 				Pressed:  state(tt.pressed),
-			}, LineGraphics{})
+			}}, LineGraphics{})
 			// Drawn first, for the pointer and the press to redraw a
 			// bar laid out already.
 			l.Draw(newImageScreen(width, height))
@@ -870,9 +907,9 @@ func TestTabsOutsetLayout(t *testing.T) {
 				l.Add('2', "TWO")
 				l.ResetFocus()
 				l.SetFocus(1)
-				l.SetGraphics(g, &component.ButtonImages{
+				l.SetGraphics(g, &TabImages{ButtonImages: component.ButtonImages{
 					Outset: component.ButtonOutset{Sides: sides},
-				}, LineGraphics{})
+				}}, LineGraphics{})
 				l.Draw(term.NewStringWriter(width, 4))
 				require.NotEmpty(t, l.layout.cells)
 

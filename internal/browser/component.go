@@ -214,7 +214,7 @@ func (c *Component) styleTabs() {
 	c.tabs.SetFocusFrameChar(c.config.FocusTabHighlightChar)
 	c.tabs.SetHoverAttr(c.config.HoverTabAttr)
 	g := c.wm.FrameGraphics()
-	c.tabs.SetGraphics(g, c.config.TabImages.ButtonImages(g), c.config.FocusTabHighlightGraphics)
+	c.tabs.SetGraphics(g, c.config.TabImages.Images(g), c.config.FocusTabHighlightGraphics)
 	c.tabs.Player, c.tabs.Sounds = c.config.SoundPlayer, c.config.TabSounds
 	if c.shadedTabs != nil {
 		c.shadedTabs.SetDefAttr(c.config.NonFocusTabAttr)

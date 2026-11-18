@@ -92,6 +92,15 @@ type tab struct {
 	badgeAttr term.Attributes
 }
 
+// TabImages are the images Tabs draws its tabs over, in the states
+// SetGraphics tells. Highlighted is for the tab SetHighlight highlights;
+// without images that tab is drawn as any other tab in focus. Every
+// image reaches past its tab by Outset.
+type TabImages struct {
+	component.ButtonImages
+	Highlighted component.ButtonImage
+}
+
 // Tabs is a simple component that draws a list of component
 // names which can in in Focus (highlighted) or not.
 type Tabs struct {
@@ -117,9 +126,11 @@ type Tabs struct {
 	separator        string
 	dirty            bool
 
-	graphics  *FrameGraphics
-	images    *component.ButtonImages
-	highlight LineGraphics
+	graphics *FrameGraphics
+	images   *TabImages
+	// highlighted draws the Highlighted images of images, nil without.
+	highlighted *component.ButtonImages
+	highlight   LineGraphics
 
 	hoverAttr term.Attributes
 	// pointer is where the pointer is, relative to the bar, and hoverIdx
@@ -253,20 +264,27 @@ func (t *Tabs) SetBottomHighlight(on bool) {
 // images under each tab, across the rows inside the bar's border, and
 // highlight over the cells of the focus-frame highlight, which it draws
 // even without a focus-frame rune. Both go under the text of the labels.
-// A tab in focus is drawn over ButtonSelected's images or, without them,
-// ButtonIdle's. One not in focus is drawn over ButtonPressed's while
-// pressed with the pointer still on it, ButtonHover's while the pointer
-// is on it and no press is held, and ButtonIdle's otherwise, falling
-// back as component.ButtonImages does. images must be taken from g, and
-// a nil g draws no images. The bar keeps as many blank cells as the
-// images' side outset before the first tab and at least as many after
-// the last, for the outsets to show.
+// The highlighted tab is drawn over the Highlighted images or, without
+// them, as any other tab in focus. A tab in focus is drawn over
+// ButtonSelected's images or, without them, ButtonIdle's. One not in
+// focus is drawn over ButtonPressed's while pressed with the pointer
+// still on it, ButtonHover's while the pointer is on it and no press is
+// held, and ButtonIdle's otherwise, falling back as
+// component.ButtonImages does. images must be taken from g, and a nil g
+// draws no images. The bar keeps as many blank cells as the images'
+// side outset before the first tab and at least as many after the last,
+// for the outsets to show.
 func (t *Tabs) SetGraphics(
-	g *FrameGraphics, images *component.ButtonImages, highlight LineGraphics,
+	g *FrameGraphics, images *TabImages, highlight LineGraphics,
 ) {
-	t.graphics, t.images, t.highlight = g, images, highlight
+	t.graphics, t.images, t.highlight, t.highlighted = g, images, highlight, nil
 	if g == nil {
 		t.images, t.highlight = nil, LineGraphics{}
+	}
+	if t.images != nil && !t.images.Highlighted.Empty() {
+		t.highlighted = &component.ButtonImages{
+			Idle: t.images.Highlighted, Outset: t.images.Outset,
+		}
 	}
 	t.dirty = true
 }
@@ -463,8 +481,10 @@ func (t *Tabs) drawTabImages(w term.Writer) {
 		if !ok {
 			continue
 		}
-		st := component.ButtonIdle
+		images, st := &t.images.ButtonImages, component.ButtonIdle
 		switch lit, pressed := t.lit(cell.idx); {
+		case cell.idx == t.highlightIdx && t.highlighted != nil:
+			images = t.highlighted
 		case t.tabs[cell.idx].focus && !t.images.Selected.Empty():
 			st = component.ButtonSelected
 		case pressed:
@@ -472,7 +492,7 @@ func (t *Tabs) drawTabImages(w term.Writer) {
 		case lit:
 			st = component.ButtonHover
 		}
-		t.images.Draw(inner, image.Rect(start-xLeft, 0, start-xLeft+width, rows), st)
+		images.Draw(inner, image.Rect(start-xLeft, 0, start-xLeft+width, rows), st)
 	}
 }
 

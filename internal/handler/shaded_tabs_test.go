@@ -184,9 +184,9 @@ func TestShadedTabsDrawsImagesWhileRunning(t *testing.T) {
 		Interrupter: term.NopInterrupter(),
 		Active:      func() []int { return []int{1} },
 	})
-	s.SetGraphics(g, &component.ButtonImages{
+	s.SetGraphics(g, &tcomponent.TabImages{ButtonImages: component.ButtonImages{
 		Idle: component.ButtonImage{Left: img, Middle: img, Right: img},
-	}, tcomponent.LineGraphics{})
+	}}, tcomponent.LineGraphics{})
 	draw := func() []term.Image {
 		w := &imageRecorder{StringWriter: term.NewStringWriter(20, 1)}
 		s.Draw(w)

@@ -3222,7 +3222,7 @@ func (h *workspaceManagerHandler) styleWorkspaceBar(
 	h.bar.SetFocusFrameChar(s.highlightChar)
 	h.bar.SetHoverAttr(s.hoverAttr)
 	g := h.frameGraphics()
-	h.bar.SetGraphics(g, s.images.ButtonImages(g), s.highlight)
+	h.bar.SetGraphics(g, s.images.Images(g), s.highlight)
 	h.bar.Sounds = s.sounds
 	if h.shadedBar != nil {
 		h.shadedBar.SetDefAttr(s.nonFocusTabAttr)

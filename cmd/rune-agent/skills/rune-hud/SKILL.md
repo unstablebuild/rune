@@ -339,12 +339,12 @@ Abbreviations:
 | Prompt buttons | `browser.prompt.images.<idle\|selected\|hover\|pressed>` | `left` | (S+1) × (T+1+B) | fill |
 | | | `middle` (tiles →) | 1 × (T+1+B) | fill |
 | | | `right` | (1+S) × (T+1+B) | fill |
-| File tab | `browser.tab_images.<focus\|non_focus\|hover\|pressed>` | `left` | (S+1) × R | fill |
+| File tab | `browser.tab_images.<focus\|focus_window\|non_focus\|hover\|pressed>` | `left` | (S+1) × R | fill |
 | | | `middle` (tiles →) | 1 × R | fill |
 | | | `right` | (1+S) × R | fill |
 | File tab highlight | `browser.focus_tab_highlight_graphics` | `left`, `right` | 1 × 1 | fill |
 | | | `horizontal` (tiles →) | 1 × 1 | fill |
-| Workspace tab | `workspace.tab_images.<focus\|non_focus\|hover\|pressed>` | `left` | (S+1) × R | fill |
+| Workspace tab | `workspace.tab_images.<focus\|focus_window\|non_focus\|hover\|pressed>` | `left` | (S+1) × R | fill |
 | | | `middle` (tiles →) | 1 × R | fill |
 | | | `right` | (1+S) × R | fill |
 | Workspace tab highlight | `workspace.focus_tab_highlight_graphics` | `left`, `right` | 1 × 1 | fill |
@@ -386,10 +386,13 @@ Abbreviations:
   search box's buttons. Prompts built elsewhere keep their colours. Confirm on
   screen which prompts show them.
 - File tab `focus` images are for every tab shown in a window, the tabs in
-  `focus_tab_attr`, and fall back to `non_focus`. Tabs have no hover state.
+  `focus_tab_attr`, and fall back to `non_focus`. `focus_window` images are for
+  the focused window's tab only and fall back to `focus`. Tabs have no hover
+  state.
 - The workspace tab bar shows only while more than one workspace is open. Its
-  `focus` images are for the workspace in focus. Its colours come from
-  `browser.focus_tab_attr`, `browser.non_focus_tab_attr` and
+  `focus_window` images, falling back to `focus`, are for the workspace in
+  focus. Its colours come from `browser.focus_tab_attr`,
+  `browser.non_focus_tab_attr` and
   `browser.focus_tab_highlight_attr`. Every workspace shares it, so only the
   user's config styles it, never a workspace's own.
 - The program status inbox is `:programstatus`. Every workspace shares it, so
@@ -487,8 +490,8 @@ Line up rails and seams across slices at these positions.
   wide uses `left`.
 - A tab activates when the button is released over it, as a quick menu button
   does. `hover` and `pressed` apply only to tabs not in focus: a tab in focus
-  keeps `focus` under the pointer. Draw the states on the same canvas, so
-  nothing jumps between them.
+  keeps `focus` or `focus_window` under the pointer. Draw the states on the
+  same canvas, so nothing jumps between them.
 - `browser.hover_tab_attr` is layered over the name and icon of the tab under
   the pointer, under any colour the tab has of its own, such as
   `dirty_tab_attr`. Its `bg` fills the blanks of the name too.
@@ -598,8 +601,8 @@ Every `graphics` table takes a `mode`:
 take no `mode`.
 
 ### Fallbacks
-- **Tabs:** `focus` falls back to `non_focus`, not to `hover`. `pressed` falls
-  back to `hover`, and `hover` to `non_focus`.
+- **Tabs:** `focus_window` falls back to `focus`, and `focus` to `non_focus`,
+  not to `hover`. `pressed` falls back to `hover`, and `hover` to `non_focus`.
 - **Scroll bar:** a missing `top_char` or `bottom_char` uses the middle image,
   and a missing `hover_` image uses the plain one.
 - **Command prompt frame:** slots `command.frame_charset.graphics` leaves out

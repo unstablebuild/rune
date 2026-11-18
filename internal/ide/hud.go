@@ -66,7 +66,7 @@ type workspaceBarStyle struct {
 	hoverAttr           term.Attributes
 	// highlightChar is 0 when the bar draws no highlight character.
 	highlightChar rune
-	images        browser.PromptImages
+	images        browser.TabImages
 	highlight     tcomponent.LineGraphics
 	sounds        handler.TabSounds
 }
@@ -107,8 +107,10 @@ func (s hudStyle) imageURIs() []string {
 		}
 	}
 	buttons(s.browser.Prompt.Images)
-	buttons(s.browser.Tabs.Images)
-	buttons(s.workspaceBar.images)
+	for _, tabs := range []browser.TabImages{s.browser.Tabs.Images, s.workspaceBar.images} {
+		buttons(tabs.PromptImages)
+		uris = append(uris, tabs.FocusWindow.Left, tabs.FocusWindow.Middle, tabs.FocusWindow.Right)
+	}
 	buttons(s.statusInbox.Images)
 	uris = append(uris, s.browser.Tabs.HighlightGraphics.URIs()...)
 	uris = append(uris, s.workspaceBar.highlight.URIs()...)

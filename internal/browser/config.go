@@ -218,19 +218,44 @@ func (i PromptImages) ButtonImages(g *tcomponent.FrameGraphics) *component.Butto
 	if i.Empty() || g == nil {
 		return nil
 	}
-	state := func(img PromptButtonImage) component.ButtonImage {
-		return component.ButtonImage{
-			Left:   g.Image(img.Left),
-			Middle: g.Image(img.Middle),
-			Right:  g.Image(img.Right),
-		}
-	}
-	return &component.ButtonImages{
-		Idle:     state(i.Idle),
-		Selected: state(i.Selected),
-		Hover:    state(i.Hover),
-		Pressed:  state(i.Pressed),
+	ret := i.images(g)
+	return &ret
+}
+
+func (i PromptImages) images(g *tcomponent.FrameGraphics) component.ButtonImages {
+	return component.ButtonImages{
+		Idle:     i.Idle.image(g),
+		Selected: i.Selected.image(g),
+		Hover:    i.Hover.image(g),
+		Pressed:  i.Pressed.image(g),
 		Outset:   i.Outset,
+	}
+}
+
+// TabImages names the images of the tabs in each state, as
+// tcomponent.TabImages draws them. Selected is for the tabs shown in a
+// window and FocusWindow for the one in the focus window, which falls
+// back to Selected's.
+type TabImages struct {
+	PromptImages
+	FocusWindow PromptButtonImage
+}
+
+// Empty reports whether i names no image, whatever its Outset.
+func (i TabImages) Empty() bool {
+	return i.PromptImages.Empty() && i.FocusWindow.Empty()
+}
+
+// Images returns the images i names, taken from g as
+// PromptImages.ButtonImages takes them. It is nil when i names no image
+// or g is nil.
+func (i TabImages) Images(g *tcomponent.FrameGraphics) *tcomponent.TabImages {
+	if i.Empty() || g == nil {
+		return nil
+	}
+	return &tcomponent.TabImages{
+		ButtonImages: i.PromptImages.images(g),
+		Highlighted:  i.FocusWindow.image(g),
 	}
 }
 
@@ -244,6 +269,14 @@ type PromptButtonImage struct {
 // Empty reports whether i names no image.
 func (i PromptButtonImage) Empty() bool {
 	return i == PromptButtonImage{}
+}
+
+func (i PromptButtonImage) image(g *tcomponent.FrameGraphics) component.ButtonImage {
+	return component.ButtonImage{
+		Left:   g.Image(i.Left),
+		Middle: g.Image(i.Middle),
+		Right:  g.Image(i.Right),
+	}
 }
 
 // Wallpaper is a tui.Component wallpaper factory.
@@ -280,7 +313,7 @@ type Config struct {
 	// TabImages names the images that writers that can draw images show
 	// under each tab, across the rows of the tab bar, in the states
 	// tcomponent.Tabs.SetGraphics tells.
-	TabImages PromptImages
+	TabImages TabImages
 	// FocusTabHighlightGraphics names the images drawn over the cells of
 	// the focus-frame highlight, below the text of the labels, also when
 	// FocusTabHighlightChar is zero.
@@ -378,7 +411,7 @@ type TabStyle struct {
 	FocusTabHighlightAttr term.Attributes
 	FocusTabHighlightChar rune
 	HoverTabAttr          term.Attributes
-	Images                PromptImages
+	Images                TabImages
 	HighlightGraphics     tcomponent.LineGraphics
 	Sounds                handler.TabSounds
 }

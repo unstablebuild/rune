@@ -652,10 +652,10 @@ func TestComponentTabGraphics(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.TabBarOffset = 13
 	cfg.TabBarHeight = 2
-	cfg.TabImages = PromptImages{
+	cfg.TabImages = TabImages{PromptImages: PromptImages{
 		Idle:     PromptButtonImage{Left: idle, Middle: idle, Right: idle},
 		Selected: PromptButtonImage{Left: focus, Middle: focus, Right: focus},
-	}
+	}}
 	cfg.FocusTabHighlightGraphics = tcomponent.LineGraphics{Middle: highlight}
 	cfg.WindowManagerConfig.FrameGraphicsStorage = storagestub.NewInMemoryService()
 	loaded := make(loadInterrupter, 8)
@@ -693,10 +693,10 @@ func TestComponentTabGraphics(t *testing.T) {
 			FocusTabAttr:          red,
 			NonFocusTabAttr:       red,
 			FocusTabHighlightChar: '=',
-			Images: PromptImages{
+			Images: TabImages{PromptImages: PromptImages{
 				Idle:     PromptButtonImage{Left: highlight, Middle: highlight, Right: highlight},
 				Selected: PromptButtonImage{Left: idle, Middle: idle, Right: idle},
-			},
+			}},
 		},
 	})
 	assert.Equal(t, ""+
@@ -705,6 +705,93 @@ func TestComponentTabGraphics(t *testing.T) {
 	name := w.Cells()[width+15]
 	require.Equal(t, 'O', name.Ch)
 	assert.Equal(t, term.ColorRed, name.Fg, "the labels take the new colors")
+}
+
+func TestComponentFocusWindowTabImages(t *testing.T) {
+	const width, height = 40, 6
+	dir := t.TempDir()
+	uri := func(name string, y uint8) string {
+		img := image.NewGray(image.Rect(0, 0, 1, 1))
+		img.SetGray(0, 0, color.Gray{Y: y})
+		var b bytes.Buffer
+		require.NoError(t, png.Encode(&b, img))
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, b.Bytes(), 0o600))
+		return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	}
+	button := func(uri string) PromptButtonImage {
+		return PromptButtonImage{Left: uri, Middle: uri, Right: uri}
+	}
+	idle, focus, window := uri("idle.png", 128), uri("focus.png", 255), uri("window.png", 40)
+
+	tests := []struct {
+		name        string
+		focusWindow bool
+		// focusTwo moves the focus to the window showing TWO.
+		focusTwo bool
+		want     string
+	}{
+		{
+			name: "the tab of the focus window", focusWindow: true,
+			want: "1_ONE  2@TWO  3aTHREE",
+		},
+		{
+			name: "the images follow the focus window", focusWindow: true, focusTwo: true,
+			want: "1@ONE  2_TWO  3aTHREE",
+		},
+		{
+			name: "without focus window images it is drawn as any shown tab",
+			want: "1@ONE  2@TWO  3aTHREE",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.TabBarOffset = 1
+			cfg.TabBarHeight = 2
+			cfg.TabImages = TabImages{PromptImages: PromptImages{
+				Idle:     button(idle),
+				Selected: button(focus),
+			}}
+			loads := 2
+			if tt.focusWindow {
+				cfg.TabImages.FocusWindow = button(window)
+				loads++
+			}
+			cfg.WindowManagerConfig.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			loaded := make(loadInterrupter, 8)
+			cfg.Interrupter = loaded
+			b := NewComponent(cfg)
+			defer func() { assert.NoError(t, b.Close()) }()
+			tab := func(path string, icon rune, name string) *Tab {
+				u, err := workspaceapi.ParseURI("file:///" + path)
+				require.NoError(t, err)
+				return b.NewTab(u, icon, name, newTestHandler(), nil)
+			}
+			winOne := b.Focus()
+			require.NoError(t, winOne.SetContent(tab("one", '1', "ONE")))
+			winTwo, ok := b.Split(browserapi.OrientationRight, winOne, tab("two", '2', "TWO"))
+			require.True(t, ok)
+			tab("three", '3', "THREE")
+			if tt.focusTwo {
+				b.SetFocus(winTwo)
+			} else {
+				b.SetFocus(winOne)
+			}
+			b.Resize(width, height)
+
+			w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+			labels := func() string {
+				require.NoError(t, w.Clear(term.Attributes{}))
+				b.Draw(w)
+				require.NoError(t, w.Flush())
+				return strings.TrimSpace(strings.Split(w.String(), "\n")[1])
+			}
+			_ = labels()
+			loaded.wait(t, loads)
+			assert.Equal(t, tt.want, labels())
+		})
+	}
 }
 
 // loadInterrupter is a term.Interrupter that queues every interrupt,

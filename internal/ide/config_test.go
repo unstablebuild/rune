@@ -3407,11 +3407,12 @@ func TestConfigHUDStyle(t *testing.T) {
 				"focus_tab_highlight_char": "▔",
 				"hover_tab_attr":           map[string]any{"fg": "white", "flags": "bold"},
 				"tab_images": map[string]any{
-					"focus":     map[string]any{"middle": "file:///tab/focus.png"},
-					"non_focus": map[string]any{"left": "file:///tab/l.png", "right": "file:///tab/r.png"},
-					"hover":     map[string]any{"middle": "file:///tab/hover.png"},
-					"pressed":   map[string]any{"middle": "file:///tab/pressed.png"},
-					"outset":    map[string]any{"sides": 1},
+					"focus":        map[string]any{"middle": "file:///tab/focus.png"},
+					"focus_window": map[string]any{"middle": "file:///tab/window.png"},
+					"non_focus":    map[string]any{"left": "file:///tab/l.png", "right": "file:///tab/r.png"},
+					"hover":        map[string]any{"middle": "file:///tab/hover.png"},
+					"pressed":      map[string]any{"middle": "file:///tab/pressed.png"},
+					"outset":       map[string]any{"sides": 1},
 				},
 				"focus_tab_highlight_graphics": map[string]any{
 					"mode": "overlay", "horizontal": "file:///tab/hl.png", "right": "file:///tab/r.png",
@@ -3427,12 +3428,15 @@ func TestConfigHUDStyle(t *testing.T) {
 					FocusTabHighlightAttr: term.Attributes{Fg: term.ColorPurple},
 					FocusTabHighlightChar: '▔',
 					HoverTabAttr:          term.Attributes{Fg: term.ColorWhite, Attrs: term.AttrBold},
-					Images: browser.PromptImages{
-						Idle:     browser.PromptButtonImage{Left: "file:///tab/l.png", Right: "file:///tab/r.png"},
-						Selected: browser.PromptButtonImage{Middle: "file:///tab/focus.png"},
-						Hover:    browser.PromptButtonImage{Middle: "file:///tab/hover.png"},
-						Pressed:  browser.PromptButtonImage{Middle: "file:///tab/pressed.png"},
-						Outset:   component.ButtonOutset{Sides: 1},
+					Images: browser.TabImages{
+						PromptImages: browser.PromptImages{
+							Idle:     browser.PromptButtonImage{Left: "file:///tab/l.png", Right: "file:///tab/r.png"},
+							Selected: browser.PromptButtonImage{Middle: "file:///tab/focus.png"},
+							Hover:    browser.PromptButtonImage{Middle: "file:///tab/hover.png"},
+							Pressed:  browser.PromptButtonImage{Middle: "file:///tab/pressed.png"},
+							Outset:   component.ButtonOutset{Sides: 1},
+						},
+						FocusWindow: browser.PromptButtonImage{Middle: "file:///tab/window.png"},
 					},
 					HighlightGraphics: tcomponent.LineGraphics{
 						Middle: "file:///tab/hl.png", End: "file:///tab/r.png", Overlay: true,
@@ -3443,6 +3447,7 @@ func TestConfigHUDStyle(t *testing.T) {
 			wantURIs: []string{
 				"file:///tab/focus.png", "file:///tab/hl.png", "file:///tab/hover.png",
 				"file:///tab/l.png", "file:///tab/pressed.png", "file:///tab/r.png",
+				"file:///tab/window.png",
 			},
 		},
 		{
@@ -3451,17 +3456,42 @@ func TestConfigHUDStyle(t *testing.T) {
 				"focus": map[string]any{"middle": "file:///tab/focus.png"},
 			}}},
 			check: func(t *testing.T, s hudStyle) {
-				assert.Equal(t, browser.PromptImages{
+				assert.Equal(t, browser.TabImages{PromptImages: browser.PromptImages{
 					Selected: browser.PromptButtonImage{Middle: "file:///tab/focus.png"},
-				}, s.browser.Tabs.Images)
+				}}, s.browser.Tabs.Images)
 			},
 			wantURIs: []string{"file:///tab/focus.png"},
+		},
+		{
+			name: "only focus_window tab images",
+			cfg: map[string]any{"browser": map[string]any{"tab_images": map[string]any{
+				"focus_window": map[string]any{"middle": "file:///tab/window.png"},
+				"outset":       map[string]any{"top": 1},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, browser.TabImages{
+					PromptImages: browser.PromptImages{Outset: component.ButtonOutset{Top: 1}},
+					FocusWindow:  browser.PromptButtonImage{Middle: "file:///tab/window.png"},
+				}, s.browser.Tabs.Images)
+			},
+			wantURIs: []string{"file:///tab/window.png"},
 		},
 		{
 			name: "an invalid tab image draws no tab images",
 			cfg: map[string]any{"browser": map[string]any{"tab_images": map[string]any{
 				"focus":     map[string]any{"middle": "ftp://example.com/focus.png"},
 				"non_focus": map[string]any{"middle": "file:///tab/idle.png"},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.True(t, s.browser.Tabs.Images.Empty())
+			},
+			wantErr: "browser.tab_images",
+		},
+		{
+			name: "an invalid focus_window image draws no tab images",
+			cfg: map[string]any{"browser": map[string]any{"tab_images": map[string]any{
+				"focus":        map[string]any{"middle": "file:///tab/focus.png"},
+				"focus_window": map[string]any{"middle": "ftp://example.com/window.png"},
 			}}},
 			check: func(t *testing.T, s hudStyle) {
 				assert.True(t, s.browser.Tabs.Images.Empty())
@@ -3497,10 +3527,11 @@ func TestConfigHUDStyle(t *testing.T) {
 				"workspace": map[string]any{
 					"focus_tab_highlight_char": "",
 					"tab_images": map[string]any{
-						"focus":     map[string]any{"middle": "file:///ws/focus.png"},
-						"non_focus": map[string]any{"middle": "file:///ws/idle.png"},
-						"hover":     map[string]any{"middle": "file:///ws/hover.png"},
-						"outset":    map[string]any{"sides": 1},
+						"focus":        map[string]any{"middle": "file:///ws/focus.png"},
+						"focus_window": map[string]any{"middle": "file:///ws/window.png"},
+						"non_focus":    map[string]any{"middle": "file:///ws/idle.png"},
+						"hover":        map[string]any{"middle": "file:///ws/hover.png"},
+						"outset":       map[string]any{"sides": 1},
 					},
 					"focus_tab_highlight_graphics": map[string]any{
 						"left": "file:///ws/hl-l.png", "horizontal": "file:///ws/hl.png",
@@ -3516,11 +3547,14 @@ func TestConfigHUDStyle(t *testing.T) {
 					nonFocusTabIconAttr: term.Attributes{Fg: term.ColorBlue},
 					highlightAttr:       term.Attributes{Fg: term.ColorPurple},
 					hoverAttr:           term.Attributes{Fg: term.ColorWhite},
-					images: browser.PromptImages{
-						Idle:     browser.PromptButtonImage{Middle: "file:///ws/idle.png"},
-						Selected: browser.PromptButtonImage{Middle: "file:///ws/focus.png"},
-						Hover:    browser.PromptButtonImage{Middle: "file:///ws/hover.png"},
-						Outset:   component.ButtonOutset{Sides: 1},
+					images: browser.TabImages{
+						PromptImages: browser.PromptImages{
+							Idle:     browser.PromptButtonImage{Middle: "file:///ws/idle.png"},
+							Selected: browser.PromptButtonImage{Middle: "file:///ws/focus.png"},
+							Hover:    browser.PromptButtonImage{Middle: "file:///ws/hover.png"},
+							Outset:   component.ButtonOutset{Sides: 1},
+						},
+						FocusWindow: browser.PromptButtonImage{Middle: "file:///ws/window.png"},
 					},
 					highlight: tcomponent.LineGraphics{
 						Start: "file:///ws/hl-l.png", Middle: "file:///ws/hl.png",
@@ -3533,6 +3567,7 @@ func TestConfigHUDStyle(t *testing.T) {
 			wantURIs: []string{
 				"file:///tab/focus.png", "file:///ws/focus.png", "file:///ws/hl-l.png",
 				"file:///ws/hl.png", "file:///ws/hover.png", "file:///ws/idle.png",
+				"file:///ws/window.png",
 			},
 		},
 		{

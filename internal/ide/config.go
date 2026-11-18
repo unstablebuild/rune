@@ -2386,71 +2386,67 @@ func (c ideConfig) promptImages() browser.PromptImages {
 	if !ok {
 		return browser.PromptImages{}
 	}
-	return c.buttonImages(cfg, "images", "prompt", []buttonImageKey{
-		{"idle", component.ButtonIdle},
-		{"selected", component.ButtonSelected},
-		{"hover", component.ButtonHover},
-		{"pressed", component.ButtonPressed},
-	}, true)
+	var ret browser.PromptImages
+	if !c.buttonImages(cfg, "images", "prompt", &ret.Outset,
+		buttonImageSlot{&ret.Idle, "idle"},
+		buttonImageSlot{&ret.Selected, "selected"},
+		buttonImageSlot{&ret.Hover, "hover"},
+		buttonImageSlot{&ret.Pressed, "pressed"},
+	) {
+		return browser.PromptImages{}
+	}
+	if ret.Idle.Empty() && !ret.Empty() {
+		c.errors["prompt.images.idle"] = errors.New(
+			"expected images for idle buttons, which the other states fall back to")
+		return browser.PromptImages{}
+	}
+	return ret
 }
 
-// buttonImageKey is the key of cfg that buttonImages reads the images of
-// state from.
-type buttonImageKey struct {
-	key   string
-	state component.ButtonState
+// buttonImageSlot is the key of a button state whose images go to dst.
+type buttonImageSlot struct {
+	dst *browser.PromptButtonImage
+	key string
 }
 
-// buttonImages reads the images of each state of states from the
-// left, middle and right keys of its key in cfg's table key, and the
-// top, bottom and sides of that table's outset, reporting errors under
-// errKey.key. With requireIdle, naming images for a state without naming
-// images for idle, which the others fall back to, is an error. An error
-// in any state draws no images at all.
+// buttonImages reads into each slot the left, middle and right images of
+// its key in cfg's table key, and the top, bottom and sides of that
+// table's outset into outset, reporting errors under errKey.key. It
+// reports false when any slot failed, in which case the caller draws no
+// images at all. Without the table it reports true and reads nothing.
 func (c ideConfig) buttonImages(
-	cfg config.Config, key, errKey string, states []buttonImageKey, requireIdle bool,
-) browser.PromptImages {
+	cfg config.Config, key, errKey string, outset *component.ButtonOutset,
+	slots ...buttonImageSlot,
+) bool {
 	name := errKey + "." + key
 	images, err := cfg.GetConfig(key)
 	if err != nil {
 		if err != config.ErrNotFound {
 			c.errors[name] = err
+			return false
 		}
-		return browser.PromptImages{}
-	}
-	var ret browser.PromptImages
-	slots := map[component.ButtonState]*browser.PromptButtonImage{
-		component.ButtonIdle:     &ret.Idle,
-		component.ButtonSelected: &ret.Selected,
-		component.ButtonHover:    &ret.Hover,
-		component.ButtonPressed:  &ret.Pressed,
+		return true
 	}
 	var errs []error
-	for _, s := range states {
-		dst := slots[s.state]
+	for _, s := range slots {
 		if err := tconfig.GetGraphics(images, s.key, nil,
-			tconfig.GraphicsSlot{Key: "left", URI: &dst.Left},
-			tconfig.GraphicsSlot{Key: "middle", URI: &dst.Middle},
-			tconfig.GraphicsSlot{Key: "right", URI: &dst.Right},
+			tconfig.GraphicsSlot{Key: "left", URI: &s.dst.Left},
+			tconfig.GraphicsSlot{Key: "middle", URI: &s.dst.Middle},
+			tconfig.GraphicsSlot{Key: "right", URI: &s.dst.Right},
 		); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	if len(errs) > 0 {
 		c.errors[name] = errors.Join(errs...)
-		return browser.PromptImages{}
-	}
-	if requireIdle && ret.Idle.Empty() && !ret.Empty() {
-		c.errors[name+".idle"] = errors.New(
-			"expected images for idle buttons, which the other states fall back to")
-		return browser.PromptImages{}
+		return false
 	}
 	c.graphicsOutset(cfg, key, errKey,
-		outsetSide{&ret.Outset.Top, "top"},
-		outsetSide{&ret.Outset.Bottom, "bottom"},
-		outsetSide{&ret.Outset.Sides, "sides"},
+		outsetSide{&outset.Top, "top"},
+		outsetSide{&outset.Bottom, "bottom"},
+		outsetSide{&outset.Sides, "sides"},
 	)
-	return ret
+	return true
 }
 
 // lineGraphics reads the graphics table key of cfg, with the start,
@@ -2473,16 +2469,22 @@ func (c ideConfig) lineGraphics(
 }
 
 // tabImages reads the tab_images of cfg, whose errors go under errKey:
-// the tabs in focus are drawn over the focus images, or the non_focus
-// ones without them, and the rest over the hover and pressed ones while
-// the pointer is on them.
-func (c ideConfig) tabImages(cfg config.Config, errKey string) browser.PromptImages {
-	return c.buttonImages(cfg, "tab_images", errKey, []buttonImageKey{
-		{"non_focus", component.ButtonIdle},
-		{"focus", component.ButtonSelected},
-		{"hover", component.ButtonHover},
-		{"pressed", component.ButtonPressed},
-	}, false)
+// the tab of the focus window is drawn over the focus_window images, the
+// other tabs in focus and, without focus_window, that one too over the
+// focus images, or the non_focus ones without them, and the rest over
+// the hover and pressed ones while the pointer is on them.
+func (c ideConfig) tabImages(cfg config.Config, errKey string) browser.TabImages {
+	var ret browser.TabImages
+	if !c.buttonImages(cfg, "tab_images", errKey, &ret.Outset,
+		buttonImageSlot{&ret.Idle, "non_focus"},
+		buttonImageSlot{&ret.Selected, "focus"},
+		buttonImageSlot{&ret.FocusWindow, "focus_window"},
+		buttonImageSlot{&ret.Hover, "hover"},
+		buttonImageSlot{&ret.Pressed, "pressed"},
+	) {
+		return browser.TabImages{}
+	}
+	return ret
 }
 
 // tabSounds reads the tab_sounds of cfg: the sounds a tab bar plays when
@@ -5860,11 +5862,14 @@ func (c ideConfig) statusInboxStyle() idestatus.InboxStyle {
 	} else if err != config.ErrNotFound {
 		c.errors[prefix+"progress_bar"] = err
 	}
-	ret.Images = c.buttonImages(cfg, "images", "program_status", []buttonImageKey{
-		{"idle", component.ButtonIdle},
-		{"selected", component.ButtonSelected},
-		{"hover", component.ButtonHover},
-	}, false)
+	var images browser.PromptImages
+	if c.buttonImages(cfg, "images", "program_status", &images.Outset,
+		buttonImageSlot{&images.Idle, "idle"},
+		buttonImageSlot{&images.Selected, "selected"},
+		buttonImageSlot{&images.Hover, "hover"},
+	) {
+		ret.Images = images
+	}
 	ret.MarkerGraphics = c.lineGraphics(cfg, "marker_graphics", "program_status", "top", "vertical", "bottom")
 	var bar idestatus.ProgressBarGraphics
 	if err := tconfig.GetGraphics(cfg, "progress_bar_graphics", &bar.Overlay,

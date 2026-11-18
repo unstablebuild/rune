@@ -23,6 +23,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/tui"
 	tcomponent "unstable.build/rune/internal/component"
 	thandler "unstable.build/rune/internal/handler"
 )
@@ -80,8 +81,11 @@ func TestConfigRestyled(t *testing.T) {
 			NonFocusTabIconAttr:   blue,
 			FocusTabHighlightAttr: blue,
 			FocusTabHighlightChar: '=',
-			Images:                PromptImages{Selected: PromptButtonImage{Middle: "file:///tab.png"}},
-			HighlightGraphics:     tcomponent.LineGraphics{Middle: "file:///highlight.png", Overlay: true},
+			Images: TabImages{
+				PromptImages: PromptImages{Selected: PromptButtonImage{Middle: "file:///tab.png"}},
+				FocusWindow:  PromptButtonImage{Middle: "file:///window.png"},
+			},
+			HighlightGraphics: tcomponent.LineGraphics{Middle: "file:///highlight.png", Overlay: true},
 		},
 	}
 
@@ -116,4 +120,94 @@ func TestConfigRestyled(t *testing.T) {
 	want.FocusTabHighlightGraphics = s.Tabs.HighlightGraphics
 
 	assert.Equal(t, want, c.Restyled(s))
+}
+
+func TestTabImagesImages(t *testing.T) {
+	g := tcomponent.NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+	t.Cleanup(func() { assert.NoError(t, g.Close()) })
+	button := func(name string) PromptButtonImage {
+		return PromptButtonImage{
+			Left:   "file:///" + name + "-left.png",
+			Middle: "file:///" + name + "-middle.png",
+			Right:  "file:///" + name + "-right.png",
+		}
+	}
+	outset := component.ButtonOutset{Top: 1, Bottom: 2, Sides: 3}
+	all := TabImages{
+		PromptImages: PromptImages{
+			Idle:     button("idle"),
+			Selected: button("selected"),
+			Hover:    button("hover"),
+			Pressed:  button("pressed"),
+			Outset:   outset,
+		},
+		FocusWindow: button("window"),
+	}
+	tests := []struct {
+		name   string
+		images TabImages
+		g      *tcomponent.FrameGraphics
+		// want pairs each drawn image with the state it is expected from.
+		want func(*tcomponent.TabImages) map[*component.ButtonImage]PromptButtonImage
+	}{
+		{name: "no graphics", images: all},
+		{name: "no images", images: TabImages{PromptImages: PromptImages{Outset: outset}}, g: g},
+		{
+			name: "only the focus window", g: g,
+			images: TabImages{
+				PromptImages: PromptImages{Outset: outset},
+				FocusWindow:  button("window"),
+			},
+			want: func(got *tcomponent.TabImages) map[*component.ButtonImage]PromptButtonImage {
+				return map[*component.ButtonImage]PromptButtonImage{
+					&got.Idle:        {},
+					&got.Selected:    {},
+					&got.Hover:       {},
+					&got.Pressed:     {},
+					&got.Highlighted: button("window"),
+				}
+			},
+		},
+		{
+			name: "every state", images: all, g: g,
+			want: func(got *tcomponent.TabImages) map[*component.ButtonImage]PromptButtonImage {
+				return map[*component.ButtonImage]PromptButtonImage{
+					&got.Idle:        all.Idle,
+					&got.Selected:    all.Selected,
+					&got.Hover:       all.Hover,
+					&got.Pressed:     all.Pressed,
+					&got.Highlighted: all.FocusWindow,
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.images.Images(tt.g)
+			if tt.want == nil {
+				assert.Nil(t, got)
+				return
+			}
+			if !assert.NotNil(t, got) {
+				return
+			}
+			assert.Equal(t, outset, got.Outset)
+			for img, uris := range tt.want(got) {
+				for _, side := range []struct {
+					got tui.Component
+					uri string
+				}{
+					{img.Left, uris.Left},
+					{img.Middle, uris.Middle},
+					{img.Right, uris.Right},
+				} {
+					if side.uri == "" {
+						assert.Nil(t, side.got)
+						continue
+					}
+					assert.Same(t, g.Image(side.uri), side.got)
+				}
+			}
+		})
+	}
 }

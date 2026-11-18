@@ -1070,24 +1070,27 @@ config = {
         "hover_tab_attr":          attr(),
         # A "tab_images" table names images drawn under each tab: "focus"
         # for the tabs shown in a window, falling back to "non_focus" for
-        # the others. A tab not in focus is drawn over "hover" while the
-        # pointer is on it and over "pressed" while a press on it is held,
-        # as a tab activates when the button is released over it. "pressed"
-        # falls back to "hover" and "hover" to "non_focus". Each names a
-        # "left" image for the tab's first cell, a "right" one for its last
-        # and a "middle" one for every cell between. "outset" stretches the
-        # left and right images "sides" cells outward:
+        # the others, and "focus_window" for the tab of the window in
+        # focus, falling back to "focus". A tab not in focus is drawn over
+        # "hover" while the pointer is on it and over "pressed" while a
+        # press on it is held, as a tab activates when the button is
+        # released over it. "pressed" falls back to "hover" and "hover" to
+        # "non_focus". Each names a "left" image for the tab's first cell,
+        # a "right" one for its last and a "middle" one for every cell
+        # between. "outset" stretches the left and right images "sides"
+        # cells outward:
         #
         #     "tab_images": {
-        #         "focus":     {
+        #         "focus":        {
         #             "left":   "file:///path/to/tab-left.png",
         #             "middle": "file:///path/to/tab-middle.png",
         #             "right":  "file:///path/to/tab-right.png",
         #         },
-        #         "non_focus": {...},
-        #         "hover":     {...},
-        #         "pressed":   {...},
-        #         "outset":    {"sides": 0},
+        #         "focus_window": {...},
+        #         "non_focus":    {...},
+        #         "hover":        {...},
+        #         "pressed":      {...},
+        #         "outset":       {"sides": 0},
         #     },
         #
         # A "focus_tab_highlight_graphics" table names images for the
@@ -1194,8 +1197,9 @@ config = {
         "focus_tab_highlight_char":  "",
         # "tab_images", "focus_tab_highlight_graphics" and "tab_sounds" name
         # images and sounds for the workspace tab bar, as their browser
-        # counterparts do; "focus" is the workspace in focus. The bar takes
-        # its colours from browser.*_tab_attr, browser.hover_tab_attr and
+        # counterparts do; "focus_window", falling back to "focus", is the
+        # workspace in focus. The bar takes its colours from
+        # browser.*_tab_attr, browser.hover_tab_attr and
         # browser.focus_tab_highlight_attr. Every workspace shares it, so a
         # workspace's own config does not style it.
         "tab_sounds": {

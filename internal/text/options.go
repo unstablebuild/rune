@@ -700,7 +700,7 @@ func WithFocusTabHighlightChar(r rune) Option {
 
 // WithTabImages returns an Option that names the images drawn under the
 // tabs, as browser.Config.TabImages does.
-func WithTabImages(images browser.PromptImages) Option {
+func WithTabImages(images browser.TabImages) Option {
 	return func(cfg *Config) {
 		cfg.TabImages = images
 	}
