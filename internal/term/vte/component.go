@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -65,6 +66,7 @@ type Component struct {
 	spawnWG           sync.WaitGroup
 	spawnErrored      atomic.Bool
 	pid               atomic.Int64
+	runsProgram       atomic.Bool // see programInForeground
 	exitCh            chan error
 	exitErr           error
 	slaveClosed       atomic.Bool
@@ -1096,6 +1098,25 @@ func (t *Component) Pid() workspaceapi.Pid {
 	return workspaceapi.Pid(t.pid.Load())
 }
 
+// programInForeground reports whether a program, not a shell, owns the
+// terminal: either the Component was started with a command that is not a
+// shell, as `terminalnewtab claude` does, or a process other than the one it
+// started is in the foreground, as when a program is run from the shell.
+// Otherwise it reports false, also when that cannot be told, as for a pty on
+// a remote workspace.
+func (t *Component) programInForeground() bool {
+	if t.runsProgram.Load() {
+		return true
+	}
+	m, ok := t.pty.Master.(interface{ ForegroundPgrp() (int, error) })
+	pid := t.Pid()
+	if !ok || pid == 0 {
+		return false
+	}
+	pgrp, err := m.ForegroundPgrp()
+	return err == nil && pgrp != int(pid)
+}
+
 // WaitSpawn blocks until the async expandAndStart goroutine
 // (created by Init when Config.CommandExpander is set) has
 // finished, including any reportSpawnError watcher hand-off.
@@ -1238,6 +1259,8 @@ func (t *Component) startCommand(ctx context.Context, cmdAndArgsStr string) erro
 	cmd.Stderr = t.pty.Slave
 	cmd.Stdin = t.pty.Slave
 
+	t.runsProgram.Store(len(cmdAndArgs) > 0 && !isShell(cmdAndArgs[0]))
+
 	t.mu.Lock()
 	if t.closed.Load() {
 		t.mu.Unlock()
@@ -1255,6 +1278,16 @@ func (t *Component) startCommand(ctx context.Context, cmdAndArgsStr string) erro
 		return fmt.Errorf("start command: %w", err)
 	}
 	return nil
+}
+
+// isShell reports whether the command at path is a common interactive shell,
+// which can take part in the bell handshake that enters modal mode.
+func isShell(path string) bool {
+	switch filepath.Base(path) {
+	case "sh", "bash", "zsh", "fish", "dash", "ksh", "csh", "tcsh":
+		return true
+	}
+	return false
 }
 
 // appendDefaultTerminalEnv pins TERM=xterm-256color and unsets

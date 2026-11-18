@@ -501,6 +501,49 @@ $ XX▐
 	})
 }
 
+func TestHandlerModalEscReachesForegroundProgram(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	cfg.Modal = true
+	// The tty echoes esc as ^[ and cat -v prints it back; a bell handshake
+	// would show as ^A^G instead.
+	rows := []string{"$ cat -v", "^[x", "^[x", "▐"}
+	screen := make([]string, 10)
+	for i := range screen {
+		var row string
+		if i < len(rows) {
+			row = rows[i]
+		}
+		screen[i] = fmt.Sprintf("%-20s", row)
+	}
+	cases := []vtetest.Case{
+		{"cat -v><x>", strings.Join(screen, "\n")},
+	}
+	testSequence(t, cfg, defaultWaitForIdleVte, cases)
+}
+
+func TestHandlerModalEscReachesCommandProgram(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	cfg.Modal = true
+	// The program is the terminal's command, with no shell to ring the bell,
+	// so esc is its own input. env keeps the command from being a shell, and
+	// the program echoes first so that the screen has drawn before the keys.
+	rows := []string{"ready", "^[x", "^[x", "▐"}
+	screen := make([]string, 10)
+	for i := range screen {
+		var row string
+		if i < len(rows) {
+			row = rows[i]
+		}
+		screen[i] = fmt.Sprintf("%-20s", row)
+	}
+	cases := []vtetest.Case{
+		{"<x>", strings.Join(screen, "\n")},
+	}
+	testSequenceCommand(t, cfg, defaultWaitForIdleVte, []string{"env", "sh", "-c", `"echo ready; exec cat -v"`}, cases)
+}
+
 func TestHandlerResizeViIntegration(t *testing.T) {
 	t.Parallel()
 	cases := []vtetest.Case{
