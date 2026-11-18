@@ -243,8 +243,25 @@ func TestRowScannerScanRow(t *testing.T) {
 			},
 		},
 		{
+			description: "a reference with a trailing colon keeps the colon out",
+			row:         cellRow("./b.go:1:1:"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 10, kind: linkPath, link: Link{
+					Path: "./b.go", Line: 1, Col: 1,
+				}},
+			},
+		},
+		{
 			description: "an address with a port is not a path",
 			row:         cellRow("listening on 127.0.0.1:8080"),
+		},
+		{
+			description: "a scheme with a port stays one URL",
+			row:         cellRow("http://h:8080"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 13, kind: linkScheme,
+					text: "http://h:8080"},
+			},
 		},
 		{
 			description: "a version is not a path",
