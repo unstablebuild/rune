@@ -44,6 +44,25 @@ type goplsDebugOptions struct {
 	Trace semanticapi.TraceValue
 }
 
+// goplsReservedKeys are Rune routing fields and settings Rune itself owns.
+// gopls ignores langID and command, so a user map must not clobber them, and
+// Rune's semantic highlighting depends on semanticTokens being on. A user who
+// wants another gopls binary sets lsp_path instead, and one who wants no
+// semantic highlighting turns it off in Rune rather than here.
+var goplsReservedKeys = map[string]bool{
+	"langID":         true,
+	"command":        true,
+	"semanticTokens": true,
+}
+
+// goplsMergeableKeys name the settings whose Rune defaults are maps, so a
+// user can flip one entry without replacing the rest. A default map added
+// here is enough for it to merge rather than be replaced.
+var goplsMergeableKeys = map[string]bool{
+	"codelenses": true,
+	"hints":      true,
+}
+
 func goplsInitializeParams(
 	rootURI string, dbg goplsDebugOptions, binPath string, userSettings map[string]any,
 ) (semanticapi.InitializeParams, error) {
@@ -73,19 +92,18 @@ func goplsInitializeParams(
 		},
 	}
 
-	// Merge user-supplied gopls settings over Rune's defaults. User keys
-	// win at the top level; codelenses and hints maps are merged key by
-	// key so a single key can flip one lens/hint without clearing the rest.
-	// langID and command are Rune routing fields that gopls ignores and
-	// must not be clobbered by user config.
+	// Merge user-supplied gopls settings over Rune's defaults. User keys win
+	// at the top level except the reserved ones, and the settings whose
+	// defaults are maps merge key by key so one entry can be flipped without
+	// replacing the rest.
 	for k, v := range userSettings {
-		if k == "langID" || k == "command" {
+		if goplsReservedKeys[k] {
 			continue
 		}
-		if k == "codelenses" || k == "hints" {
+		if goplsMergeableKeys[k] {
 			if defaultMap, ok := initOptions[k].(map[string]any); ok {
 				if userMap, ok := v.(map[string]any); ok {
-					merged := make(map[string]any, len(defaultMap))
+					merged := make(map[string]any, len(defaultMap)+len(userMap))
 					for dk, dv := range defaultMap {
 						merged[dk] = dv
 					}

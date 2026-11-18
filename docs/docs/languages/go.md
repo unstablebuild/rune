@@ -140,21 +140,29 @@ User keys win over Rune's built-in defaults. The `codelenses` and `hints`
 maps are merged key by key, so setting `gc_details: false` disables just that
 lens without clearing every other lens Rune enables by default.
 
+Three keys are reserved and never taken from your config: `langID` and
+`command` are how Rune routes the session to gopls, and `semanticTokens`
+drives Rune's own highlighting. To point Rune at a different gopls binary, set
+`extensions.go.config.lsp_path` instead of `command`.
+
 Settings you are likely to adjust:
 
 | Setting | What it does |
 |---------|--------------|
-| `fileWatcher` | Filesystem watcher mode: `"off"`, `"poll"`, or `"fsnotify"`. `"poll"` scans periodically; `"fsnotify"` uses OS file watchers. |
-| `vulncheck` | Vulnerability analysis mode: `"Prompt"` (default), `"Imports"`, or `"Off"`. |
+| `fileWatcher` | Server-side watch strategy: `"off"` (default), `"poll"`, or `"fsnotify"`. With `"off"` gopls relies on the editor's own change notifications. |
+| [`vulncheck`](https://github.com/golang/tools/blob/master/gopls/doc/settings.md#vulncheck) | Vulnerability analysis mode: `"Prompt"` (default), `"Imports"`, or `"Off"`. |
 | `codelenses.<name>` | Per-code-lens toggle (e.g. `gc_details`, `tidy`, `test`, `vendor`). |
 | `hints.<name>` | Per-inlay-hint toggle (e.g. `parameterNames`, `constantValues`, `rangeVariableTypes`). |
 
 See the [gopls settings reference](https://github.com/golang/tools/blob/master/gopls/doc/settings.md)
 for the full list of supported settings and their defaults.
 
-Rune's defaults enable all codelenses and hints listed in
-`goplsInitializeParams`. If you only want to change one lens or hint, set
-just that key under `codelenses` or `hints`; the rest keep Rune's defaults.
+Rune enables these codelenses by default: `generate`, `regenerate_cgo`,
+`run_govulncheck`, `tidy`, `upgrade_dependency`, `vendor`. It enables these
+hints: `assignVariableTypes`, `compositeLiteralFields`, `constantValues`,
+`rangeVariableTypes`, `parameterNames`, `functionTypeParameters`. If you only
+want to change one lens or hint, set just that key under `codelenses` or
+`hints`; the rest keep Rune's defaults.
 
 #### Analyzers
 
@@ -164,18 +172,20 @@ match exactly.
 
 | Analyzer | Notes |
 |----------|-------|
-| `fieldalignment` | Reports structs whose fields could be reordered to use less memory. **The real analyzer name is `fieldalignment`**, not `fieldassignment` (as some release notes say). Off by default. |
-| `atomictypes` | Suggests `sync/atomic` types instead of manual locking. On by default in v0.22+. |
-| `embedlit` | Drops redundant embedded-struct literals under Go 1.27. On by default in v0.22+. |
-| `scannererr` | Flags missing `Err()` after a `bufio.Scanner` loop. On by default in v0.22+. |
-| `writestring` | Flags `WriteString(a+b)`. On by default in v0.22+. |
-| `sqlrowserr` | Flags missing `Err()` after a `sql.Rows` loop. New in v0.23. |
+| `fieldalignment` | Reports structs whose fields could be reordered to use less memory. Off by default. |
+| `atomictypes` | Suggests `sync/atomic` types instead of manual locking. On by default. |
+| `embedlit` | Drops redundant embedded-struct literals under Go 1.27. On by default. |
+| `scannererr` | Flags missing `Err()` after a `bufio.Scanner` loop. On by default. |
+| `writestring` | Flags `WriteString(a+b)`. On by default. |
+| `sqlrowserr` | Flags missing `Err()` after a `sql.Rows` loop. On by default. |
 
-Renamed analyzers: the `waitgroup` modernizer is now `waitgroupgo` (`waitgroup` remains the misuse checker), and the `errorsastype` shadowing analyzer is now `errorsastypeshadow` (`errorsastype` remains the modernizer).
+Renamed analyzers: the `waitgroup` modernizer is now `waitgroupgo`
+(`waitgroup` remains the misuse checker), and the `errorsastype` shadowing
+analyzer is now `errorsastypeshadow` (`errorsastype` remains the modernizer).
 
 Example:
 
-```yaml
+```yaml tab
 extensions:
   go:
     config:
@@ -189,14 +199,12 @@ extensions:
 | Setting | Values | Notes |
 |---------|--------|-------|
 | `renameMovesSubpackages` | `true`/`false` | Renaming a package also moves its subdirectories. Off by default. |
-| `fileWatcher` | `"off"`, `"poll"`, `"fsnotify"` | Watches the filesystem for changes instead of polling. `"poll"` scans every 1-2s; `"fsnotify"` uses OS watchers and can exhaust file descriptors on macOS. |
 
-`fileWatcher` supplements Rune's own change notifications, it does not replace
-them. Rune does not advertise `workspace.didChangeWatchedFiles`, so edits made
-outside the editor are invisible to gopls without it. Use `"poll"` over a
-remote or network filesystem, or when an external tool rewrites files. Both
-modes skip directories starting with `.` or `_`, skip `testdata`, and report
-only `.go`, `.mod`, `.sum`, `.work`, and `.s` files.
+Rune does not advertise `workspace.didChangeWatchedFiles`, so edits made
+outside the editor reach gopls only through `fileWatcher`. With `"off"`, the
+default, gopls relies on the editor's notifications. Use `"poll"` over a
+remote or network filesystem, or when an external tool rewrites files.
+`"fsnotify"` uses OS watchers and can exhaust file descriptors on macOS.
 
 See the [gopls settings reference](https://github.com/golang/tools/blob/master/gopls/doc/settings.md)
 and [analyzers reference](https://github.com/golang/tools/blob/master/gopls/doc/analyzers.md)
@@ -345,12 +353,13 @@ Always/Never is persisted in `gopls/vulncheck/settings.json` under your user
 config directory:
 
 - macOS: `~/Library/Application Support/gopls/vulncheck/settings.json`
-- Linux: `$XDG_CONFIG_HOME` or `~/.config/gopls/vulncheck/settings.json`
+- Linux: `$XDG_CONFIG_HOME/gopls/vulncheck/settings.json`, which defaults to
+  `~/.config/gopls/vulncheck/settings.json`
 - Overridable with `GOPLS_CONFIG_DIR`; delete the file to reset.
 
 To opt out of the prompt entirely, set `vulncheck` to `"Imports"` or `"Off"`
 as an initialization option under `extensions.go.config.gopls` (see gopls server
-settings above). `go vulncheck` (the command) runs govulncheck on demand and is
+settings above). Rune's `go vulncheck` command runs govulncheck on demand and is
 separate from the automatic prompt.
 
 ## Key bindings
