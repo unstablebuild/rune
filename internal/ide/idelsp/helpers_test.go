@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +34,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/idelsp/jsonrpc2"
 	"unstable.build/rune/internal/workspace"
 )
@@ -414,7 +416,8 @@ func makeURI(t *testing.T, uri string) workspaceapi.URI {
 // A peer answers initialize with initResult and every other request
 // with null, and exits on the exit notification or a signal.
 type fakeProcExecutor struct {
-	initResult json.RawMessage
+	initResult          json.RawMessage
+	resumeAfterShutdown <-chan struct{}
 
 	mu sync.Mutex
 	// startErr fails StartCommand, as when the program does not exist.
@@ -428,7 +431,7 @@ type fakeProcExecutor struct {
 }
 
 type fakeProc struct {
-	file    *os.File
+	conn    net.Conn
 	watcher chan error
 	once    sync.Once
 
@@ -471,13 +474,23 @@ func (e *fakeProcExecutor) StartCommand(
 	if !ok {
 		return 0, errors.New("fakeProcExecutor: stdout is not an *os.File")
 	}
+	// Transfer the socket to the fake process so it can drain queued messages
+	// after Rune closes its descriptor, and its own exit signals EOF.
+	conn, err := net.FileConn(f)
+	if err != nil {
+		return 0, fmt.Errorf("fakeProcExecutor: duplicate stdout socket: %w", err)
+	}
+	_ = f.Close()
 	e.nextPid++
-	p := &fakeProc{file: f}
+	p := &fakeProc{conn: conn}
 	if cmd.Watcher != nil {
 		p.watcher = cmd.Watcher.WatchProcess()
 	}
 	e.procs[e.nextPid] = p
-	go p.serve(e.initResult, e.dieOnInit)
+	initResult, dieOnInit, resumeAfterShutdown := e.initResult, e.dieOnInit, e.resumeAfterShutdown
+	go debug.CapturePanicReport(func() {
+		p.serve(initResult, dieOnInit, resumeAfterShutdown)
+	})
 	return e.nextPid, nil
 }
 
@@ -504,7 +517,7 @@ func (p *fakeProc) exit(err error) {
 		if p.watcher != nil {
 			p.watcher <- err
 		}
-		_ = p.file.Close()
+		_ = p.conn.Close()
 	})
 }
 
@@ -526,11 +539,13 @@ func (p *fakeProc) received() ([]string, []string) {
 	return append([]string(nil), p.methods...), append([]string(nil), p.opens...)
 }
 
-func (p *fakeProc) serve(initResult json.RawMessage, dieOnInit error) {
+func (p *fakeProc) serve(
+	initResult json.RawMessage, dieOnInit error, resumeAfterShutdown <-chan struct{},
+) {
 	ctx := context.Background()
 	framer := jsonrpc2.HeaderFramer()
-	reader := framer.Reader(p.file)
-	writer := framer.Writer(p.file)
+	reader := framer.Reader(p.conn)
+	writer := framer.Writer(p.conn)
 	for {
 		msg, err := reader.Read(ctx)
 		if err != nil {
@@ -561,5 +576,8 @@ func (p *fakeProc) serve(initResult json.RawMessage, dieOnInit error) {
 			return
 		}
 		_ = writer.Write(ctx, resp)
+		if req.Method == "shutdown" && resumeAfterShutdown != nil {
+			<-resumeAfterShutdown
+		}
 	}
 }
