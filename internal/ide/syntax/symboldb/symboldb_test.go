@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -479,6 +480,18 @@ func (f *fakeParser) setGoFile(uri workspaceapi.URI, gf goFile) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.queryResults[uri.String()] = m
+	f.nodeResults[uri.String()] = defs
+}
+
+// setNodeDefs cans only definition captures for a file, for specs whose
+// definitions come from the node query alone.
+func (f *fakeParser) setNodeDefs(uri workspaceapi.URI, names ...string) {
+	defs := make([]syntaxapi.Result, len(names))
+	for i, d := range names {
+		defs[i] = syntaxapi.Result{File: uri, Text: d, From: term.Coordinates{Y: 300 + i}}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.nodeResults[uri.String()] = defs
 }
 
@@ -960,6 +973,77 @@ func TestGrammarFingerprintComputedOncePerLanguage(t *testing.T) {
 	require.NoError(t, p.Wait(context.Background()))
 
 	assert.Equal(t, 1, e.fake.grammarCallsFor("go"))
+}
+
+func TestHostSpecGrammarCoversInjectedLanguages(t *testing.T) {
+	all := map[string]string{"svelte": "v1", "typescript": "v1", "javascript": "v1"}
+	with := func(overrides map[string]string) map[string]string {
+		m := maps.Clone(all)
+		for k, v := range overrides {
+			if v == "" {
+				delete(m, k)
+				continue
+			}
+			m[k] = v
+		}
+		return m
+	}
+	tests := []struct {
+		name string
+		// first and second are the fingerprints installed for each run,
+		// by language; a missing language is not installed.
+		first, second map[string]string
+		wantReextract bool
+	}{
+		{
+			name:  "unchanged grammars skip",
+			first: all, second: all,
+		},
+		{
+			name:          "host grammar upgraded re-extracts",
+			first:         all,
+			second:        with(map[string]string{"svelte": "v2"}),
+			wantReextract: true,
+		},
+		{
+			name:          "injected grammar upgraded re-extracts",
+			first:         all,
+			second:        with(map[string]string{"typescript": "v2"}),
+			wantReextract: true,
+		},
+		{
+			name:          "injected grammar installed after the first scan re-extracts",
+			first:         with(map[string]string{"javascript": ""}),
+			second:        all,
+			wantReextract: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			e := newEnv(t)
+			uri := e.writeFile(t, "Button.svelte")
+			e.fake.grammars = maps.Clone(tt.first)
+			e.fake.setNodeDefs(uri, "click")
+			p := e.start(t)
+			require.NoError(t, p.Wait(ctx))
+			require.NoError(t, p.Close())
+
+			fake2 := newFakeParser()
+			fake2.grammars = maps.Clone(tt.second)
+			fake2.setNodeDefs(uri, "click", "focus")
+			e.fake = fake2
+			p2 := e.start(t)
+			require.NoError(t, p2.Wait(ctx))
+
+			assert.Equal(t, tt.wantReextract, fake2.callsFor(uri) > 0)
+			want := []string{"Button.click"}
+			if tt.wantReextract {
+				want = []string{"Button.click", "Button.focus"}
+			}
+			assert.Equal(t, want, listReferenced(t, p2))
+		})
+	}
 }
 
 func TestSchemaVersionBumpRebuildsDerivedRecords(t *testing.T) {

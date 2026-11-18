@@ -402,11 +402,20 @@ func TestParserGrammarFingerprintOnDisk(t *testing.T) {
 					treesitter.HighlightsFilename: []byte("(identifier) @variable\n"),
 					treesitter.IndentsFilename:    nil,
 					"README.md":                   []byte("# tsx\n"),
-					"queries/injections.scm":      []byte("(comment) @injection.content\n"),
 				}))
 				return pkgs
 			},
 			wantEqual: true,
+		},
+		{
+			name: "injections query added",
+			change: func(t *testing.T, pkgs *grammarfixture.Packages) syntax.PkgManager {
+				pkgs.Install(t, "tsx", "2", with(tsx, map[string][]byte{
+					treesitter.InjectionsFilename: []byte(
+						`((comment) @injection.content (#set! injection.language "comment"))` + "\n"),
+				}))
+				return pkgs
+			},
 		},
 		{
 			name: "another language upgraded",

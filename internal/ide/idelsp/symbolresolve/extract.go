@@ -19,7 +19,6 @@ package symbolresolve
 import (
 	"context"
 	"io"
-	"path"
 
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -75,6 +74,28 @@ type FileExtraction struct {
 	Imports map[string]string
 }
 
+// queryRole identifies what a query in an extraction batch captures.
+type queryRole int
+
+const (
+	roleRef queryRole = iota
+	rolePkg
+	rolePath
+	roleAlias
+	roleDefs
+	roleMethod
+	roleReexport
+)
+
+// queryTag records the source and role of one batch query; a batch's
+// tags are indexed by query ID.
+type queryTag struct {
+	src  querySource
+	role queryRole
+	// ref indexes src.spec.RefQueries for roleRef queries.
+	ref int
+}
+
 // ExtractFile computes one file's contribution to a symbol index by
 // running every query the spec needs in one batch against a single
 // parse of the file. It applies the same rules as the workspace-wide
@@ -86,62 +107,58 @@ type FileExtraction struct {
 // nested-module specs are emitted once per dotted suffix of the
 // file's module path, so a symbol is addressable by any trailing run
 // of module segments. Re-export bindings in the spec's re-export
-// files are emitted as definitions under the same qualifiers.
+// files are emitted as definitions under the same qualifiers. For a
+// host spec the batch carries each injected spec's queries bound to
+// the regions of its language, and the host's qualifier names the
+// symbols they extract.
 func ExtractFile(
 	ctx context.Context, parser FileQueryer, spec *Spec, qc QualifierContext,
 	file workspaceapi.URI,
 ) (FileExtraction, error) {
-	refCount := len(spec.RefQueries)
-	queries := make([]MultiQuery, 0, refCount+5)
-	for i, rq := range spec.RefQueries {
-		queries = append(queries, MultiQuery{
-			ID: i, Query: rq.Query, Captures: rq.Captures,
-		})
+	var queries []MultiQuery
+	var tags []queryTag
+	add := func(src querySource, role queryRole, ref int, q MultiQuery) {
+		q.ID, q.Lang = len(tags), src.lang
+		queries = append(queries, q)
+		tags = append(tags, queryTag{src: src, role: role, ref: ref})
 	}
-	id := refCount
-	nextID := func() int { n := id; id++; return n }
-	pkgID, pathID, aliasID, methodID, reexportID := -1, -1, -1, -1, -1
-	if spec.hasPackages() {
-		pkgID = nextID()
-		queries = append(queries, MultiQuery{
-			ID: pkgID, Query: spec.PackageClauseQuery,
-			Captures: spec.PackageClauseCaptures,
+	for _, src := range spec.querySources() {
+		s := src.spec
+		for i, rq := range s.RefQueries {
+			add(src, roleRef, i, MultiQuery{Query: rq.Query, Captures: rq.Captures})
+		}
+		// A package clause names the file's module, which an injected
+		// region cannot do.
+		if src.lang == "" && s.hasPackages() {
+			add(src, rolePkg, 0, MultiQuery{
+				Query: s.PackageClauseQuery, Captures: s.PackageClauseCaptures,
+			})
+		}
+		if s.ImportPathQuery != "" {
+			add(src, rolePath, 0, MultiQuery{
+				Query: s.ImportPathQuery, Captures: s.ImportPathCaptures,
+			})
+			add(src, roleAlias, 0, MultiQuery{
+				Query: s.ImportAliasQuery, Captures: s.ImportAliasCaptures,
+			})
+		}
+		add(src, roleDefs, 0, MultiQuery{
+			Nodes: syntaxapi.NodeCaptureDefinitionFunc | syntaxapi.NodeCaptureDefinitionType,
 		})
-	}
-	if spec.ImportPathQuery != "" {
-		pathID = nextID()
-		queries = append(queries, MultiQuery{
-			ID: pathID, Query: spec.ImportPathQuery,
-			Captures: spec.ImportPathCaptures,
-		})
-		aliasID = nextID()
-		queries = append(queries, MultiQuery{
-			ID: aliasID, Query: spec.ImportAliasQuery,
-			Captures: spec.ImportAliasCaptures,
-		})
-	}
-	defsID := nextID()
-	queries = append(queries, MultiQuery{
-		ID:    defsID,
-		Nodes: syntaxapi.NodeCaptureDefinitionFunc | syntaxapi.NodeCaptureDefinitionType,
-	})
-	if spec.hasMethods() {
-		methodID = nextID()
-		queries = append(queries, MultiQuery{
-			ID: methodID, Query: spec.MethodDefQuery,
-			Captures: spec.MethodDefCaptures,
-		})
-	}
-	// The re-export query joins the batch for every file of the
-	// language — not only re-export files — so sessions that cache the
-	// compiled batch per language never recompile it; results from
-	// other files are dropped below.
-	if spec.hasReexports() {
-		reexportID = nextID()
-		queries = append(queries, MultiQuery{
-			ID: reexportID, Query: spec.ReexportQuery,
-			Captures: spec.ReexportCaptures,
-		})
+		if s.hasMethods() {
+			add(src, roleMethod, 0, MultiQuery{
+				Query: s.MethodDefQuery, Captures: s.MethodDefCaptures,
+			})
+		}
+		// The re-export query joins the batch for every file of the
+		// language — not only re-export files — so sessions that cache
+		// the compiled batch per language never recompile it; results
+		// from other files are dropped below.
+		if s.hasReexports() {
+			add(src, roleReexport, 0, MultiQuery{
+				Query: s.ReexportQuery, Captures: s.ReexportCaptures,
+			})
+		}
 	}
 
 	results, err := parser.QueryMulti(ctx, file, queries)
@@ -156,12 +173,12 @@ func ExtractFile(
 	var paths map[workspaceapi.URI][]string
 	var explicit map[workspaceapi.URI]map[string]string
 	for _, r := range results {
-		switch r.QueryID {
-		case pkgID:
+		switch tags[r.QueryID].role {
+		case rolePkg:
 			pkg = r.Match[0].Text
-		case pathID:
+		case rolePath:
 			paths, _ = reduceImportPaths(paths, r.Match[0])
-		case aliasID:
+		case roleAlias:
 			explicit, _ = reduceImportAliases(
 				explicit, [2]syntaxapi.Result{r.Match[0], r.Match[1]})
 		}
@@ -177,23 +194,22 @@ func ExtractFile(
 	if pkg != "" {
 		pkgs = moduleSuffixes(pkg)
 	}
-	isReexportFile := reexportID >= 0 &&
-		spec.isReexportFile(path.Base(file.Path()))
 	for _, r := range results {
-		switch {
-		case r.QueryID < refCount:
+		tag := tags[r.QueryID]
+		s := tag.src.spec
+		switch tag.role {
+		case roleRef:
 			p0, p1 := r.Match[0], r.Match[1]
-			if !spec.exported(p1.Text) {
+			if !s.exported(p1.Text) {
 				continue
 			}
-			if spec.RefQueries[r.QueryID].RequireImport &&
-				ext.Imports[p0.Text] == "" {
+			if s.RefQueries[tag.ref].RequireImport && ext.Imports[p0.Text] == "" {
 				continue
 			}
 			ext.Symbols = append(ext.Symbols, FileSymbol{
 				Name: p0.Text + "." + p1.Text, Pos: p1.From, Kind: SymbolRef,
 			})
-		case r.QueryID == defsID:
+		case roleDefs:
 			if pkg == "" {
 				continue
 			}
@@ -204,7 +220,7 @@ func ExtractFile(
 					Kind: SymbolDef,
 				})
 			}
-		case r.QueryID == methodID:
+		case roleMethod:
 			if pkg == "" {
 				continue
 			}
@@ -225,8 +241,8 @@ func ExtractFile(
 					Kind: SymbolMethodDef,
 				})
 			}
-		case r.QueryID == reexportID:
-			if pkg == "" || !isReexportFile {
+		case roleReexport:
+			if pkg == "" || !s.isReexportFile(file.Path()) {
 				continue
 			}
 			for _, q := range pkgs {

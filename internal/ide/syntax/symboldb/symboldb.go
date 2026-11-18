@@ -436,7 +436,7 @@ func (p *Parser) resolveFromIndex(
 		if progress != nil {
 			progress.Report("Resolved from index", len(specMatches), 1, 1)
 		}
-		if len(specMatches) > 1 && len(parts) == 2 && spec.ImportPathQuery != "" {
+		if len(specMatches) > 1 && len(parts) == 2 && spec.HasImports() {
 			specMatches = p.dedupByImport(ctx, specMatches, parts[0])
 		}
 		if len(specMatches) > 1 {
@@ -874,6 +874,19 @@ func (p *Parser) grammar(ctx context.Context, langID string) string {
 	return m.sum
 }
 
+// specGrammar returns the fingerprint of every grammar a spec's
+// extraction depends on: its own, and for a host spec those of the
+// injected languages, whose upgrade or installation changes what the
+// host's files contribute.
+func (p *Parser) specGrammar(ctx context.Context, spec *symbolresolve.Spec) string {
+	grammars := make([]string, 0, 1+len(spec.Injected))
+	grammars = append(grammars, p.grammar(ctx, spec.LangID))
+	for _, sub := range spec.Injected {
+		grammars = append(grammars, p.grammar(ctx, sub.LangID))
+	}
+	return strings.Join(grammars, "+")
+}
+
 func (p *Parser) stageFile(
 	ctx context.Context, q symbolresolve.FileQueryer,
 	qc symbolresolve.QualifierContext, us string,
@@ -903,7 +916,7 @@ func (p *Parser) stageFile(
 	// Read before extracting: if the grammar is upgraded in between,
 	// the stamp is older than the grammar used, which only costs a
 	// redundant re-extraction later rather than a stale record.
-	grammar := p.grammar(ctx, spec.LangID)
+	grammar := p.specGrammar(ctx, spec)
 	if known && old.ModTime == modTime && old.Version == schemaVersion &&
 		old.Grammar == grammar {
 		return fileUpdate{}, false

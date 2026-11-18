@@ -70,6 +70,7 @@ type fakeTree struct {
 	edits         []fakeEdit
 	willEdit      fakeEdit
 	indents       map[int]int
+	cannotIndent  bool
 	expand        map[term.Range]term.Range
 	shrink        map[term.Range]term.Range
 	comments      map[term.Range][]term.Range
@@ -144,6 +145,10 @@ func (f *fakeTree) State() iterator.Iterator[syntax.State] {
 func (f *fakeTree) IndentationAt(line int) (int, bool) {
 	n, ok := f.indents[line]
 	return n, ok
+}
+
+func (f *fakeTree) CanIndent() bool {
+	return !f.cannotIndent
 }
 
 func (f *fakeTree) SelectionExpand(r term.Range) (term.Range, bool) {
@@ -756,6 +761,12 @@ func TestIndentationAt(t *testing.T) {
 			assert.Equal(t, c.want, got)
 		})
 	}
+	t.Run("a section whose tree cannot indent goes to the host", func(t *testing.T) {
+		sec.cannotIndent = true
+		got, ok := h.tree.IndentationAt(4)
+		assert.True(t, ok)
+		assert.Equal(t, 104, got)
+	})
 }
 
 func TestFirstNonBlankRow(t *testing.T) {

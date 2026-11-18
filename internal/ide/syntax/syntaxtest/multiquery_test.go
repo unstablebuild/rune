@@ -430,6 +430,103 @@ type betaTypeWithMuchLongerName struct{}
 		"file A results must survive file B reusing the session buffer")
 }
 
+const injectedQueryFile = `<script lang="ts">
+  import * as geometry from "./geometry";
+  export function increment(by: number): number {
+    return geometry.area(by);
+  }
+</script>
+
+<p class="hint">{geometry.describe(1)}</p>
+
+<style>
+  p { color: red; }
+</style>
+`
+
+func TestQueryMultiInjectedRegions(t *testing.T) {
+	uri, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	scheme, err := workspace.NewMemoryScheme(context.Background(), config.NopConfig(), uri)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = scheme.Close() })
+	file := createFile(t, scheme, "Counter.svelte", injectedQueryFile)
+
+	const (
+		hostQuery   = `(script_element (start_tag (tag_name) @tag))`
+		memberQuery = `(member_expression object: (identifier) @pkg property: (property_identifier) @member)`
+		tsFuncQuery = `(function_declaration name: (identifier) @fn)`
+		cssQuery    = `(rule_set (selectors) @sel)`
+	)
+	queries := []symbolresolve.MultiQuery{
+		{ID: 0, Query: hostQuery, Captures: []string{"tag"}},
+		{ID: 1, Query: memberQuery, Captures: []string{"pkg", "member"}, Lang: "typescript"},
+		{ID: 2, Query: tsFuncQuery, Captures: []string{"fn"}, Lang: "typescript"},
+		{ID: 3, Query: memberQuery, Captures: []string{"pkg", "member"}, Lang: "javascript"},
+		{ID: 4, Query: cssQuery, Captures: []string{"sel"}, Lang: "css"},
+	}
+
+	type hit struct {
+		text string
+		y, x int
+	}
+	run := func(t *testing.T, pkg syntax.PkgManager) map[int][]hit {
+		t.Helper()
+		parser := treesitter.NewParser(scheme, pkg, uri)
+		session := parser.NewQuerySession()
+		t.Cleanup(func() { _ = session.Close() })
+		results, err := session.QueryMulti(context.Background(), file, queries)
+		require.NoError(t, err)
+		hits := make(map[int][]hit)
+		for _, r := range results {
+			last := r.Match[len(r.Match)-1]
+			hits[r.QueryID] = append(hits[r.QueryID], hit{last.Text, last.From.Y, last.From.X})
+		}
+		return hits
+	}
+
+	t.Run("regions are parsed with their language in file coordinates", func(t *testing.T) {
+		hits := run(t, newSveltePackages(t, "svelte", "typescript", "javascript", "css"))
+
+		assert.Equal(t, []hit{{"script", 0, 1}}, hits[0], "host queries see the host tree")
+		// The <script> block is TypeScript: its member read and function
+		// declaration are found at their position in the component.
+		assert.Equal(t, []hit{{"area", 3, 20}}, hits[1])
+		assert.Equal(t, []hit{{"increment", 2, 18}}, hits[2])
+		// Markup expressions are JavaScript regions of their own.
+		assert.Equal(t, []hit{{"describe", 7, 26}}, hits[3])
+		assert.Equal(t, []hit{{"p", 10, 2}}, hits[4])
+	})
+
+	t.Run("an injected language that is not installed yields nothing", func(t *testing.T) {
+		hits := run(t, newSveltePackages(t, "svelte", "javascript"))
+
+		assert.Equal(t, []hit{{"script", 0, 1}}, hits[0])
+		assert.Empty(t, hits[1])
+		assert.Empty(t, hits[2])
+		assert.Equal(t, []hit{{"describe", 7, 26}}, hits[3])
+		assert.Empty(t, hits[4])
+	})
+
+	t.Run("a host without an injections query yields nothing for injected queries", func(t *testing.T) {
+		wd, err := os.Getwd()
+		require.NoError(t, err)
+		pkgs := grammarfixture.NewPackages(t, map[string][]string{
+			"svelte": {"1"}, "typescript": {"1"},
+		})
+		svelte := grammarfixture.PackageFiles(t, filepath.Join(wd, "svelte"))
+		delete(svelte, treesitter.InjectionsFilename)
+		pkgs.Install(t, "svelte", "1", svelte)
+		pkgs.Install(t, "typescript", "1",
+			grammarfixture.PackageFiles(t, filepath.Join(wd, "typescript")))
+		hits := run(t, pkgs)
+
+		assert.Equal(t, []hit{{"script", 0, 1}}, hits[0])
+		assert.Empty(t, hits[1])
+		assert.Empty(t, hits[2])
+	})
+}
+
 // BenchmarkQuerySessionQueryMulti measures the per-file extraction cost the
 // symboldb index scan pays: one session, one large file, batched queries.
 func BenchmarkQuerySessionQueryMulti(b *testing.B) {

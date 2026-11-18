@@ -17,12 +17,47 @@
 package treesitter
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
-	"github.com/unstablebuild/rune-go-sdk/term"
 )
+
+func TestFixtureInjectionsQueriesUseOnlySupportedPredicates(t *testing.T) {
+	// The fixtures are the queries the language packages ship; a pattern
+	// Rune has to disable is a <script> or <style> rule that silently
+	// stopped working, which no highlighting test would notice unless it
+	// happened to cover that tag.
+	queries, err := filepath.Glob(filepath.Join("..", "syntaxtest", "*", InjectionsFilename))
+	require.NoError(t, err)
+	require.NotEmpty(t, queries)
+	for _, query := range queries {
+		dir := filepath.Dir(query)
+		t.Run(filepath.Base(dir), func(t *testing.T) {
+			parser := filepath.Join(dir, ParserFilename)
+			if runtime.GOOS != "darwin" {
+				parser = filepath.Join(dir, runtime.GOOS+"_"+runtime.GOARCH, ParserFilename)
+			}
+			if _, err := os.Stat(parser); err != nil {
+				t.Skipf("no tree-sitter fixture for %s/%s at %s", runtime.GOOS, runtime.GOARCH, parser)
+			}
+			pkg := &countingPkgManager{files: []string{parser, query}}
+			lang, text, err := loadLanguage(context.Background(), filepath.Base(dir), pkg, InjectionsFilename, "")
+			require.NoError(t, err)
+			defer lang.close()
+
+			q, disabled, err := newInjectionsQuery(lang.lang, text)
+			require.NoError(t, err)
+			defer q.Close()
+			assert.Empty(t, disabled, "patterns with predicates Rune cannot evaluate")
+		})
+	}
+}
 
 func TestNormalizeInjectionLanguage(t *testing.T) {
 	cases := []struct {
@@ -194,53 +229,117 @@ func TestInjectionOffsetApply(t *testing.T) {
 	}
 }
 
+func TestInjectionOffsetApplyRange(t *testing.T) {
+	content := []byte("<a onclick=\"${run()}\">\n<b>\n")
+	starts := lineStarts(nil, content)
+	// The quoted attribute value `${run()}` spans bytes 12-20 on row 0.
+	value := tree_sitter.Range{
+		StartByte: 12, EndByte: 20,
+		StartPoint: tree_sitter.Point{Row: 0, Column: 12},
+		EndPoint:   tree_sitter.Point{Row: 0, Column: 20},
+	}
+	cases := []struct {
+		name   string
+		offset injectionOffset
+		rng    tree_sitter.Range
+		want   tree_sitter.Range
+		ok     bool
+	}{
+		{
+			name:   "trims template delimiters",
+			offset: injectionOffset{startCol: 2, endCol: -1},
+			rng:    value,
+			want: tree_sitter.Range{
+				StartByte: 14, EndByte: 19,
+				StartPoint: tree_sitter.Point{Row: 0, Column: 14},
+				EndPoint:   tree_sitter.Point{Row: 0, Column: 19},
+			},
+			ok: true,
+		},
+		{
+			name:   "crossing a row boundary resolves the new line start",
+			offset: injectionOffset{endRow: 1, endCol: -17},
+			rng:    value,
+			want: tree_sitter.Range{
+				StartByte: 12, EndByte: 26,
+				StartPoint: tree_sitter.Point{Row: 0, Column: 12},
+				EndPoint:   tree_sitter.Point{Row: 1, Column: 3},
+			},
+			ok: true,
+		},
+		{
+			name:   "row past the end of the text",
+			offset: injectionOffset{endRow: 5},
+			rng:    value,
+		},
+		{
+			name:   "inverted range",
+			offset: injectionOffset{startCol: 10},
+			rng:    value,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := c.offset.applyRange(c.rng, starts)
+			assert.Equal(t, c.ok, ok)
+			assert.Equal(t, c.want, got)
+		})
+	}
+}
+
 func TestResolveInjections(t *testing.T) {
-	rng := func(sy, sx, ey, ex int) term.Range {
-		return term.Range{Start: term.Coordinates{Y: sy, X: sx}, End: term.Coordinates{Y: ey, X: ex}}
+	rng := func(sy, sx, ey, ex uint) tree_sitter.Range {
+		return tree_sitter.Range{
+			StartPoint: tree_sitter.Point{Row: sy, Column: sx},
+			EndPoint:   tree_sitter.Point{Row: ey, Column: ex},
+		}
+	}
+	region := func(lang string, rng tree_sitter.Range) injectionRegion {
+		return injectionRegion{language: lang, rng: rng}
 	}
 	cases := []struct {
 		name       string
 		candidates []injectionCandidate
-		want       []Injection
+		want       []injectionRegion
 	}{
-		{name: "none", want: []Injection{}},
+		{name: "none", want: []injectionRegion{}},
 		{
 			name: "last pattern wins for the same node",
 			candidates: []injectionCandidate{
-				{node: 1, pattern: 0, Injection: Injection{Language: "javascript", Range: rng(1, 0, 3, 0)}},
-				{node: 1, pattern: 7, Injection: Injection{Language: "typescript", Range: rng(1, 0, 3, 0)}},
+				{node: 1, pattern: 0, injectionRegion: region("javascript", rng(1, 0, 3, 0))},
+				{node: 1, pattern: 7, injectionRegion: region("typescript", rng(1, 0, 3, 0))},
 			},
-			want: []Injection{{Language: "typescript", Range: rng(1, 0, 3, 0)}},
+			want: []injectionRegion{region("typescript", rng(1, 0, 3, 0))},
 		},
 		{
 			name: "earlier pattern reported later does not override",
 			candidates: []injectionCandidate{
-				{node: 1, pattern: 7, Injection: Injection{Language: "typescript", Range: rng(1, 0, 3, 0)}},
-				{node: 1, pattern: 0, Injection: Injection{Language: "javascript", Range: rng(1, 0, 3, 0)}},
+				{node: 1, pattern: 7, injectionRegion: region("typescript", rng(1, 0, 3, 0))},
+				{node: 1, pattern: 0, injectionRegion: region("javascript", rng(1, 0, 3, 0))},
 			},
-			want: []Injection{{Language: "typescript", Range: rng(1, 0, 3, 0)}},
+			want: []injectionRegion{region("typescript", rng(1, 0, 3, 0))},
 		},
 		{
 			name: "document order",
 			candidates: []injectionCandidate{
-				{node: 2, pattern: 0, Injection: Injection{Language: "css", Range: rng(5, 7, 8, 0)}},
-				{node: 1, pattern: 3, Injection: Injection{Language: "javascript", Range: rng(1, 8, 3, 0)}},
-				{node: 3, pattern: 1, Injection: Injection{Language: "comment", Range: rng(5, 0, 5, 6)}},
+				{node: 2, pattern: 0, injectionRegion: region("css", rng(5, 7, 8, 0))},
+				{node: 1, pattern: 3, injectionRegion: region("javascript", rng(1, 8, 3, 0))},
+				{node: 3, pattern: 1, injectionRegion: region("comment", rng(5, 0, 5, 6))},
 			},
-			want: []Injection{
-				{Language: "javascript", Range: rng(1, 8, 3, 0)},
-				{Language: "comment", Range: rng(5, 0, 5, 6)},
-				{Language: "css", Range: rng(5, 7, 8, 0)},
+			want: []injectionRegion{
+				region("javascript", rng(1, 8, 3, 0)),
+				region("comment", rng(5, 0, 5, 6)),
+				region("css", rng(5, 7, 8, 0)),
 			},
 		},
 		{
 			name: "empty and inverted regions are dropped",
 			candidates: []injectionCandidate{
-				{node: 1, pattern: 0, Injection: Injection{Language: "javascript", Range: rng(1, 8, 1, 8)}},
-				{node: 2, pattern: 0, Injection: Injection{Language: "css", Range: rng(4, 0, 2, 0)}},
-				{node: 3, pattern: 0, Injection: Injection{Language: "css", Range: rng(5, 7, 8, 0)}},
+				{node: 1, pattern: 0, injectionRegion: region("javascript", rng(1, 8, 1, 8))},
+				{node: 2, pattern: 0, injectionRegion: region("css", rng(4, 0, 2, 0))},
+				{node: 3, pattern: 0, injectionRegion: region("css", rng(5, 7, 8, 0))},
 			},
-			want: []Injection{{Language: "css", Range: rng(5, 7, 8, 0)}},
+			want: []injectionRegion{region("css", rng(5, 7, 8, 0))},
 		},
 	}
 	for _, c := range cases {

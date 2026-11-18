@@ -505,9 +505,10 @@ func (p Parser) ListReferencedSymbols(
 }
 
 // GrammarFingerprint identifies the grammar and locals query installed
-// for langID: two fingerprints are equal exactly when both files are
-// byte-identical, wherever they are installed. It fails when the
-// language package or either file is not installed.
+// for langID, plus its injections query when it ships one: two
+// fingerprints are equal exactly when those files are byte-identical,
+// wherever they are installed. It fails when the language package, the
+// grammar or the locals query is not installed.
 func (p Parser) GrammarFingerprint(ctx context.Context, langID string) (string, error) {
 	it, err := p.pkg.LibDir(ctx, langID)
 	if err != nil {
@@ -518,17 +519,20 @@ func (p Parser) GrammarFingerprint(ctx context.Context, langID string) (string, 
 	if err != nil {
 		return "", fmt.Errorf("list files: %w", err)
 	}
-	paths := make(map[string]string, 2)
+	paths := make(map[string]string, 3)
 	for _, path := range files {
 		switch name := filepath.Base(path); name {
-		case ParserFilename, LocalsFilename:
+		case ParserFilename, LocalsFilename, InjectionsFilename:
 			paths[name] = path
 		}
 	}
 	h := sha256.New()
-	for _, name := range []string{ParserFilename, LocalsFilename} {
+	for _, name := range []string{ParserFilename, LocalsFilename, InjectionsFilename} {
 		path, ok := paths[name]
 		if !ok {
+			if name == InjectionsFilename {
+				continue
+			}
 			return "", errNotInstalled
 		}
 		f, err := os.Open(path)

@@ -109,6 +109,12 @@ func TestParserGrammarFingerprint(t *testing.T) {
 			wantEqual: true,
 		},
 		{
+			name: "injections query added",
+			mutate: func(f map[string]string) {
+				f[InjectionsFilename] = `((comment) @injection.content (#set! injection.language "comment"))`
+			},
+		},
+		{
 			name:    "grammar missing",
 			mutate:  func(f map[string]string) { delete(f, ParserFilename) },
 			wantErr: true,

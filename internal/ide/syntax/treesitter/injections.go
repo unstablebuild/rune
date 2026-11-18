@@ -64,24 +64,38 @@ func (t *Tree) initInjections(language *tree_sitter.Language, injectionsFile str
 	if err != nil {
 		return fmt.Errorf("read injections file: %v", err)
 	}
-
-	injections, qerr := tree_sitter.NewQuery(language, string(data))
-	if qerr != nil {
-		return fmt.Errorf("compile injections query: %v", qerr)
+	injections, disabled, err := newInjectionsQuery(language, string(data))
+	if err != nil {
+		return err
 	}
-	// A predicate the binding does not evaluate never filters, so a
-	// pattern relying on one would inject its language into every
-	// node it structurally matches.
-	for i := range injections.PatternCount() {
-		if !supportedInjectionPredicates(injections.GeneralPredicates(i)) {
-			t.log(log.DebugLevel, "disabling injections pattern %d: unsupported predicate", i)
-			injections.DisablePattern(i)
-		}
+	for _, i := range disabled {
+		t.log(log.DebugLevel, "disabling injections pattern %d: unsupported predicate", i)
 	}
-
 	t.injections = injections
 	t.log(log.DebugLevel, "injections initialized")
 	return nil
+}
+
+// newInjectionsQuery compiles an injections query against language. Patterns
+// relying on a predicate the binding does not evaluate are disabled, since
+// an unevaluated predicate never filters and such a pattern would inject
+// its language into every node it structurally matches; their indexes are
+// returned so the caller can report them.
+func newInjectionsQuery(
+	language *tree_sitter.Language, text string,
+) (*tree_sitter.Query, []uint, error) {
+	injections, qerr := tree_sitter.NewQuery(language, text)
+	if qerr != nil {
+		return nil, nil, fmt.Errorf("compile injections query: %v", qerr)
+	}
+	var disabled []uint
+	for i := range injections.PatternCount() {
+		if !supportedInjectionPredicates(injections.GeneralPredicates(i)) {
+			injections.DisablePattern(i)
+			disabled = append(disabled, i)
+		}
+	}
+	return injections, disabled, nil
 }
 
 // supportedInjectionPredicates reports whether every predicate the query
@@ -96,44 +110,77 @@ func supportedInjectionPredicates(preds []tree_sitter.QueryPredicate) bool {
 }
 
 func (t *Tree) getInjections() []Injection {
-	contentIdx, ok := t.injections.CaptureIndexForName(captureInjectionContent)
+	regions := queryInjections(t.injections, t.tree.RootNode(), t.content)
+	out := make([]Injection, 0, len(regions))
+	for _, r := range regions {
+		rng, ok := t.treeSitterRangeToTerm(r.rng)
+		if !ok {
+			t.log(log.DebugLevel, "could not convert injection points %v-%v to term",
+				r.rng.StartPoint, r.rng.EndPoint)
+			continue
+		}
+		out = append(out, Injection{Language: r.language, Range: rng})
+	}
+	return out
+}
+
+// injectionRegion is one region an injections query marks as another
+// language, in tree-sitter coordinates.
+type injectionRegion struct {
+	language string
+	rng      tree_sitter.Range
+}
+
+// queryInjections runs the injections query q over root and returns the
+// regions it marks as another language, in document order. A content node
+// captured by several patterns takes the language of the last one, and
+// `#offset!` directives are applied to the captured node's range.
+func queryInjections(
+	q *tree_sitter.Query, root *tree_sitter.Node, content []byte,
+) []injectionRegion {
+	contentIdx, ok := q.CaptureIndexForName(captureInjectionContent)
 	if !ok {
 		return nil
 	}
-	langIdx, hasLangCapture := t.injections.CaptureIndexForName(captureInjectionLanguage)
+	langIdx, hasLangCapture := q.CaptureIndexForName(captureInjectionLanguage)
 
 	cur := tree_sitter.NewQueryCursor()
 	defer cur.Close()
 
+	// Offsets move points only; the byte offsets they imply are resolved
+	// through the line starts, built on first use since most queries
+	// carry no offset directive.
+	var starts []int
 	var candidates []injectionCandidate
-	matches := cur.Matches(t.injections, t.tree.RootNode(), t.content)
+	matches := cur.Matches(q, root, content)
 	for {
 		m, ok := matches.Next()
 		if !ok {
 			break
 		}
-		lang := t.injectionLanguage(&m, langIdx, hasLangCapture)
+		lang := injectionLanguage(q, &m, content, langIdx, hasLangCapture)
 		if lang == "" {
 			continue
 		}
-		offset := parseInjectionOffset(t.injections.GeneralPredicates(m.PatternIndex), contentIdx)
+		offset := parseInjectionOffset(q.GeneralPredicates(m.PatternIndex), contentIdx)
 		for _, cap := range m.Captures {
 			if uint(cap.Index) != contentIdx {
 				continue
 			}
-			start, end, ok := offset.apply(cap.Node.StartPosition(), cap.Node.EndPosition())
-			if !ok {
-				continue
-			}
-			rng, ok := t.treeSitterRangeToTerm(tree_sitter.Range{StartPoint: start, EndPoint: end})
-			if !ok {
-				t.log(log.DebugLevel, "could not convert injection points %v-%v to term", start, end)
-				continue
+			rng := cap.Node.Range()
+			if offset != (injectionOffset{}) {
+				if starts == nil {
+					starts = lineStarts(nil, content)
+				}
+				var ok bool
+				if rng, ok = offset.applyRange(rng, starts); !ok {
+					continue
+				}
 			}
 			candidates = append(candidates, injectionCandidate{
-				node:      cap.Node.Id(),
-				pattern:   m.PatternIndex,
-				Injection: Injection{Language: lang, Range: rng},
+				node:            cap.Node.Id(),
+				pattern:         m.PatternIndex,
+				injectionRegion: injectionRegion{language: lang, rng: rng},
 			})
 		}
 	}
@@ -143,10 +190,11 @@ func (t *Tree) getInjections() []Injection {
 // injectionLanguage returns the normalized language a match injects: the
 // pattern's injection.language property, else the text of its
 // @injection.language capture.
-func (t *Tree) injectionLanguage(
-	m *tree_sitter.QueryMatch, langIdx uint, hasLangCapture bool,
+func injectionLanguage(
+	q *tree_sitter.Query, m *tree_sitter.QueryMatch, content []byte,
+	langIdx uint, hasLangCapture bool,
 ) string {
-	for _, prop := range t.injections.PropertySettings(m.PatternIndex) {
+	for _, prop := range q.PropertySettings(m.PatternIndex) {
 		if prop.Key == propertyInjectionLanguage && prop.Value != nil {
 			return normalizeInjectionLanguage(*prop.Value)
 		}
@@ -156,7 +204,7 @@ func (t *Tree) injectionLanguage(
 	}
 	for _, cap := range m.Captures {
 		if uint(cap.Index) == langIdx {
-			return normalizeInjectionLanguage(cap.Node.Utf8Text(t.content))
+			return normalizeInjectionLanguage(cap.Node.Utf8Text(content))
 		}
 	}
 	return ""
@@ -233,23 +281,40 @@ func (o injectionOffset) apply(start, end tree_sitter.Point) (
 		tree_sitter.Point{Row: uint(er), Column: uint(ec)}, true
 }
 
+// applyRange moves both ends of rng by the offset, resolving the byte
+// offsets of the moved points through starts (see lineStarts). It reports
+// false when the result is not a well-formed range or leaves the text the
+// starts describe.
+func (o injectionOffset) applyRange(rng tree_sitter.Range, starts []int) (tree_sitter.Range, bool) {
+	start, end, ok := o.apply(rng.StartPoint, rng.EndPoint)
+	if !ok || int(end.Row) >= len(starts) {
+		return tree_sitter.Range{}, false
+	}
+	return tree_sitter.Range{
+		StartByte:  uint(starts[start.Row]) + start.Column,
+		EndByte:    uint(starts[end.Row]) + end.Column,
+		StartPoint: start,
+		EndPoint:   end,
+	}, true
+}
+
 // injectionCandidate is one capture of the injections query, before the
 // patterns capturing the same content node are reconciled.
 type injectionCandidate struct {
 	node    uintptr
 	pattern uint
-	Injection
+	injectionRegion
 }
 
 // resolveInjections drops empty regions, keeps for each content node the
 // candidate of the last pattern in the query that captured it, and returns
 // the rest in document order. Patterns of an inheriting query follow those
 // it inherits, so the specific language's rule beats the generic one.
-func resolveInjections(candidates []injectionCandidate) []Injection {
+func resolveInjections(candidates []injectionCandidate) []injectionRegion {
 	byNode := make(map[uintptr]int, len(candidates))
 	kept := make([]injectionCandidate, 0, len(candidates))
 	for _, c := range candidates {
-		if !coordinatesLess(c.Range.Start, c.Range.End) {
+		if !pointLess(c.rng.StartPoint, c.rng.EndPoint) {
 			continue
 		}
 		if i, ok := byNode[c.node]; ok {
@@ -262,19 +327,19 @@ func resolveInjections(candidates []injectionCandidate) []Injection {
 		kept = append(kept, c)
 	}
 	slices.SortStableFunc(kept, func(a, b injectionCandidate) int {
-		return cmp.Or(cmp.Compare(a.Range.Start.Y, b.Range.Start.Y),
-			cmp.Compare(a.Range.Start.X, b.Range.Start.X))
+		return cmp.Or(cmp.Compare(a.rng.StartPoint.Row, b.rng.StartPoint.Row),
+			cmp.Compare(a.rng.StartPoint.Column, b.rng.StartPoint.Column))
 	})
-	out := make([]Injection, len(kept))
+	out := make([]injectionRegion, len(kept))
 	for i, c := range kept {
-		out[i] = c.Injection
+		out[i] = c.injectionRegion
 	}
 	return out
 }
 
-func coordinatesLess(a, b term.Coordinates) bool {
-	if a.Y != b.Y {
-		return a.Y < b.Y
+func pointLess(a, b tree_sitter.Point) bool {
+	if a.Row != b.Row {
+		return a.Row < b.Row
 	}
-	return a.X < b.X
+	return a.Column < b.Column
 }

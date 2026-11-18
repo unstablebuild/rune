@@ -27,7 +27,7 @@ import (
 // is tried first to preserve existing behavior. Cpp precedes C so that
 // SpecForFile hands `.h` headers, which parse as C++, to the spec whose
 // queries compile against that grammar.
-var registry = []*Spec{Go, Python, Rust, Zig, TypeScript, TSX, JavaScript, Cpp, C}
+var registry = []*Spec{Go, Python, Rust, Zig, TypeScript, TSX, JavaScript, Cpp, C, Svelte}
 
 // SpecFor returns the spec for a tree-sitter language id, or nil when no
 // spec is registered for that language.

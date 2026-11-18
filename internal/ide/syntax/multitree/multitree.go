@@ -45,11 +45,6 @@ import (
 	"unstable.build/rune/internal/workspace"
 )
 
-// commentLanguage is the language nvim-treesitter queries inject into
-// comments. Its trees highlight tags like TODO and know nothing about
-// indentation, so indentation requests skip their sections.
-const commentLanguage = "comment"
-
 var _ syntax.NewTreeFunc = New
 
 // New installs a composite tree into buf, as treesitter.New installs a single
@@ -103,6 +98,13 @@ type injector interface {
 
 type indentService interface {
 	IndentationAt(line int) (int, bool)
+}
+
+// indentCapable is the section tree capability that tells a tree unable to
+// indent at all, like a comment's or a declined language's, from one that
+// leaves a line as is.
+type indentCapable interface {
+	CanIndent() bool
 }
 
 type selectionService interface {
@@ -656,13 +658,15 @@ func appendLocations(dst []textapi.Location, ll textapi.LocationList) []textapi.
 // the section's own indentation on top of the indentation of the line of
 // that first token, without consulting the host. Lines before the first
 // token, like the one opened right after <script>, blank sections and
-// comment sections are the host's, as are lines outside any section.
+// sections whose tree cannot indent, such as a comment's, one whose grammar
+// ships no indents query or one whose package was declined, are the host's,
+// as are lines outside any section.
 func (c *Tree) IndentationAt(line int) (int, bool) {
 	c.mu.Lock()
 	var inside *section
 	var base, startY int
 	for _, s := range c.sections {
-		if s.lang == commentLanguage || line <= s.rng.Start.Y || line >= s.rng.End.Y {
+		if line <= s.rng.Start.Y || line >= s.rng.End.Y {
 			continue
 		}
 		cells := c.view.RawCells()
@@ -677,6 +681,11 @@ func (c *Tree) IndentationAt(line int) (int, bool) {
 	}
 	c.mu.Unlock()
 
+	if inside != nil {
+		if capable, ok := inside.tree.(indentCapable); !ok || !capable.CanIndent() {
+			inside = nil
+		}
+	}
 	if inside == nil {
 		if svc, ok := c.host.(indentService); ok {
 			return svc.IndentationAt(line)

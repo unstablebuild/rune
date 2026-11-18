@@ -44,7 +44,21 @@ func TestSpecFor(t *testing.T) {
 	assert.Same(t, symbolresolve.JavaScript, symbolresolve.SpecFor("javascript"))
 	assert.Same(t, symbolresolve.C, symbolresolve.SpecFor("c"))
 	assert.Same(t, symbolresolve.Cpp, symbolresolve.SpecFor("cpp"))
+	assert.Same(t, symbolresolve.Svelte, symbolresolve.SpecFor("svelte"))
 	assert.Nil(t, symbolresolve.SpecFor("ruby"))
+}
+
+func TestSpecHasImports(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, symbolresolve.TypeScript.HasImports())
+	assert.False(t, symbolresolve.Python.HasImports())
+	// A host has no import queries of its own but inherits its injected
+	// specs' ability to tell imports apart.
+	assert.True(t, symbolresolve.Svelte.HasImports())
+	assert.False(t, (&symbolresolve.Spec{
+		LangID: "host", Injected: []*symbolresolve.Spec{symbolresolve.Python},
+	}).HasImports())
 }
 
 func TestNewQualifierContextNilFSPanics(t *testing.T) {

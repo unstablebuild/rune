@@ -124,6 +124,7 @@ The segments are separated with dots:
 | Rust | `geometry.Shape`, `geometry.Shape.area` |
 | Zig | `geometry.Shape`, `geometry.Shape.area` |
 | TypeScript and JavaScript | `geometry.Shape`, `geometry.Shape.area`, `utils.slugify` for a re-export from `utils/index.ts` |
+| Svelte | `Counter.increment`, `Counter.Store.reset` for declarations in `Counter.svelte`'s `<script>` block |
 
 Private and unexported declarations are indexed like public ones, so internal
 helpers resolve and appear in completion by their qualified name.
@@ -153,8 +154,8 @@ name.
 Opening a workspace starts a background scan. Rune walks non-ignored source
 files for languages that have a registered symbol-resolution specification.
 Hidden directories and paths excluded by Git ignore rules are skipped. Rune
-currently has specifications for Go, Python, Rust, Zig, TypeScript, and
-JavaScript.
+currently has specifications for Go, Python, Rust, Zig, TypeScript,
+JavaScript, and Svelte.
 
 Each eligible file goes through one Tree-sitter parse. Rune runs several queries
 against that syntax tree as one batch:

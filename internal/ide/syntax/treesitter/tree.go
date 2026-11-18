@@ -234,6 +234,16 @@ func (t *Tree) IndentationAt(line int) (int, bool) {
 	return ret, ret >= 0
 }
 
+// CanIndent reports whether IndentationAt computes indentation: the tree is
+// parsed and its grammar ships an indents query. A tree that cannot indent
+// answers false for every line; one that can answers false only for a line
+// it leaves as is.
+func (t *Tree) CanIndent() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.ready && !t.closed && t.tree != nil && t.indents != nil
+}
+
 // State returns an iterator that eventually, when the Tree is ready
 // streams the current state of the tree, every time it's altered.
 func (t *Tree) State() iterator.Iterator[syntax.State] {

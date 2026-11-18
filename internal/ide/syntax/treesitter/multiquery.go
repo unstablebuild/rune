@@ -26,6 +26,7 @@ import (
 	"slices"
 	"sync"
 
+	log "github.com/sirupsen/logrus"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -121,6 +122,12 @@ func (p Parser) SearchMulti(
 type compiledQueries struct {
 	lang    *loadedLanguage
 	queries []compiledQuery
+	// injections is the language's injections query, compiled only when
+	// the batch carries queries for injected languages; injected holds
+	// each such language's own batch, run against the regions the
+	// injections query marks with that language.
+	injections *sitter.Query
+	injected   map[string]*compiledQueries
 }
 
 type compiledQuery struct {
@@ -138,6 +145,12 @@ func (c *compiledQueries) close() {
 		if q.query != nil {
 			q.query.Close()
 		}
+	}
+	if c.injections != nil {
+		c.injections.Close()
+	}
+	for _, sub := range c.injected {
+		sub.close()
 	}
 	if c.lang != nil {
 		c.lang.close()
@@ -279,13 +292,74 @@ func (f *querySession) Close() error {
 
 func sameMultiQuery(a, b symbolresolve.MultiQuery) bool {
 	return a.ID == b.ID && a.Query == b.Query && a.Nodes == b.Nodes &&
-		slices.Equal(a.Captures, b.Captures)
+		a.Lang == b.Lang && slices.Equal(a.Captures, b.Captures)
 }
 
 // compileQueriesForLang loads langID once and compiles every query against
 // it, so a worker shares a single parser and language handle across all
-// queries for that language.
+// queries for that language. Queries bound to an injected language are
+// compiled against that language instead, together with langID's
+// injections query that locates their regions; an injected language that
+// is not installed, or a host grammar without an injections query, simply
+// contributes no matches.
 func compileQueriesForLang(
+	ctx context.Context, pkg syntax.PkgManager, langID string,
+	queries []symbolresolve.MultiQuery,
+) (*compiledQueries, error) {
+	var own []symbolresolve.MultiQuery
+	injected := make(map[string][]symbolresolve.MultiQuery)
+	for _, q := range queries {
+		if q.Lang == "" {
+			own = append(own, q)
+			continue
+		}
+		injected[q.Lang] = append(injected[q.Lang], q)
+	}
+	c, err := compileLanguageQueries(ctx, pkg, langID, own)
+	if err != nil {
+		return nil, err
+	}
+	if len(injected) == 0 {
+		return c, nil
+	}
+	text, err := readLibQuery(ctx, pkg, langID, InjectionsFilename)
+	if err != nil {
+		if errors.Is(err, errNotInstalled) {
+			log.Debugf("treesitter: language %q has no %s; injected queries yield nothing",
+				langID, InjectionsFilename)
+			return c, nil
+		}
+		c.close()
+		return nil, err
+	}
+	q, disabled, err := newInjectionsQuery(c.lang.lang, text)
+	if err != nil {
+		c.close()
+		return nil, fmt.Errorf("language %q: %w", langID, err)
+	}
+	for _, i := range disabled {
+		log.Debugf("treesitter: language %q: disabling injections pattern %d: unsupported predicate",
+			langID, i)
+	}
+	c.injections = q
+	c.injected = make(map[string]*compiledQueries, len(injected))
+	for lang, qs := range injected {
+		sub, err := compileLanguageQueries(ctx, pkg, lang, qs)
+		if err != nil {
+			if errors.Is(err, errNotInstalled) {
+				log.Debugf("treesitter: language %q injected into %q is not installed", lang, langID)
+				continue
+			}
+			c.close()
+			return nil, err
+		}
+		c.injected[lang] = sub
+	}
+	return c, nil
+}
+
+// compileLanguageQueries loads langID and compiles queries against it.
+func compileLanguageQueries(
 	ctx context.Context, pkg syntax.PkgManager, langID string,
 	queries []symbolresolve.MultiQuery,
 ) (*compiledQueries, error) {
@@ -322,6 +396,34 @@ func compileQueriesForLang(
 		})
 	}
 	return c, nil
+}
+
+// readLibQuery returns the contents of the query file name in langID's
+// package. It fails with errNotInstalled when the package or the file is
+// absent.
+func readLibQuery(
+	ctx context.Context, pkg syntax.PkgManager, langID, name string,
+) (string, error) {
+	it, err := pkg.LibDir(ctx, langID)
+	if err != nil {
+		return "", errNotInstalled
+	}
+	files, err := iterator.ToSlice(ctx, it)
+	_ = it.Close()
+	if err != nil {
+		return "", fmt.Errorf("list files: %w", err)
+	}
+	for _, path := range files {
+		if filepath.Base(path) != name {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read lib query file %s: %v", name, err)
+		}
+		return string(data), nil
+	}
+	return "", errNotInstalled
 }
 
 // fileScratch holds buffers a single worker or session recycles across
@@ -407,6 +509,52 @@ func readFileSymbolsMulti(
 		if err := runQueryOnTree(ctx, q, root, content, starts, fileURI, emit); err != nil {
 			retErr = errors.Join(retErr, err)
 		}
+	}
+	if c.injections == nil || len(c.injected) == 0 {
+		return retErr
+	}
+	if err := runInjectedQueries(ctx, c, root, content, starts, fileURI, emit); err != nil {
+		retErr = errors.Join(retErr, err)
+	}
+	return retErr
+}
+
+// runInjectedQueries parses each region the host tree's injections query
+// marks with a language in c.injected and runs that language's batch on
+// it. Regions are parsed one at a time, as their own documents in host
+// coordinates, so matches carry absolute positions and a syntax error in
+// one region cannot disturb another.
+func runInjectedQueries(
+	ctx context.Context, c *compiledQueries, root *sitter.Node, content []byte,
+	starts []int, fileURI workspaceapi.URI,
+	emit func(symbolresolve.MultiResult) error,
+) (retErr error) {
+	for _, region := range queryInjections(c.injections, root, content) {
+		sub, ok := c.injected[region.language]
+		if !ok {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return retErr
+		}
+		if err := sub.lang.parser.SetIncludedRanges([]sitter.Range{region.rng}); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("%s region %v: %w",
+				region.language, region.rng.StartPoint, err))
+			continue
+		}
+		tree := sub.lang.parser.Parse(content, nil)
+		if tree == nil {
+			retErr = errors.Join(retErr, fmt.Errorf("%s region %v: failed to parse data",
+				region.language, region.rng.StartPoint))
+			continue
+		}
+		subRoot := tree.RootNode()
+		for _, q := range sub.queries {
+			if err := runQueryOnTree(ctx, q, subRoot, content, starts, fileURI, emit); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
+		}
+		tree.Close()
 	}
 	return retErr
 }

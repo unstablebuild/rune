@@ -56,6 +56,8 @@ func TestSpecForFile(t *testing.T) {
 		{"a.cc", symbolresolve.Cpp},
 		{"a.hpp", symbolresolve.Cpp},
 		{"a.inl", symbolresolve.Cpp},
+		{"a.svelte", symbolresolve.Svelte},
+		{"src/Button.svelte", symbolresolve.Svelte},
 		{"a.txt", nil},
 		{"go", nil},
 	} {

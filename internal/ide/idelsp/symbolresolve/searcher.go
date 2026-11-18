@@ -34,6 +34,14 @@ type MultiQuery struct {
 	// node is emitted as its own single-capture match rather than being
 	// grouped into a tuple.
 	Nodes syntaxapi.NodeCaptureName
+	// Lang, when non-empty, runs the query against the regions of that
+	// language that the file's grammar marks through its injections
+	// query (a <script> block, say) instead of against the file's own
+	// syntax tree. Each region is parsed on its own with the named
+	// language's grammar, in document coordinates. Files whose grammar
+	// has no injections query, and languages that are not installed,
+	// yield no matches for such queries.
+	Lang string
 }
 
 // MultiResult is a single SearchMulti match tagged with the ID of the

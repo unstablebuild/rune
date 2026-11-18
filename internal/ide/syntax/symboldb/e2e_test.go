@@ -91,6 +91,28 @@ func pkgManagerFor(t testing.TB, fixtures string) syntax.PkgManager {
 	}}
 }
 
+// multiStubPkgManager serves a different fixture directory per language
+// id, for workspaces whose files inject one grammar into another; a
+// language it does not list reads as not installed.
+type multiStubPkgManager map[string][]string
+
+func (m multiStubPkgManager) LibDir(
+	_ context.Context, langID string,
+) (iterator.Iterator[string], error) {
+	return iterator.FromSlice(m[langID]), nil
+}
+
+func multiPkgManagerFor(t testing.TB, fixtures map[string]string) multiStubPkgManager {
+	t.Helper()
+	m := make(multiStubPkgManager, len(fixtures))
+	for langID, rel := range fixtures {
+		wd, err := os.Getwd()
+		require.NoError(t, err)
+		m[langID] = grammarfixture.LibDir(t, filepath.Join(wd, rel))
+	}
+	return m
+}
+
 func copyDir(t *testing.T, src, dst string) {
 	t.Helper()
 	entries, err := os.ReadDir(src)
@@ -114,6 +136,11 @@ func copyDir(t *testing.T, src, dst string) {
 // for the initial scan.
 func setupE2E(t *testing.T, testdata, fixtures string) *e2eEnv {
 	t.Helper()
+	return setupE2EWith(t, testdata, pkgManagerFor(t, fixtures))
+}
+
+func setupE2EWith(t *testing.T, testdata string, pkg syntax.PkgManager) *e2eEnv {
+	t.Helper()
 	root := t.TempDir()
 	copyDir(t, testdata, root)
 
@@ -124,7 +151,7 @@ func setupE2E(t *testing.T, testdata, fixtures string) *e2eEnv {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = scheme.Close() })
 
-	backing := treesitter.NewParser(scheme, pkgManagerFor(t, fixtures), rootURI)
+	backing := treesitter.NewParser(scheme, pkg, rootURI)
 	p, err := New(backing, scheme, rootURI, storagestub.NewInMemoryService(),
 		&recordingNotifications{}, syncTick)
 	require.NoError(t, err)
@@ -462,6 +489,65 @@ func TestZigE2E(t *testing.T) {
 	})
 }
 
+func TestSvelteE2E(t *testing.T) {
+	t.Parallel()
+	env := setupE2EWith(t, svelteTestdata, multiPkgManagerFor(t, map[string]string{
+		"svelte": svelteFixtures, "typescript": tsFixtures, "javascript": jsFixtures,
+	}))
+
+	t.Run("script declarations resolve to the component", func(t *testing.T) {
+		for name, rel := range map[string]string{
+			"Counter.increment":    "src/Counter.svelte",
+			"Counter.Store":        "src/Counter.svelte",
+			"Counter.Store.reset":  "src/Counter.svelte",
+			"Badge.emphasize":      "src/Badge.svelte",
+			"Badge.Palette.swatch": "src/Badge.svelte",
+			"Settings.load":        "src/Settings.svelte",
+			"Settings.toggle":      "src/Settings.svelte",
+			"Broken.stable":        "src/Broken.svelte",
+		} {
+			assert.Equalf(t, []string{env.uri(t, rel)}, resolveURIs(t, env.p, name), "resolve %q", name)
+		}
+	})
+
+	t.Run("references with no workspace definition resolve to the use site", func(t *testing.T) {
+		assert.Equal(t, []string{env.uri(t, "src/Counter.svelte")},
+			resolveURIs(t, env.p, "motion.tweened"))
+	})
+
+	t.Run("match positions are component coordinates", func(t *testing.T) {
+		it, err := env.p.ResolveSymbol(context.Background(), "Counter.increment", nil)
+		require.NoError(t, err)
+		matches, err := iterator.ToSlice(context.Background(), it)
+		require.NoError(t, err)
+		require.Len(t, matches, 1)
+		assert.Equal(t, 21, matches[0].Pos.Y)
+		assert.Equal(t, 18, matches[0].Pos.X)
+	})
+
+	t.Run("modules imported by components keep their own spec", func(t *testing.T) {
+		// The TypeScript spec claims geometry.ts, so its definition is
+		// preferred over the component's reference.
+		assert.Equal(t, []string{env.uri(t, "src/lib/geometry.ts")},
+			resolveURIs(t, env.p, "geometry.area"))
+	})
+
+	t.Run("listed symbols include component names", func(t *testing.T) {
+		got := listSet(t, env.p)
+		for _, name := range []string{
+			"Counter.increment", "Counter.Store.reset", "Badge.emphasize",
+			"Settings.load", "motion.tweened", "geometry.describe", "format.percent",
+		} {
+			assert.Truef(t, got[name], "expected %q to be listed", name)
+		}
+		assert.False(t, got["Plain.h1"], "markup must not be indexed")
+	})
+
+	t.Run("an unindexed name is a miss, not a fallback", func(t *testing.T) {
+		assert.Empty(t, resolveURIs(t, env.p, "Counter.missing"))
+	})
+}
+
 func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 	const (
 		tsxFile = "Home.tsx"
@@ -702,17 +788,21 @@ func (s *countingQuerySession) QueryMulti(
 // Paths to the committed testdata modules and tree-sitter fixtures,
 // relative to this package's directory.
 const (
-	goTestdata    = "../../idelsp/symbolresolve/testdata"
-	pyTestdata    = "../../idelsp/symbolresolve/testdata_py"
-	pyPkgTestdata = "../../idelsp/symbolresolve/testdata_py_pkg"
-	rsTestdata    = "../../idelsp/symbolresolve/testdata_rs"
-	zigTestdata   = "../../idelsp/symbolresolve/testdata_zig"
+	goTestdata     = "../../idelsp/symbolresolve/testdata"
+	pyTestdata     = "../../idelsp/symbolresolve/testdata_py"
+	pyPkgTestdata  = "../../idelsp/symbolresolve/testdata_py_pkg"
+	rsTestdata     = "../../idelsp/symbolresolve/testdata_rs"
+	zigTestdata    = "../../idelsp/symbolresolve/testdata_zig"
+	svelteTestdata = "../../idelsp/symbolresolve/testdata_svelte"
 
-	goFixtures  = "../../idelsp/symbolresolve/go"
-	pyFixtures  = "../syntaxtest/python"
-	rsFixtures  = "../syntaxtest/rust"
-	tsxFixtures = "../syntaxtest/tsx"
-	zigFixtures = "../syntaxtest/zig"
+	goFixtures     = "../../idelsp/symbolresolve/go"
+	pyFixtures     = "../syntaxtest/python"
+	rsFixtures     = "../syntaxtest/rust"
+	tsxFixtures    = "../syntaxtest/tsx"
+	tsFixtures     = "../syntaxtest/typescript"
+	jsFixtures     = "../syntaxtest/javascript"
+	svelteFixtures = "../syntaxtest/svelte"
+	zigFixtures    = "../syntaxtest/zig"
 )
 
 // benchWorkspace generates a workspace of Go files whose shared-name

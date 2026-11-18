@@ -453,6 +453,26 @@ func TestSvelteCompositeHighlightsIntegration(t *testing.T) {
 		})
 		assert.Equal(t, "javascript", s.tree.Sections()[0].Language)
 	})
+
+	t.Run("comments are highlighted by the comment grammar", func(t *testing.T) {
+		number := syntax.DefaultConfig().CaptureNamesAttributes["number"]
+		s := newSvelteTree(t, newSveltePackages(t, "svelte", "comment"),
+			"<!-- TODO: fix #12 soon -->\n<p>hi</p>\n")
+		s.waitLocation(svelteLocation(xy(15, 0), xy(18, 0), number))
+		s.locked(func() {
+			var numbers []textapi.Location
+			for _, l := range s.locs {
+				if l.Attr == number {
+					numbers = append(numbers, l)
+				}
+			}
+			assert.Equal(t, []textapi.Location{svelteLocation(xy(15, 0), xy(18, 0), number)},
+				numbers, "only the issue number is a number, not every word")
+		})
+		assert.Equal(t, []multitree.Section{
+			{Language: "comment", Range: term.Range{Start: xy(0, 0), End: xy(27, 0)}},
+		}, s.tree.Sections())
+	})
 }
 
 func TestSvelteCompositeEditsIntegration(t *testing.T) {

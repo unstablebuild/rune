@@ -3,7 +3,17 @@
 ; Inherits chains have been inlined; do not re-expand.
 
 ; --- begin inherited: html_tags (injections) ---
-; --- begin html_tags (injections) (from nvim-treesitter/runtime/queries/html_tags/injections.scm) ---
+; --- begin html_tags (injections) (from queries/html_tags/injections.scm) ---
+; Injections shared by the HTML-like grammars (html, svelte, vue, astro,
+; angular, blade through html). Written by hand from nvim-treesitter's
+; runtime/queries/html_tags/injections.scm (Apache-2.0), which expresses
+; its predicates for Neovim's Lua engine: `#lua-match?` and `#gsub!`. Rune
+; evaluates `#match?` with RE2 and disables any pattern using a predicate
+; it does not know, so the upstream file cannot be shipped as is. Keep the
+; patterns in upstream's order; only the predicates differ, and the
+; `<script type="foo/bar">` rule, which relied on `#gsub!` to rewrite the
+; MIME type into a language name, is spelled out per type instead.
+
 ((comment) @injection.content
   (#set! injection.language "comment"))
 
@@ -14,8 +24,8 @@
 ((style_element
   (start_tag) @_no_type_lang
   (raw_text) @injection.content)
-  (#not-match? @_no_type_lang "[[:space:]]lang[[:space:]]*=")
-  (#not-match? @_no_type_lang "[[:space:]]type[[:space:]]*=")
+  (#not-match? @_no_type_lang "\\slang\\s*=")
+  (#not-match? @_no_type_lang "\\stype\\s*=")
   (#set! injection.language "css"))
 
 ((style_element
@@ -34,13 +44,33 @@
 ((script_element
   (start_tag) @_no_type_lang
   (raw_text) @injection.content)
-  (#not-match? @_no_type_lang "[[:space:]]lang[[:space:]]*=")
-  (#not-match? @_no_type_lang "[[:space:]]type[[:space:]]*=")
+  (#not-match? @_no_type_lang "\\slang\\s*=")
+  (#not-match? @_no_type_lang "\\stype\\s*=")
   (#set! injection.language "javascript"))
 
-; <script type="foo/bar">
-; pattern dropped: its gsub directive cannot be evaluated
+; <script type="text/javascript">
+((script_element
+  (start_tag
+    (attribute
+      (attribute_name) @_attr
+      (#eq? @_attr "type")
+      (quoted_attribute_value
+        (attribute_value) @_type)))
+  (raw_text) @injection.content)
+  (#any-of? @_type "text/javascript" "application/javascript" "text/ecmascript" "application/ecmascript")
+  (#set! injection.language "javascript"))
 
+; <script type="application/json">
+((script_element
+  (start_tag
+    (attribute
+      (attribute_name) @_attr
+      (#eq? @_attr "type")
+      (quoted_attribute_value
+        (attribute_value) @_type)))
+  (raw_text) @injection.content)
+  (#any-of? @_type "application/json" "application/ld+json")
+  (#set! injection.language "json"))
 
 ; <script type="importmap">
 ((script_element
