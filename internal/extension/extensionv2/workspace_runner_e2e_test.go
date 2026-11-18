@@ -21,8 +21,11 @@ package extensionv2
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -126,4 +129,164 @@ func TestWorkspaceRunnerExtensionProcessE2E(t *testing.T) {
 			assert.True(t, state.Running)
 		})
 	}
+}
+
+// goSourceExtension is a Go extension that completes the handshake, then
+// reports the reload signal when it gets it.
+const goSourceExtension = `package main
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+)
+
+func main() {
+	meta, err := os.ReadFile("meta.json")
+	if err != nil {
+		panic(err)
+	}
+	if _, err := os.Stdout.Write(meta); err != nil {
+		panic(err)
+	}
+	if _, err := io.ReadAll(os.Stdin); err != nil {
+		panic(err)
+	}
+	fmt.Fprintf(os.Stderr, "config read pid=%d\n", os.Getpid())
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGUSR2)
+	<-ch
+	fmt.Fprintln(os.Stderr, "reload signal")
+	time.Sleep(time.Minute)
+}
+`
+
+func TestWorkspaceRunnerGoSourceExtensionE2E(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no reload signal")
+	}
+	goTool, err := exec.LookPath("go")
+	require.NoError(t, err, "the go toolchain must be on PATH")
+	meta, err := json.Marshal(extensionapi.Metadata{
+		DeveloperID: "dev-id", DeveloperEmail: "dev@example.com", DeveloperKey: "dev-key",
+		ExtensionID: "ext", ExtensionName: "Ext",
+		Permissions: extensionapi.NewPermissions(extensionapi.PermissionStorage),
+	})
+	require.NoError(t, err)
+
+	newRunner := func(t *testing.T, mainGo string) (*workspaceRunner, string) {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		keys, err := auth.GenerateKeys()
+		require.NoError(t, err)
+		dir := t.TempDir()
+		uri, err := workspaceapi.ParseURI("file://" + dir)
+		require.NoError(t, err)
+		execScheme, err := workspace.NewFileScheme(ctx, config.MapConfig(map[string]any{}), uri)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, execScheme.Close()) })
+		dataDir := filepath.Join(dir, "data")
+		require.NoError(t, os.MkdirAll(filepath.Join(dataDir, "bin"), 0o755))
+		require.NoError(t, os.Symlink(goTool, filepath.Join(dataDir, "bin", "go")))
+		runner := newWorkspaceRunner(execScheme, execScheme, extension.GrantAll(),
+			nopTrustVerifier{}, uri, filepath.Join(dir, "ext.sock"), dataDir, dataDir,
+			[]byte("cert"), keys)
+		t.Cleanup(func() { require.NoError(t, runner.Close()) })
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "meta.json"), meta, 0o644))
+		pkgDir := filepath.Join(dir, "ext")
+		require.NoError(t, os.MkdirAll(pkgDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(pkgDir, "go.mod"),
+			[]byte("module ext\n\ngo 1.21\n"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(pkgDir, "main.go"), []byte(mainGo), 0o644))
+		return runner, pkgDir
+	}
+	// builtBinary is the binary the log says the extension was built into.
+	builtBinary := func(t *testing.T, runner *workspaceRunner) string {
+		t.Helper()
+		for _, line := range strings.Split(readExtensionLog(t, runner), "\n") {
+			if _, after, ok := strings.Cut(line, " build -o "); ok {
+				return strings.TrimSuffix(strings.TrimSuffix(after, `" source=rune`), " .")
+			}
+		}
+		t.Fatal("the log does not say what the extension was built into")
+		return ""
+	}
+
+	t.Run("the signal reaches the extension", func(t *testing.T) {
+		runner, pkgDir := newRunner(t, goSourceExtension)
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer waitCancel()
+		require.NoError(t, runner.startExtension(waitCtx, "ext", pkgDir, config.NopConfig()))
+
+		var pid int
+		require.Eventually(t, func() bool {
+			_, err := fmt.Sscanf(lineWith(readExtensionLog(t, runner), "config read pid="),
+				"config read pid=%d", &pid)
+			return err == nil
+		}, 10*time.Second, 10*time.Millisecond, "the extension must read its config")
+		state, ok := runner.extension("ext")
+		require.True(t, ok)
+		assert.True(t, state.Running)
+		assert.Equal(t, workspaceapi.Pid(pid), state.Pid, "the pid recorded is the extension's own")
+		bin := builtBinary(t, runner)
+		assert.FileExists(t, bin)
+
+		assert.Equal(t, 1, runner.SignalReload())
+		require.Eventually(t, func() bool {
+			return strings.Contains(readExtensionLog(t, runner), "reload signal")
+		}, 10*time.Second, 10*time.Millisecond, "the extension must get the reload signal")
+
+		require.NoError(t, runner.stopExtensionByID("ext"))
+		require.Eventually(t, func() bool {
+			_, err := os.Stat(filepath.Dir(bin))
+			return os.IsNotExist(err)
+		}, 10*time.Second, 10*time.Millisecond, "the binary is removed when the run ends")
+	})
+
+	t.Run("a restart builds the changed source", func(t *testing.T) {
+		runner, pkgDir := newRunner(t, goSourceExtension)
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer waitCancel()
+		require.NoError(t, runner.startExtension(waitCtx, "ext", pkgDir, config.NopConfig()))
+		first := builtBinary(t, runner)
+
+		changed := strings.Replace(goSourceExtension, "config read pid=", "config read again pid=", 1)
+		require.NoError(t, os.WriteFile(filepath.Join(pkgDir, "main.go"), []byte(changed), 0o644))
+		require.NoError(t, runner.restartExtension(waitCtx, "ext"))
+		require.Eventually(t, func() bool {
+			return strings.Contains(readExtensionLog(t, runner), "config read again pid=")
+		}, 10*time.Second, 10*time.Millisecond, "the restarted extension runs the new source")
+		assert.NotEqual(t, first, builtBinary(t, runner), "the restart builds into a new file")
+		assert.NoFileExists(t, first, "the previous run's binary is removed")
+	})
+
+	t.Run("a build failure ends the run before the handshake", func(t *testing.T) {
+		runner, pkgDir := newRunner(t, "package main\n\nfunc main() { undefined() }\n")
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer waitCancel()
+		err := runner.startExtension(waitCtx, "ext", pkgDir, config.NopConfig())
+		require.ErrorContains(t, err, "build: exit status 1")
+		state, ok := runner.extension("ext")
+		require.True(t, ok)
+		assert.False(t, state.Running)
+		assert.Zero(t, state.Pid)
+		logs := readExtensionLog(t, runner)
+		assert.Contains(t, logs, "undefined: undefined", "the compiler's output is logged")
+		assert.Contains(t, logs, `level=error msg="exited: build: exit status 1" source=rune`)
+		assert.NotContains(t, logs, "handshake complete")
+	})
+}
+
+// lineWith returns the first line of logs holding substr, "" for none.
+func lineWith(logs, substr string) string {
+	for _, line := range strings.Split(logs, "\n") {
+		if i := strings.Index(line, substr); i >= 0 {
+			return line[i:]
+		}
+	}
+	return ""
 }

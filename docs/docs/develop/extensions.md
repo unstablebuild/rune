@@ -294,12 +294,16 @@ you, usually with `path` already set to the installed binary under
 `$RUNE_DATADIR`. In most cases you only ever touch the `config` block to
 tune the extension's own behavior.
 
-An extension reads its `config` block when it starts. Before each
-[`runectl screenshot`](runectl.md#screenshots), Rune reads its config file
-again and tells running extensions; those that support it, such as Rune
-Agent's status bar, apply the new block then (see [Reloading
+An extension reads its `config` block when it starts. Whenever Rune reads
+its config file again, because the user saved it or a file it includes, a
+package was installed or updated, or a [`runectl
+screenshot`](runectl.md#screenshots) is about to be taken, it tells running
+extensions with `SIGUSR2` on macOS and Linux; those that support it, such as
+Rune Agent's status bar, apply the new block then (see [Reloading
 configuration](sdk/go.md#reloading-configuration)). Otherwise,
-`extensions restart <id>` picks up the change.
+`extensions restart <id>` picks up the change. An extension written in a
+language whose runtime ends the process on an unhandled `SIGUSR2`, such as
+Python or Rust, must handle or ignore the signal; the SDKs document how.
 
 ### Source and package extensions
 
@@ -312,12 +316,17 @@ and a missing toolchain fails the extension start with a `pkg install` hint:
 | Entrypoint | Runs as | Package |
 | --- | --- | --- |
 | `<file>.py` | `uv run` against the nearest `pyproject.toml` above the file | `python` |
-| `<package-dir>` | `go -C <package-dir> run .`, using the package's `go.mod` and `go.sum` | [`go`](../languages/go.md) |
+| `<package-dir>` | `go -C <package-dir> build`, using the package's `go.mod` and `go.sum`, then the binary it built | [`go`](../languages/go.md) |
 | `<file>.rs` | `cargo run` against the nearest `Cargo.toml` above the file | `rust` |
 
 For Go, point `path` at the main package directory, not at `main.go`. The
 directory must contain `go.mod`, and modules with dependencies must commit
-`go.sum` so Rune can run them in read-only module mode.
+`go.sum` so Rune can build them in read-only module mode. Rune builds the
+package into a file of its own for each run, so the extension process is the
+one Rune started: it gets the signals Rune sends, and `extensions status`
+shows its pid. The build's output goes to the extension's log, and a build
+that fails ends the run. The Go build cache keeps a start after the first
+about as fast as a binary's.
 
 A Python entrypoint lives inside a project: uv builds the extension's
 environment from the `pyproject.toml` next to (or above) the script, so

@@ -153,10 +153,12 @@ the shared settings plus your own block under `extensions.<id>.config`.
 Other extensions' blocks are left out.
 
 On macOS and Linux, Rune sends each running extension process `SIGUSR2`
-after it reads its config file again, for example before a
+whenever it reads its config file again: when the user saves the file or
+one it includes, when a package is installed or updated, and before a
 [`runectl screenshot`](../runectl.md#screenshots). Install a handler to
 apply the change; the SDK installs none, and Go ignores the signal by
-default:
+default. The handler must tolerate repeats, since a change that does not
+concern your extension signals it all the same:
 
 ```go
 reload := make(chan os.Signal, 1)
@@ -202,9 +204,12 @@ extensions start snippets /path/to/snippets --config '{"key":"value"}'
 
 To skip the build step during development, point `extensions start` at the
 main package directory instead. The directory must contain `go.mod` and
-`go.sum`; Rune runs it as `go -C <package-directory> run .` with the
-[`go` package's](../../languages/go.md) toolchain (see
+`go.sum`; Rune builds it with the [`go` package's](../../languages/go.md)
+toolchain, as `go -C <package-directory> build`, into a file of its own for
+that run and starts the binary (see
 [source and package extensions](../extensions.md#source-and-package-extensions)).
+The build's output goes to the extension's log, and a build that fails ends
+the run.
 
 ```
 extensions start snippets /path/to/snippets-package

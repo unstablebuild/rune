@@ -52,6 +52,7 @@ type recordingExecutor struct {
 	mu   sync.Mutex
 	ctx  context.Context
 	cmd  workspaceapi.Cmd
+	cmds []workspaceapi.Cmd
 	pids []workspaceapi.Pid
 }
 
@@ -62,6 +63,7 @@ func (r *recordingExecutor) StartCommand(ctx context.Context, cmd workspaceapi.C
 	defer r.mu.Unlock()
 	r.ctx = ctx
 	r.cmd = cmd
+	r.cmds = append(r.cmds, cmd)
 	pid := workspaceapi.Pid(len(r.pids) + 1)
 	r.pids = append(r.pids, pid)
 	return pid, nil
@@ -71,6 +73,48 @@ func (r *recordingExecutor) snapshotCmd() workspaceapi.Cmd {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.cmd
+}
+
+// waitCmds waits for n commands to have been started and returns them.
+func (r *recordingExecutor) waitCmds(t *testing.T, n int) []workspaceapi.Cmd {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		r.mu.Lock()
+		cmds := append([]workspaceapi.Cmd(nil), r.cmds...)
+		r.mu.Unlock()
+		if len(cmds) >= n {
+			return cmds
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d commands were not started before the deadline, got %d", n, len(cmds))
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// completeBuild checks that the command exec started last builds the Go
+// package at dir into a binary, reports the build as succeeded and returns
+// the command that then runs the binary.
+func completeBuild(t *testing.T, exec *recordingExecutor, goBin, dir string) workspaceapi.Cmd {
+	t.Helper()
+	build := exec.snapshotCmd()
+	require.Equal(t, goBin, build.Path)
+	require.Len(t, build.Args, 6, "go -C <dir> build -o <bin> .")
+	assert.Equal(t, []string{"-C", dir, "build", "-o"}, build.Args[:4])
+	assert.Equal(t, ".", build.Args[5])
+	bin := build.Args[4]
+	assert.Equal(t, filepath.Base(dir), filepath.Base(bin), "the binary is named after the package")
+	assert.DirExists(t, filepath.Dir(bin))
+	for _, env := range build.Env {
+		assert.False(t, strings.HasPrefix(env, "RUNE_TOKEN="), "the build gets no auth token")
+	}
+	assert.NotNil(t, build.Stdout, "the build's output goes to the extension's log")
+	n := len(exec.waitCmds(t, 1))
+	build.Watcher.WatchProcess() <- nil
+	run := exec.waitCmds(t, n+1)[n]
+	assert.Equal(t, bin, run.Path)
+	return run
 }
 
 // waitCmd blocks until StartCommand has recorded a command with a usable
@@ -597,7 +641,10 @@ func TestWorkspaceRunnerRunSourceEntrypoint(t *testing.T) {
 		bin        string // toolchain binary provisioned under <dataDir>/bin
 		wantErr    string
 		wantPath   string
-		wantArgs   []string
+		// wantBuildDir is the Go package the toolchain builds before the
+		// binary runs with wantArgs.
+		wantBuildDir string
+		wantArgs     []string
 	}{
 		{
 			name:       "python entrypoint runs via uv project",
@@ -625,18 +672,18 @@ func TestWorkspaceRunnerRunSourceEntrypoint(t *testing.T) {
 			wantErr:    "pkg install python",
 		},
 		{
-			name:       "go main package with args",
-			cmdAndArgs: "/opt/ext/main.go --flag",
-			bin:        "go",
-			wantArgs:   []string{"-C", "/opt/ext", "run", ".", "--flag"},
+			name:         "go main package with args",
+			cmdAndArgs:   "/opt/ext/main.go --flag",
+			bin:          "go",
+			wantBuildDir: "/opt/ext",
+			wantArgs:     []string{"--flag"},
 		},
 		{
-			name:       "go home-relative entrypoint expands",
-			cmdAndArgs: "~/ext/main.go --flag",
-			bin:        "go",
-			wantArgs: []string{
-				"-C", filepath.Join(usr.HomeDir, "ext"), "run", ".", "--flag",
-			},
+			name:         "go home-relative entrypoint expands",
+			cmdAndArgs:   "~/ext/main.go --flag",
+			bin:          "go",
+			wantBuildDir: filepath.Join(usr.HomeDir, "ext"),
+			wantArgs:     []string{"--flag"},
 		},
 		{
 			name:       "go entrypoint must be a main.go",
@@ -650,10 +697,11 @@ func TestWorkspaceRunnerRunSourceEntrypoint(t *testing.T) {
 			wantErr:    "pkg install go",
 		},
 		{
-			name:       "go package directory runs whole package",
-			cmdAndArgs: goPkgDir + " --flag",
-			bin:        "go",
-			wantArgs:   []string{"-C", goPkgDir, "run", ".", "--flag"},
+			name:         "go package directory builds whole package",
+			cmdAndArgs:   goPkgDir + " --flag",
+			bin:          "go",
+			wantBuildDir: goPkgDir,
+			wantArgs:     []string{"--flag"},
 		},
 		{
 			name:       "go package directory missing package",
@@ -726,6 +774,11 @@ func TestWorkspaceRunnerRunSourceEntrypoint(t *testing.T) {
 			}
 			require.NoError(t, err)
 
+			if tt.wantBuildDir != "" {
+				run := completeBuild(t, exec, filepath.Join(dataDir, "bin", "go"), tt.wantBuildDir)
+				assert.Equal(t, tt.wantArgs, run.Args)
+				return
+			}
 			cmd := exec.snapshotCmd()
 			wantPath := tt.wantPath
 			if tt.bin != "" {
@@ -781,8 +834,8 @@ func TestWorkspaceRunnerExpandsEnvInEntrypoint(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			runner, exec := newRunner(t)
 			require.NoError(t, runner.Run("src-ext", tt.cmdAndArgs, config.NopConfig()))
-			assert.Equal(t, []string{"-C", goPkgDir, "run", ".", "--flag"},
-				exec.snapshotCmd().Args)
+			run := completeBuild(t, exec, filepath.Join(runner.dataDir, "bin", "go"), goPkgDir)
+			assert.Equal(t, []string{"--flag"}, run.Args)
 		})
 	}
 }
@@ -818,11 +871,12 @@ func TestWorkspaceRunnerExpandsDataDirInEntrypoint(t *testing.T) {
 		filepath.Join(dataDir, "bin", "go"), []byte("#!/bin/sh\n"), 0o755))
 
 	for _, tt := range []struct {
-		name       string
-		cmdAndArgs string
-		wantPath   string
-		wantArgs   []string
-		wantVerify string
+		name         string
+		cmdAndArgs   string
+		wantPath     string
+		wantArgs     []string
+		wantBuildDir string
+		wantVerify   string
 	}{
 		{
 			name:       "binary",
@@ -832,11 +886,10 @@ func TestWorkspaceRunnerExpandsDataDirInEntrypoint(t *testing.T) {
 			wantVerify: filepath.Join(pkgDir, "ext"),
 		},
 		{
-			name:       "package directory",
-			cmdAndArgs: "$RUNE_DATADIR/lib/pkg",
-			wantPath:   filepath.Join(dataDir, "bin", "go"),
-			wantArgs:   []string{"-C", pkgDir, "run", "."},
-			wantVerify: pkgDir,
+			name:         "package directory",
+			cmdAndArgs:   "$RUNE_DATADIR/lib/pkg",
+			wantBuildDir: pkgDir,
+			wantVerify:   pkgDir,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -848,9 +901,14 @@ func TestWorkspaceRunnerExpandsDataDirInEntrypoint(t *testing.T) {
 				[]byte("cert"), keys,
 			)
 			require.NoError(t, runner.Run("ext", tt.cmdAndArgs, config.NopConfig()))
-			cmd := exec.snapshotCmd()
-			assert.Equal(t, tt.wantPath, cmd.Path)
-			assert.Equal(t, tt.wantArgs, cmd.Args)
+			if tt.wantBuildDir != "" {
+				run := completeBuild(t, exec, filepath.Join(dataDir, "bin", "go"), tt.wantBuildDir)
+				assert.Empty(t, run.Args)
+			} else {
+				cmd := exec.snapshotCmd()
+				assert.Equal(t, tt.wantPath, cmd.Path)
+				assert.Equal(t, tt.wantArgs, cmd.Args)
+			}
 			assert.Equal(t, []string{tt.wantVerify}, verifier.paths)
 		})
 	}
@@ -992,6 +1050,142 @@ func (e *signalRecordingExecutor) signalled() map[workspaceapi.Pid]syscall.Signa
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return maps.Clone(e.signals)
+}
+
+func TestWorkspaceRunnerGoSourceBuild(t *testing.T) {
+	t.Parallel()
+	goPkgDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(goPkgDir, "go.mod"), []byte("module ext\n"), 0o644))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(goPkgDir, "main.go"),
+		[]byte("package main\n\nfunc main() {}\n"), 0o644))
+
+	newRunner := func(t *testing.T) (*workspaceRunner, *signalRecordingExecutor) {
+		t.Helper()
+		keys, err := auth.GenerateKeys()
+		require.NoError(t, err)
+		uri, err := workspaceapi.ParseURI("file:///tmp")
+		require.NoError(t, err)
+		dataDir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dataDir, "bin"), 0o755))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dataDir, "bin", "go"), []byte("#!/bin/sh\n"), 0o755))
+		exec := &signalRecordingExecutor{}
+		runner := newWorkspaceRunner(exec, exec, nil, nopTrustVerifier{}, uri,
+			"/tmp/ext.sock", dataDir, "/tmp/ext-install", []byte("cert"), keys)
+		t.Cleanup(func() { _ = runner.Close() })
+		return runner, exec
+	}
+	binDir := func(t *testing.T, exec *recordingExecutor) string {
+		t.Helper()
+		return filepath.Dir(exec.waitCmds(t, 1)[0].Args[4])
+	}
+	// Every subtest runs its extension under an id of its own: the log
+	// file is named after the id.
+	logOf := func(t *testing.T, runner *workspaceRunner, id string) string {
+		t.Helper()
+		state, ok := runner.extension(id)
+		require.True(t, ok)
+		logs, err := os.ReadFile(state.LogPath)
+		require.NoError(t, err)
+		return string(logs)
+	}
+
+	t.Run("the binary runs with the extension's pid once built", func(t *testing.T) {
+		t.Parallel()
+		runner, exec := newRunner(t)
+		require.NoError(t, runner.Run("ext-pid", goPkgDir+" --flag", config.NopConfig()))
+		state, ok := runner.extension("ext-pid")
+		require.True(t, ok)
+		assert.True(t, state.Running)
+		assert.Zero(t, state.Pid, "the pid is unknown while the extension builds")
+		run := completeBuild(t, &exec.recordingExecutor, runner.dataDir+"/bin/go", goPkgDir)
+		assert.Equal(t, []string{"--flag"}, run.Args)
+		assert.Contains(t, run.Env, "RUNE_DATADIR="+runner.dataDir)
+		require.Eventually(t, func() bool {
+			state, _ := runner.extension("ext-pid")
+			return state.Pid == 2
+		}, 2*time.Second, time.Millisecond, "the binary's pid is the extension's")
+		assert.Contains(t, logOf(t, runner, "ext-pid"), "building ")
+		assert.Contains(t, logOf(t, runner, "ext-pid"), "started with pid 2")
+	})
+
+	t.Run("SignalReload skips an extension that is still building", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows has no reload signal")
+		}
+		t.Parallel()
+		runner, exec := newRunner(t)
+		require.NoError(t, runner.Run("ext-signal", goPkgDir, config.NopConfig()))
+		assert.Zero(t, runner.SignalReload())
+		assert.Empty(t, exec.signalled(), "the build is not signalled")
+		completeBuild(t, &exec.recordingExecutor, runner.dataDir+"/bin/go", goPkgDir)
+		require.Eventually(t, func() bool { return runner.SignalReload() == 1 },
+			2*time.Second, time.Millisecond)
+		assert.Equal(t, map[workspaceapi.Pid]syscall.Signal{2: syscall.SIGUSR2}, exec.signalled())
+	})
+
+	t.Run("a build failure ends the run", func(t *testing.T) {
+		t.Parallel()
+		runner, exec := newRunner(t)
+		require.NoError(t, runner.Run("ext-fail", goPkgDir, config.NopConfig()))
+		build := exec.snapshotCmd()
+		dir := binDir(t, &exec.recordingExecutor)
+		build.Watcher.WatchProcess() <- errors.New("exit status 1")
+		require.Eventually(t, func() bool {
+			state, _ := runner.extension("ext-fail")
+			return !state.Running
+		}, 2*time.Second, time.Millisecond)
+		state, _ := runner.extension("ext-fail")
+		assert.ErrorContains(t, state.LastErr, "build: exit status 1")
+		assert.Len(t, exec.waitCmds(t, 1), 1, "the binary is not started")
+		assert.ErrorContains(t, runner.WaitReady(context.Background(), "ext-fail"),
+			"build: exit status 1")
+		assert.Contains(t, logOf(t, runner, "ext-fail"), "exited: build: exit status 1")
+		require.Eventually(t, func() bool {
+			_, err := os.Stat(dir)
+			return os.IsNotExist(err)
+		}, 2*time.Second, time.Millisecond, "the build directory is removed when the run ends")
+	})
+
+	t.Run("stopping during the build cancels it and starts nothing", func(t *testing.T) {
+		t.Parallel()
+		runner, exec := newRunner(t)
+		require.NoError(t, runner.Run("ext-stop", goPkgDir, config.NopConfig()))
+		build := exec.snapshotCmd()
+		dir := binDir(t, &exec.recordingExecutor)
+		require.NoError(t, runner.stopExtensionByID("ext-stop"))
+		assert.ErrorIs(t, exec.ctx.Err(), context.Canceled, "the build's context is cancelled")
+		// The executor reports the killed build.
+		build.Watcher.WatchProcess() <- errors.New("signal: killed")
+		assert.Never(t, func() bool { return len(exec.waitCmds(t, 1)) > 1 },
+			50*time.Millisecond, time.Millisecond, "the binary is not started")
+		state, _ := runner.extension("ext-stop")
+		assert.False(t, state.Running)
+		assert.NoError(t, state.LastErr, "a stop is not an error")
+		require.Eventually(t, func() bool {
+			_, err := os.Stat(dir)
+			return os.IsNotExist(err)
+		}, 2*time.Second, time.Millisecond, "the build directory is removed")
+	})
+
+	t.Run("a restart builds again", func(t *testing.T) {
+		t.Parallel()
+		runner, exec := newRunner(t)
+		require.NoError(t, runner.Run("ext-restart", goPkgDir, config.NopConfig()))
+		completeBuild(t, &exec.recordingExecutor, runner.dataDir+"/bin/go", goPkgDir)
+		first := exec.waitCmds(t, 2)[0].Args[4]
+		go func() {
+			// The restart waits for the handshake, which never comes: let it
+			// run until the test ends.
+			_ = runner.restartExtension(context.Background(), "ext-restart")
+		}()
+		cmds := exec.waitCmds(t, 3)
+		second := cmds[2]
+		assert.Equal(t, []string{"-C", goPkgDir, "build", "-o"}, second.Args[:4])
+		assert.NotEqual(t, first, second.Args[4], "every run builds into a file of its own")
+	})
 }
 
 func TestWorkspaceRunnerSignalReload(t *testing.T) {

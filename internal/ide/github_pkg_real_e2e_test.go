@@ -185,7 +185,7 @@ func newRealGitHubPkgHandler(
 
 	// The official distribution serves the language requirement; its
 	// tarball delivers the host toolchain into <dataDir>/bin so
-	// `uv run` / `go run` starts the extension.
+	// `uv run` or `go build` starts the extension.
 	pkgs := idepkgtest.MakePackages(release.Package{Name: requirement, Latest: "1"})
 	bundles := idepkgtest.MakeBundles(
 		[]release.Bundle{{Package: requirement, Version: "1"}})

@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -276,12 +277,18 @@ func (m *workspaceRunner) run(
 	m.mu.Lock()
 	state.started = time.Now()
 	state.startCount++
-	// The process may have exited already.
-	if state.running {
-		state.pid = pid
-	}
+	m.setPid(state, pid)
 	m.mu.Unlock()
 	return state, nil
+}
+
+// setPid records the pid of the run's process, unless the run ended
+// already. It must be called with m.mu held. A pid of 0 means the process
+// has not started yet: a source extension is still building.
+func (m *workspaceRunner) setPid(state *extensionRunState, pid workspaceapi.Pid) {
+	if state.running && pid != 0 {
+		state.pid = pid
+	}
 }
 
 // register makes a new run the extension's current one, before it starts so
@@ -325,23 +332,123 @@ func (m *workspaceRunner) register(
 	return state, nil
 }
 
+// start starts the run's process and returns its pid, or starts the
+// build of a source extension and returns 0: the process starts, and the
+// pid is recorded, once the build succeeds.
 func (m *workspaceRunner) start(
 	ctx context.Context, state *extensionRunState,
 ) (workspaceapi.Pid, error) {
-	collector := state.collector
-	cmd, releaseStdin, err := m.makeCommand(ctx, state)
+	cmd, build, releaseStdin, err := m.makeCommand(ctx, state)
 	if err != nil {
 		return 0, fmt.Errorf("make command: %w", err)
 	}
-	collector.lifecycle(log.InfoLevel, "starting %s in %s",
+	if build != nil {
+		if err := m.startBuild(ctx, state, build, cmd); err != nil {
+			releaseStdin()
+			return 0, err
+		}
+		return 0, nil
+	}
+	pid, err := m.startProcess(ctx, state, cmd)
+	if err != nil {
+		releaseStdin()
+		return 0, err
+	}
+	return pid, nil
+}
+
+func (m *workspaceRunner) startProcess(
+	ctx context.Context, state *extensionRunState, cmd workspaceapi.Cmd,
+) (workspaceapi.Pid, error) {
+	state.collector.lifecycle(log.InfoLevel, "starting %s in %s",
 		strings.Join(append([]string{cmd.Path}, cmd.Args...), " "), cmd.Dir)
 	pid, err := m.extExecutor.StartCommand(ctx, cmd)
 	if err != nil {
-		releaseStdin()
 		return 0, fmt.Errorf("start command: %w", err)
 	}
-	collector.lifecycle(log.InfoLevel, "started with pid %d", pid)
+	state.collector.lifecycle(log.InfoLevel, "started with pid %d", pid)
 	return pid, nil
+}
+
+// sourceBuild is how a source extension is compiled before it runs.
+type sourceBuild struct {
+	// toolchain is the compiler, and args its arguments, which write the
+	// binary at bin.
+	toolchain string
+	args      []string
+	bin       string
+}
+
+// startBuild runs build, with the extension's environment minus what
+// authorizes it to call into Rune, and starts cmd once it succeeds. The
+// build's output goes to the extension's log. Its failure, and the end of
+// the run during it, end the run as an exit would.
+func (m *workspaceRunner) startBuild(
+	ctx context.Context, state *extensionRunState, build *sourceBuild,
+	cmd workspaceapi.Cmd,
+) error {
+	collector := state.collector
+	waitCh := make(chan error, 1)
+	buildCmd := workspaceapi.Cmd{
+		Path:        build.toolchain,
+		Args:        build.args,
+		Dir:         cmd.Dir,
+		Env:         m.withoutAuthToken(cmd.Env),
+		Stdout:      collector,
+		Stderr:      collector,
+		Watcher:     workspaceapi.ChanProcessWatcher(waitCh),
+		SysProcAttr: procattr.NewGroup(),
+	}
+	collector.lifecycle(log.InfoLevel, "building %s",
+		strings.Join(append([]string{buildCmd.Path}, buildCmd.Args...), " "))
+	if _, err := m.extExecutor.StartCommand(ctx, buildCmd); err != nil {
+		return fmt.Errorf("start build: %w", err)
+	}
+	// Whatever ends the run before its process starts is reported to the
+	// watcher of the process's exit, which ends the run as an exit would.
+	exit := func(err error) {
+		select {
+		case cmd.Watcher.WatchProcess() <- err:
+		case <-m.ctx.Done():
+		}
+	}
+	go debug.CapturePanicReport(func() {
+		var err error
+		select {
+		case err = <-waitCh:
+		case <-m.ctx.Done():
+			return
+		}
+		if err != nil {
+			exit(fmt.Errorf("build: %w", err))
+			return
+		}
+		if ctx.Err() != nil {
+			exit(fmt.Errorf("build: %w", ctx.Err()))
+			return
+		}
+		pid, err := m.startProcess(ctx, state, cmd)
+		if err != nil {
+			exit(err)
+			return
+		}
+		m.mu.Lock()
+		m.setPid(state, pid)
+		m.mu.Unlock()
+	})
+	return nil
+}
+
+// withoutAuthToken returns env without the variable that authorizes an
+// extension to call into Rune.
+func (m *workspaceRunner) withoutAuthToken(env []string) []string {
+	ret := make([]string, 0, len(env))
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, m.cfg.authTokenEnv+"=") {
+			ret = append(ret, kv)
+		}
+	}
+	return ret
 }
 
 // Close stops all extensions and cleans up all resources associated
@@ -377,9 +484,12 @@ func (m *workspaceRunner) log(level log.Level, msg string, args ...any) {
 	}).Logf(level, msg, args...)
 }
 
+// makeCommand returns the command that runs the extension, the build
+// that must succeed before it is started, nil for none, and a release
+// that must be called once the extension has exited or failed to start.
 func (m *workspaceRunner) makeCommand(
 	ctx context.Context, state *extensionRunState,
-) (ret workspaceapi.Cmd, releaseStdin func(), err error) {
+) (ret workspaceapi.Cmd, build *sourceBuild, releaseStdin func(), err error) {
 	extensionID, collector := state.id, state.collector
 	waitCh := make(chan error)
 	// allow args to be passed to extensions
@@ -398,19 +508,34 @@ func (m *workspaceRunner) makeCommand(
 			}
 		}
 	}
-	argv, err = m.sourceEntrypointArgv(extensionID, argv)
+	argv, build, err = m.sourceEntrypointArgv(extensionID, argv)
 	if err != nil {
-		return workspaceapi.Cmd{}, nil, err
+		return workspaceapi.Cmd{}, nil, nil, err
+	}
+	// The binary of a source extension is a new file for every run,
+	// removed when the run ends, so a restart or another workspace never
+	// replaces a binary that is running.
+	cleanup := func() {}
+	if build != nil {
+		binDir, err := os.MkdirTemp("", "rune-extension-")
+		if err != nil {
+			return workspaceapi.Cmd{}, nil, nil, fmt.Errorf("extension %s: build directory: %w",
+				extensionID, err)
+		}
+		cleanup = func() { _ = os.RemoveAll(binDir) }
+		build.bin = filepath.Join(binDir, build.bin)
+		build.args = append(build.args, "-o", build.bin, ".")
+		argv = append([]string{build.bin}, argv...)
 	}
 	ret = workspaceapi.Cmd{
 		Path:    argv[0],
 		Args:    argv[1:],
 		Dir:     m.dataDir, // default
 		Watcher: workspaceapi.ChanProcessWatcher(waitCh),
-		// Source entrypoints run behind `go run`, `uv run` or
-		// `cargo run`, which exec the extension as a grandchild that
-		// SIGKILL cannot be forwarded to. Heading its own process
-		// group is what lets stopping the extension reach it.
+		// Source entrypoints run behind `uv run` or `cargo run`, which
+		// exec the extension as a grandchild that SIGKILL cannot be
+		// forwarded to. Heading its own process group is what lets
+		// stopping the extension reach it.
 		SysProcAttr: procattr.NewGroup(),
 	}
 
@@ -422,18 +547,21 @@ func (m *workspaceRunner) makeCommand(
 		if werr != nil {
 			err = fmt.Errorf("could not expand workspace "+
 				"path: %q: %w", m.workspace.Path(), werr)
-			return workspaceapi.Cmd{}, nil, err
+			cleanup()
+			return workspaceapi.Cmd{}, nil, nil, err
 		}
 	}
 
 	ret.Env, err = m.commandEnvs(ctx, ret.Path, ret.Args, m.dataDir)
 	if err != nil {
-		return workspaceapi.Cmd{}, nil, err
+		cleanup()
+		return workspaceapi.Cmd{}, nil, nil, err
 	}
 	ret.Env = append(ret.Env, fmt.Sprintf("RUNE_PID=%d", os.Getpid()))
 	stdin, releaseStdin, stdout, err := m.makeProtocolExchange(state, verifiedPublisher)
 	if err != nil {
-		return workspaceapi.Cmd{}, nil, err
+		cleanup()
+		return workspaceapi.Cmd{}, nil, nil, err
 	}
 	ret.Stdin, ret.Stdout, ret.Stderr = stdin, stdout, collector
 	// The watcher goroutine owns the collector's lifecycle: it must
@@ -446,6 +574,7 @@ func (m *workspaceRunner) makeCommand(
 	// os.TempDir and is unlinked from workspaceRunner.Close, and the FD
 	// is released on process exit.
 	go debug.CapturePanicReport(func() {
+		defer cleanup()
 		select {
 		case exitErr := <-waitCh:
 			if exitErr != nil {
@@ -463,7 +592,7 @@ func (m *workspaceRunner) makeCommand(
 			releaseStdin()
 		}
 	})
-	return ret, releaseStdin, nil
+	return ret, build, releaseStdin, nil
 }
 
 func (m *workspaceRunner) resolveEntrypoint(path string) (string, error) {
@@ -487,9 +616,15 @@ func (m *workspaceRunner) resolveEntrypoint(path string) (string, error) {
 // Cmd.Path to an argument, so ~ and env vars are expanded here — the
 // local fileScheme only expands Cmd.Path. Non-source paths are
 // returned unchanged.
+//
+// A Go entrypoint is built and run as a binary rather than run through
+// `go run`, which neither handles nor forwards the signals Rune sends
+// the process it started: it returns the extension's own arguments and
+// the build, whose bin is the base name of the binary for the caller to
+// place and to append `-o <bin> .` for.
 func (m *workspaceRunner) sourceEntrypointArgv(
 	extensionID string, argv []string,
-) ([]string, error) {
+) ([]string, *sourceBuild, error) {
 	var pkg string
 	// goPackageDir is set when the entrypoint points at a Go package
 	// directory rather than a source file; the toolchain then runs the
@@ -505,21 +640,21 @@ func (m *workspaceRunner) sourceEntrypointArgv(
 	default:
 		// A path with no recognized source extension may still be a Go
 		// package directory (the entrypoint pointing at the main
-		// package dir so go run picks up all its files). Otherwise it
+		// package dir so the build picks up all its files). Otherwise it
 		// is a plain command and passes through unchanged.
 		dir, err := workspaceapi.ExpandPath(
 			os.ExpandEnv(argv[0]), user.Current,
 			func() (string, error) { return "", nil },
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"could not expand extension path %q: %w", argv[0], err)
 		}
 		if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
-			return argv, nil
+			return argv, nil, nil
 		}
 		if _, ok := findFileUp(dir, "go.mod"); !ok {
-			return argv, nil
+			return argv, nil, nil
 		}
 		pkg = "go"
 		goPackageDir = dir
@@ -530,11 +665,12 @@ func (m *workspaceRunner) sourceEntrypointArgv(
 		func() (string, error) { return "", nil },
 	)
 	if err != nil {
-		return nil, fmt.Errorf(
+		return nil, nil, fmt.Errorf(
 			"could not expand extension script path %q: %w", argv[0], err)
 	}
 
 	var run []string
+	var build *sourceBuild
 	switch pkg {
 	case "python":
 		// Resolve the project root before uv records either path. The
@@ -543,27 +679,27 @@ func (m *workspaceRunner) sourceEntrypointArgv(
 		// or the venv path lets lazy imports mix files from two releases.
 		project, ok := findFileUp(filepath.Dir(script), "pyproject.toml")
 		if !ok {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"extension %s: no pyproject.toml found in any directory above %s",
 				extensionID, script)
 		}
 		logicalProjectDir := filepath.Dir(project)
 		resolvedProject, err := filepath.EvalSymlinks(project)
 		if err != nil {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"extension %s: resolve Python project %s: %w",
 				extensionID, project, err)
 		}
 		projectDir := filepath.Dir(resolvedProject)
 		scriptRel, err := filepath.Rel(logicalProjectDir, script)
 		if err != nil {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"extension %s: locate Python entrypoint in project: %w",
 				extensionID, err)
 		}
 		resolvedScript, err := filepath.EvalSymlinks(filepath.Join(projectDir, scriptRel))
 		if err != nil {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"extension %s: resolve Python entrypoint %s: %w",
 				extensionID, script, err)
 		}
@@ -572,7 +708,7 @@ func (m *workspaceRunner) sourceEntrypointArgv(
 		if _, err := os.Stat(filepath.Join(projectDir, "uv.lock")); err == nil {
 			run = append(run, "--locked")
 		} else if !os.IsNotExist(err) {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"extension %s: stat Python lockfile: %w", extensionID, err)
 		}
 		run = append(run, "--project", projectDir, script)
@@ -580,19 +716,23 @@ func (m *workspaceRunner) sourceEntrypointArgv(
 		dir := goPackageDir
 		if dir == "" {
 			if filepath.Base(script) != "main.go" {
-				return nil, fmt.Errorf(
+				return nil, nil, fmt.Errorf(
 					"extension %s: go entrypoint must be a main.go, got %s",
 					extensionID, script)
 			}
 			dir = filepath.Dir(script)
 		}
-		// -C runs from the package directory so go run picks up the
+		// -C builds from the package directory so go picks up the
 		// module's go.mod and the main package's sibling files.
-		run = []string{"go", "-C", dir, "run", "."}
+		run = []string{"go"}
+		build = &sourceBuild{
+			args: []string{"-C", dir, "build"},
+			bin:  goBinaryName(dir),
+		}
 	case "rust":
 		manifest, ok := findFileUp(filepath.Dir(script), "Cargo.toml")
 		if !ok {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"extension %s: no Cargo.toml found in any directory above %s",
 				extensionID, script)
 		}
@@ -602,15 +742,32 @@ func (m *workspaceRunner) sourceEntrypointArgv(
 	bin := filepath.Join(m.dataDir, "bin", run[0])
 	if _, err := os.Stat(bin); err != nil {
 		if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("stat %s: %w", bin, err)
+			return nil, nil, fmt.Errorf("stat %s: %w", bin, err)
 		}
-		return nil, fmt.Errorf(
+		return nil, nil, fmt.Errorf(
 			"extension %s requires the %s package to run %s, "+
 				"but it is not installed; install it with `pkg install %s`",
 			extensionID, pkg, script, pkg)
 	}
+	if build != nil {
+		build.toolchain = bin
+		return argv[1:], build, nil
+	}
 	run[0] = bin
-	return append(run, argv[1:]...), nil
+	return append(run, argv[1:]...), nil, nil
+}
+
+// goBinaryName is the file name of the binary built from the Go main
+// package at dir: its directory name, which is how the process is listed.
+func goBinaryName(dir string) string {
+	name := filepath.Base(dir)
+	if name == "." || name == string(filepath.Separator) || name == "" {
+		name = "extension"
+	}
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return name
 }
 
 // findFileUp walks from dir toward the filesystem root and returns the

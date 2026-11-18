@@ -109,6 +109,46 @@ return typed clients into the host that share one channel:
 
 Every accessor is gated on the matching `Permission` declared in `Metadata`.
 
+## Reloading configuration
+
+The `config` dict passed to the extension body is your block as it was when
+the process started. `w.config().fetch()` asks Rune for the configuration
+on every call instead, so it reflects the file as Rune last read it: the
+shared settings plus your own block under `extensions.<id>.config`.
+
+On macOS and Linux, Rune sends each running extension process `SIGUSR2`
+whenever it reads its config file again: when the user saves the file or
+one it includes, when a package is installed or updated, and before a
+[`runectl screenshot`](../runectl.md#screenshots). Python ends the process
+on an unhandled `SIGUSR2`, so `serve_workspace_extension` installs a
+handler that ignores it. Replace that handler from the extension body to
+apply the change; it must tolerate repeats, since a change that does not
+concern your extension signals it all the same:
+
+```python
+import asyncio
+import signal
+
+
+async def extend(w: Workspace, config: dict[str, Any]) -> None:
+    s = Snippets(w, config)
+
+    async def reload() -> None:
+        cfg = await w.config().fetch()
+        own = cfg.get("extensions", {}).get("snippets", {}).get("config", {})
+        s.apply(own)
+
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(
+        signal.SIGUSR2, lambda: loop.create_task(reload())
+    )
+```
+
+The handler stays installed until the extension shuts down. A block that
+no longer exists comes back missing, which you may want to treat as the
+defaults. Rune captures a screenshot 300 ms after signalling, so redraw
+promptly; a slower redraw shows up in the next capture.
+
 ## Declare dependencies in pyproject.toml
 
 A Python extension is a regular Python project. Rune runs a `.py`
