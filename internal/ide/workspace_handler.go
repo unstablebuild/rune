@@ -199,6 +199,7 @@ type workspaceManagerHandler struct {
 	sessionReopenDisabled   bool
 	configChangeHook        func(ConfigChange) (ConfigChangeResult, error)
 	configChange            configChangeState
+	configWatcher           *configWatcher
 	watchedFilesChangeHook  func(int)
 	tutorialsInstalled      func(names []string) ([]string, error)
 	onboardingActive        func() bool
@@ -760,6 +761,10 @@ func (h *workspaceManagerHandler) init(
 
 	h.homeURI = homeDirUri
 	h.homeWorkspace = homeWorkspace
+	h.configWatcher = newConfigWatcher(homeWorkspace, func() {
+		h.configChanged("file saved")
+	})
+	h.configWatcher.set(cfg.includedFiles)
 	h.setReleaseManager(releaseManager)
 	// Construct the llama-server pools, search service and router here,
 	// after setReleaseManager has installed h.pkgmanager and
@@ -1593,7 +1598,11 @@ func (h *workspaceManagerHandler) applyConfigChange(source string) (
 ) {
 	cfg, err := h.reloadConfig()
 	if err != nil {
+		// The previous set of files stays watched, so the fix is seen.
 		return ConfigChange{}, ConfigChangeResult{}, fmt.Errorf("load config: %w", err)
+	}
+	if h.configWatcher != nil {
+		h.configWatcher.set(cfg.includedFiles)
 	}
 	s := &h.configChange
 	s.mu.Lock()
@@ -3937,6 +3946,9 @@ func (h *workspaceManagerHandler) Close() (ret error) {
 		if err := h.homeDAPManager.Close(); err != nil {
 			ret = multierror.Append(ret, err)
 		}
+	}
+	if h.configWatcher != nil {
+		h.configWatcher.close()
 	}
 	if h.pkgmanager != nil {
 		if err := h.pkgmanager.Close(); err != nil {

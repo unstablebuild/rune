@@ -106,6 +106,7 @@ func (l *includeLoader) overlayRoot(path string, base map[string]any) (map[strin
 	src, err := os.ReadFile(abs)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			l.files = append(l.files, abs)
 			return base, nil
 		}
 		return nil, err
@@ -134,6 +135,7 @@ func (l *includeLoader) overlayFile(
 	src, err := os.ReadFile(abs)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			l.files = append(l.files, abs)
 			l.warn(includeKey+" "+path,
 				fmt.Errorf("%s: not found (included from %s)", abs, from))
 			return base, nil

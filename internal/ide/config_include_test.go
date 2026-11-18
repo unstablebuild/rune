@@ -133,7 +133,7 @@ func TestIncludeLoader(t *testing.T) {
 				"here.yaml":   "here: 1\n",
 			},
 			want:      map[string]any{"here": 1, "own": 1},
-			wantFiles: []string{"config.yaml", "here.yaml"},
+			wantFiles: []string{"config.yaml", "gone.yaml", "here.yaml"},
 			wantWarn:  []string{"include gone.yaml"},
 		},
 		{
@@ -222,7 +222,7 @@ func TestIncludeLoader(t *testing.T) {
 			},
 			base:      map[string]any{},
 			want:      map[string]any{"own": 1},
-			wantFiles: []string{"config.star"},
+			wantFiles: []string{"config.star", "gone.star"},
 			wantWarn:  []string{"include gone.star"},
 		},
 		{
@@ -342,10 +342,11 @@ config["requirements"] = ["go"]
 			wantFiles: []string{"config.yaml", "other.yaml"},
 		},
 		{
-			name:  "a missing root config leaves the base",
-			files: map[string]string{},
-			base:  map[string]any{"base": 1},
-			want:  map[string]any{"base": 1},
+			name:      "a missing root config leaves the base and is listed",
+			files:     map[string]string{},
+			base:      map[string]any{"base": 1},
+			want:      map[string]any{"base": 1},
+			wantFiles: []string{"config.yaml"},
 		},
 	}
 	for _, tt := range tests {

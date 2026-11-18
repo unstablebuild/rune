@@ -724,6 +724,38 @@ func TestEditorLoadsThePackageConfigItIncludesWhenItStarts(t *testing.T) {
 	}
 }
 
+func TestEditorReloadsWhenAnIncludedFileChanges(t *testing.T) {
+	h := newRestartHost(t)
+	e := h.start(t, launch{inWorkspace: true})
+	etc := filepath.Join(h.dataDir, "etc", "startpkg.yaml")
+	installed, err := os.ReadFile(etc)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(etc, append([]byte("editor:\n  tabspaces: 3\n"), installed...), 0o644))
+	var changes []ConfigChange
+	require.Eventually(t, func() bool {
+		changes = append(changes, h.takeChanges()...)
+		return len(changes) > 0
+	}, 10*time.Second, 20*time.Millisecond, "saving an included file reloads the config")
+	e.drain()
+	require.Len(t, changes, 1)
+	assert.Equal(t, "file saved", changes[0].Source)
+	assert.True(t, changes[0].TouchesPath("editor", "tabspaces"))
+	assert.Contains(t, flatScreen(e.screen()), "Config changed (file saved). None of the changes "+
+		"are in effect yet; restart the program to load: editor.tabspaces.")
+
+	require.NoError(t, os.WriteFile(etc, installed, 0o644))
+	require.Eventually(t, func() bool { return len(h.takeChanges()) > 0 },
+		10*time.Second, 20*time.Millisecond, "restoring the file reloads the config again")
+
+	cfg, err := e.workspaceHandler.reloadConfig()
+	require.NoError(t, err)
+	state := &e.workspaceHandler.configChange
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	assert.Equal(t, state.lastApplied, cfg.cfg, "the config in effect follows the file")
+}
+
 type launch struct {
 	name string
 	// inWorkspace launches as `rune <dir>` does.

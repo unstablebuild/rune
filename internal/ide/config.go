@@ -410,9 +410,10 @@ type ideConfig struct {
 	logo *Logo
 
 	configPath string
-	// includedFiles holds the absolute path of every file the config was
-	// loaded from, configPath first, then the files it includes in the
-	// order they were read. Empty when configPath does not exist.
+	// includedFiles holds the absolute path of every file the config is
+	// read from, configPath first, then the files it includes in the
+	// order they were read, whether or not they exist, so a watcher can
+	// see them appear. Empty until the config file was read.
 	includedFiles    []string
 	cfg              map[string]any
 	errors           map[string]error

@@ -119,8 +119,12 @@ changes.
 
 ## Applying config changes
 
-Rune does not watch the config file. Open it with `config`, edit it, save it —
-nothing happens until you reload.
+Rune watches your config file and the files it includes. When you save one,
+Rune reads the configuration again and applies what it can without a reload:
+`gui.env` variables, the appearance keys `themereload` covers, `sounds`, `acp`
+agents, newly added extensions and newly added tutorials. A notification then
+lists which of your changes are in effect and which are not yet. The rest
+takes a reload or a restart.
 
 `workspacereload` closes the focused workspace and opens it again. The open
 buffers, cursor positions, window layout and the extension tabs shown in it,
@@ -170,11 +174,10 @@ while the current one keeps running, which makes it a convenient way to test
 fonts, themes and window settings. Everything else in the restart list is
 per-process too, so the new window picks those up as well.
 
-Installing a package is the one case where config is applied without a reload:
-`gui.env` variables, the keys `themereload` covers, `sounds`, `acp` agents,
-newly added extensions and newly added tutorials take effect live. When the
-install finishes, a notification lists which keys are in effect now and which
-need a restart.
+Installing a package applies its config the same way a save does: `gui.env`
+variables, the keys `themereload` covers, `sounds`, `acp` agents, newly added
+extensions and newly added tutorials take effect live, and a notification
+lists which keys are in effect now and which need a restart.
 
 ## Editor Modes
 
