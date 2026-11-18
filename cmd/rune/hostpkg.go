@@ -28,7 +28,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 )
@@ -45,32 +44,12 @@ func newHostPackageManager(
 	trust := pkgtrust.NewStore()
 	mgr, storage := idepkg.NewProvisioningManager(
 		rootStorage, releases, scheme,
-		*flagDataPath, *flagConfigPath, resolveRemoteEditorMode(),
-		defaultConfigTree, trust,
-		idepkg.WithAfterConfigMerge(func(
-			event idepkg.ConfigMergeEvent,
-		) (idepkg.ConfigMergeResult, error) {
-			if !event.TouchesPath("gui", "env") {
-				return idepkg.ConfigMergeResult{}, nil
-			}
-			applyEnv()
-			return idepkg.ConfigMergeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
-		}))
+		*flagDataPath, *flagConfigPath, resolveRemoteEditorMode(), trust,
+		idepkg.WithAfterConfigWrite(func(string) { applyEnv() }))
 	if err := mgr.Reconcile(context.Background()); err != nil {
 		log.Warnf("packages: clean up incomplete installs: %v", err)
 	}
 	return mgr, storage
-}
-
-// defaultConfigTree is the config base package .star configs are read
-// against; it must match the editor's.
-func defaultConfigTree() map[string]any {
-	tree, err := ide.DefaultConfigTree(runeDefaultConfig())
-	if err != nil {
-		log.Warnf("packages: decode default config tree: %v", err)
-		return nil
-	}
-	return tree
 }
 
 // servedPackages is the package manager a network node serves to its

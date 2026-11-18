@@ -67,6 +67,56 @@ standard Starlark only, with no `load()`, no file I/O, and no environment
 access. A `config.star` that binds nothing (for example, a file with only
 comments) is treated as an empty overlay.
 
+## Including other files
+
+A config file can pull in other config files, so settings can be split by
+topic, shared between machines, or installed by a package. In YAML, list them
+under a top-level `include` key; in Starlark, call `include()`:
+
+```yaml tab
+include:
+  - $RUNE_DATADIR/etc/rune-agent.yaml
+  - ~/dotfiles/rune/theme.yaml
+  - keys.star
+editor:
+  mode: vim
+```
+
+```python tab
+include("$RUNE_DATADIR/etc/rune-agent.yaml")
+include("~/dotfiles/rune/theme.yaml")
+include("keys.star")
+config["editor"]["mode"] = "vim"
+```
+
+Rune reads the files in the order listed, each on top of Rune's defaults and
+the files before it, and then the including file's own settings on top of
+them all, so a later file wins over an earlier one and your own file always
+wins over what it includes. An included file can be YAML or Starlark whatever
+the including file is, and can include files of its own. A Starlark file sees
+in `config` what was set before it ran. In Starlark, `include()` takes effect
+where it is called: settings assigned above the call are overridden by the
+file, settings assigned below it override the file.
+
+A path is resolved from the directory of the file that includes it; `~` is
+your home directory and `$RUNE_DATADIR` is Rune's data directory. A file that
+does not exist is reported and skipped, so an `include` line can be commented
+out and back in without breaking the rest of the file. A file that includes
+itself, directly or through another, is an error.
+
+Two keys know about the layer they are set in. A `gui.env` variable that
+refers to itself, such as `PATH: /opt/tool/bin:$PATH`, is chained onto the
+value of the layer below it rather than replacing it, so every file can add
+its own entries. And `include` itself is read from each file, not merged:
+a workspace's `.rune/config.yaml` cannot include files.
+
+[Installed packages](./develop/packages.md#the-config-overlay) keep their
+settings in `$RUNE_DATADIR/etc/<package>.yaml` and add an `include` line for
+it to your config, which is why that key appears there after a `pkg install`.
+Put your own settings in your config, where they override the package's,
+rather than in the file under `etc/`, which Rune rewrites when the package
+changes.
+
 ## Applying config changes
 
 Rune does not watch the config file. Open it with `config`, edit it, save it —
@@ -121,9 +171,10 @@ fonts, themes and window settings. Everything else in the restart list is
 per-process too, so the new window picks those up as well.
 
 Installing a package is the one case where config is applied without a reload:
-`gui.env` variables, `gui.themes`, `sounds`, newly added extensions and newly
-added tutorials take effect live. When the install finishes, the notification
-lists which keys are in effect now and which need a restart.
+`gui.env` variables, the keys `themereload` covers, `sounds`, `acp` agents,
+newly added extensions and newly added tutorials take effect live. When the
+install finishes, a notification lists which keys are in effect now and which
+need a restart.
 
 ## Editor Modes
 

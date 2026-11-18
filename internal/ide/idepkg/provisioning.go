@@ -61,22 +61,17 @@ func HostArch() string {
 // wiring in ide/pkgmanager. It returns the Manager and the partitioned
 // storage the caller must Close.
 //
-// configBase supplies the editor's default config tree used as the `config`
-// base when a package's .star config is read during a merge; it must match
-// the tree the editor feeds via WithConfigBase or a .star-based gui.env merge
-// resolves against a nil base.
-//
 // Extra opts are appended after the baseline.
 func NewProvisioningManager(
 	rootStorage storageapi.Service, rm release.Manager, scheme schemeapi.Scheme,
-	dataDir, configPath, editorMode string, configBase func() map[string]any,
+	dataDir, configPath, editorMode string,
 	trust *pkgtrust.Store, opts ...Option,
 ) (*Manager, storageapi.Service) {
 	if trust == nil {
 		panic("idepkg.NewProvisioningManager: nil trust store")
 	}
 	storage := storageapi.WithPartition(rootStorage, StoragePartition)
-	baseOpts := []Option{WithConfigBase(configBase)}
+	var baseOpts []Option
 	if editorMode != "" {
 		baseOpts = append(baseOpts, WithEditorMode(editorMode))
 	}

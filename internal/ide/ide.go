@@ -115,15 +115,6 @@ func Config(cfgfilename string, def DefaultConfig, opts ...Option) (config.Confi
 	return config.MapConfig(cfg.cfg), err
 }
 
-// DefaultConfigTree decodes def into the raw config map the editor uses as the
-// predeclared `config` base when reading a package's .star config during a
-// merge. Headless callers (a host's package manager) pass the result to
-// idepkg.NewProvisioningManager so a .star-based gui.env merge resolves against
-// the same tree the editor would.
-func DefaultConfigTree(def DefaultConfig) (map[string]any, error) {
-	return decodeDefaultConfig(def)
-}
-
 // PkgEditorMode resolves the editor mode exposed to package config.star scripts
 // (the RUNE_EDITOR_MODE predeclared global) from cfg, applying the same
 // normalization the running editor uses: exo resolves to its configured
@@ -690,7 +681,8 @@ func (i *IDE) init(
 
 	i.workspaceHandler = new(workspaceManagerHandler)
 	commandObserver := newCommandObserverRegistry()
-	i.workspaceHandler.packageConfigMergeHook = op.packageConfigMergeHook
+	i.workspaceHandler.configChangeHook = op.configChangeHook
+	i.workspaceHandler.configChange.lastApplied = i.ideConfig.cfg
 	i.workspaceHandler.watchedFilesChangeHook = op.watchedFilesChangeHook
 	i.workspaceHandler.workspaceOpenCompleters = op.workspaceOpenCompleters
 	i.workspaceHandler.trustedWorkspaceConfigs = op.trustedWorkspaceConfigs

@@ -17,11 +17,15 @@
 package idepkg
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/unstablebuild/blue/release"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
+	"gopkg.in/yaml.v3"
+	"unstable.build/rune/internal/ide/starlarkconfig"
 )
 
 // RequirementsKey is the top-level package config key listing Rune
@@ -38,10 +42,7 @@ func pkgConfigRequirements(
 	filename string, data []byte,
 	pkgID string, pkgVersion release.Version, editorMode string,
 ) ([]string, error) {
-	cfg, err := loadIdePkgConfigOverlay(
-		filename, data, map[string]any{},
-		pkgID, pkgVersion, editorMode,
-	)
+	cfg, err := decodePkgConfig(filename, data, pkgID, pkgVersion, editorMode)
 	if err != nil {
 		return nil, fmt.Errorf("decode package config: %w", err)
 	}
@@ -64,6 +65,36 @@ func pkgConfigRequirements(
 		reqs = append(reqs, s)
 	}
 	return reqs, nil
+}
+
+// decodePkgConfig decodes a package config, config.yaml or config.star, on
+// its own: a .star runs over an empty config with the package globals of
+// StarlarkParams. The editor layers the installed copy over the user's
+// config itself; this decode only reads the package's metadata.
+func decodePkgConfig(
+	filename string, data []byte,
+	pkgID string, pkgVersion release.Version, editorMode string,
+) (map[string]any, error) {
+	if strings.HasSuffix(strings.ToLower(filename), ".star") {
+		cfg, err := starlarkconfig.Decode(starlarkconfig.Source{
+			Src:      data,
+			Filename: filename,
+			Params:   StarlarkParams(pkgID, pkgVersion, editorMode),
+			Base:     map[string]any{},
+		})
+		if errors.Is(err, starlarkconfig.ErrMissingConfig) {
+			return map[string]any{}, nil
+		}
+		return cfg, err
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		cfg = map[string]any{}
+	}
+	return cfg, nil
 }
 
 // RequirementChange is a requirement an install installed or upgraded

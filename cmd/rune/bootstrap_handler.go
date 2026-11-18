@@ -42,13 +42,13 @@ import (
 	sdkhandler "github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"gopkg.in/yaml.v3"
 	"unstable.build/rune/cmd/rune/ide/apiclient"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/handler/quickmenu"
 	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/hostenv"
-	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
 	"unstable.build/rune/internal/ide/ideupgrade"
 	"unstable.build/rune/internal/ide/keymeta"
@@ -275,7 +275,7 @@ func (b *bootstrapHandler) buildConfiguredIDE(
 		ide.WithScheme(workspace.DocsScheme, newDocsSchemeFunc(b.configPath)),
 		ide.WithTrustedWorkspaceConfig(docsConfigYAML),
 		ide.WithTabsClickCallback(b.handleTabsClick),
-		ide.WithPackageConfigMergeHook(b.packageConfigMergeHook),
+		ide.WithConfigChangeHook(b.configChangeHook),
 		ide.WithDispatchOnPreview(cmdSetTheme,
 			func(cmd string, args ...string) (component.Responsive, func(), bool) {
 				if cmd != cmdSetTheme || b.g == nil {
@@ -438,53 +438,28 @@ func (b *bootstrapHandler) config() config.Config {
 	return b.preIDE.Config()
 }
 
-func (b *bootstrapHandler) guiEnvLiveApplyHook(
-	event idepkg.ConfigMergeEvent,
-) (idepkg.ConfigMergeResult, error) {
-	if !event.TouchesPath("gui", "env") {
-		return idepkg.ConfigMergeResult{}, nil
-	}
+// applyGUIEnv applies the gui.env of the config file to this process, so
+// the commands and extensions started from now on see it.
+func (b *bootstrapHandler) applyGUIEnv() error {
 	rootCfg, err := rootConfig(b.configPath)
 	if err != nil {
-		return idepkg.ConfigMergeResult{}, fmt.Errorf("reload config for gui.env: %w", err)
+		return fmt.Errorf("reload config for gui.env: %w", err)
 	}
 	guiCfg, ok, err := getGUIConfig(rootCfg)
 	if err != nil {
-		return idepkg.ConfigMergeResult{}, fmt.Errorf("load gui config: %w", err)
+		return fmt.Errorf("load gui config: %w", err)
 	}
 	if !ok {
-		return idepkg.ConfigMergeResult{}, nil
+		return nil
 	}
-	if env, err := getGUIEnvVars(guiCfg); err != nil {
-		return idepkg.ConfigMergeResult{}, fmt.Errorf("decode gui.env: %w", err)
-	} else if err := b.host.Apply(env); err != nil {
-		return idepkg.ConfigMergeResult{}, fmt.Errorf("apply gui.env: %w", err)
-	}
-	return idepkg.ConfigMergeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
-}
-
-func (b *bootstrapHandler) guiThemesLiveApplyHook(
-	event idepkg.ConfigMergeEvent,
-) (idepkg.ConfigMergeResult, error) {
-	if !event.TouchesPath("gui", "themes") || b.g == nil {
-		return idepkg.ConfigMergeResult{}, nil
-	}
-	rootCfg, err := rootConfig(b.configPath)
+	env, err := getGUIEnvVars(guiCfg)
 	if err != nil {
-		return idepkg.ConfigMergeResult{}, fmt.Errorf("reload config for gui.themes: %w", err)
+		return fmt.Errorf("decode gui.env: %w", err)
 	}
-	guiCfg, ok, err := getGUIConfig(rootCfg)
-	if err != nil {
-		return idepkg.ConfigMergeResult{}, fmt.Errorf("load gui config: %w", err)
+	if err := b.host.Apply(env); err != nil {
+		return fmt.Errorf("apply gui.env: %w", err)
 	}
-	if !ok {
-		return idepkg.ConfigMergeResult{}, nil
-	}
-	scheduled := b.scheduleNextTick(func() { b.applyGUIThemes(guiCfg) })
-	if !scheduled {
-		return idepkg.ConfigMergeResult{}, nil
-	}
-	return idepkg.ConfigMergeResult{LivePaths: [][]string{{"gui", "themes"}}}, nil
+	return nil
 }
 
 // applyGUIThemes makes the themes of guiCfg the ones the GUI offers,
@@ -500,14 +475,27 @@ func (b *bootstrapHandler) applyGUIThemes(guiCfg config.Config) {
 	}
 }
 
-func (b *bootstrapHandler) packageConfigMergeHook(event idepkg.ConfigMergeEvent) (
-	idepkg.ConfigMergeResult, error,
+// configChangeHook applies to this process what the IDE cannot of a
+// config change: the gui.env, which the extensions the IDE starts next
+// inherit, and the HUD, whose install also restyles the GUI and tells
+// the running extensions to fetch their config again. It runs off the
+// event loop.
+func (b *bootstrapHandler) configChangeHook(change ide.ConfigChange) (
+	ide.ConfigChangeResult, error,
 ) {
-	env, envErr := b.guiEnvLiveApplyHook(event)
-	themes, themesErr := b.guiThemesLiveApplyHook(event)
-	return idepkg.ConfigMergeResult{
-		LivePaths: append(env.LivePaths, themes.LivePaths...),
-	}, errors.Join(envErr, themesErr)
+	var result ide.ConfigChangeResult
+	var err error
+	if change.TouchesPath("gui", "env") {
+		if err = b.applyGUIEnv(); err == nil {
+			result.LivePaths = append(result.LivePaths, []string{"gui", "env"})
+		}
+	}
+	i := b.currentIDE()
+	hud, assets, loadErr := b.loadHUD(i)
+	if b.scheduleNextTick(func() { b.installHUD(i, hud, assets, loadErr) }) && loadErr == nil {
+		result.LivePaths = append(result.LivePaths, ide.HUDLivePaths...)
+	}
+	return result, err
 }
 
 func (b *bootstrapHandler) setupConfiguredIDE(
@@ -1107,10 +1095,33 @@ func (b *bootstrapHandler) writePresetConfig() error {
 		return fmt.Errorf("render preset: %w", err)
 	}
 	path := filepath.Join(b.dataDir, configFilename)
+	body += presetIncludes(path)
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("write preset config %q: %w", path, err)
 	}
 	return nil
+}
+
+// presetIncludes renders the include list of the config at path, so a
+// preset written over it keeps the package configs it included; "" when
+// it has none or does not parse.
+func presetIncludes(path string) string {
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Include []string `yaml:"include"`
+	}
+	if err := yaml.Unmarshal(src, &cfg); err != nil || len(cfg.Include) == 0 {
+		return ""
+	}
+	rule := "# " + strings.Repeat("-", 75) + "\n"
+	return "\n" + rule +
+		"# Included configuration files\n#\n" +
+		"# Installed packages keep their settings in the files listed here. Later\n" +
+		"# files and the settings of this file override earlier ones.\n" +
+		rule + "include:\n  - " + strings.Join(cfg.Include, "\n  - ") + "\n"
 }
 
 func (b *bootstrapHandler) Close() error {

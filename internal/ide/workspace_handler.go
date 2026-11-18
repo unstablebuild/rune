@@ -29,6 +29,7 @@ import (
 	"os/user"
 	"path"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -196,8 +197,8 @@ type workspaceManagerHandler struct {
 	lastSession             idehistory.Session
 	reopenPending           bool
 	sessionReopenDisabled   bool
-	startupPrompts          []func()
-	packageConfigMergeHook  func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error)
+	configChangeHook        func(ConfigChange) (ConfigChangeResult, error)
+	configChange            configChangeState
 	watchedFilesChangeHook  func(int)
 	tutorialsInstalled      func(names []string) ([]string, error)
 	onboardingActive        func() bool
@@ -909,7 +910,6 @@ func (h *workspaceManagerHandler) init(
 	defer h.mu.Unlock()
 
 	if cwd == nil {
-		h.releaseStartupPrompts()
 		h.focusProxy.Target = h.focusHandler()
 		h.initTabs(cfg, workspacesBarHeight,
 			workspacesBarOffset, workspacesBarFrame)
@@ -1470,13 +1470,10 @@ func startUserExtension(
 	return nil
 }
 
-func (h *workspaceManagerHandler) startInstalledExtensions(ids []string) []string {
+// startInstalledExtensions starts, on every open workspace, the
+// extensions of ids that cfg gives a path, and returns the ids it did.
+func (h *workspaceManagerHandler) startInstalledExtensions(cfg ideConfig, ids []string) []string {
 	if len(ids) == 0 {
-		return nil
-	}
-	cfg, err := h.reloadConfig()
-	if err != nil {
-		log.Errorf("failed to reload config to start installed extensions: %v", err)
 		return nil
 	}
 	userExtensions := cfg.extensions()
@@ -1537,45 +1534,137 @@ func (h *workspaceManagerHandler) startInstalledExtensions(ids []string) []strin
 	return started
 }
 
-func (h *workspaceManagerHandler) afterPackageConfigMerge(
-	event idepkg.ConfigMergeEvent,
-) (idepkg.ConfigMergeResult, error) {
-	var result idepkg.ConfigMergeResult
-	var err error
-	if h.packageConfigMergeHook != nil {
-		result, err = h.packageConfigMergeHook(event)
+// configChangeState serialises configChanged: one run at a time, and a
+// call made during a run makes it run once more when it is done.
+type configChangeState struct {
+	mu      sync.Mutex
+	running bool
+	// rerun is the source of the call that arrived during a run, "" for
+	// none.
+	rerun string
+	// lastApplied is the config tree the process runs with.
+	lastApplied map[string]any
+}
+
+// configChanged reads the user config again and puts what differs from
+// the one in effect into effect, as far as the running process can,
+// then tells the user what did and did not take. source says what
+// changed the config, for the notice. It must not run on the event
+// loop; it may run on any goroutine, and concurrent calls coalesce.
+func (h *workspaceManagerHandler) configChanged(source string) {
+	s := &h.configChange
+	s.mu.Lock()
+	if s.running {
+		s.rerun = source
+		s.mu.Unlock()
+		return
+	}
+	s.running = true
+	s.mu.Unlock()
+	for {
+		h.runConfigChange(source)
+		s.mu.Lock()
+		source, s.rerun = s.rerun, ""
+		if source == "" {
+			s.running = false
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+	}
+}
+
+func (h *workspaceManagerHandler) runConfigChange(source string) {
+	notifications := h.notifications.current()
+	change, result, err := h.applyConfigChange(source)
+	if err != nil {
+		_, _ = notifications.Notify(browserapi.LevelError, "Config changed (%s): %v", source, err)
+	}
+	if change.New != nil {
+		notifyConfigChange(notifications, change, result)
+	}
+}
+
+// applyConfigChange reads the config again and applies what differs from
+// the one in effect. It returns the change it applied, zero when the
+// config did not change or did not load, and what it made live.
+func (h *workspaceManagerHandler) applyConfigChange(source string) (
+	ConfigChange, ConfigChangeResult, error,
+) {
+	cfg, err := h.reloadConfig()
+	if err != nil {
+		return ConfigChange{}, ConfigChangeResult{}, fmt.Errorf("load config: %w", err)
+	}
+	s := &h.configChange
+	s.mu.Lock()
+	change := ConfigChange{Old: s.lastApplied, New: cfg.cfg, Source: source}
+	s.mu.Unlock()
+	if reflect.DeepEqual(change.Old, change.New) {
+		return ConfigChange{}, ConfigChangeResult{}, nil
 	}
 
-	for _, id := range h.startInstalledExtensions(event.AddedExtensionIDs()) {
+	var result ConfigChangeResult
+	var errs error
+	// The host applies gui.env first so the extensions started below
+	// inherit the environment the change gave them.
+	if h.configChangeHook != nil {
+		result, err = h.configChangeHook(change)
+		errs = errors.Join(errs, err)
+	}
+	for _, id := range h.startInstalledExtensions(cfg, change.AddedExtensionIDs()) {
 		result.LivePaths = append(result.LivePaths, []string{"extensions", id})
 	}
-
-	if names := event.AddedTutorialNames(); len(names) > 0 {
-		registered, tutErr := h.tutorialsInstalled(names)
+	// Running extensions fetch their config again when the HUD is
+	// reloaded, and the others read it when they start.
+	for _, id := range change.UnchangedExtensionPaths() {
+		result.LivePaths = append(result.LivePaths, []string{"extensions", id})
+	}
+	if names := change.AddedTutorialNames(); len(names) > 0 {
+		registered, err := h.tutorialsInstalled(names)
 		for _, name := range registered {
 			result.LivePaths = append(result.LivePaths, []string{"tutorials", name})
 		}
-		err = errors.Join(err, tutErr)
+		errs = errors.Join(errs, err)
+	}
+	if change.TouchesPath(keySounds) {
+		// The reload applied them to the shared registry.
+		result.LivePaths = append(result.LivePaths, []string{keySounds})
+	}
+	if change.TouchesPath(keyACP) {
+		h.reloadACPConfigs(cfg)
+		result.LivePaths = append(result.LivePaths, []string{keyACP})
 	}
 
-	if event.TouchesPath(keySounds) {
-		// Reloading applies the merged sounds to the shared registry.
-		if _, reloadErr := h.reloadConfig(); reloadErr != nil {
-			err = errors.Join(err, fmt.Errorf("reload config for sounds: %w", reloadErr))
-		} else {
-			result.LivePaths = append(result.LivePaths, []string{keySounds})
-		}
-	}
+	s.mu.Lock()
+	s.lastApplied = cfg.cfg
+	s.mu.Unlock()
+	return change, result, errs
+}
 
-	if event.TouchesPath(keyACP) {
-		if cfg, reloadErr := h.reloadConfig(); reloadErr != nil {
-			err = errors.Join(err, fmt.Errorf("reload config for acp: %w", reloadErr))
-		} else {
-			h.reloadACPConfigs(cfg)
-			result.LivePaths = append(result.LivePaths, []string{keyACP})
-		}
+// notifyConfigChange tells the user which of the paths change touched
+// are in effect and which need a restart.
+func notifyConfigChange(
+	notifications browserapi.Notifications, change ConfigChange,
+	result ConfigChangeResult,
+) {
+	inEffect, pending := change.summarize(result.LivePaths)
+	switch {
+	case len(inEffect) == 0 && len(pending) == 0:
+		return
+	case len(pending) == 0:
+		_, _ = notifications.Notify(browserapi.LevelSuccess,
+			"Config changed (%s). All changes are in effect now: %s.",
+			change.Source, strings.Join(inEffect, ", "))
+	case len(inEffect) == 0:
+		_, _ = notifications.Notify(browserapi.LevelInfo,
+			"Config changed (%s). None of the changes are in effect yet; "+
+				"restart the program to load: %s.",
+			change.Source, strings.Join(pending, ", "))
+	default:
+		_, _ = notifications.Notify(browserapi.LevelInfo,
+			"Config changed (%s). In effect now: %s. Restart the program to load: %s.",
+			change.Source, strings.Join(inEffect, ", "), strings.Join(pending, ", "))
 	}
-	return result, err
 }
 
 // reloadACPConfigs applies the agents of cfg, with each workspace's own
@@ -1832,7 +1921,6 @@ func (h *workspaceManagerHandler) abortPendingBuild(
 	h.mu.Lock()
 	h.beginPendingWorkspaceTeardown(pending)
 	h.shaderRunner.stopLoading()
-	h.releaseStartupPrompts()
 	h.mu.Unlock()
 	if built != nil {
 		h.discardBuiltWorkspace(built)
@@ -2349,7 +2437,6 @@ func (h *workspaceManagerHandler) installPendingWorkspace(
 	// One-shot: only the first install of the session consumes the
 	// previous session's snapshot.
 	defer h.maybeReopenLastSession()
-	defer h.releaseStartupPrompts()
 
 	if pending.canceled.Load() {
 		h.beginPendingWorkspaceTeardown(pending)
@@ -5194,14 +5281,6 @@ func (h *workspaceManagerHandler) setReleaseManager(releaseManager release.Manag
 				_, _ = notifications.Notify(browserapi.LevelError,
 					"package manager: clean up: %v", err)
 			}
-			err := h.pkgmanager.pkg.ProcessInstalledSettings(idepkg.WithUI(ctx,
-				startupUI{Notifications: notifications, h: h}))
-			if err != nil {
-				_, _ = notifications.Notify(browserapi.LevelError,
-					"package manager: process installed settings: %v", err)
-			} else {
-				log.Debugf("processed all installed settings")
-			}
 		}()
 	} else {
 		h.pkgmanager.Close()
@@ -5216,33 +5295,8 @@ func (h *workspaceManagerHandler) setReleaseManager(releaseManager release.Manag
 	h.pkgmanager.init(notifications, releaseManager, wm,
 		h.ideStorage, h.homeWorkspace, h.sixDir, h.configPath, h.frameCharSet,
 		h, h, h.scheduleNextTick,
-		editorMode, autoInstall, h.afterPackageConfigMerge, h.gitRemoteURL,
+		editorMode, autoInstall, h.gitRemoteURL,
 		h.trust)
-}
-
-// startupUI is the idepkg.UI of the package manager while the editor
-// starts. A prompt shown before the workspace the editor launched with
-// is installed opens on the home screen, which that workspace then
-// covers, so it holds prompts until releaseStartupPrompts.
-type startupUI struct {
-	browserapi.Notifications
-	h *workspaceManagerHandler
-}
-
-func (u startupUI) PromptConfig(p idepkg.ConfigPrompt, answer func(approved bool)) {
-	u.h.startupPrompts = append(u.h.startupPrompts, func() {
-		u.h.pkgmanager.pkg.PromptConfig(p, answer)
-	})
-}
-
-// releaseStartupPrompts shows the prompts startupUI held on the screen in
-// focus, once; later calls show nothing.
-func (h *workspaceManagerHandler) releaseStartupPrompts() {
-	prompts := h.startupPrompts
-	h.startupPrompts = nil
-	for _, prompt := range prompts {
-		prompt()
-	}
 }
 
 func (h *workspaceManagerHandler) openURI(file workspaceapi.URI, focus bool) error {

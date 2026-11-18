@@ -39,24 +39,13 @@ func WithEditorMode(mode string) Option {
 	}
 }
 
-// WithConfigBase sets a provider for the editor's default config tree. It is
-// predeclared as `config` when reading the user's .star config so
-// overlay-style mutations (config[...] = ...) and Rune's managed block
-// resolve without binding `config`. The provider is called per read so it
-// reflects the current configuration.
-func WithConfigBase(base func() map[string]any) Option {
+// WithAfterConfigWrite installs a hook called with the package's ID after
+// the config a package contributes changed: its config was written to the
+// etc directory and included from the user config on install or use, or
+// removed from both on uninstall. The hook reloads the config to see the
+// change; the Manager does not know what the keys mean.
+func WithAfterConfigWrite(hook func(pkgID string)) Option {
 	return func(m *Manager) {
-		m.configBase = base
-	}
-}
-
-// WithAfterConfigMerge installs a hook invoked after a package config merge is
-// written to the user config file. The hook is generic and unaware of GUI or
-// environment concerns; callers inspect the applied diff and report back
-// whether any live reload happened via ConfigMergeResult. The hook runs for
-// both the auto-apply path and the prompt's Allow path, and never for Deny.
-func WithAfterConfigMerge(hook func(ConfigMergeEvent) (ConfigMergeResult, error)) Option {
-	return func(m *Manager) {
-		m.afterConfigMerge = hook
+		m.afterConfigWrite = hook
 	}
 }

@@ -694,6 +694,45 @@ func TestBootstrapTelemetryPersistenceRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWritePresetConfigKeepsTheIncludes(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		existing string
+		want     []string
+	}{
+		{name: "no config"},
+		{name: "no includes", existing: "editor:\n  mode: emacs\n"},
+		{
+			name:     "includes",
+			existing: "include:\n  - $RUNE_DATADIR/etc/go.yaml\n  - ~/theme.yaml\neditor:\n  mode: emacs\n",
+			want:     []string{"$RUNE_DATADIR/etc/go.yaml", "~/theme.yaml"},
+		},
+		{name: "unparsable", existing: "include: [\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, configFilename)
+			if tc.existing != "" {
+				require.NoError(t, os.WriteFile(cfgPath, []byte(tc.existing), 0o644))
+			}
+			b := &bootstrapHandler{dataDir: dir, chosenEditor: editorVim}
+			require.NoError(t, b.writePresetConfig())
+
+			content, err := os.ReadFile(cfgPath)
+			require.NoError(t, err)
+			var cfg struct {
+				Include []string       `yaml:"include"`
+				Editor  map[string]any `yaml:"editor"`
+				GUI     map[string]any `yaml:"gui"`
+			}
+			require.NoError(t, yaml.Unmarshal(content, &cfg))
+			require.Equal(t, tc.want, cfg.Include)
+			require.Nil(t, cfg.Editor, "the preset replaces the rest")
+			require.NotEmpty(t, cfg.GUI)
+		})
+	}
+}
+
 func TestGuardedTelemetryPromptReopensOnDismiss(t *testing.T) {
 	prompter := &fakeBootstrapPrompter{}
 	b := &bootstrapHandler{

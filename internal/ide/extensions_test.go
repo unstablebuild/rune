@@ -28,12 +28,14 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/blue/release"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/extensionapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
@@ -44,7 +46,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"gopkg.in/yaml.v3"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/extension"
@@ -62,11 +63,8 @@ import (
 func TestStartInstalledExtensions(t *testing.T) {
 	t.Parallel()
 
-	newHandler := func(cfg ideConfig, runners ...*recordingRunner) *workspaceManagerHandler {
-		h := &workspaceManagerHandler{
-			mu:           new(sync.Mutex),
-			reloadConfig: func() (ideConfig, error) { return cfg, nil },
-		}
+	newHandler := func(runners ...*recordingRunner) *workspaceManagerHandler {
+		h := &workspaceManagerHandler{mu: new(sync.Mutex)}
 		for i, runner := range runners {
 			ws := &workspaceHandler{}
 			ws.Extensions.Store(extension.Runner(runner))
@@ -81,20 +79,12 @@ func TestStartInstalledExtensions(t *testing.T) {
 		cfg := configWithExtension(t, "rune-agent", "rune-agent-bin")
 		home := &recordingRunner{}
 		wsRunner := &recordingRunner{}
-		ws := &workspaceHandler{}
-		ws.Extensions.Store(extension.Runner(wsRunner))
+		h := newHandler(wsRunner)
+		h.homeRunner = home
 
-		h := &workspaceManagerHandler{
-			mu:           new(sync.Mutex),
-			homeRunner:   home,
-			reloadConfig: func() (ideConfig, error) { return cfg, nil },
-		}
-		h.workspaces[0] = ws
-		h.workspaceCount = 1
-
-		started := h.startInstalledExtensions([]string{"rune-agent", "other-ext"})
+		started := h.startInstalledExtensions(cfg, []string{"rune-agent", "other-ext"})
 		assert.Equal(t, []string{"rune-agent"}, started,
-			"only ids present in the merged config are reported")
+			"only ids present in the config are reported")
 
 		assert.Empty(t, home.runCalls(),
 			"home runner must not start user extensions")
@@ -105,34 +95,25 @@ func TestStartInstalledExtensions(t *testing.T) {
 		assert.Equal(t, "rune-agent-bin", wsCalls[0].path)
 	})
 
-	t.Run("ignores ids absent from merged config", func(t *testing.T) {
+	t.Run("ignores ids absent from the config", func(t *testing.T) {
 		t.Parallel()
 		cfg := configWithExtension(t, "rune-agent", "rune-agent-bin")
 		home := &recordingRunner{}
-		h := &workspaceManagerHandler{
-			mu:           new(sync.Mutex),
-			homeRunner:   home,
-			reloadConfig: func() (ideConfig, error) { return cfg, nil },
-		}
+		h := newHandler()
+		h.homeRunner = home
 
-		started := h.startInstalledExtensions([]string{"other-ext"})
+		started := h.startInstalledExtensions(cfg, []string{"other-ext"})
 		assert.Empty(t, started)
 		assert.Empty(t, home.runCalls())
 	})
 
 	t.Run("no ids is a no-op", func(t *testing.T) {
 		t.Parallel()
-		home := &recordingRunner{}
-		h := &workspaceManagerHandler{
-			mu:         new(sync.Mutex),
-			homeRunner: home,
-			reloadConfig: func() (ideConfig, error) {
-				t.Fatal("reloadConfig must not be called with no ids")
-				return ideConfig{}, nil
-			},
-		}
-		assert.Empty(t, h.startInstalledExtensions(nil))
-		assert.Empty(t, home.runCalls())
+		wsRunner := &recordingRunner{}
+		h := newHandler(wsRunner)
+		assert.Empty(t, h.startInstalledExtensions(
+			configWithExtension(t, "rune-agent", "rune-agent-bin"), nil))
+		assert.Empty(t, wsRunner.runCalls())
 	})
 
 	t.Run("already-running runner still counts as started", func(t *testing.T) {
@@ -142,15 +123,8 @@ func TestStartInstalledExtensions(t *testing.T) {
 			runErr: fmt.Errorf("extension %q: %w", "rune-agent",
 				extensionv2.ErrExtensionAlreadyRunning),
 		}
-		ws := &workspaceHandler{}
-		ws.Extensions.Store(extension.Runner(wsRunner))
-		h := &workspaceManagerHandler{
-			mu:           new(sync.Mutex),
-			reloadConfig: func() (ideConfig, error) { return cfg, nil },
-		}
-		h.workspaces[0] = ws
-		h.workspaceCount = 1
-		started := h.startInstalledExtensions([]string{"rune-agent"})
+		h := newHandler(wsRunner)
+		started := h.startInstalledExtensions(cfg, []string{"rune-agent"})
 		assert.Equal(t, []string{"rune-agent"}, started)
 		assert.Len(t, wsRunner.runCalls(), 1)
 	})
@@ -158,9 +132,10 @@ func TestStartInstalledExtensions(t *testing.T) {
 	t.Run("skips extensions configured without a path", func(t *testing.T) {
 		t.Parallel()
 		wsRunner := &recordingRunner{}
-		h := newHandler(configWithConfigOnlyExtension(t), wsRunner)
+		h := newHandler(wsRunner)
 
-		started := h.startInstalledExtensions([]string{"rune-agent", "other-ext"})
+		started := h.startInstalledExtensions(configWithConfigOnlyExtension(t),
+			[]string{"rune-agent", "other-ext"})
 		assert.Equal(t, []string{"other-ext"}, started,
 			"configuring an extension does not start it")
 		calls := wsRunner.runCalls()
@@ -180,18 +155,19 @@ func TestStartInstalledExtensions(t *testing.T) {
 			errors: map[string]error{},
 		}
 		wsRunner := &recordingRunner{}
-		h := newHandler(cfg, wsRunner)
+		h := newHandler(wsRunner)
 
-		assert.Empty(t, h.startInstalledExtensions([]string{"rune-agent", "fuzzy_search"}))
+		assert.Empty(t, h.startInstalledExtensions(cfg, []string{"rune-agent", "fuzzy_search"}))
 		assert.Empty(t, wsRunner.runCalls())
 	})
 
 	t.Run("skips extensions without a path on every workspace", func(t *testing.T) {
 		t.Parallel()
 		first, second := &recordingRunner{}, &recordingRunner{}
-		h := newHandler(configWithConfigOnlyExtension(t), first, second)
+		h := newHandler(first, second)
 
-		started := h.startInstalledExtensions([]string{"rune-agent", "other-ext"})
+		started := h.startInstalledExtensions(configWithConfigOnlyExtension(t),
+			[]string{"rune-agent", "other-ext"})
 		assert.Equal(t, []string{"other-ext"}, started)
 		for _, runner := range []*recordingRunner{first, second} {
 			calls := runner.runCalls()
@@ -205,16 +181,16 @@ func TestStartInstalledExtensions(t *testing.T) {
 		t.Parallel()
 		cfg := configWithConfigOnlyExtension(t)
 		wsRunner := &recordingRunner{}
-		h := newHandler(cfg, wsRunner)
+		h := newHandler(wsRunner)
 
-		assert.Empty(t, h.startInstalledExtensions([]string{"rune-agent"}),
+		assert.Empty(t, h.startInstalledExtensions(cfg, []string{"rune-agent"}),
 			"a theme styling Rune Agent installs before the agent")
 		assert.Empty(t, wsRunner.runCalls())
 
 		agent := cfg.cfg["extensions"].(map[string]any)["rune-agent"].(map[string]any)
 		agent["path"] = "rune-agent-bin"
 		assert.Equal(t, []string{"rune-agent"},
-			h.startInstalledExtensions([]string{"rune-agent"}))
+			h.startInstalledExtensions(cfg, []string{"rune-agent"}))
 		calls := wsRunner.runCalls()
 		require.Len(t, calls, 1)
 		assert.Equal(t, "rune-agent", calls[0].id)
@@ -345,140 +321,148 @@ func TestStartUserExtensionIdempotent(t *testing.T) {
 	})
 }
 
-func TestAfterPackageConfigMerge(t *testing.T) {
+func TestApplyConfigChange(t *testing.T) {
 	t.Parallel()
 
-	newHandler := func(t *testing.T, hook func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error)) (
-		*workspaceManagerHandler, *recordingRunner,
-	) {
+	// newHandler returns a handler running with old whose next reload
+	// reads cur.
+	newHandler := func(
+		t *testing.T, old, cur ideConfig,
+		hook func(ConfigChange) (ConfigChangeResult, error),
+	) (*workspaceManagerHandler, *recordingRunner) {
 		t.Helper()
-		cfg := configWithExtension(t, "rune-agent", "rune-agent-bin")
 		wsRunner := &recordingRunner{}
 		ws := &workspaceHandler{}
 		ws.Extensions.Store(extension.Runner(wsRunner))
 		h := &workspaceManagerHandler{
-			mu:                     new(sync.Mutex),
-			homeRunner:             &recordingRunner{},
-			reloadConfig:           func() (ideConfig, error) { return cfg, nil },
-			packageConfigMergeHook: hook,
+			mu:               new(sync.Mutex),
+			homeRunner:       &recordingRunner{},
+			reloadConfig:     func() (ideConfig, error) { return cur, nil },
+			configChangeHook: hook,
+			tutorialsInstalled: func(names []string) ([]string, error) {
+				t.Fatalf("tutorialsInstalled(%v) must not be called", names)
+				return nil, nil
+			},
 		}
+		h.configChange.lastApplied = old.cfg
 		h.workspaces[0] = ws
 		h.workspaceCount = 1
 		return h, wsRunner
 	}
+	base := func() ideConfig {
+		return ideConfig{cfg: map[string]any{"editor": map[string]any{"mode": "vim"}},
+			errors: map[string]error{}}
+	}
+	withExt := configWithExtension(t, "rune-agent", "rune-agent-bin")
+	withEnv := ideConfig{cfg: map[string]any{
+		"editor": map[string]any{"mode": "vim"},
+		"gui":    map[string]any{"env": map[string]any{"FOO": "bar"}},
+	}, errors: map[string]error{}}
+	liveEnv := func(change ConfigChange) (ConfigChangeResult, error) {
+		if !change.TouchesPath("gui", "env") {
+			return ConfigChangeResult{}, nil
+		}
+		return ConfigChangeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
+	}
 
-	t.Run("gui.env only invokes stored hook, no extension start", func(t *testing.T) {
+	t.Run("an unchanged config applies nothing", func(t *testing.T) {
 		t.Parallel()
-		var hookCalls int
-		h, wsRunner := newHandler(t, func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error) {
-			hookCalls++
-			return idepkg.ConfigMergeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
-		})
-		event := idepkg.ConfigMergeEvent{Diff: mustYAMLDoc(t, "gui:\n  env:\n    FOO: bar\n")}
-
-		result, err := h.afterPackageConfigMerge(event)
+		h, wsRunner := newHandler(t, withExt, withExt,
+			func(ConfigChange) (ConfigChangeResult, error) {
+				t.Fatal("the hook must not run for an unchanged config")
+				return ConfigChangeResult{}, nil
+			})
+		change, result, err := h.applyConfigChange("test")
 		require.NoError(t, err)
-		assert.ElementsMatch(t, [][]string{{"gui", "env"}}, result.LivePaths)
-		assert.Equal(t, 1, hookCalls)
+		assert.Nil(t, change.New)
+		assert.Empty(t, result.LivePaths)
 		assert.Empty(t, wsRunner.runCalls())
 	})
 
-	t.Run("extensions only starts extension and still invokes hook", func(t *testing.T) {
+	t.Run("a failed reload keeps the config in effect", func(t *testing.T) {
+		t.Parallel()
+		h, _ := newHandler(t, base(), withExt, nil)
+		h.reloadConfig = func() (ideConfig, error) { return ideConfig{}, errors.New("boom") }
+		change, _, err := h.applyConfigChange("test")
+		require.ErrorContains(t, err, "boom")
+		assert.Nil(t, change.New)
+		assert.Equal(t, base().cfg, h.configChange.lastApplied)
+	})
+
+	t.Run("gui.env only runs the hook, no extension start", func(t *testing.T) {
 		t.Parallel()
 		var hookCalls int
-		h, wsRunner := newHandler(t, func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error) {
-			hookCalls++
-			return idepkg.ConfigMergeResult{}, nil
-		})
-		event := idepkg.ConfigMergeEvent{
-			Diff: mustYAMLDoc(t, "extensions:\n  rune-agent:\n    path: rune-agent-bin\n"),
-		}
-
-		result, err := h.afterPackageConfigMerge(event)
+		h, wsRunner := newHandler(t, base(), withEnv,
+			func(change ConfigChange) (ConfigChangeResult, error) {
+				hookCalls++
+				assert.Equal(t, "test", change.Source)
+				return liveEnv(change)
+			})
+		change, result, err := h.applyConfigChange("test")
 		require.NoError(t, err)
-		assert.ElementsMatch(t, [][]string{{"extensions", "rune-agent"}}, result.LivePaths)
+		assert.Equal(t, withEnv.cfg, change.New)
+		assert.Equal(t, [][]string{{"gui", "env"}}, result.LivePaths)
 		assert.Equal(t, 1, hookCalls)
+		assert.Empty(t, wsRunner.runCalls())
+		assert.Equal(t, withEnv.cfg, h.configChange.lastApplied)
+	})
+
+	t.Run("an added extension starts after the hook ran", func(t *testing.T) {
+		t.Parallel()
+		var wsRunner *recordingRunner
+		h, runner := newHandler(t, base(), withExt,
+			func(ConfigChange) (ConfigChangeResult, error) {
+				assert.Empty(t, wsRunner.runCalls(), "the hook runs before extensions start")
+				return ConfigChangeResult{}, nil
+			})
+		wsRunner = runner
+		_, result, err := h.applyConfigChange("test")
+		require.NoError(t, err)
+		assert.Equal(t, [][]string{{"extensions", "rune-agent"}}, result.LivePaths)
 		require.Len(t, wsRunner.runCalls(), 1)
 		assert.Equal(t, "rune-agent", wsRunner.runCalls()[0].id)
 	})
 
-	t.Run("both env and extensions live-apply", func(t *testing.T) {
+	t.Run("a hook error still starts the extension", func(t *testing.T) {
 		t.Parallel()
-		h, wsRunner := newHandler(t, func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error) {
-			return idepkg.ConfigMergeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
-		})
-		event := idepkg.ConfigMergeEvent{
-			Diff: mustYAMLDoc(t,
-				"gui:\n  env:\n    FOO: bar\nextensions:\n  rune-agent:\n    path: rune-agent-bin\n"),
-		}
-		result, err := h.afterPackageConfigMerge(event)
-		require.NoError(t, err)
-		assert.ElementsMatch(t, [][]string{{"gui", "env"}, {"extensions", "rune-agent"}},
-			result.LivePaths)
+		h, wsRunner := newHandler(t, base(), withExt,
+			func(ConfigChange) (ConfigChangeResult, error) {
+				return ConfigChangeResult{}, errors.New("boom")
+			})
+		_, result, err := h.applyConfigChange("test")
+		require.ErrorContains(t, err, "boom")
+		assert.Equal(t, [][]string{{"extensions", "rune-agent"}}, result.LivePaths)
 		require.Len(t, wsRunner.runCalls(), 1)
 	})
 
-	t.Run("stored hook error propagates", func(t *testing.T) {
+	t.Run("no hook still starts the extension", func(t *testing.T) {
 		t.Parallel()
-		h, _ := newHandler(t, func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error) {
-			return idepkg.ConfigMergeResult{}, errors.New("boom")
-		})
-		event := idepkg.ConfigMergeEvent{
-			Diff: mustYAMLDoc(t, "extensions:\n  rune-agent:\n    path: rune-agent-bin\n"),
-		}
-		result, err := h.afterPackageConfigMerge(event)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "boom")
-		assert.ElementsMatch(t, [][]string{{"extensions", "rune-agent"}}, result.LivePaths,
-			"the extension still starts when the stored hook errors")
-	})
-
-	t.Run("nil stored hook still starts extension", func(t *testing.T) {
-		t.Parallel()
-		h, wsRunner := newHandler(t, nil)
-		event := idepkg.ConfigMergeEvent{
-			Diff: mustYAMLDoc(t, "extensions:\n  rune-agent:\n    path: rune-agent-bin\n"),
-		}
-		result, err := h.afterPackageConfigMerge(event)
+		h, wsRunner := newHandler(t, base(), withExt, nil)
+		_, result, err := h.applyConfigChange("test")
 		require.NoError(t, err)
-		assert.ElementsMatch(t, [][]string{{"extensions", "rune-agent"}}, result.LivePaths)
+		assert.Equal(t, [][]string{{"extensions", "rune-agent"}}, result.LivePaths)
 		require.Len(t, wsRunner.runCalls(), 1)
 	})
 
-	t.Run("extension config without a path is not started or reported live", func(t *testing.T) {
+	t.Run("an extension added without a path is neither started nor live", func(t *testing.T) {
 		t.Parallel()
-		var hookCalls int
-		h, wsRunner := newHandler(t, func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error) {
-			hookCalls++
-			return idepkg.ConfigMergeResult{}, nil
-		})
-		cfg := configWithConfigOnlyExtension(t)
-		h.reloadConfig = func() (ideConfig, error) { return cfg, nil }
-		event := idepkg.ConfigMergeEvent{
-			Diff: mustYAMLDoc(t,
-				"extensions:\n  rune-agent:\n    config:\n      status_bar:\n        enabled: true\n"),
-		}
-
-		result, err := h.afterPackageConfigMerge(event)
+		cur := ideConfig{cfg: map[string]any{"extensions": map[string]any{
+			"rune-agent": map[string]any{
+				"config": map[string]any{"status_bar": map[string]any{"enabled": true}},
+			},
+		}}, errors: map[string]error{}}
+		h, wsRunner := newHandler(t, base(), cur, nil)
+		_, result, err := h.applyConfigChange("test")
 		require.NoError(t, err)
 		assert.Empty(t, result.LivePaths,
 			"the config waits for the package that installs the extension")
-		assert.Equal(t, 1, hookCalls)
 		assert.Empty(t, wsRunner.runCalls())
 	})
 
-	t.Run("only extensions given a path are reported live", func(t *testing.T) {
+	t.Run("only extensions given a path start", func(t *testing.T) {
 		t.Parallel()
-		h, wsRunner := newHandler(t, nil)
-		cfg := configWithConfigOnlyExtension(t)
-		h.reloadConfig = func() (ideConfig, error) { return cfg, nil }
-		event := idepkg.ConfigMergeEvent{
-			Diff: mustYAMLDoc(t,
-				"extensions:\n  rune-agent:\n    config:\n      status_bar:\n        enabled: true\n"+
-					"  other-ext:\n    path: other-ext-bin\n"),
-		}
-
-		result, err := h.afterPackageConfigMerge(event)
+		h, wsRunner := newHandler(t, base(), configWithConfigOnlyExtension(t), nil)
+		_, result, err := h.applyConfigChange("test")
 		require.NoError(t, err)
 		assert.Equal(t, [][]string{{"extensions", "other-ext"}}, result.LivePaths)
 		calls := wsRunner.runCalls()
@@ -486,88 +470,182 @@ func TestAfterPackageConfigMerge(t *testing.T) {
 		assert.Equal(t, "other-ext", calls[0].id)
 	})
 
-	t.Run("tutorials added invoke tutorialsInstalled and still run hook", func(t *testing.T) {
+	t.Run("the config of an extension with the same path is live", func(t *testing.T) {
 		t.Parallel()
-		var hookCalls int
-		h, _ := newHandler(t, func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error) {
-			hookCalls++
-			return idepkg.ConfigMergeResult{}, nil
-		})
+		cur := configWithExtension(t, "rune-agent", "rune-agent-bin")
+		cur.cfg["extensions"].(map[string]any)["rune-agent"].(map[string]any)["config"] =
+			map[string]any{"status_bar": map[string]any{"enabled": false}}
+		h, wsRunner := newHandler(t, withExt, cur, nil)
+		_, result, err := h.applyConfigChange("test")
+		require.NoError(t, err)
+		assert.Equal(t, [][]string{{"extensions", "rune-agent"}}, result.LivePaths,
+			"the running extension fetches its config again")
+		assert.Empty(t, wsRunner.runCalls(), "it is not started twice")
+	})
+
+	t.Run("an extension whose path changed needs a restart", func(t *testing.T) {
+		t.Parallel()
+		h, wsRunner := newHandler(t, withExt,
+			configWithExtension(t, "rune-agent", "rune-agent-v2"), nil)
+		_, result, err := h.applyConfigChange("test")
+		require.NoError(t, err)
+		assert.Empty(t, result.LivePaths)
+		assert.Empty(t, wsRunner.runCalls())
+	})
+
+	t.Run("added tutorials are registered", func(t *testing.T) {
+		t.Parallel()
+		cur := ideConfig{cfg: map[string]any{"tutorials": map[string]any{
+			"go-intro": "go-intro.star", "loaded": "loaded.star",
+		}}, errors: map[string]error{}}
+		h, _ := newHandler(t, base(), cur, nil)
 		var gotNames []string
 		h.tutorialsInstalled = func(names []string) ([]string, error) {
 			gotNames = names
 			return []string{"go-intro"}, nil
 		}
-		event := idepkg.ConfigMergeEvent{
-			Diff: mustYAMLDoc(t, "tutorials:\n  go-intro: go-intro.star\n  loaded: loaded.star\n"),
-		}
-		result, err := h.afterPackageConfigMerge(event)
+		_, result, err := h.applyConfigChange("test")
 		require.NoError(t, err)
-		assert.ElementsMatch(t, [][]string{{"tutorials", "go-intro"}}, result.LivePaths,
+		assert.Equal(t, [][]string{{"tutorials", "go-intro"}}, result.LivePaths,
 			"only the tutorials made live are reported")
-		assert.Equal(t, 1, hookCalls)
 		assert.Equal(t, []string{"go-intro", "loaded"}, gotNames)
 	})
 
-	t.Run("no tutorials added does not invoke tutorialsInstalled", func(t *testing.T) {
+	t.Run("a tutorial error is joined onto the error", func(t *testing.T) {
 		t.Parallel()
-		h, _ := newHandler(t, nil)
-		var called bool
-		h.tutorialsInstalled = func([]string) ([]string, error) {
-			called = true
-			return nil, nil
-		}
-		event := idepkg.ConfigMergeEvent{
-			Diff: mustYAMLDoc(t, "extensions:\n  rune-agent:\n    path: rune-agent-bin\n"),
-		}
-		_, err := h.afterPackageConfigMerge(event)
-		require.NoError(t, err)
-		assert.False(t, called)
-	})
-
-	t.Run("tutorialsInstalled error is joined onto returned error", func(t *testing.T) {
-		t.Parallel()
-		h, _ := newHandler(t, nil)
+		cur := ideConfig{cfg: map[string]any{"tutorials": map[string]any{
+			"go-intro": "go-intro.star",
+		}}, errors: map[string]error{}}
+		h, _ := newHandler(t, base(), cur, nil)
 		h.tutorialsInstalled = func([]string) ([]string, error) {
 			return nil, errors.New("tutorial boom")
 		}
-		event := idepkg.ConfigMergeEvent{
-			Diff: mustYAMLDoc(t, "tutorials:\n  go-intro: go-intro.star\n"),
-		}
-		_, err := h.afterPackageConfigMerge(event)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "tutorial boom")
+		_, _, err := h.applyConfigChange("test")
+		require.ErrorContains(t, err, "tutorial boom")
 	})
 
-	t.Run("sounds reload the config and go live", func(t *testing.T) {
+	t.Run("sounds are live", func(t *testing.T) {
 		t.Parallel()
-		h, _ := newHandler(t, nil)
-		var reloads int
-		h.reloadConfig = func() (ideConfig, error) {
-			reloads++
-			return ideConfig{}, nil
-		}
-		event := idepkg.ConfigMergeEvent{
-			Diff: mustYAMLDoc(t, "sounds:\n  ding: $RUNE_DATADIR/lib/pkg/ding.wav\n"),
-		}
-		result, err := h.afterPackageConfigMerge(event)
+		cur := ideConfig{cfg: map[string]any{"sounds": map[string]any{
+			"ding": "$RUNE_DATADIR/lib/pkg/ding.wav",
+		}}, errors: map[string]error{}}
+		h, _ := newHandler(t, base(), cur, nil)
+		_, result, err := h.applyConfigChange("test")
 		require.NoError(t, err)
-		assert.ElementsMatch(t, [][]string{{"sounds"}}, result.LivePaths)
-		assert.Equal(t, 1, reloads)
+		assert.Equal(t, [][]string{{"sounds"}}, result.LivePaths)
 	})
 
-	t.Run("sounds stay pending when the reload fails", func(t *testing.T) {
+	t.Run("other keys need a restart", func(t *testing.T) {
 		t.Parallel()
-		h, _ := newHandler(t, nil)
-		h.reloadConfig = func() (ideConfig, error) {
-			return ideConfig{}, errors.New("reload boom")
-		}
-		event := idepkg.ConfigMergeEvent{
-			Diff: mustYAMLDoc(t, "sounds:\n  ding: /ding.wav\n"),
-		}
-		result, err := h.afterPackageConfigMerge(event)
-		require.ErrorContains(t, err, "reload boom")
+		cur := base()
+		cur.cfg["editor"] = map[string]any{"mode": "emacs"}
+		h, _ := newHandler(t, base(), cur, liveEnv)
+		change, result, err := h.applyConfigChange("test")
+		require.NoError(t, err)
 		assert.Empty(t, result.LivePaths)
+		assert.Equal(t, [][]string{{"editor", "mode"}}, change.ChangedPaths())
+	})
+}
+
+func TestConfigChangedCoalescesConcurrentCalls(t *testing.T) {
+	t.Parallel()
+	cur := configWithExtension(t, "rune-agent", "rune-agent-bin")
+	var reloads atomic.Int32
+	gate := make(chan struct{})
+	var once sync.Once
+	h := &workspaceManagerHandler{
+		mu: new(sync.Mutex),
+		reloadConfig: func() (ideConfig, error) {
+			reloads.Add(1)
+			once.Do(func() { <-gate })
+			return cur, nil
+		},
+		tutorialsInstalled: func([]string) ([]string, error) { return nil, nil },
+	}
+	h.notifications = newWorkspaceNotifications(nil, notificationsConfig(), h)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.configChanged("first")
+	}()
+	require.Eventually(t, func() bool { return reloads.Load() == 1 },
+		time.Second, time.Millisecond, "the first call is reloading")
+	h.configChanged("second")
+	h.configChanged("third")
+	close(gate)
+	<-done
+	assert.Equal(t, int32(2), reloads.Load(),
+		"the calls made during a run coalesce into one more run")
+	assert.Equal(t, cur.cfg, h.configChange.lastApplied)
+	assert.False(t, h.configChange.running)
+}
+
+func TestNotifyConfigChange(t *testing.T) {
+	t.Parallel()
+	old := map[string]any{"editor": map[string]any{"mode": "vim"}}
+	for _, tt := range []struct {
+		name  string
+		new   map[string]any
+		live  [][]string
+		level browserapi.NotificationLevel
+		msg   string
+	}{
+		{
+			name: "all live",
+			new: map[string]any{
+				"editor": map[string]any{"mode": "vim"},
+				"gui":    map[string]any{"env": map[string]any{"FOO": "bar"}},
+				"extensions": map[string]any{
+					"rune-agent": map[string]any{"path": "rune-agent-bin"},
+				},
+			},
+			live:  [][]string{{"gui", "env"}, {"extensions", "rune-agent"}},
+			level: browserapi.LevelSuccess,
+			msg: "Config changed (package pkg). All changes are in effect now: " +
+				"extensions.rune-agent, gui.env.",
+		},
+		{
+			name:  "none live",
+			new:   map[string]any{"editor": map[string]any{"mode": "emacs", "tabspaces": 2}},
+			level: browserapi.LevelInfo,
+			msg: "Config changed (package pkg). None of the changes are in effect yet; " +
+				"restart the program to load: editor.mode, editor.tabspaces.",
+		},
+		{
+			name: "some live",
+			new: map[string]any{
+				"editor": map[string]any{"mode": "vim"},
+				"sounds": map[string]any{"ding": "ding.wav"},
+				"extensions": map[string]any{
+					"rune-agent": map[string]any{"config": map[string]any{"a": 1}},
+				},
+			},
+			live:  [][]string{{"sounds"}},
+			level: browserapi.LevelInfo,
+			msg: "Config changed (package pkg). In effect now: sounds.ding. " +
+				"Restart the program to load: extensions.rune-agent.",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			n := idepkgtest.NewNotifications(t)
+			notifyConfigChange(n, ConfigChange{Old: old, New: tt.new, Source: "package pkg"},
+				ConfigChangeResult{LivePaths: tt.live})
+			active := n.Active()
+			require.Len(t, active, 1)
+			for _, noti := range active {
+				assert.Equal(t, tt.level, noti.Level)
+				assert.Equal(t, tt.msg, noti.Msg)
+			}
+		})
+	}
+
+	t.Run("nothing changed notifies nothing", func(t *testing.T) {
+		t.Parallel()
+		n := idepkgtest.NewNotifications(t)
+		notifyConfigChange(n, ConfigChange{Old: old, New: old, Source: "x"}, ConfigChangeResult{})
+		assert.Empty(t, n.Active())
 	})
 }
 
@@ -598,16 +676,16 @@ func TestPkgInstallStartsExtensionWithPackageEnv(t *testing.T) {
 
 	recorder := &recordingRunner{captureEnv: envKey}
 
-	// envHook mirrors cmd/rune's guiEnvLiveApplyHook: when the merged diff
+	// envHook mirrors cmd/rune's configChangeHook: when the change
 	// touches gui.env it applies the package environment to the live process.
-	envHook := func(event idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error) {
-		if !event.TouchesPath("gui", "env") {
-			return idepkg.ConfigMergeResult{}, nil
+	envHook := func(change ConfigChange) (ConfigChangeResult, error) {
+		if !change.TouchesPath("gui", "env") {
+			return ConfigChangeResult{}, nil
 		}
 		if err := os.Setenv(envKey, envVal); err != nil {
-			return idepkg.ConfigMergeResult{}, err
+			return ConfigChangeResult{}, err
 		}
-		return idepkg.ConfigMergeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
+		return ConfigChangeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
 	}
 
 	m := newPkgInstallExtHandler(t, configPath, rm,
@@ -628,11 +706,16 @@ func TestPkgInstallStartsExtensionWithPackageEnv(t *testing.T) {
 	}, repl.NopProgressWriter())
 	require.NoError(t, err)
 
-	// The merged config on disk must carry the package's extension entry.
-	merged, err := os.ReadFile(configPath)
+	// The package config on disk must carry the extension entry, and the
+	// user config include it.
+	merged, err := os.ReadFile(filepath.Join(m.sixDir, "etc", pkgID+".yaml"))
 	require.NoError(t, err)
 	assert.Contains(t, string(merged), extID,
-		"install must merge the extensions entry into the user config")
+		"install must write the package config to etc")
+	userCfg, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(userCfg), "$RUNE_DATADIR/etc/"+pkgID+".yaml",
+		"install must include the package config in the user config")
 
 	var calls []runCall
 	require.Eventually(t, func() bool {
@@ -692,35 +775,31 @@ func TestPkgInstallExtensionConfigWithoutPath(t *testing.T) {
 		require.Eventually(t, func() bool { return len(callsFor(e, "userext")) > 0 },
 			10*time.Second, 20*time.Millisecond, "the workspace never started userext")
 	}
-	install := func(e *startedEditor, pkgID string) []string {
+	install := func(e *startedEditor, pkgID string) {
 		t.Helper()
 		ui := recordingPkgUI{Notifications: idepkgtest.NewNotifications(t), t: t}
 		require.NoError(t, e.PackageManager().InstallPackageVersion(
 			idepkg.WithUI(context.Background(), ui), pkgID, "1", repl.NopProgressWriter()))
 		e.drain()
-		var notices []string
-		for _, n := range ui.Active() {
-			notices = append(notices, n.Msg)
-		}
-		return notices
 	}
-	pkgext := func() any {
+	pkgext := func(e *startedEditor) any {
 		t.Helper()
-		var cfg map[string]any
-		require.NoError(t, yaml.Unmarshal([]byte(h.readConfig(t)), &cfg))
-		return cfg["extensions"].(map[string]any)["pkgext"]
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		cfg, err := e.workspaceHandler.reloadConfig()
+		require.NoError(t, err)
+		return cfg.cfg["extensions"].(map[string]any)["pkgext"]
 	}
 
 	e := h.start(t, launch{})
 	openWorkspace(e)
 
-	assert.Equal(t, []string{
-		"saved themepkg configuration updates to your config. None are in effect yet; " +
-			"restart the program to load: extensions.pkgext.",
-	}, install(e, "themepkg"))
+	install(e, "themepkg")
+	assert.Contains(t, flatScreen(e.screen()), "Config changed (package themepkg). None of the "+
+		"changes are in effect yet; restart the program to load: extensions.pkgext.")
 	assert.Equal(t, map[string]any{
 		"config": map[string]any{"status_bar": map[string]any{"enabled": false}},
-	}, pkgext())
+	}, pkgext(e))
 	assert.Empty(t, callsFor(e, "pkgext"), "installing config for an extension does not start it")
 	e.stop(t)
 
@@ -730,19 +809,31 @@ func TestPkgInstallExtensionConfigWithoutPath(t *testing.T) {
 		200*time.Millisecond, 10*time.Millisecond,
 		"opening a workspace does not start an extension that has no path")
 
-	assert.Equal(t, []string{
-		"applied extpkg configuration updates. All changes are in effect now: extensions.pkgext.",
-	}, install(e, "extpkg"))
+	install(e, "extpkg")
+	assert.Contains(t, flatScreen(e.screen()),
+		"Config changed (package extpkg). All changes are in effect now: extensions.pkgext.")
 	assert.Equal(t, map[string]any{
 		"config": map[string]any{"status_bar": map[string]any{"enabled": false}},
 		"path":   "$RUNE_DATADIR/lib/extpkg/ext",
-	}, pkgext(), "the extension's package adds the path beside the theme's config")
+	}, pkgext(e), "the extension's package adds the path beside the theme's config")
 	calls := callsFor(e, "pkgext")
 	require.Len(t, calls, 1, "the extension starts on the open workspace")
 	assert.Equal(t, filepath.Join(h.dataDir, "lib", "extpkg", "ext"),
 		hostenv.ExpandDataDir(calls[0].path, h.dataDir))
 	assert.Equal(t, map[string]any{"status_bar": map[string]any{"enabled": false}},
 		configValues(calls[0].cfg), "the extension starts with the theme's config")
+}
+
+// flatScreen is the text of a drawn screen without its frames, each run
+// of blanks one space, so a wrapped notification reads as one line.
+func flatScreen(screen string) string {
+	text := strings.Map(func(r rune) rune {
+		if strings.ContainsRune("│┌┐└┘├┤┬┴┼─", r) {
+			return ' '
+		}
+		return r
+	}, screen)
+	return strings.Join(strings.Fields(text), " ")
 }
 
 func TestPkgInstallRegistersTutorialLive(t *testing.T) {
@@ -798,27 +889,23 @@ func TestPkgInstallRegistersTutorialLive(t *testing.T) {
 	require.False(t, tutorialRegistered(i, mu, tutName),
 		"tutorial must not be registered before install")
 
-	ui := recordingPkgUI{Notifications: idepkgtest.NewNotifications(t), t: t}
 	h := pkgconsole.New(pkgconsole.Config{Manager: i.workspaceHandler.pkgmanager.pkg})
 	mu.Lock()
-	_, err = h.HandleCommand(idepkg.WithUI(context.Background(), ui), repl.Command{
+	_, err = h.HandleCommand(context.Background(), repl.Command{
 		Name: pkgconsole.CommandName,
 		Args: []string{"install", pkgID},
 	}, repl.NopProgressWriter())
 	mu.Unlock()
 	require.NoError(t, err)
-	var notices []string
-	for _, n := range ui.Active() {
-		notices = append(notices, n.Msg)
-	}
-	assert.Equal(t, []string{
-		"applied tutpkg configuration updates. All changes are in effect now: tutorials.go-intro.",
-	}, notices)
 
-	merged, err := os.ReadFile(configPath)
+	etc, err := os.ReadFile(filepath.Join(dataDir, "etc", pkgID+".yaml"))
 	require.NoError(t, err)
-	assert.Contains(t, string(merged), tutName,
-		"install must merge the tutorials entry into the user config")
+	assert.Contains(t, string(etc), tutName,
+		"install must write the tutorials entry to the package config")
+	userCfg, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(userCfg), "$RUNE_DATADIR/etc/"+pkgID+".yaml",
+		"install must include the package config")
 
 	require.Eventually(t, func() bool {
 		return tutorialRegistered(i, mu, tutName)
@@ -1150,13 +1237,6 @@ func configWithConfigOnlyExtension(t *testing.T) ideConfig {
 	}
 }
 
-func mustYAMLDoc(t *testing.T, s string) *yaml.Node {
-	t.Helper()
-	var doc yaml.Node
-	require.NoError(t, yaml.Unmarshal([]byte(s), &doc))
-	return &doc
-}
-
 // configValues returns the top-level keys of cfg, so a test can compare the
 // config an extension was started with.
 func configValues(cfg config.Config) map[string]any {
@@ -1193,13 +1273,13 @@ func makeEnvExtPkgTarball(t *testing.T, envKey, envVal, extID, extPath string) [
 
 // newPkgInstallExtHandler builds a testWorkspaceManagerHandler wired like the
 // production IDE for the pkg-install path: a real release manager, a real
-// on-disk config at configPath that reloadConfig re-reads (so the post-merge
-// hook observes the merged extensions entry), the given ExtensionsRunner, and
-// the given gui.env merge hook.
+// on-disk config at configPath that reloadConfig re-reads (so the config
+// change observes the installed extensions entry), the given
+// ExtensionsRunner, and the given config change hook.
 func newPkgInstallExtHandler(
 	t *testing.T, configPath string, releaseManager release.Manager,
 	runner ExtensionsRunner,
-	mergeHook func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error),
+	changeHook func(ConfigChange) (ConfigChangeResult, error),
 	gitRemoteURL ...func(pkgID string) string,
 ) *testWorkspaceManagerHandler {
 	t.Helper()
@@ -1212,7 +1292,7 @@ func newPkgInstallExtHandler(
 
 	m := new(testWorkspaceManagerHandler)
 	m.workspaceManagerHandler = new(workspaceManagerHandler)
-	m.packageConfigMergeHook = mergeHook
+	m.configChangeHook = changeHook
 	m.tutorialsInstalled = func([]string) ([]string, error) { return nil, nil }
 	if len(gitRemoteURL) > 0 {
 		m.gitRemoteURL = gitRemoteURL[0]
@@ -1242,11 +1322,14 @@ func newPkgInstallExtHandler(
 		ret := defaultCfg()
 		ret.configPath = configPath
 		ret.storage = cfg.storage
-		if err := loadFileConfig(&ret, configPath, ""); err != nil {
+		if err := loadFileConfig(&ret, configPath, dir); err != nil {
 			return ret, err
 		}
 		return ret, nil
 	}
+	startCfg, err := reload()
+	require.NoError(t, err)
+	m.configChange.lastApplied = startCfg.cfg
 
 	require.NoError(t, m.workspaceManagerHandler.init(nil, homeURI, manager,
 		notiCfg, cfg, storage, dir,

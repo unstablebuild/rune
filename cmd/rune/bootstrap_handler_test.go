@@ -37,7 +37,6 @@ import (
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/handler/quickmenu"
 	"unstable.build/rune/internal/ide"
-	"unstable.build/rune/internal/ide/starlarkconfig"
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/gui"
 	"unstable.build/rune/internal/term/gui/glassbar"
@@ -525,14 +524,13 @@ func TestBootstrapIDEsFetchSponsorsFromAPI(t *testing.T) {
 	}
 }
 
-func TestGUIThemesLiveApplyHook(t *testing.T) {
+func TestConfigChangeHookAppliesThemes(t *testing.T) {
 	const (
 		envKey    = "RUNE_TEST_LIVE_APPLY_THEMES_ENV"
 		envVal    = "/from/theme/package"
 		themeDiff = "gui:\n  themes:\n    livetest:\n" +
 			"      foreground: '#112233'\n      background: '#445566'\n"
 	)
-	livetest := map[string]any{"foreground": "#112233", "background": "#445566"}
 	writeYAML := func(gui string) func(t *testing.T, path string) {
 		return func(t *testing.T, path string) {
 			require.NoError(t, os.WriteFile(path, []byte("editor:\n  mode: modal\n"+gui), 0o644))
@@ -540,51 +538,56 @@ func TestGUIThemesLiveApplyHook(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		filename    string
-		initial     string
-		writeMerged func(t *testing.T, path string)
-		diff        string
-		withoutGUI  bool
-		wantPaths   [][]string
+		name         string
+		filename     string
+		initial      string
+		writeChanged func(t *testing.T, path string)
+		diff         string
+		withoutGUI   bool
+		wantPaths    [][]string
 	}{
 		{
-			name:        "yaml config",
-			filename:    configFilename,
-			initial:     "editor:\n  mode: modal\n",
-			writeMerged: writeYAML(themeDiff),
-			diff:        themeDiff,
-			wantPaths:   [][]string{{"gui", "themes"}},
+			name:         "yaml config",
+			filename:     configFilename,
+			initial:      "editor:\n  mode: modal\n",
+			writeChanged: writeYAML(themeDiff),
+			diff:         themeDiff,
+			wantPaths:    ide.HUDLivePaths,
 		},
 		{
-			name:     "starlark config",
+			name:     "starlark config including a package config",
 			filename: configStarFilename,
 			initial:  "config[\"terminal\"][\"initial_reservoir\"] = 2\n",
-			writeMerged: func(t *testing.T, path string) {
-				require.NoError(t, starlarkconfig.WriteManagedConfigFileAtomic(path, map[string]any{
-					"gui": map[string]any{"themes": map[string]any{"livetest": livetest}},
-				}))
+			writeChanged: func(t *testing.T, path string) {
+				etc := filepath.Join(filepath.Dir(path), "etc")
+				require.NoError(t, os.MkdirAll(etc, 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(etc, "theme.yaml"),
+					[]byte(themeDiff), 0o644))
+				require.NoError(t, os.WriteFile(path, []byte(
+					"include(\"$RUNE_DATADIR/etc/theme.yaml\")\n"+
+						"config[\"terminal\"][\"initial_reservoir\"] = 2\n"), 0o644))
 			},
 			diff:      themeDiff,
-			wantPaths: [][]string{{"gui", "themes"}},
+			wantPaths: ide.HUDLivePaths,
 		},
 		{
-			name:        "no GUI attached",
-			filename:    configFilename,
-			initial:     "editor:\n  mode: modal\n",
-			writeMerged: writeYAML(themeDiff),
-			diff:        themeDiff,
-			withoutGUI:  true,
+			name:         "no GUI attached",
+			filename:     configFilename,
+			initial:      "editor:\n  mode: modal\n",
+			writeChanged: writeYAML(themeDiff),
+			diff:         themeDiff,
+			withoutGUI:   true,
+			wantPaths:    ide.HUDLivePaths,
 		},
 		{
 			name:     "env and themes",
 			filename: configFilename,
 			initial:  "editor:\n  mode: modal\n",
-			writeMerged: writeYAML("gui:\n  env:\n    " + envKey + ": " + envVal + "\n" +
+			writeChanged: writeYAML("gui:\n  env:\n    " + envKey + ": " + envVal + "\n" +
 				"  themes:\n    livetest:\n      foreground: '#112233'\n      background: '#445566'\n"),
 			diff: "gui:\n  env:\n    " + envKey + ": " + envVal + "\n" +
 				"  themes:\n    livetest:\n      foreground: '#112233'\n      background: '#445566'\n",
-			wantPaths: [][]string{{"gui", "env"}, {"gui", "themes"}},
+			wantPaths: append([][]string{{"gui", "env"}}, ide.HUDLivePaths...),
 		},
 	}
 	for _, tt := range tests {
@@ -595,6 +598,7 @@ func TestGUIThemesLiveApplyHook(t *testing.T) {
 
 			b := newConfiguredBootstrapForEnvTest(t, tt.filename, tt.initial, t.TempDir())
 			var startupThemes []string
+			var startupTheme string
 			if !tt.withoutGUI {
 				guiCfg, ok, err := getGUIConfig(b.config())
 				require.NoError(t, err)
@@ -604,12 +608,15 @@ func TestGUIThemesLiveApplyHook(t *testing.T) {
 				require.NoError(t, err)
 				t.Cleanup(func() { _ = g.Close() })
 				b.attachGUI(g, false)
+				// Startup applies the GUI config once the GUI is attached.
+				reloadHUD(t, b)
 				startupThemes = g.Themes()
+				startupTheme = g.Theme()
 				require.NotEmpty(t, startupThemes, "the built-in themes are available at startup")
 			}
-			tt.writeMerged(t, b.configPath)
+			tt.writeChanged(t, b.configPath)
 
-			result, err := b.packageConfigMergeHook(mergeEvent(t, tt.diff))
+			result, err := b.configChangeHook(configChange(t, tt.diff))
 			require.NoError(t, err)
 			assert.ElementsMatch(t, tt.wantPaths, result.LivePaths)
 			if tt.withoutGUI {
@@ -621,12 +628,12 @@ func TestGUIThemesLiveApplyHook(t *testing.T) {
 				defer b.mu.Unlock()
 				return slices.Contains(b.g.Themes(), "livetest")
 			}, 10*time.Second, 10*time.Millisecond,
-				"a theme merged by a package install must be available without a restart")
+				"a theme a package installs must be available without a restart")
 			b.mu.Lock()
 			defer b.mu.Unlock()
 			assert.Subset(t, b.g.Themes(), startupThemes,
 				"the reloaded set keeps the themes available at startup")
-			assert.Empty(t, b.g.Theme(), "installing a theme must not switch the active one")
+			assert.Equal(t, startupTheme, b.g.Theme(), "installing a theme must not switch the active one")
 			_, err = b.g.SetTheme("livetest")
 			require.NoError(t, err)
 		})

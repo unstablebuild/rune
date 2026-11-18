@@ -44,7 +44,7 @@ const maxIncludeDepth = 16
 // includeLoader layers config files onto a tree. Each file first layers the
 // files it includes, in order, then its own keys, so a later layer wins
 // over an earlier one. A relative include resolves from the directory of
-// the including file; /Users/ernestrc/.rune and ~ expand. A file under the data
+// the including file; $RUNE_DATADIR and ~ expand. A file under the data
 // directory's etc directory is the config of the package named by its
 // path there: its top-level requirements are dropped, its $RUNE_PKG_ID and
 // $RUNE_PKG_VERSION expand to the package and the version in use, and a

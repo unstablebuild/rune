@@ -18,6 +18,7 @@ package idepkg
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -48,12 +49,10 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"gopkg.in/yaml.v3"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idepkg/gitpkg"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
-	"unstable.build/rune/internal/ide/starlarkconfig"
 	"unstable.build/rune/internal/workspace/walkdir"
 )
 
@@ -225,14 +224,9 @@ type Manager struct {
 
 	editorMode string
 
-	// configBase returns the editor's default config tree, used as the
-	// predeclared `config` base when reading the user's .star config so
-	// overlay-style mutations (config[...] = ...) resolve. May be nil.
-	configBase func() map[string]any
-
-	// afterConfigMerge, when set, is invoked after a package config merge is
-	// written to the user config file. See WithAfterConfigMerge.
-	afterConfigMerge func(ConfigMergeEvent) (ConfigMergeResult, error)
+	// afterConfigWrite, when set, is called after the config a package
+	// contributes changed. See WithAfterConfigWrite.
+	afterConfigWrite func(pkgID string)
 
 	// iterators gates the installs of each package. m holds the install
 	// in flight of each package, and waiting holds, for each install
@@ -536,6 +530,9 @@ func (m *Manager) DeletePackageVersion(
 		if err != nil {
 			ret = multierror.Append(ret, err)
 		}
+		if err := m.uninstallConfig(pkgID); err != nil {
+			ret = multierror.Append(ret, err)
+		}
 	} else if isInUse {
 		return ErrVersionInUse
 	}
@@ -609,6 +606,11 @@ func (m *Manager) DeletePackage(
 	if err := os.RemoveAll(pkgDirname); err != nil {
 		ret = multierror.Append(ret, err)
 	}
+	// A package whose in-use version was deleted on its own, or whose lib
+	// link is gone, still has its config.
+	if err := m.uninstallConfig(pkgID); err != nil {
+		ret = multierror.Append(ret, err)
+	}
 	return ret
 }
 
@@ -635,41 +637,6 @@ func (m *Manager) ListInstalledPackages(ctx context.Context) (
 		seen[pkg] = struct{}{}
 		return true
 	}), nil
-}
-
-// ProcessInstalledSettings processes settings by packages.
-func (m *Manager) ProcessInstalledSettings(ctx context.Context) (ret error) {
-	dit, err := m.storage.List(ctx, nil)
-	if err != nil {
-		return err
-	}
-	it := iterator.FromDocumentIterator[pkgVersionValue](dit)
-	slice, err := iterator.ToSlice(ctx, it)
-	if err != nil {
-		return err
-	}
-	for _, pkv := range slice {
-		if !pkv.Complete {
-			continue
-		}
-		_, _, isInUse, err := m.isPackageVersionInUse(pkv.Package, pkv.Version)
-		if err != nil {
-			err = fmt.Errorf("could not check if package %s version %s is in use: %v",
-				pkv.Package, pkv.Version, err)
-			ret = errors.Join(ret, err)
-			continue
-		}
-		if !isInUse {
-			continue
-		}
-		dir := makePackageVersionDirname(m.dataDir, pkv.Package, pkv.Version)
-		configFile := pkgConfigFile(dir)
-		err = m.processConfig(ctx, pkv.Package, pkv.Version, configFile)
-		if err != nil {
-			ret = errors.Join(ret, fmt.Errorf("process %s: %w", configFile, err))
-		}
-	}
-	return ret
 }
 
 // ListInstalledPackageVersions lists the bundles installed for the given package.
@@ -731,13 +698,14 @@ func (m *Manager) UsePackageVersion(
 		return ErrVersionInUse
 	}
 	pkgVersionDirname := makePackageVersionDirname(m.dataDir, pkgID, version)
-
-	configFile := pkgConfigFile(pkgVersionDirname)
-	err = m.processConfig(ctx, pkgID, version, configFile)
-	if err != nil {
+	if err := m.linkLibCopyBin(pkgID, version, val.Executables, pkgVersionDirname); err != nil {
 		return err
 	}
-	return m.linkLibCopyBin(pkgID, version, val.Executables, pkgVersionDirname)
+	if err := m.installConfig(pkgID, version, pkgVersionDirname); err != nil {
+		return fmt.Errorf("install configuration for %s version %s: %w",
+			pkgID, version, err)
+	}
+	return nil
 }
 
 // PackageVersionInUse returns the in-use version of pkgID by reading the
@@ -883,8 +851,6 @@ func (m *Manager) runDownload(
 		return fmt.Errorf("rename staging dir: %w", err)
 	}
 
-	configFile := pkgConfigFile(pkgVersionDirname)
-
 	if err := m.linkLibCopyBin(pkgID, version, executables, pkgVersionDirname); err != nil {
 		_ = os.RemoveAll(pkgVersionDirname)
 		return err
@@ -920,8 +886,8 @@ func (m *Manager) runDownload(
 		return fmt.Errorf("update storage field: %w", err)
 	}
 
-	if err := m.processInstalledConfig(ctx, pkgID, version, configFile); err != nil {
-		return fmt.Errorf("process configuration for %s version %s: %w",
+	if err := m.installConfig(pkgID, version, pkgVersionDirname); err != nil {
+		return fmt.Errorf("install configuration for %s version %s: %w",
 			pkgID, version, err)
 	}
 
@@ -1096,275 +1062,182 @@ func (m *Manager) linkLibCopyBin(
 	return nil
 }
 
-func (m *Manager) promptConfigChange(
-	ui UI, pkgID string, pkgVersion release.Version, configYAML []byte,
-	pkgDoc *yaml.Node,
-) {
-	message := fmt.Sprintf(
-		"Extension %s (version %s) wants to **update** your configuration "+
-			"with the following settings:\n\n```yaml\n%s\n```\n\nDo you want to allow this?",
-		pkgID, pkgVersion, string(configYAML))
-	ui.PromptConfig(ConfigPrompt{
-		Message: message,
-		Options: []PromptOption{{Label: "Allow", Key: 'a'}, {Label: "Deny", Key: 'd'}},
-		// the settings read best on their own lines, unwrapped
-		MaxWidth: 120,
-	}, func(approved bool) {
-		if !approved {
-			return
-		}
-		userDoc, err := m.userConfigDocument()
-		if err == nil {
-			err = m.applyConfigMerge(ui, browserapi.LevelSuccess, pkgID, pkgVersion, userDoc, pkgDoc)
-		}
-		if err != nil {
-			_, _ = ui.Notify(browserapi.LevelError, "apply configuration: %s", err)
-		}
-	})
-}
+// pkgConfigExts are the extensions a package config in the etc directory
+// can have.
+var pkgConfigExts = []string{".yaml", ".star"}
 
-func (m *Manager) promptExtensionPathChange(
-	ui UI, pkgID string, change extensionPathChange,
-) {
-	message := fmt.Sprintf(
-		"Package **%s** wants to install extension **%s** at:\n\n`%s`\n\n"+
-			"An extension with the same ID is already registered at:\n\n`%s`\n\n"+
-			"Do you want to replace it?",
-		pkgID, change.extensionID, change.installedPath, change.currentPath)
-	ui.PromptConfig(ConfigPrompt{
-		Message:  message,
-		Options:  []PromptOption{{Label: "Yes", Key: 'y'}, {Label: "No", Key: 'n'}},
-		MaxWidth: 80,
-	}, func(approved bool) {
-		if !approved {
-			return
-		}
-		userDoc, err := m.userConfigDocument()
-		if err == nil {
-			err = m.writeConfigMerge(userDoc, change.pkgDoc)
-		}
-		if err != nil {
-			_, _ = ui.Notify(browserapi.LevelError, "apply configuration: %s", err)
-			return
-		}
-		_, _ = ui.Notify(browserapi.LevelSuccess,
-			"updated %s extension path. Restart the program to load the changes.", pkgID)
-	})
-}
-
-// ConfigMergeEvent describes a package config merge that was just written to
-// the user config file. The applied diff (Diff) carries only the keys that
-// were merged. Consumers inspect it to decide whether any live reload is
-// possible; the idepkg package itself is unaware of what the keys mean.
-type ConfigMergeEvent struct {
-	PkgID      string
-	PkgVersion release.Version
-	// Diff is the YAML document node for the applied diff. Its first content
-	// child is the mapping of merged keys.
-	Diff *yaml.Node
-}
-
-// TouchesPath reports whether the applied diff includes the given nested key
-// path, e.g. TouchesPath("gui", "env").
-func (e ConfigMergeEvent) TouchesPath(path ...string) bool {
-	return configDiffTouchesPath(e.Diff, path...)
-}
-
-// AddedExtensionIDs returns the ids added under the top-level "extensions"
-// key of the applied diff, or nil when the diff did not add any.
-func (e ConfigMergeEvent) AddedExtensionIDs() []string {
-	return addedExtensionIDs(e.Diff)
-}
-
-// AddedTutorialNames returns the names added under the top-level "tutorials"
-// key of the applied diff, or nil when the diff did not add any.
-func (e ConfigMergeEvent) AddedTutorialNames() []string {
-	return addedTutorialNames(e.Diff)
-}
-
-// ConfigMergeResult reports what a post-merge hook did.
-type ConfigMergeResult struct {
-	// LivePaths lists the config key paths whose merged values the running
-	// process picked up. Each entry covers the whole subtree under it. Diff
-	// keys not covered by any entry need a restart to take effect. Paths are
-	// segment slices rather than dotted strings because ids and names may
-	// contain dots.
-	LivePaths [][]string
-}
-
-// applyConfigMerge deep-merges addDoc into userDoc and writes the result to
-// the user config file atomically, after backing up the existing file. It is
-// shared by the auto-apply path (purely-new keys) and the prompt's Allow path
-// (version-dependent conflicts the user approved). Once the file is written
-// it invokes the post-merge hook (if configured) and notifies ui at level
-// which keys are in effect and which need a restart. The notice is shown even
-// when the hook fails, since the config was saved; the hook's error is then
-// returned. A write error is returned without notifying.
-func (m *Manager) applyConfigMerge(
-	ui UI, level browserapi.NotificationLevel,
-	pkgID string, pkgVersion release.Version, userDoc, addDoc *yaml.Node,
+// installConfig makes the config of version of pkgID, the version in use
+// extracted at versionDir, a layer of the user's config: it is copied to
+// the etc directory and the user config includes it from there. A version
+// without a config leaves the package with none. An include line the user
+// commented out stays off. The hook of WithAfterConfigWrite runs last.
+func (m *Manager) installConfig(
+	pkgID string, version release.Version, versionDir string,
 ) error {
-	if err := m.writeConfigMerge(userDoc, addDoc); err != nil {
-		return err
-	}
-	result, err := m.runAfterConfigMerge(pkgID, pkgVersion, addDoc)
-	m.notifyConfigApplied(ui, level, pkgID, addDoc, result)
-	return err
-}
-
-func (m *Manager) writeConfigMerge(userDoc, addDoc *yaml.Node) error {
-	starConfig := m.starUserConfig()
-	merged, err := buildMergedConfig(userDoc, addDoc, starConfig)
+	ext, err := m.installEtcConfig(pkgID, version, versionDir)
 	if err != nil {
 		return err
 	}
-
-	backup, err := backupUserConfig(m.configPath)
-	if err != nil {
-		return fmt.Errorf("backup user config: %w", err)
-	}
-
-	m.log(log.InfoLevel, "created config backup "+
-		"before applying package updates: %s", backup)
-
-	if starConfig {
-		if err := starlarkconfig.WriteManagedConfigFileAtomic(m.configPath, merged.starDiff); err != nil {
-			return fmt.Errorf("write starlark config: %w", err)
+	err = m.editUserConfig(func(src []byte) ([]byte, error) {
+		for _, other := range pkgConfigExts {
+			if other != ext {
+				src = removeInclude(src, m.configPath, includeSpelling(pkgID, other), m.dataDir)
+			}
 		}
-		return nil
+		if ext == "" {
+			return src, nil
+		}
+		return addInclude(src, m.configPath, includeSpelling(pkgID, ext), m.dataDir)
+	})
+	if err != nil {
+		return err
 	}
-	if err := writeYAMLAtomic(m.configPath, merged.yamlDoc, addDoc.Content[0]); err != nil {
-		return fmt.Errorf("write config: %w", err)
+	if m.afterConfigWrite != nil {
+		m.afterConfigWrite(pkgID)
 	}
 	return nil
 }
 
-func (m *Manager) runAfterConfigMerge(
-	pkgID string, pkgVersion release.Version, addDoc *yaml.Node,
-) (ConfigMergeResult, error) {
-	if m.afterConfigMerge == nil {
-		return ConfigMergeResult{}, nil
-	}
-	return m.afterConfigMerge(ConfigMergeEvent{
-		PkgID:      pkgID,
-		PkgVersion: pkgVersion,
-		Diff:       addDoc,
-	})
-}
-
-// notifyConfigApplied reports a saved config merge, naming the diff keys that
-// result made live and those that still need a restart.
-func (m *Manager) notifyConfigApplied(
-	ui UI, level browserapi.NotificationLevel, pkgID string,
-	diff *yaml.Node, result ConfigMergeResult,
-) {
-	inEffect, pending := summarizeConfigDiff(diff, result.LivePaths)
-	switch {
-	case len(pending) == 0:
-		_, _ = ui.Notify(level, "applied %s configuration updates. "+
-			"All changes are in effect now: %s.", pkgID, strings.Join(inEffect, ", "))
-	case len(inEffect) == 0:
-		_, _ = ui.Notify(level, "saved %s configuration updates to your config. "+
-			"None are in effect yet; restart the program to load: %s.",
-			pkgID, strings.Join(pending, ", "))
-	default:
-		_, _ = ui.Notify(level, "partially applied %s configuration updates. "+
-			"In effect now: %s. Restart the program to load: %s.",
-			pkgID, strings.Join(inEffect, ", "), strings.Join(pending, ", "))
-	}
-}
-
-func (m *Manager) processConfig(
-	ctx context.Context, pkgID string, pkgVersion release.Version, pkgConfigFile string,
-) error {
-	return m.processConfigFile(ctx, pkgID, pkgVersion, pkgConfigFile, false)
-}
-
-func (m *Manager) processInstalledConfig(
-	ctx context.Context, pkgID string, pkgVersion release.Version, pkgConfigFile string,
-) error {
-	return m.processConfigFile(ctx, pkgID, pkgVersion, pkgConfigFile, true)
-}
-
-// processConfigFile merges a package's config into the user config.
-// Changes that would replace the user's settings are asked about
-// through the UI of ctx, and applied when the user approves them, which
-// can be after this returns.
-func (m *Manager) processConfigFile(
-	ctx context.Context, pkgID string, pkgVersion release.Version,
-	pkgConfigFile string, promptExtensionPaths bool,
-) error {
-	_, err := os.Stat(pkgConfigFile)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("stat config: %v", err)
-	}
+// installEtcConfig writes the config of version of pkgID, read from
+// versionDir, to the etc directory, and removes the config of the package
+// in the other format. It returns the extension of the file written, empty
+// when the version has no config and the package's was removed.
+func (m *Manager) installEtcConfig(
+	pkgID string, version release.Version, versionDir string,
+) (string, error) {
+	src := pkgConfigFile(versionDir)
+	data, err := os.ReadFile(src)
 	if err != nil {
-		return nil
-	}
-	data, err := os.ReadFile(pkgConfigFile)
-	if err != nil {
-		return fmt.Errorf("read config: %w", err)
-	}
-	// A fresh datadir has no user config yet. Seed an empty one so the
-	// package's env/settings still merge; otherwise a first install (e.g. a
-	// remote host installing into a brand-new ~/.rune) never gets
-	// GOROOT and the toolchain fails with "cannot find GOROOT directory".
-	if _, statErr := os.Stat(m.configPath); os.IsNotExist(statErr) {
-		if err := os.MkdirAll(filepath.Dir(m.configPath), 0o777); err != nil {
-			return fmt.Errorf("create config dir: %w", err)
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("read package config: %w", err)
 		}
-		if err := os.WriteFile(m.configPath, nil, 0o644); err != nil {
-			return fmt.Errorf("seed empty user config: %w", err)
+		return "", m.removeEtcConfig(pkgID)
+	}
+	ext := strings.ToLower(filepath.Ext(src))
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		data = append(data, '\n')
+	}
+	data = append(data, etcTrailer(pkgID, version)...)
+	path := makePackageEtcPath(m.dataDir, pkgID, ext)
+	if err := writeFileAtomic(path, data); err != nil {
+		return "", fmt.Errorf("write %s: %w", path, err)
+	}
+	for _, other := range pkgConfigExts {
+		if other == ext {
+			continue
+		}
+		if err := os.Remove(makePackageEtcPath(m.dataDir, pkgID, other)); err != nil &&
+			!errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("remove stale package config: %w", err)
 		}
 	}
+	m.log(log.InfoLevel, "installed the config of package %s version %s at %s",
+		pkgID, version, path)
+	return ext, nil
+}
 
-	userCfg, err := loadIdePkgConfigFile(m.configPath, m.configBaseTree())
-	if err != nil {
-		return fmt.Errorf("load user config: %w", err)
-	}
+// etcTrailer is the comment that ends the copy of a package config in the
+// etc directory. It trails the config so the line numbers Starlark errors
+// report match the package's own file.
+func etcTrailer(pkgID string, version release.Version) string {
+	return fmt.Sprintf("\n# Installed by Rune from package %s %s. Rune overwrites this file when\n"+
+		"# the package changes; put your own settings in your config instead.\n",
+		pkgID, version)
+}
 
-	userDoc, err := m.userConfigDocument()
-	if err != nil {
-		return fmt.Errorf("load user config document: %w", err)
-	}
-
-	plan, err := planConfigChange(
-		pkgConfigFile, data, userCfg, userDoc,
-		pkgID, pkgVersion, m.dataDir, m.editorMode, promptExtensionPaths,
-	)
-	if err != nil {
-		return err
-	}
-
-	ui := m.ui(ctx)
-	if plan.autoApplyDoc != nil {
-		if err := m.applyConfigMerge(
-			ui, browserapi.LevelInfo, pkgID, pkgVersion, plan.userDoc, plan.autoApplyDoc,
-		); err != nil {
-			return fmt.Errorf("auto-apply config change: %w", err)
+// removeEtcConfig removes the config of pkgID from the etc directory, in
+// either format.
+func (m *Manager) removeEtcConfig(pkgID string) error {
+	for _, ext := range pkgConfigExts {
+		path := makePackageEtcPath(m.dataDir, pkgID, ext)
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove %s: %w", path, err)
 		}
-	}
-	for _, change := range plan.pathChanges {
-		m.promptExtensionPathChange(ui, pkgID, change)
-	}
-	if plan.prompt {
-		m.promptConfigChange(ui, pkgID, pkgVersion, plan.missingYAML, plan.pkgDoc)
 	}
 	return nil
 }
 
-func (m *Manager) starUserConfig() bool {
-	return strings.HasSuffix(strings.ToLower(m.configPath), ".star")
+// uninstallConfig removes the config of pkgID from the etc directory and
+// its include from the user config, and runs the hook of
+// WithAfterConfigWrite when either was there.
+func (m *Manager) uninstallConfig(pkgID string) error {
+	hadEtc := false
+	for _, ext := range pkgConfigExts {
+		if _, err := os.Stat(makePackageEtcPath(m.dataDir, pkgID, ext)); err == nil {
+			hadEtc = true
+		}
+	}
+	if err := m.removeEtcConfig(pkgID); err != nil {
+		return err
+	}
+	hadInclude := false
+	err := m.editUserConfig(func(src []byte) ([]byte, error) {
+		out := src
+		for _, ext := range pkgConfigExts {
+			out = removeInclude(out, m.configPath, includeSpelling(pkgID, ext), m.dataDir)
+		}
+		hadInclude = !bytes.Equal(out, src)
+		return out, nil
+	})
+	if err != nil {
+		return err
+	}
+	if (hadEtc || hadInclude) && m.afterConfigWrite != nil {
+		m.afterConfigWrite(pkgID)
+	}
+	return nil
 }
 
-// userConfigDocument parses the user config into a yaml document so a
-// package merge only rewrites the keys it adds: the decoded config map
-// used for diffing has already lost comments, key order and formatting.
-func (m *Manager) userConfigDocument() (*yaml.Node, error) {
-	if m.starUserConfig() {
-		return nil, nil
+// editUserConfig rewrites the user config with edit, atomically, when edit
+// changes it. A missing config is edited as an empty one.
+func (m *Manager) editUserConfig(edit func(src []byte) ([]byte, error)) error {
+	src, err := os.ReadFile(m.configPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read user config: %w", err)
 	}
-	return loadOrCreateUserConfig(m.configPath)
+	out, err := edit(src)
+	if err != nil {
+		return fmt.Errorf("edit user config %s: %w", m.configPath, err)
+	}
+	if bytes.Equal(out, src) {
+		return nil
+	}
+	if err := writeFileAtomic(m.configPath, out); err != nil {
+		return fmt.Errorf("write user config: %w", err)
+	}
+	m.log(log.InfoLevel, "updated the includes of the user config %s", m.configPath)
+	return nil
+}
+
+// writeFileAtomic writes data to path through a temporary file in its
+// directory, which it creates, so a reader sees the old or the new file.
+func writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("write: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("close temp: %w", err)
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("chmod: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("rename: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) untar(
@@ -1413,23 +1286,6 @@ func (m *Manager) untar(
 
 	configFile := pkgConfigFile(dirname)
 	return configFile, executables, manifest, nil
-}
-
-func loadIdePkgConfigFile(path string, base map[string]any) (map[string]any, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return loadIdePkgConfigFromBytes(path, data, base, "", "", "")
-}
-
-// configBaseTree returns the editor's default config tree to predeclare as
-// `config` when reading the user's .star config, or nil when unavailable.
-func (m *Manager) configBaseTree() map[string]any {
-	if m.configBase == nil {
-		return nil
-	}
-	return m.configBase()
 }
 
 // pkgConfigFile returns the path to the package's settings file inside dir.
@@ -1497,441 +1353,6 @@ func StarlarkParams(
 		params["RUNE_EDITOR_MODE"] = editorMode
 	}
 	return params
-}
-
-func loadIdePkgConfigFromBytes(
-	filename string, data []byte, base map[string]any,
-	pkgID string, pkgVersion release.Version, editorMode string,
-) (map[string]any, error) {
-	if strings.HasSuffix(strings.ToLower(filename), ".star") {
-		// User configs are authored as overlays that mutate a
-		// predeclared `config` (config[...] = ...) and never bind it,
-		// matching how the editor loads them. Decode in overlay mode
-		// against the editor's default config tree so subscript
-		// mutations on nested keys — and Rune's appended managed block's
-		// reference to `config` — resolve without "undefined: config".
-		// A nil base still predeclares `config` as an empty dict, so
-		// empty or comments-only files yield an empty configuration.
-		cfg, err := starlarkconfig.Decode(starlarkconfig.Source{
-			Src:      data,
-			Filename: filename,
-			Params:   StarlarkParams(pkgID, pkgVersion, editorMode),
-			Base:     base,
-		})
-		if errors.Is(err, starlarkconfig.ErrMissingConfig) {
-			return map[string]any{}, nil
-		}
-		return cfg, err
-	}
-	if len(data) == 0 {
-		return map[string]any{}, nil
-	}
-	var cfg map[string]any
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
-	}
-	return normalizeIdePkgConfig(cfg).(map[string]any), nil
-}
-
-func loadIdePkgConfigOverlay(
-	filename string, data []byte, base map[string]any,
-	pkgID string, pkgVersion release.Version, editorMode string,
-) (map[string]any, error) {
-	if strings.HasSuffix(strings.ToLower(filename), ".star") {
-		return starlarkconfig.Decode(starlarkconfig.Source{
-			Src:      data,
-			Filename: filename,
-			Params:   StarlarkParams(pkgID, pkgVersion, editorMode),
-			Base:     base,
-		})
-	}
-	return loadIdePkgConfigFromBytes(filename, data, base, pkgID, pkgVersion,
-		editorMode)
-}
-
-func normalizeIdePkgConfig(v any) any {
-	switch t := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(t))
-		for k, val := range t {
-			out[k] = normalizeIdePkgConfig(val)
-		}
-		return out
-	case map[any]any:
-		out := make(map[string]any, len(t))
-		for k, val := range t {
-			out[k.(string)] = normalizeIdePkgConfig(val)
-		}
-		return out
-	case []any:
-		out := make([]any, len(t))
-		for i, val := range t {
-			out[i] = normalizeIdePkgConfig(val)
-		}
-		return out
-	default:
-		return t
-	}
-}
-
-// idePkgConfigDiff classifies overlay keys against the user config into two
-// disjoint subsets:
-//
-//   - newCfg: overlay key paths absent from the user config, plus user values
-//     that only differ from the overlay in spelling the data directory (an
-//     absolute path where the overlay has $RUNE_DATADIR, written by releases
-//     that expanded it at install time). These can be auto-applied without
-//     prompting.
-//   - conflictCfg: overlay scalar leaves that already exist in the user config
-//     with a different value and must be approved. Outside gui.env only
-//     version-dependent leaves qualify (RUNE-225); under gui.env every
-//     differing scalar qualifies, with gui.env.PATH merged rather than
-//     overridden. All other differing scalars, type mismatches, and differing
-//     lists preserve the user value (RUNE-187).
-//
-// Either returned map is nil when its subset is empty.
-func idePkgConfigDiff(
-	user, overlay map[string]any, versionDependent map[string]any,
-	dataDir string, keyPath []string,
-) (newCfg, conflictCfg map[string]any) {
-	for key, overlayVal := range overlay {
-		userVal, ok := user[key]
-		if !ok {
-			if newCfg == nil {
-				newCfg = map[string]any{}
-			}
-			newCfg[key] = overlayVal
-			continue
-		}
-		overlayMap, overlayIsMap := overlayVal.(map[string]any)
-		userMap, userIsMap := userVal.(map[string]any)
-		if !overlayIsMap || !userIsMap {
-			var val any
-			change := valueSame
-			switch {
-			case isScalar(userVal) && isScalar(overlayVal):
-				val, change = scalarChange(
-					append(keyPath, key),
-					isVersionDependentScalar(versionDependent, key),
-					userVal, overlayVal, dataDir,
-				)
-			case listRespelled(userVal, overlayVal, dataDir):
-				val, change = overlayVal, valueRespelled
-			}
-			switch change {
-			case valueRespelled:
-				if newCfg == nil {
-					newCfg = map[string]any{}
-				}
-				newCfg[key] = val
-			case valueConflict:
-				if conflictCfg == nil {
-					conflictCfg = map[string]any{}
-				}
-				conflictCfg[key] = val
-			}
-			continue
-		}
-		nestedVersionDependent, _ := versionDependent[key].(map[string]any)
-		nestedNew, nestedConflict := idePkgConfigDiff(
-			userMap, overlayMap, nestedVersionDependent, dataDir, append(keyPath, key),
-		)
-		if nestedNew != nil {
-			if newCfg == nil {
-				newCfg = map[string]any{}
-			}
-			newCfg[key] = nestedNew
-		}
-		if nestedConflict != nil {
-			if conflictCfg == nil {
-				conflictCfg = map[string]any{}
-			}
-			conflictCfg[key] = nestedConflict
-		}
-	}
-	return newCfg, conflictCfg
-}
-
-type valueChange int
-
-const (
-	// valueSame keeps the user value.
-	valueSame valueChange = iota
-	// valueRespelled replaces the user value without asking: it is the
-	// overlay as a release that expanded $RUNE_DATADIR at install time
-	// wrote it.
-	valueRespelled
-	// valueConflict replaces the user value only with the user's approval.
-	valueConflict
-)
-
-func scalarChange(
-	keyPath []string, versionDependent bool, userVal, overlayVal any, dataDir string,
-) (any, valueChange) {
-	if isGUIEnvPathLeaf(keyPath) {
-		merged, respelled, added := mergePathValue(
-			fmt.Sprint(userVal), fmt.Sprint(overlayVal), dataDir,
-		)
-		switch {
-		case added:
-			return merged, valueConflict
-		case respelled:
-			return merged, valueRespelled
-		}
-		return nil, valueSame
-	}
-	userStr, overlayStr := fmt.Sprint(userVal), fmt.Sprint(overlayVal)
-	if overlayStr == userStr {
-		return nil, valueSame
-	}
-	if expandedAtInstall(userStr, overlayStr, dataDir) {
-		return overlayVal, valueRespelled
-	}
-	if sameAfterDataDir(userStr, overlayStr, dataDir) {
-		return nil, valueSame
-	}
-	if isGUIEnvLeaf(keyPath) || versionDependent {
-		return overlayVal, valueConflict
-	}
-	return nil, valueSame
-}
-
-// expandedAtInstall reports whether userStr is overlayStr with $RUNE_DATADIR
-// expanded with dataDir, as older releases merged it. Any other spelling of
-// the same value, such as ${RUNE_DATADIR}, is the user's to keep.
-func expandedAtInstall(userStr, overlayStr, dataDir string) bool {
-	return dataDir != "" && userStr != overlayStr &&
-		userStr == hostenv.ExpandDataDir(overlayStr, dataDir)
-}
-
-// sameAfterDataDir reports whether the user and overlay spellings name the
-// same value on this host once $RUNE_DATADIR is expanded with dataDir.
-func sameAfterDataDir(userStr, overlayStr, dataDir string) bool {
-	return dataDir != "" &&
-		hostenv.ExpandDataDir(userStr, dataDir) == hostenv.ExpandDataDir(overlayStr, dataDir)
-}
-
-// listRespelled reports whether two lists of scalars differ only in elements
-// that a release expanded $RUNE_DATADIR in at install time.
-func listRespelled(userVal, overlayVal any, dataDir string) bool {
-	userList, ok := userVal.([]any)
-	if !ok {
-		return false
-	}
-	overlayList, ok := overlayVal.([]any)
-	if !ok || len(userList) != len(overlayList) {
-		return false
-	}
-	differ := false
-	for i := range overlayList {
-		if !isScalar(userList[i]) || !isScalar(overlayList[i]) {
-			return false
-		}
-		userStr, overlayStr := fmt.Sprint(userList[i]), fmt.Sprint(overlayList[i])
-		if userStr == overlayStr {
-			continue
-		}
-		if !expandedAtInstall(userStr, overlayStr, dataDir) {
-			return false
-		}
-		differ = true
-	}
-	return differ
-}
-
-func isGUIEnvLeaf(keyPath []string) bool {
-	return len(keyPath) == 3 && keyPath[0] == "gui" && keyPath[1] == "env"
-}
-
-func isVersionDependentScalar(versionDependent map[string]any, key string) bool {
-	dep, ok := versionDependent[key].(bool)
-	return ok && dep
-}
-
-func isGUIEnvPathLeaf(keyPath []string) bool {
-	return isGUIEnvLeaf(keyPath) && keyPath[2] == "PATH"
-}
-
-func isScalar(v any) bool {
-	switch v.(type) {
-	case map[string]any, []any:
-		return false
-	default:
-		return true
-	}
-}
-
-// mergePathValue merges the package's PATH chunks into the user's. A user
-// chunk that is a package chunk with $RUNE_DATADIR expanded with dataDir is
-// rewritten in place to the package spelling (respelled); a user chunk naming
-// the same directory in another spelling counts as present; package chunks
-// the user lacks are prepended in package order (added).
-func mergePathValue(userPath, pkgPath, dataDir string) (merged string, respelled, added bool) {
-	if pkgPath == "" {
-		return userPath, false, false
-	}
-	userChunks := strings.Split(userPath, ":")
-	present := make(map[string]struct{}, len(userChunks))
-	for _, chunk := range userChunks {
-		present[chunk] = struct{}{}
-	}
-	var missing []string
-	for chunk := range strings.SplitSeq(pkgPath, ":") {
-		if _, ok := present[chunk]; ok {
-			continue
-		}
-		present[chunk] = struct{}{}
-		i, same := userChunkFor(userChunks, chunk, dataDir)
-		switch {
-		case i >= 0:
-			userChunks[i] = chunk
-			respelled = true
-		case !same:
-			missing = append(missing, chunk)
-		}
-	}
-	userPath = strings.Join(userChunks, ":")
-	if len(missing) == 0 {
-		return userPath, respelled, false
-	}
-	if userPath == "" {
-		return strings.Join(missing, ":"), respelled, true
-	}
-	return strings.Join(missing, ":") + ":" + userPath, respelled, true
-}
-
-// userChunkFor returns the index of the user chunk to respell to pkgChunk, or
-// -1 when there is none, and whether some user chunk names pkgChunk's
-// directory already.
-func userChunkFor(userChunks []string, pkgChunk, dataDir string) (int, bool) {
-	if !strings.Contains(pkgChunk, hostenv.DataDirVar) {
-		return -1, false
-	}
-	same := false
-	for i, chunk := range userChunks {
-		if expandedAtInstall(chunk, pkgChunk, dataDir) {
-			return i, true
-		}
-		same = same || sameAfterDataDir(chunk, pkgChunk, dataDir)
-	}
-	return -1, same
-}
-
-func versionDependentKeys(overlay map[string]any) map[string]any {
-	var out map[string]any
-	for key, val := range overlay {
-		switch t := val.(type) {
-		case map[string]any:
-			nested := versionDependentKeys(t)
-			if nested == nil {
-				continue
-			}
-			if out == nil {
-				out = map[string]any{}
-			}
-			out[key] = nested
-		case string:
-			if !referencesPkgVersion(t) {
-				continue
-			}
-			if out == nil {
-				out = map[string]any{}
-			}
-			out[key] = true
-		}
-	}
-	return out
-}
-
-// versionDependentSentinel is an implausible package version used to
-// re-resolve a .star overlay so that leaves whose value depends on
-// $RUNE_PKG_VERSION can be detected by comparison.
-const versionDependentSentinel = "\x00rune-version-sentinel\x00"
-
-func versionDependentOverlayKeys(
-	filename string, data []byte, overlay map[string]any,
-	pkgID, editorMode string,
-) (map[string]any, error) {
-	if !strings.HasSuffix(strings.ToLower(filename), ".star") {
-		return versionDependentKeys(overlay), nil
-	}
-	sentinel, err := loadIdePkgConfigOverlay(
-		filename, data, map[string]any{},
-		pkgID, versionDependentSentinel, editorMode,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("decode package config (version probe): %w", err)
-	}
-	return versionDependentByDecode(overlay, sentinel), nil
-}
-
-func versionDependentByDecode(real, sentinel map[string]any) map[string]any {
-	var out map[string]any
-	for key, realVal := range real {
-		sentinelVal, ok := sentinel[key]
-		if !ok {
-			continue
-		}
-		realMap, realIsMap := realVal.(map[string]any)
-		sentinelMap, sentinelIsMap := sentinelVal.(map[string]any)
-		if realIsMap && sentinelIsMap {
-			nested := versionDependentByDecode(realMap, sentinelMap)
-			if nested == nil {
-				continue
-			}
-			if out == nil {
-				out = map[string]any{}
-			}
-			out[key] = nested
-			continue
-		}
-		if realIsMap || sentinelIsMap {
-			continue
-		}
-		if fmt.Sprint(realVal) == fmt.Sprint(sentinelVal) {
-			continue
-		}
-		if out == nil {
-			out = map[string]any{}
-		}
-		out[key] = true
-	}
-	return out
-}
-
-func referencesPkgVersion(s string) bool {
-	var found bool
-	os.Expand(s, func(name string) string {
-		if name == "RUNE_PKG_VERSION" {
-			found = true
-		}
-		return ""
-	})
-	return found
-}
-
-func mapToYAMLDocument(cfg map[string]any) (*yaml.Node, error) {
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return nil, err
-	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, err
-	}
-	return &doc, nil
-}
-
-func loadIdePkgConfigFromYAMLDoc(doc *yaml.Node) (map[string]any, error) {
-	data, err := yaml.Marshal(doc)
-	if err != nil {
-		return nil, err
-	}
-	var cfg map[string]any
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
-	}
-	return normalizeIdePkgConfig(cfg).(map[string]any), nil
 }
 
 func newReadyIterator(
@@ -2201,6 +1622,10 @@ func EtcDir(dataDir string) string {
 
 func makeEtcDirname(dataDir string) string {
 	return filepath.Join(dataDir, "etc")
+}
+
+func makePackageEtcPath(dataDir, pkgID, ext string) string {
+	return filepath.Join(makeEtcDirname(dataDir), pkgID+ext)
 }
 
 func makeStagingDirname(dataDir, pkgID string, version release.Version) string {

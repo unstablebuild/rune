@@ -18,9 +18,9 @@ commands, or stay alive for the length of a workspace, that is an
 ## How a plugin fits into Rune
 
 A plugin is delivered as a [package](./packages.md): its executable is
-placed on the user's `PATH`, and its configuration overlay is merged into
-the user's Rune [config](../config.md) so the feature that uses the tool is
-already pointed at it. The tool is available immediately after
+placed on the user's `PATH`, and its configuration overlay is installed and
+included from the user's Rune [config](../config.md) so the feature that uses
+the tool is already pointed at it. The tool is available immediately after
 `pkg install`, in Rune's terminals and to anything Rune launches, with no
 manual setup.
 

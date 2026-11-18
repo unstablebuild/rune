@@ -175,7 +175,7 @@ func TestRemoteWorkspaceInstallsOnItsHost(t *testing.T) {
 	})
 }
 
-func TestRemoteWorkspaceAsksAboutItsHostsConfig(t *testing.T) {
+func TestRemoteWorkspaceInstallsThePackageConfigOnItsHost(t *testing.T) {
 	dataDir := t.TempDir()
 	uri, err := workspaceapi.CurrentUserHostURI(dataDir)
 	require.NoError(t, err)
@@ -187,28 +187,25 @@ func TestRemoteWorkspaceAsksAboutItsHostsConfig(t *testing.T) {
 	host, storage := idepkg.NewProvisioningManager(storagestub.NewInMemoryService(),
 		idepkgtest.NewReleaseManager(idepkgtest.MakePackages(), idepkgtest.MakeBundles(
 			[]release.Bundle{{Package: "configpkg", Version: "2"}})),
-		scheme, dataDir, configPath, "", func() map[string]any { return nil },
-		idepkgtest.TrustStore())
+		scheme, dataDir, configPath, "", idepkgtest.TrustStore())
 	t.Cleanup(func() { _ = storage.Close() })
 	m, wh := openHostWorkspace(t, host)
 
 	require.NoError(t, wh.hostPackages.pm.InstallPackageVersion(
 		context.Background(), "configpkg", "2", nil))
 	m.quiesce()
-	h := newSafeHandler(m)
-	h.Resize(100, 30)
-	screen := handlertest.DrawHandler(h, 100, 30)
-	assert.Contains(t, screen, "On studio:")
-	assert.Contains(t, screen, "wants to update your configuration")
-	h.Handle(term.Event{Type: term.EventKey, Ch: 'a'})
 
-	require.EventuallyWithT(t, func(c *assert.CollectT) {
-		data, err := os.ReadFile(configPath)
-		require.NoError(c, err)
-		assert.Contains(c, string(data), "GOROOT: $RUNE_DATADIR/pkg/configpkg/2/go")
-	}, 5*time.Second, 5*time.Millisecond, "the approved change is applied on the host")
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, "include:\n  - $RUNE_DATADIR/etc/configpkg.yaml\nenv:\n  GOROOT: /custom/go\n",
+		string(data), "the host's config includes the package config")
+	etc, err := os.ReadFile(filepath.Join(dataDir, "etc", "configpkg.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(etc), "GOROOT: $RUNE_DATADIR/pkg/$RUNE_PKG_ID/$RUNE_PKG_VERSION/go",
+		"the package config is written on the host as the package ships it")
 	_, err = os.Stat(filepath.Join(m.sixDir, "rune.yaml"))
 	assert.ErrorIs(t, err, os.ErrNotExist, "nothing changes on this machine")
+	assert.NoDirExists(t, filepath.Join(m.sixDir, "etc"))
 }
 
 // unsupportedHost is a host running a Rune without package management.

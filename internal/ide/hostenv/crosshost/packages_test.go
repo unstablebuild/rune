@@ -70,12 +70,15 @@ func TestRemotePackageInstallKeepsDataDirLiteral(t *testing.T) {
 
 	installTool(t, pm)
 
-	assert.Empty(t, ui.asked(), "a package adding new config asks nothing")
+	assert.Empty(t, ui.asked(), "a package install asks nothing")
 	env := h.guiEnv(t, dataDir)
-	assert.Equal(t, "$RUNE_DATADIR/"+toolLib+"/bin:$PATH", env["PATH"],
-		"the host keeps $RUNE_DATADIR literal in its config")
-	assert.Equal(t, "$RUNE_DATADIR/"+toolLib, env["E2E_TOOL_HOME"])
-	cfg, _ := h.readFile(t, dataDir+"/config.yaml")
+	assert.Equal(t, "$RUNE_DATADIR/lib/$RUNE_PKG_ID/bin:$PATH", env["PATH"],
+		"the host writes the package config as the package ships it")
+	assert.Equal(t, "$RUNE_DATADIR/lib/$RUNE_PKG_ID", env["E2E_TOOL_HOME"])
+	cfg, ok := h.readFile(t, dataDir+"/config.yaml")
+	require.True(t, ok, "%s/config.yaml exists", dataDir)
+	assert.Contains(t, cfg, "- $RUNE_DATADIR/etc/"+toolPkg+".yaml",
+		"the host includes the package config in its config")
 	assert.NotContains(t, cfg, local)
 
 	want := dataDir + "/" + toolLib
@@ -85,53 +88,28 @@ func TestRemotePackageInstallKeepsDataDirLiteral(t *testing.T) {
 		"and to the terminals it starts next")
 }
 
-func TestRemotePackageInstallRespellsExpandedConfigWithoutAsking(t *testing.T) {
+func TestRemotePackageInstallKeepsTheUsersConfig(t *testing.T) {
 	localDataDir(t)
 	h := startHost(t)
 	h.serveToolPackage(t)
 	const dataDir = remoteHome + "/.rune"
-	// What releases that expanded $RUNE_DATADIR at install time wrote.
-	h.writeFile(t, dataDir+"/config.yaml", fmt.Sprintf(`gui:
+	const original = `gui:
   env:
-    PATH: %[1]s/%[2]s/bin:/opt/user/bin:$PATH
-    E2E_TOOL_HOME: %[1]s/%[2]s
-`, dataDir, toolLib), 0o644)
-	s := h.connect(t, h.workspaceDir(t, "ws"))
-	pm, ui := hostPackages(t, s)
-
-	installTool(t, pm)
-
-	assert.Empty(t, ui.asked(),
-		"a value naming the host's own data directory is respelled without asking")
-	env := h.guiEnv(t, dataDir)
-	assert.Equal(t, "$RUNE_DATADIR/"+toolLib+"/bin:/opt/user/bin:$PATH", env["PATH"],
-		"the expanded entry is respelled in place and the user's entries are kept")
-	assert.Equal(t, "$RUNE_DATADIR/"+toolLib, env["E2E_TOOL_HOME"])
-	assert.Equal(t, "tool<"+dataDir+"/"+toolLib+">\n", run(t, s, workspaceapi.Cmd{Path: "e2e-tool"}))
-}
-
-func TestRemotePackageInstallAsksBeforeReplacingAnotherHostsPath(t *testing.T) {
-	local := localDataDir(t)
-	h := startHost(t)
-	h.serveToolPackage(t)
-	const dataDir = remoteHome + "/.rune"
-	// Spelled with the client's data directory, which names nothing on this
-	// host, so it is a different value rather than another spelling.
-	original := fmt.Sprintf(`gui:
-  env:
-    PATH: %[1]s/%[2]s/bin:$PATH
-    E2E_TOOL_HOME: %[1]s/%[2]s
-`, local, toolLib)
+    PATH: /opt/user/bin:$PATH
+`
 	h.writeFile(t, dataDir+"/config.yaml", original, 0o644)
 	s := h.connect(t, h.workspaceDir(t, "ws"))
 	pm, ui := hostPackages(t, s)
 
 	installTool(t, pm)
 
-	assert.NotEmpty(t, ui.asked(), "replacing a different value needs the user's approval")
-	env := h.guiEnv(t, dataDir)
-	assert.Equal(t, local+"/"+toolLib+"/bin:$PATH", env["PATH"], "a denied change is not applied")
-	assert.Equal(t, local+"/"+toolLib, env["E2E_TOOL_HOME"])
+	assert.Empty(t, ui.asked())
+	cfg, ok := h.readFile(t, dataDir+"/config.yaml")
+	require.True(t, ok)
+	assert.Equal(t, "include:\n  - $RUNE_DATADIR/etc/"+toolPkg+".yaml\n"+original, cfg,
+		"the install only adds the include line to the user's config")
+	assert.Equal(t, "tool<"+dataDir+"/"+toolLib+">\n", run(t, s, workspaceapi.Cmd{Path: "e2e-tool"}),
+		"the package's PATH entry chains onto the user's")
 }
 
 func installTool(t *testing.T, pm idepkg.PackageManager) {
@@ -144,11 +122,13 @@ func installTool(t *testing.T, pm idepkg.PackageManager) {
 		"install %s %s on the host", toolPkg, version)
 }
 
-// guiEnv returns the gui.env block of the user config in dataDir on h.
+// guiEnv returns the gui.env block of the config toolPkg installed in
+// dataDir on h.
 func (h *remoteHost) guiEnv(t *testing.T, dataDir string) map[string]any {
 	t.Helper()
-	content, ok := h.readFile(t, dataDir+"/config.yaml")
-	require.True(t, ok, "%s/config.yaml exists", dataDir)
+	path := dataDir + "/etc/" + toolPkg + ".yaml"
+	content, ok := h.readFile(t, path)
+	require.True(t, ok, "%s exists", path)
 	var cfg struct {
 		GUI struct {
 			Env map[string]any `yaml:"env"`

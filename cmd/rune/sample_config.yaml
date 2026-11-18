@@ -7,6 +7,13 @@
 # Path to the debug log. This property is not reloaded on reloadWorkspace.
 #log_path: ~/.rune/debug.log
 
+# Other config files to read before this one, in order: later files and
+# this file's own settings override earlier ones. Paths are relative to
+# this file; `~` and `$RUNE_DATADIR` expand. Installed packages add their
+# `$RUNE_DATADIR/etc/<package>.yaml` here.
+#include:
+#  - ~/dotfiles/rune/theme.yaml
+
 #gui:
 #  # Pick a theme by name. See the `guitheme` command for the full list of commands.
 #  default_theme: romero

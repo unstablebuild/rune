@@ -139,24 +139,27 @@ When a user installs one, Rune:
 1. **Installs required packages first.** If the package's config declares a
    top-level `requirements:` list, Rune resolves each named package to its
    latest version and installs it, or upgrades it to that version, config
-   merge and environment included, before the package itself. Each
-   requirement installed or upgraded is listed in the console output. If a
-   requirement cannot be installed or upgraded, the whole install is aborted.
+   and environment included, before the package itself. Each requirement
+   installed or upgraded is listed in the console output. If a requirement
+   cannot be installed or upgraded, the whole install is aborted.
 2. **Puts executables on the `PATH`.** Every executable in the package's
    top-level `bin/` directory is copied into Rune's shared binary directory,
    which is always first on the `PATH` of Rune's terminals and of anything
    Rune launches. The tools are available immediately, with no separate step.
-3. **Merges the config overlay.** The package's config is deep-merged into
-   the user's config: keys the package introduces are added, including new
-   leaves under a map the user already has. A package only needs to carry the
-   settings that connect it to Rune, and it will not disturb the rest of the
-   user's configuration. A value the user has already customized is left as
-   is, so the package never clobbers a user setting silently. The one
-   exception is a value the package derives from `$RUNE_PKG_VERSION`: when
-   that changes across versions, Rune shows the user the diff and asks before
-   applying it. The `requirements` key itself is package metadata, not
-   config: it is stripped from the merge and never appears in the user's
-   config.
+3. **Installs the config overlay.** The package's config is written, as the
+   package ships it, to `$RUNE_DATADIR/etc/<pkg>.yaml` (or `.star`), and an
+   [`include`](../config.md#including-other-files) line naming that file is
+   added to the user's config. The user's own settings are read after the
+   included files, so a value the user has customized wins over the package's,
+   and the package never clobbers a user setting. Updating the package, or
+   switching versions with `pkg use`, rewrites the file under `etc/`; removing
+   the package deletes it and its `include` line. The `requirements` key
+   itself is package metadata, not config: Rune ignores it when it reads the
+   file.
+
+Rune applies what it can of the new config at once, starting a registered
+extension and registering tutorials and sounds, and tells the user which
+settings need a restart.
 
 This is the same on a git install and a first-party archive install: the
 difference is only where the files come from. A git-hosted extension usually
@@ -179,11 +182,17 @@ expose the binary.
 Every package carries a `config.yaml` (or `config.star`) at its root: the
 **config overlay**. In a git package it is the repository's `config.yaml`;
 in a first-party archive it is the file at the top of the tarball. Either
-way, Rune deep-merges it into the user's [config](../config.md) at install
-time (as described [above](#what-pkg-install-does)) and it is where a package
-wires itself into Rune: registering an extension, requiring other packages,
-and pointing at its own files. If both `config.yaml` and `config.star` are
-present, `config.yaml` wins.
+way, Rune installs it under `$RUNE_DATADIR/etc/` and includes it from the
+user's [config](../config.md) (as described [above](#what-pkg-install-does)),
+and it is where a package wires itself into Rune: registering an extension,
+requiring other packages, and pointing at its own files. If both
+`config.yaml` and `config.star` are present, `config.yaml` wins.
+
+A `config.star` overlay is a [Starlark config](../config.md#starlark) read
+against the defaults and the files included before it, so it can read and
+amend what is already set. Rune overwrites the installed copy whenever the
+package changes, so users put their own settings in their config, not in the
+file under `etc/`.
 
 ### Referencing the install location
 
@@ -196,15 +205,12 @@ these variables:
 | `$RUNE_PKG_ID` | The package's name. |
 | `$RUNE_PKG_VERSION` | The installed version. |
 
-`$RUNE_PKG_ID` and `$RUNE_PKG_VERSION` are expanded when the package is
-installed. `$RUNE_DATADIR` is kept as written in the user's config and
-resolved on the machine that uses the value, when it starts a command or
-applies an environment. One config therefore serves local, `ssh://` and
-`rune://` workspaces: in a remote workspace, an extension entrypoint, a
-debugger command or a `gui.env` value names the data directory on the remote
-machine, where the package is installed. A config written by an earlier
-version of Rune may hold the expanded path instead; the next install or update
-of the package writes `$RUNE_DATADIR` back without asking.
+All three are expanded when Rune reads the installed file, so a new version
+of the package is picked up without rewriting anything. `$RUNE_DATADIR` is
+resolved on the machine that uses the value: one config therefore serves
+local, `ssh://` and `rune://` workspaces, and in a remote workspace an
+extension entrypoint, a debugger command or a `gui.env` value names the data
+directory on the remote machine, where the package is installed.
 
 A package's own files are reachable at `$RUNE_DATADIR/lib/$RUNE_PKG_ID`,
 which resolves to the version currently in use: the cloned repository for a
@@ -298,13 +304,12 @@ extensions:
         layout: '{{ .Image | src "file://$RUNE_DATADIR/lib/$RUNE_PKG_ID/status/rail.png" | alt "" }}{{ .Status }}'
 ```
 
-The keys merge like any other: they are added where the user's config does
-not set them already, and the user's own values stay. Rune does not start an
+The keys layer like any other: each included file adds to what the files
+before it set, and the user's own values stay on top. Rune does not start an
 extension that has no `path`, so if the extension isn't installed yet, its
-config waits in the user's config until a package installs it and adds the
-`path`. An extension reads the new config when it starts, or sooner if it
-reloads its config on `themereload`, as Rune Agent does for its status bar
-and compose box frame.
+config waits until a package installs it and adds the `path`. An extension
+reads the new config when it starts, or sooner if it reloads its config on
+`themereload`, as Rune Agent does for its status bar and compose box frame.
 
 ### Registering a tutorial
 
@@ -360,7 +365,7 @@ content:
 ├── lib/                        # payload, kept in place
 │   ├── <shared-library>
 │   └── <data-file>
-└── config.yaml                 # config overlay, merged into the user config
+└── config.yaml                 # config overlay, installed under etc/
 ```
 
 Installing it, or cloning a git repository, produces this layout:
@@ -379,7 +384,9 @@ Installing it, or cloning a git repository, produces this layout:
 ├── lib/
 │   └── <pkg> -> pkg/<pkg>/<version>/   # symlink to the in-use version
 │                                       #   ($RUNE_DATADIR/lib/$RUNE_PKG_ID)
-└── config.yaml                     # user config, with the overlay merged in
+├── etc/
+│   └── <pkg>.yaml                  # the overlay of the in-use version
+└── config.yaml                     # user config, which includes etc/<pkg>.yaml
 ```
 
 Three kinds of content, three destinations:
@@ -400,7 +407,8 @@ Three kinds of content, three destinations:
   extension's sources; for a first-party archive it is data files, shared
   libraries, or a bundled toolchain.
 - **The config overlay.** The [`config.yaml`](#the-config-overlay) at the
-  root, merged into the user's config at install time.
+  root, copied to `etc/<pkg>.yaml` and included from the user's config at
+  install time.
 
 ### Example: a first-party plugin (ripgrep)
 
@@ -422,7 +430,7 @@ extensions:
 
 It refers to `rg` by name because the binary is already on the `PATH`.
 Everything else in the user's `extensions` and `fuzzy_search` configuration
-is left untouched by the merge. A user installs it by name from the
+is left untouched. A user installs it by name from the
 [console](../learn/console.md):
 
 ```
@@ -446,4 +454,4 @@ distribute your own extension, [use a git repository](#distributing-from-a-git-r
 - [Extensions](./extensions.md): package a program that communicates with
   Rune through the SDK.
 - [Console](../learn/console.md): install and manage packages with `pkg`.
-- [Config](../config.md): how Rune configuration is structured and merged.
+- [Config](../config.md): how Rune configuration is structured and layered.

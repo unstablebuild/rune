@@ -106,8 +106,7 @@ func newHost(
 	scheme, dataDir := newHostScheme(t)
 	rm := idepkgtest.NewReleaseManager(packages, bundles)
 	pm, storage := idepkg.NewProvisioningManager(storagestub.NewInMemoryService(), rm,
-		scheme, dataDir, filepath.Join(dataDir, "rune.yaml"), "",
-		func() map[string]any { return nil }, idepkgtest.TrustStore())
+		scheme, dataDir, filepath.Join(dataDir, "rune.yaml"), "", idepkgtest.TrustStore())
 	t.Cleanup(func() { _ = storage.Close() })
 	return pm, dataDir
 }
@@ -157,24 +156,17 @@ func (r *recorder) PromptConfig(p idepkg.ConfigPrompt, answer func(bool)) {
 	r.answers = append(r.answers, answer)
 }
 
-func (r *recorder) prompt(t *testing.T, i int) idepkg.ConfigPrompt {
-	t.Helper()
+// asked returns the messages of the prompts the host asked.
+func (r *recorder) asked() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	require.Greater(t, len(r.prompts), i, "prompt %d was not asked", i)
-	return r.prompts[i]
+	var msgs []string
+	for _, p := range r.prompts {
+		msgs = append(msgs, p.Message)
+	}
+	return msgs
 }
 
-func (r *recorder) answer(t *testing.T, i int, approved bool) {
-	t.Helper()
-	r.mu.Lock()
-	require.Greater(t, len(r.answers), i, "prompt %d was not asked", i)
-	answer := r.answers[i]
-	r.mu.Unlock()
-	answer(approved)
-}
-
-// await waits for the client to record ev.
 func (r *recorder) await(t *testing.T, ev string) {
 	t.Helper()
 	require.EventuallyWithT(t, func(c *assert.CollectT) {
@@ -446,7 +438,7 @@ func hostGOROOT(t *testing.T, dataDir string) string {
 	return cfg.Env.GOROOT
 }
 
-func TestInstallAsksTheClient(t *testing.T) {
+func TestInstallWritesThePackageConfigOnTheHost(t *testing.T) {
 	t.Parallel()
 	pkgs := idepkgtest.MakePackages()
 	bundles := idepkgtest.MakeBundles([]release.Bundle{
@@ -456,40 +448,73 @@ func TestInstallAsksTheClient(t *testing.T) {
 	pm, dataDir := newHost(t, pkgs, bundles)
 	c, events := serve(t, pm)
 	ctx := context.Background()
-	saved := func(level browserapi.NotificationLevel, keys string) string {
-		return fmt.Sprintf("notify %d saved configpkg configuration updates to your config. "+
-			"None are in effect yet; restart the program to load: %s.", level, keys)
-	}
-	const v1GOROOT = "$RUNE_DATADIR/pkg/configpkg/1/go"
-	const v2GOROOT = "$RUNE_DATADIR/pkg/configpkg/2/go"
+	const goroot = "$RUNE_DATADIR/pkg/$RUNE_PKG_ID/$RUNE_PKG_VERSION/go"
 
 	require.NoError(t, c.InstallPackageVersion(ctx, "configpkg", "1", nil))
-	assert.Equal(t, []string{
-		saved(browserapi.LevelInfo, "env.GOROOT, settings.indent, settings.theme"),
-	}, events.recorded(),
-		"settings the user does not have are applied without asking")
-	assert.Equal(t, v1GOROOT, hostGOROOT(t, dataDir))
+	assert.Empty(t, events.asked(), "a package config is installed without asking")
+	etc := hostPackageConfig(t, dataDir)
+	assert.Equal(t, goroot, etc.Env.GOROOT, "the package config is written as shipped")
+	assert.Equal(t, "dark", etc.Settings.Theme)
+	assert.Contains(t, hostPackageConfigText(t, dataDir), "package configpkg 1.")
+	assert.Equal(t, []string{"$RUNE_DATADIR/etc/configpkg.yaml"}, hostIncludes(t, dataDir),
+		"the host's config includes the package config")
 
 	require.NoError(t, c.InstallPackageVersion(ctx, "configpkg", "2", nil))
-	p := events.prompt(t, 0)
-	assert.Contains(t, p.Message, "GOROOT: "+v2GOROOT)
-	assert.Equal(t, []idepkg.PromptOption{{Label: "Allow", Key: 'a'}, {Label: "Deny", Key: 'd'}},
-		p.Options)
-	assert.Equal(t, v1GOROOT, hostGOROOT(t, dataDir), "nothing changes before the user answers")
-	events.answer(t, 0, true)
-	events.await(t, saved(browserapi.LevelSuccess, "env.GOROOT"))
-	assert.Equal(t, v2GOROOT, hostGOROOT(t, dataDir))
+	assert.Empty(t, events.asked())
+	etc = hostPackageConfig(t, dataDir)
+	assert.Equal(t, goroot, etc.Env.GOROOT)
+	assert.Equal(t, "light", etc.Settings.Theme, "the new version's config replaces the old")
+	assert.Contains(t, hostPackageConfigText(t, dataDir), "package configpkg 2.")
+	assert.Equal(t, []string{"$RUNE_DATADIR/etc/configpkg.yaml"}, hostIncludes(t, dataDir),
+		"the include line is added once")
 
 	require.NoError(t, c.UsePackageVersion(ctx, "configpkg", "1"))
-	events.prompt(t, 1)
-	events.answer(t, 1, false)
-	// The host ends the request once nothing is left to answer, which
-	// frees it for the next one.
-	require.NoError(t, c.UsePackageVersion(ctx, "configpkg", "2"))
-	assert.Equal(t, v2GOROOT, hostGOROOT(t, dataDir), "a denied change is not applied")
+	assert.Equal(t, "dark", hostPackageConfig(t, dataDir).Settings.Theme,
+		"using a version installs its config")
 	inUse, _, err := c.PackageVersionInUse(ctx, "configpkg")
 	require.NoError(t, err)
-	assert.Equal(t, release.Version("2"), inUse)
+	assert.Equal(t, release.Version("1"), inUse)
+
+	require.NoError(t, c.DeletePackage(ctx, "configpkg"))
+	_, err = os.Stat(filepath.Join(dataDir, "etc", "configpkg.yaml"))
+	assert.ErrorIs(t, err, os.ErrNotExist, "deleting the package removes its config")
+	assert.Empty(t, hostIncludes(t, dataDir), "and its include line")
+}
+
+// hostPackageConfigFile is the config of configpkg as installed on the host.
+type hostPackageConfigFile struct {
+	Env struct {
+		GOROOT string `yaml:"GOROOT"`
+	} `yaml:"env"`
+	Settings struct {
+		Theme string `yaml:"theme"`
+	} `yaml:"settings"`
+}
+
+func hostPackageConfigText(t *testing.T, dataDir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dataDir, "etc", "configpkg.yaml"))
+	require.NoError(t, err)
+	return string(data)
+}
+
+func hostPackageConfig(t *testing.T, dataDir string) hostPackageConfigFile {
+	t.Helper()
+	var cfg hostPackageConfigFile
+	require.NoError(t, yaml.Unmarshal([]byte(hostPackageConfigText(t, dataDir)), &cfg))
+	return cfg
+}
+
+// hostIncludes returns the include list of the host's user config.
+func hostIncludes(t *testing.T, dataDir string) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dataDir, "rune.yaml"))
+	require.NoError(t, err)
+	var cfg struct {
+		Include []string `yaml:"include"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &cfg))
+	return cfg.Include
 }
 
 // ownUI is the UI of the user of a GUI node, who did not ask for what
@@ -503,7 +528,7 @@ func (u ownUI) Prompt(browserapi.PromptConfig, handler.PromptHandler) (browserap
 	return nil, errors.New("unexpected prompt")
 }
 
-func TestPeerInstallAsksThePeer(t *testing.T) {
+func TestPeerInstallKeepsTheHostsOwnConfig(t *testing.T) {
 	t.Parallel()
 	pkgs := idepkgtest.MakePackages()
 	bundles := idepkgtest.MakeBundles([]release.Bundle{{Package: "configpkg", Version: "2"}})
@@ -519,32 +544,12 @@ func TestPeerInstallAsksThePeer(t *testing.T) {
 	c, events := serve(t, pm)
 
 	require.NoError(t, c.InstallPackageVersion(context.Background(), "configpkg", "2", nil))
-	events.prompt(t, 0)
-	events.answer(t, 0, true)
-	events.await(t, fmt.Sprintf("notify %d saved configpkg configuration updates to your config. "+
-		"None are in effect yet; restart the program to load: env.GOROOT.", browserapi.LevelSuccess))
-	assert.Equal(t, "$RUNE_DATADIR/pkg/configpkg/2/go", hostGOROOT(t, dataDir))
+	assert.Empty(t, events.asked())
+	assert.Equal(t, "/custom/go", hostGOROOT(t, dataDir), "the host's own settings are kept")
+	assert.Equal(t, []string{"$RUNE_DATADIR/etc/configpkg.yaml"}, hostIncludes(t, dataDir))
+	assert.Equal(t, "$RUNE_DATADIR/pkg/$RUNE_PKG_ID/$RUNE_PKG_VERSION/go",
+		hostPackageConfig(t, dataDir).Env.GOROOT)
 	assert.Empty(t, own.Active(), "nothing is notified to the node's own user")
-}
-
-func TestAnswerAfterTheHostLeft(t *testing.T) {
-	t.Parallel()
-	pkgs := idepkgtest.MakePackages()
-	bundles := idepkgtest.MakeBundles([]release.Bundle{{Package: "configpkg", Version: "2"}})
-	pm, dataDir := newHost(t, pkgs, bundles)
-	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "rune.yaml"),
-		[]byte("env:\n  GOROOT: /custom/go\n"), 0o644))
-	cc := dialConn(t, func(s *grpc.Server) { NewServer(pm).Register(s) })
-	events := &recorder{}
-	c := NewClient(cc, events)
-
-	require.NoError(t, c.InstallPackageVersion(context.Background(), "configpkg", "2", nil))
-	events.prompt(t, 0)
-	require.NoError(t, cc.Close())
-	events.answer(t, 0, true)
-	events.await(t, fmt.Sprintf("notify %d apply configuration: "+
-		"the connection to the host was lost", browserapi.LevelError))
-	assert.Equal(t, "/custom/go", hostGOROOT(t, dataDir))
 }
 
 func TestErrorsKeepTheirKind(t *testing.T) {

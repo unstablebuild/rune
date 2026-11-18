@@ -44,7 +44,6 @@ import (
 	"unstable.build/rune/internal/extension/extensionv2"
 	"unstable.build/rune/internal/handler/command"
 	"unstable.build/rune/internal/ide/ideauthorizer"
-	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/text"
 )
@@ -102,15 +101,17 @@ func WithReleaseManager(m release.Manager) Option {
 	}
 }
 
-// WithPackageConfigMergeHook installs a hook invoked after a package config
-// merge is written to the user config file. The hook inspects the applied
-// diff and may live-apply changes to the running process, reporting back via
-// idepkg.ConfigMergeResult. It is wired into the package manager.
-func WithPackageConfigMergeHook(
-	hook func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error),
+// WithConfigChangeHook installs a hook invoked, off the event loop, when
+// the user config was reloaded and differs from the one in effect: after
+// a package wrote its config and when a config file changes on disk. The
+// hook applies what the IDE cannot to the running process and reports the
+// paths it made live. It runs before the IDE starts the extensions the
+// change added.
+func WithConfigChangeHook(
+	hook func(ConfigChange) (ConfigChangeResult, error),
 ) Option {
 	return func(opts *options) {
-		opts.packageConfigMergeHook = hook
+		opts.configChangeHook = hook
 	}
 }
 
@@ -619,7 +620,7 @@ type options struct {
 	tutorialPlaylist       []TutorialPlaylistItem
 	startingTutorial       string
 
-	packageConfigMergeHook func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error)
+	configChangeHook func(ConfigChange) (ConfigChangeResult, error)
 
 	watchedFilesChangeHook func(int)
 

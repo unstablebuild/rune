@@ -695,98 +695,32 @@ func TestSetReleaseManager(t *testing.T) {
 	require.NoError(t, m.Close())
 }
 
-func TestEditorRespellsWhatAnOlderReleaseExpandedWhenItStarts(t *testing.T) {
-	const expanded = "editor:\n  mode: modal\n" +
-		"gui:\n  env:\n    STARTPKG_HOME: <DATA>/lib/startpkg\n" +
-		"    PATH: /opt/mine/bin:<DATA>/lib/startpkg/bin:$PATH\n" +
-		"debugger:\n  startpkg:\n    command: <DATA>/lib/startpkg/dap --listen={addr}\n" +
-		"extensions:\n  startpkg:\n    path: <DATA>/lib/startpkg/ext\n" +
-		"tutorials:\n  startpkg-intro: <DATA>/lib/startpkg/intro.star\n"
-	const respelled = "editor:\n  mode: modal\n" +
-		"gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/startpkg\n" +
-		"    PATH: /opt/mine/bin:$RUNE_DATADIR/lib/startpkg/bin:$PATH\n" +
-		"debugger:\n  startpkg:\n    command: $RUNE_DATADIR/lib/startpkg/dap --listen={addr}\n" +
-		"extensions:\n  startpkg:\n    path: $RUNE_DATADIR/lib/startpkg/ext\n" +
-		"tutorials:\n  startpkg-intro: $RUNE_DATADIR/lib/startpkg/intro.star\n"
+func TestEditorLoadsThePackageConfigItIncludesWhenItStarts(t *testing.T) {
 	for _, launch := range launches {
 		t.Run(launch.name, func(t *testing.T) {
 			h := newRestartHost(t)
-			h.writeConfig(t, expanded)
+			userConfig := h.readConfig(t)
+			assert.Contains(t, userConfig, "- $RUNE_DATADIR/etc/startpkg.yaml",
+				"the install includes the package config")
+			etc, err := os.ReadFile(filepath.Join(h.dataDir, "etc", "startpkg.yaml"))
+			require.NoError(t, err)
+			assert.Contains(t, string(etc), "$RUNE_DATADIR/lib/$RUNE_PKG_ID/ext",
+				"the package config is written as the package ships it")
 
 			e := h.start(t, launch)
-			assert.Equal(t, respelled, h.readConfig(t))
-			merges := h.takeMerges()
-			require.Len(t, merges, 1)
-			assert.True(t, merges[0].TouchesPath("gui", "env"),
-				"the host re-applies gui.env after the merge")
+			assert.Equal(t, userConfig, h.readConfig(t), "starting changes nothing")
+			assert.Empty(t, h.takeChanges(), "starting applies no change")
 			assert.Contains(t, e.tutorialNames(), "startpkg-intro")
-			assert.Zero(t, countFloatingWindows(e.IDE, e.mu),
-				"the user already had everything the package provides: nothing to ask")
+			assert.Zero(t, countFloatingWindows(e.IDE, e.mu))
 			e.open(t)
 			e.requireExtensionStartedAt(t, h.expand("<DATA>/lib/startpkg/ext"))
 			e.stop(t)
 
 			e = h.start(t, launch)
-			assert.Equal(t, respelled, h.readConfig(t))
-			assert.Empty(t, h.takeMerges(), "the next start has nothing to respell")
+			assert.Equal(t, userConfig, h.readConfig(t))
+			assert.Empty(t, h.takeChanges())
 			assert.Zero(t, countFloatingWindows(e.IDE, e.mu))
 		})
-	}
-}
-
-func TestEditorAsksAtStartBeforeReplacingAnotherMachinesDataDir(t *testing.T) {
-	const foreign = "editor:\n  mode: modal\n" +
-		"gui:\n  env:\n    STARTPKG_HOME: /home/other/.rune/lib/startpkg\n" +
-		"    PATH: $RUNE_DATADIR/lib/startpkg/bin:$PATH\n" +
-		"debugger:\n  startpkg:\n    command: $RUNE_DATADIR/lib/startpkg/dap --listen={addr}\n" +
-		"extensions:\n  startpkg:\n    path: $RUNE_DATADIR/lib/startpkg/ext\n" +
-		"tutorials:\n  startpkg-intro: $RUNE_DATADIR/lib/startpkg/intro.star\n"
-	const allowed = "editor:\n  mode: modal\n" +
-		"gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/startpkg\n" +
-		"    PATH: $RUNE_DATADIR/lib/startpkg/bin:$PATH\n" +
-		"debugger:\n  startpkg:\n    command: $RUNE_DATADIR/lib/startpkg/dap --listen={addr}\n" +
-		"extensions:\n  startpkg:\n    path: $RUNE_DATADIR/lib/startpkg/ext\n" +
-		"tutorials:\n  startpkg-intro: $RUNE_DATADIR/lib/startpkg/intro.star\n"
-	for _, launch := range launches {
-		for _, answer := range []struct {
-			name  string
-			key   rune
-			after string
-		}{
-			{name: "allowed", key: 'a', after: allowed},
-			{name: "denied", key: 'd', after: foreign},
-		} {
-			t.Run(launch.name+"/"+answer.name, func(t *testing.T) {
-				h := newRestartHost(t)
-				h.writeConfig(t, foreign)
-
-				e := h.start(t, launch)
-				assert.Equal(t, foreign, h.readConfig(t), "nothing changes before the user answers")
-				assert.Empty(t, h.takeMerges())
-				require.Equal(t, 1, countFloatingWindows(e.IDE, e.mu), "the prompt is on the screen the user sees")
-				screen := e.screen()
-				assert.Contains(t, screen, "startpkg")
-				assert.Contains(t, screen, "STARTPKG_HOME: $RUNE_DATADIR/lib/startpkg",
-					"the prompt shows what it writes")
-
-				e.press(answer.key)
-				assert.Equal(t, answer.after, h.readConfig(t))
-				assert.Zero(t, countFloatingWindows(e.IDE, e.mu))
-				merges := h.takeMerges()
-				if answer.after == foreign {
-					assert.Empty(t, merges)
-					return
-				}
-				require.Len(t, merges, 1)
-				assert.True(t, merges[0].TouchesPath("gui", "env"))
-				e.stop(t)
-
-				e = h.start(t, launch)
-				assert.Equal(t, allowed, h.readConfig(t))
-				assert.Zero(t, countFloatingWindows(e.IDE, e.mu), "an approved value is not asked about again")
-				assert.Empty(t, h.takeMerges())
-			})
-		}
 	}
 }
 
@@ -805,8 +739,8 @@ type restartHost struct {
 	dir, dataDir, configPath string
 	rm                       *idepkgtest.ReleaseManager
 
-	mu     sync.Mutex
-	merges []idepkg.ConfigMergeEvent
+	mu      sync.Mutex
+	changes []ConfigChange
 }
 
 const startpkgConfig = "gui:\n  env:\n    STARTPKG_HOME: $RUNE_DATADIR/lib/$RUNE_PKG_ID\n" +
@@ -834,13 +768,13 @@ func newRestartHost(t *testing.T) *restartHost {
 	}))
 	require.NoError(t, os.WriteFile(h.configPath, []byte("editor:\n  mode: modal\n"), 0o644))
 
-	// Without e.mu: the merge hook takes the handler lock.
+	// Without e.mu: the change hook takes the handler lock.
 	e := h.start(t, launch{})
 	require.NoError(t, e.PackageManager().InstallPackageVersion(context.Background(),
 		"startpkg", "1", repl.NopProgressWriter()))
 	e.drain()
 	e.stop(t)
-	h.takeMerges()
+	h.takeChanges()
 	return h
 }
 
@@ -870,7 +804,7 @@ func (h *restartHost) start(t *testing.T, l launch) *startedEditor {
 		WithExtensionsRunner(recordingExtensionsRunner{runner: runner}),
 		WithLocker(mu),
 		WithScheduleNextTick(sched),
-		WithPackageConfigMergeHook(h.afterMerge),
+		WithConfigChangeHook(h.afterChange),
 		// Its reopen prompt would be a second floating window.
 		WithoutSessionReopen(),
 	)
@@ -910,19 +844,19 @@ func (e *startedEditor) open(t *testing.T) {
 	e.drain()
 }
 
-func (h *restartHost) afterMerge(event idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error) {
+func (h *restartHost) afterChange(change ConfigChange) (ConfigChangeResult, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.merges = append(h.merges, event)
-	return idepkg.ConfigMergeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
+	h.changes = append(h.changes, change)
+	return ConfigChangeResult{LivePaths: [][]string{{"gui", "env"}}}, nil
 }
 
-func (h *restartHost) takeMerges() []idepkg.ConfigMergeEvent {
+func (h *restartHost) takeChanges() []ConfigChange {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	merges := h.merges
-	h.merges = nil
-	return merges
+	changes := h.changes
+	h.changes = nil
+	return changes
 }
 
 func (h *restartHost) expand(s string) string {

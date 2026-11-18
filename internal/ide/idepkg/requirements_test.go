@@ -151,14 +151,12 @@ func TestInstallPackageRequirements(t *testing.T) {
 		_, ok = versionInUse(t, m, parentID)
 		assert.True(t, ok, "dependent package must be installed")
 
-		cfg := readUserConfigMap(t, m.configPath)
-		assert.NotContains(t, cfg, "requirements",
-			"requirements is package metadata and must not merge into the user config")
-		settings, ok := cfg["settings"].(map[string]any)
-		require.True(t, ok)
-		assert.Contains(t, settings, "parentkey")
-		assert.Contains(t, settings, "depkey",
-			"requirement config must be merged as part of the dependent install")
+		userConfig, err := os.ReadFile(m.configPath)
+		require.NoError(t, err)
+		assert.Equal(t, "include:\n  - $RUNE_DATADIR/etc/dep.yaml\n  - $RUNE_DATADIR/etc/parent.yaml\n",
+			string(userConfig), "the requirement's config is included before the dependent's")
+		assert.FileExists(t, makePackageEtcPath(m.dataDir, depID, ".yaml"))
+		assert.FileExists(t, makePackageEtcPath(m.dataDir, parentID, ".yaml"))
 	})
 
 	// Notification writers auto-dismiss when progress == total
@@ -417,7 +415,7 @@ func TestInstallPackageRequirements(t *testing.T) {
 		assert.True(t, ok)
 	})
 
-	t.Run("star config requirements are stripped from the merged config", func(t *testing.T) {
+	t.Run("star config requirements install and the config is copied verbatim", func(t *testing.T) {
 		t.Parallel()
 		pkgs := idepkgtest.MakePackages(release.Package{Name: depID, Latest: "1"})
 		versions := idepkgtest.MakeBundles(
@@ -440,11 +438,14 @@ func TestInstallPackageRequirements(t *testing.T) {
 		_, ok := versionInUse(t, m, depID)
 		assert.True(t, ok, "star-declared requirement must be installed")
 
-		cfg := readUserConfigMap(t, m.configPath)
-		assert.NotContains(t, cfg, "requirements")
-		settings, ok := cfg["settings"].(map[string]any)
-		require.True(t, ok)
-		assert.Contains(t, settings, "parentkey")
+		etc, err := os.ReadFile(makePackageEtcPath(m.dataDir, parentID, ".star"))
+		require.NoError(t, err)
+		assert.True(t, strings.HasPrefix(string(etc),
+			`config["requirements"] = ["`+depID+`"]`+"\n"),
+			"the loader drops requirements when it reads the file: %s", etc)
+		userConfig, err := os.ReadFile(m.configPath)
+		require.NoError(t, err)
+		assert.Contains(t, string(userConfig), "- $RUNE_DATADIR/etc/parent.star\n")
 	})
 }
 

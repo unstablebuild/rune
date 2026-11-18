@@ -34,43 +34,40 @@ import (
 
 	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/hostenv"
-	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
-	"unstable.build/rune/internal/ide/starlarkconfig"
 	"unstable.build/rune/internal/term/gui"
 )
 
-func TestGUIEnvLiveApplyHookAppliesNewlyMergedVar(t *testing.T) {
+func TestApplyGUIEnvAppliesNewlyIncludedVar(t *testing.T) {
 	const (
 		envKey = "RUNE_TEST_LIVE_APPLY_GOROOT"
-		envVal = "/from/merged/config"
+		envVal = "/from/included/config"
 	)
 	t.Setenv(envKey, "")
 	require.NoError(t, os.Unsetenv(envKey))
 
 	// IDE starts from a config that has no gui.env at all, mirroring a fresh
-	// install before the go package merges its env block.
+	// install before the go package adds its env block.
 	b := newConfiguredBootstrapForEnvTest(t, configFilename,
 		"editor:\n  mode: modal\n", t.TempDir())
 
-	// The package manager merges gui.env into the user config on disk before
-	// invoking the post-merge hook. Reproduce that on-disk state.
-	merged := "editor:\n  mode: modal\ngui:\n  env:\n    " + envKey + ": " + envVal + "\n"
-	require.NoError(t, os.WriteFile(b.configPath, []byte(merged), 0o644))
+	// The package manager writes the package config and includes it in the
+	// user config on disk before the config change runs. Reproduce that
+	// on-disk state.
+	etc := filepath.Join(filepath.Dir(b.configPath), "etc")
+	require.NoError(t, os.MkdirAll(etc, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(etc, "go.yaml"),
+		[]byte("gui:\n  env:\n    "+envKey+": "+envVal+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(b.configPath, []byte(
+		"editor:\n  mode: modal\ninclude:\n  - $RUNE_DATADIR/etc/go.yaml\n"), 0o644))
 
-	event := mergeEvent(t, "gui:\n  env:\n    "+envKey+": "+envVal+"\n")
-	require.True(t, event.TouchesPath("gui", "env"))
-
-	result, err := b.guiEnvLiveApplyHook(event)
-	require.NoError(t, err)
-	assert.Equal(t, [][]string{{"gui", "env"}}, result.LivePaths,
-		"merging a gui.env var must be reported as live-applied")
+	require.NoError(t, b.applyGUIEnv())
 	assert.Equal(t, envVal, os.Getenv(envKey),
-		"guiEnvLiveApplyHook must apply the freshly-merged gui.env to the live "+
-			"environment so extensions started after the merge (and gopls) inherit it")
+		"applyGUIEnv must apply the freshly-included gui.env to the live "+
+			"environment so extensions started after the change (and gopls) inherit it")
 }
 
-func TestGUIEnvLiveApplyHookAppliesVarPresentAtStartup(t *testing.T) {
+func TestApplyGUIEnvAppliesVarPresentAtStartup(t *testing.T) {
 	const (
 		envKey = "RUNE_TEST_LIVE_APPLY_STARTUP"
 		envVal = "/present/at/startup"
@@ -81,14 +78,11 @@ func TestGUIEnvLiveApplyHookAppliesVarPresentAtStartup(t *testing.T) {
 	configBody := "editor:\n  mode: modal\ngui:\n  env:\n    " + envKey + ": " + envVal + "\n"
 	b := newConfiguredBootstrapForEnvTest(t, configFilename, configBody, t.TempDir())
 
-	event := mergeEvent(t, "gui:\n  env:\n    "+envKey+": "+envVal+"\n")
-	result, err := b.guiEnvLiveApplyHook(event)
-	require.NoError(t, err)
-	assert.Equal(t, [][]string{{"gui", "env"}}, result.LivePaths)
+	require.NoError(t, b.applyGUIEnv())
 	assert.Equal(t, envVal, os.Getenv(envKey))
 }
 
-func TestGUIEnvLiveApplyHookStarlarkOverlayConfig(t *testing.T) {
+func TestApplyGUIEnvStarlarkConfigIncludingYAML(t *testing.T) {
 	const (
 		envKey = "RUNE_TEST_LIVE_APPLY_STAR_OVERLAY"
 		envVal = "/from/starlark/config"
@@ -100,22 +94,36 @@ func TestGUIEnvLiveApplyHookStarlarkOverlayConfig(t *testing.T) {
 		"config[\"terminal\"][\"initial_reservoir\"] = 2\n", t.TempDir())
 
 	// Reproduce the on-disk state after a package install: the manager
-	// appends its managed gui.env block to the user's config.star before
-	// invoking the post-merge hook.
-	require.NoError(t, starlarkconfig.WriteManagedConfigFileAtomic(
-		b.configPath, map[string]any{
-			"gui": map[string]any{"env": map[string]any{envKey: envVal}},
-		}))
+	// writes the package config and adds an include line to the user's
+	// config.star before the config change runs.
+	etc := filepath.Join(filepath.Dir(b.configPath), "etc")
+	require.NoError(t, os.MkdirAll(etc, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(etc, "go.yaml"),
+		[]byte("gui:\n  env:\n    "+envKey+": "+envVal+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(b.configPath, []byte(
+		"include(\"$RUNE_DATADIR/etc/go.yaml\")\n"+
+			"config[\"terminal\"][\"initial_reservoir\"] = 2\n"), 0o644))
 
-	event := mergeEvent(t, "gui:\n  env:\n    "+envKey+": "+envVal+"\n")
-	require.True(t, event.TouchesPath("gui", "env"))
-
-	result, err := b.guiEnvLiveApplyHook(event)
-	require.NoError(t, err,
-		"gui.env reload must decode the Starlark overlay config against the "+
-			"full default tree")
-	assert.Equal(t, [][]string{{"gui", "env"}}, result.LivePaths)
+	require.NoError(t, b.applyGUIEnv(),
+		"gui.env reload must decode the Starlark config against the full default tree")
 	assert.Equal(t, envVal, os.Getenv(envKey))
+}
+
+func TestConfigChangeHookSkipsGUIEnvWhenUntouched(t *testing.T) {
+	const (
+		envKey = "RUNE_TEST_LIVE_APPLY_UNTOUCHED"
+		envVal = "/not/applied"
+	)
+	t.Setenv(envKey, "")
+	require.NoError(t, os.Unsetenv(envKey))
+
+	b := newConfiguredBootstrapForEnvTest(t, configFilename,
+		"editor:\n  mode: modal\ngui:\n  env:\n    "+envKey+": "+envVal+"\n", t.TempDir())
+
+	result, err := b.configChangeHook(configChange(t, "editor:\n  tabspaces: 2\n"))
+	require.NoError(t, err)
+	assert.NotContains(t, result.LivePaths, []string{"gui", "env"})
+	assert.Equal(t, "", os.Getenv(envKey), "an untouched gui.env is not applied")
 }
 
 func TestStartLoginPathResolvePropagatesError(t *testing.T) {
@@ -150,8 +158,8 @@ func TestApplyShellPATHAndGUIEnvWithPATHWaits(t *testing.T) {
 // bootstrapHandler against the given on-disk config, written to dataDir as
 // filename (config.yaml or config.star, selecting the decoder). A config file
 // in dataDir makes isBootstrapped true, so newBootstrapHandler builds the real
-// configured IDE (with the production packageConfigMergeHook wired via
-// WithPackageConfigMergeHook) instead of opening the OAuth bootstrap flow. The
+// configured IDE (with the production configChangeHook wired via
+// WithConfigChangeHook) instead of opening the OAuth bootstrap flow. The
 // apiclient is pointed at a 404 server so construction never touches the
 // network, and installBackupDir keeps install-ID tamper detection off the
 // machine-global temp dir.
@@ -214,9 +222,11 @@ func newBootstrapForTest(
 	return b
 }
 
-func mergeEvent(t *testing.T, diffYAML string) idepkg.ConfigMergeEvent {
+// configChange is the change that adds the keys of diffYAML to an empty
+// config.
+func configChange(t *testing.T, diffYAML string) ide.ConfigChange {
 	t.Helper()
-	var doc yaml.Node
-	require.NoError(t, yaml.Unmarshal([]byte(diffYAML), &doc))
-	return idepkg.ConfigMergeEvent{Diff: &doc}
+	var added map[string]any
+	require.NoError(t, yaml.Unmarshal([]byte(diffYAML), &added))
+	return ide.ConfigChange{Old: map[string]any{}, New: added, Source: "test"}
 }

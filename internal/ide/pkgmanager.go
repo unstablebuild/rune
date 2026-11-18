@@ -113,7 +113,6 @@ func (m *localPkgManager) init(
 	scheduleNextTick func(func()) bool,
 	editorMode string,
 	autoInstall bool,
-	afterConfigMerge func(idepkg.ConfigMergeEvent) (idepkg.ConfigMergeResult, error),
 	gitRemoteURL func(pkgID string) string,
 	trust *pkgtrust.Store,
 ) {
@@ -130,14 +129,9 @@ func (m *localPkgManager) init(
 	opts := []idepkg.Option{
 		idepkg.WithFrameCharSet(fcs),
 		idepkg.WithEditorMode(editorMode),
-		idepkg.WithConfigBase(func() map[string]any {
-			cfg, err := wh.reloadConfig()
-			if err != nil {
-				return nil
-			}
-			return cfg.cfg
+		idepkg.WithAfterConfigWrite(func(pkgID string) {
+			wh.configChanged("package " + pkgID)
 		}),
-		idepkg.WithAfterConfigMerge(afterConfigMerge),
 	}
 	m.pkg = idepkg.NewManager(n, composed, storage, trust, scheme, dataDir,
 		configPath, prompter, scheduleNextTick, interrupter,

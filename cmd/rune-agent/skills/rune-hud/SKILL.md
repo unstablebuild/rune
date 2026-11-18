@@ -18,9 +18,10 @@ what looks wrong. Do not ask the user to measure cells, run diagnostic commands
 or provide screenshots you can capture yourself.
 
 ## Scope: configuration and assets only
-- Edit the user's active configuration, theme assets, manifest and backups.
-  Generate or edit the requested sprites and wallpaper; generate sounds only
-  when requested. Keep unrelated configuration and artwork unchanged.
+- Edit the theme's config file, the include line that loads it, theme assets
+  and the manifest. Generate or edit the requested sprites and wallpaper;
+  generate sounds only when requested. Keep unrelated configuration and
+  artwork unchanged.
 - Do not locate, read or modify Rune's source code to carry out an appearance
   request. Do not write parser tests, run test suites, build Rune, install a
   development toolchain or implement new template features.
@@ -116,11 +117,18 @@ do not claim to have verified a prompt or state that was not shown.
   ```
 
 - **Editing the config:**
-  - Back up the active config once per session, using a timestamped filename.
-  - Patch only the keys you change, as text. Never round-trip the file through a
-    YAML library: it drops the user's comments.
-  - When you replace a value, leave a one-line comment naming the previous
-    version, so the user can roll back.
+  - Write the theme's keys to a file the theme owns,
+    `$RUNE_DATADIR/hud/<theme>/config.yaml`, and make sure the user's config
+    includes it: a YAML config lists it under the top-level `include:` key, a
+    Starlark config calls `include("$RUNE_DATADIR/hud/<theme>/config.yaml")`.
+    Add the line once, as text, and leave the rest of the user's file alone;
+    the user's own settings override the theme's, so a key the user set stays
+    in effect until they remove it.
+  - Patch only the keys you change, as text. Never round-trip the user's file
+    through a YAML library: it drops their comments.
+  - Rune reads the config again when an included file changes, so a save is
+    enough to apply the theme's live keys; `runectl screenshot` applies them
+    before each capture as well.
 
 Layout of a theme:
 ```
@@ -642,7 +650,7 @@ take no `mode`.
 
 ### Minimal command separator config
 These absolute URIs are placeholders, not existing assets. Replace them with
-newly written asset paths and merge these keys into the user's config:
+newly written asset paths and add these keys to the theme's config:
 
 ```yaml
 browser:
@@ -709,8 +717,8 @@ presentation.
 to those opened later, and reads their images again, so you can overwrite an
 image at the same path while you iterate.
 
-Merge the examples into the existing configuration; do not replace unrelated
-keys or remove the user's useful fields. In Starlark, the equivalent paths are
+Add the examples to the theme's config; do not replace unrelated keys or
+remove the user's useful fields. In Starlark, the equivalent paths are
 `config["editor"]["status_bar"]["layout"]` and
 `config["extensions"]["rune-agent"]["config"]["status_bar"]["layout"]`.
 
