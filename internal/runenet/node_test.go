@@ -347,6 +347,15 @@ func logOut(t *testing.T, node *Node, creds *countingCredentials) {
 	ctx, cancel := context.WithTimeout(context.Background(), joinTimeout)
 	defer cancel()
 	require.NoError(t, node.Start(ctx))
+	// Finish the initial background join before logging out. Otherwise Up
+	// can mistake that join for a login already handling the logout.
+	if login := node.login; login != nil {
+		select {
+		case <-login:
+		case <-ctx.Done():
+			t.Fatal("initial background join did not finish:", ctx.Err())
+		}
+	}
 	_, err := node.srv.Up(ctx)
 	require.NoError(t, err)
 	lc, err := node.client()
