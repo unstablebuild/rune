@@ -29,7 +29,10 @@ Run `claude` in a Rune terminal. Claude Code **v2.1.295 or later** reports
 whether it is working, waiting for your input, or done through the
 [Program Status Protocol](../learn/terminal/program-status.md) (OSC 7501).
 Rune displays that status on the terminal tab and the workspace bar, so
-you can see which session needs attention while working elsewhere.
+you can see which session needs attention while working elsewhere. The
+[`programstatus`](../learn/terminal/program-status.md#the-status-inbox)
+command (`` <ctrl-`> ``) gives a bird's-eye view of every Claude Code
+session across your workspaces.
 
 This needs **no hooks, Claude Code plugin, or `runectl` installation**.
 Claude Code detects Rune's support for the protocol itself.
