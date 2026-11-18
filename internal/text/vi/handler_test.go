@@ -6616,53 +6616,51 @@ func TestViCountChangeToLineVisualMode(t *testing.T) {
 	}
 }
 
-func TestViNormalModeArrowEdgeReturnsUnhandled(t *testing.T) {
-	newVi := func(t *testing.T, content string) *viHandlerImpl {
-		t.Helper()
-		vi := setupVi(t, content, 2)
-		vi.Resize(40, 10)
-		vi.Draw(term.NoopWriter{})
-		return vi
+func TestViArrowEdgeReturnsUnhandled(t *testing.T) {
+	modes := []struct {
+		name  string
+		enter []term.Event
+		want  viMode
+	}{
+		{name: "normal", want: normalMode},
+		{
+			name:  "insert",
+			enter: []term.Event{{Type: term.EventKey, Ch: 'i'}},
+			want:  insertMode,
+		},
 	}
+	cases := []struct {
+		name        string
+		at          term.Coordinates
+		key         term.Key
+		wantHandled bool
+	}{
+		{"ArrowUp at top line is unhandled", term.Coordinates{}, term.KeyArrowUp, false},
+		{"ArrowUp below top line is handled", term.Coordinates{Y: 1}, term.KeyArrowUp, true},
+		{"ArrowDown at bottom line is unhandled", term.Coordinates{Y: 1}, term.KeyArrowDown, false},
+		{"ArrowDown above bottom line is handled", term.Coordinates{}, term.KeyArrowDown, true},
+		{"ArrowLeft at column zero is unhandled", term.Coordinates{}, term.KeyArrowLeft, false},
+		{"ArrowLeft mid-line is handled", term.Coordinates{X: 2}, term.KeyArrowLeft, true},
+	}
+	for _, mode := range modes {
+		for _, tc := range cases {
+			t.Run(mode.name+"/"+tc.name, func(t *testing.T) {
+				vi := setupVi(t, "hello\nworld", 2)
+				vi.Resize(40, 10)
+				vi.Draw(term.NoopWriter{})
+				if tc.at != (term.Coordinates{}) {
+					require.True(t, vi.setCursorAtScroll(tc.at))
+				}
+				for _, ev := range mode.enter {
+					vi.Handle(ev)
+				}
+				require.Equal(t, mode.want, vi.mode())
 
-	t.Run("ArrowUp at top line is unhandled", func(t *testing.T) {
-		vi := newVi(t, "hello\nworld")
-		_, handled := vi.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowUp})
-		assert.False(t, handled)
-	})
-
-	t.Run("ArrowUp below top line is handled", func(t *testing.T) {
-		vi := newVi(t, "hello\nworld")
-		require.True(t, vi.setCursorAtScroll(term.Coordinates{Y: 1}))
-		_, handled := vi.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowUp})
-		assert.True(t, handled)
-	})
-
-	t.Run("ArrowDown at bottom line is unhandled", func(t *testing.T) {
-		vi := newVi(t, "hello\nworld")
-		require.True(t, vi.setCursorAtScroll(term.Coordinates{Y: 1}))
-		_, handled := vi.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowDown})
-		assert.False(t, handled)
-	})
-
-	t.Run("ArrowDown above bottom line is handled", func(t *testing.T) {
-		vi := newVi(t, "hello\nworld")
-		_, handled := vi.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowDown})
-		assert.True(t, handled)
-	})
-
-	t.Run("ArrowLeft at column zero is unhandled", func(t *testing.T) {
-		vi := newVi(t, "hello\nworld")
-		_, handled := vi.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowLeft})
-		assert.False(t, handled)
-	})
-
-	t.Run("ArrowLeft mid-line is handled", func(t *testing.T) {
-		vi := newVi(t, "hello\nworld")
-		require.True(t, vi.setCursorAtScroll(term.Coordinates{X: 2}))
-		_, handled := vi.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowLeft})
-		assert.True(t, handled)
-	})
+				_, handled := vi.Handle(term.Event{Type: term.EventKey, Key: tc.key})
+				assert.Equal(t, tc.wantHandled, handled)
+			})
+		}
+	}
 }
 
 func TestViJoin(t *testing.T) {

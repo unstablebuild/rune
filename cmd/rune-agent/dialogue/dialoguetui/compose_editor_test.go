@@ -517,3 +517,36 @@ func TestComposeEditorModalArrowUpRecallsQueuedMessage(t *testing.T) {
 		"ArrowUp on an empty modal buffer must recall the queued message")
 	assert.Equal(t, 0, comp.QueueLen())
 }
+
+func TestComposeEditorModalInsertArrowsRecallHistory(t *testing.T) {
+	ed := vi.Editor(vi.WithClipboard(clipboard.NewInMemory()))
+	comp := NewComponent(ComponentConfig{
+		Editor:           ed,
+		EditorModal:      true,
+		ModalStartInsert: true,
+	})
+
+	h, tx, rx := Handler(context.Background(), new(sync.Mutex), comp,
+		term.FuncInterrupter(func(context.Context) error { return nil }))
+	defer close(tx)
+	h.Resize(30, 10)
+
+	go func() { <-rx }()
+	typeText(h, "old message")
+	_, handled := h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+	require.True(t, handled)
+	require.Equal(t, "", comp.Input().Text())
+
+	typeText(h, "draft")
+	require.Equal(t, "draft", comp.Input().Text())
+
+	_, handled = h.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowUp})
+	assert.True(t, handled)
+	assert.Equal(t, "old message", comp.Input().Text(),
+		"ArrowUp at the top edge in insert mode must recall the previous history entry")
+
+	_, handled = h.Handle(term.Event{Type: term.EventKey, Key: term.KeyArrowDown})
+	assert.True(t, handled)
+	assert.Equal(t, "draft", comp.Input().Text(),
+		"ArrowDown at the bottom edge in insert mode must restore the draft")
+}

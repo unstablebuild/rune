@@ -1789,20 +1789,16 @@ func (vi *viHandlerImpl) handleInsert(ev term.Event) (quit, handled bool) {
 			handled = true
 		case term.KeyArrowUp:
 			vi.cursor.MoveToScroll(vi.anchor)
-			vi.cursor.MoveUp()
-			handled = true
+			handled = vi.cursor.MoveUp()
 		case term.KeyArrowRight:
 			vi.cursor.MoveToScroll(vi.anchor)
-			vi.cursor.MoveRight()
-			handled = true
+			handled = vi.cursor.MoveRight()
 		case term.KeyArrowDown:
 			vi.cursor.MoveToScroll(vi.anchor)
-			vi.cursor.MoveDown()
-			handled = true
+			handled = vi.cursor.MoveDown()
 		case term.KeyArrowLeft:
 			vi.cursor.MoveToScroll(vi.anchor)
-			vi.cursor.MoveLeft()
-			handled = true
+			handled = vi.cursor.MoveLeft()
 		default:
 			if ev.Ch != 0 {
 				if vi.config.autoPair {
