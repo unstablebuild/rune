@@ -138,28 +138,47 @@ func dropContinuedPaths(
 	if y == 0 || len(dst) == before {
 		return dst
 	}
+	row := cells[y]
 	above := cells[y-1]
-	end := len(above)
-	for end > 0 && above[end-1].Ch == 0 {
-		end--
-	}
-	if end < 2 || !wrapMarked(above, end) || !isPathRune(above[end-2].Ch) {
-		return dst
-	}
-	// A name that reached the margin without a position is not half a
-	// reference, and neither is ordinary prose that happens to end in a
-	// path rune. Only a name that looks like a path is worth dropping.
-	if !rowEndsInPath(above[:end-1]) {
-		return dst
-	}
 	kept := dst[:before]
 	for _, span := range dst[before:] {
-		if span.kind == linkPath && span.x0 == 0 {
+		// Only a path that starts where its pane's content starts can be
+		// the second half of the name on the row above.
+		if span.kind != linkPath || span.x0 != paneStart(row, span.x0) {
+			kept = append(kept, span)
 			continue
 		}
-		kept = append(kept, span)
+		end := paneEnd(above, span.x0)
+		if end < span.x0+2 || !wrapMarked(above, end) || !isPathRune(above[end-2].Ch) {
+			kept = append(kept, span)
+			continue
+		}
+		// A name that reached the margin without a position is not half a
+		// reference, and neither is prose that happens to end in a path
+		// rune. Only a name that looks like a path is worth dropping.
+		if !rowEndsInPath(above[span.x0 : end-1]) {
+			kept = append(kept, span)
+			continue
+		}
 	}
 	return kept
+}
+
+// paneEnd returns the cell one past the content of the pane that holds x:
+// the frame rune that closes it, or the end of the row with its trailing
+// blanks trimmed. The wrap marker of a pane is the last cell before this.
+func paneEnd(row []term.Cell, x int) int {
+	end := len(row)
+	for i := x; i < len(row); i++ {
+		if isFrameRune(row[i].Ch) {
+			end = i
+			break
+		}
+	}
+	for end > x && row[end-1].Ch == 0 {
+		end--
+	}
+	return end
 }
 
 // rowEndsInPath reports whether the cells end in something shaped like
@@ -467,7 +486,12 @@ func (s *rowScanner) scanRow(y int, row []term.Cell, dst []linkSpan) []linkSpan 
 		x += found
 
 		if row[x].Ch == ':' {
-			// A colon can start a path reference.
+			// A colon can start a path reference. A pending wrapped
+			// scheme is settled first, because the path below proves the
+			// join will not reach it, and a span left pending would reach
+			// buildLink with no text at all.
+			dst = s.settle(row, dst, pending)
+			pending = -1
 			dst, x = s.scanPath(y, row, x, dst)
 			continue
 		}
@@ -525,7 +549,9 @@ func (s *rowScanner) settle(row []term.Cell, dst []linkSpan, i int) []linkSpan {
 	}
 	trimmed := trimURL(s.wrapped)
 	if !hasHost(trimmed) {
-		return dst[:i]
+		// Drop only this span. A path appended after it must survive, so
+		// the pending span is not the last one any more.
+		return dropSpans(dst, []int{i})
 	}
 	dst[i].x1 -= len(s.wrapped) - len(trimmed)
 	dst[i].text = string(trimmed)
@@ -613,26 +639,68 @@ func (s *rowScanner) scanPath(
 	return dst, end
 }
 
+// positionAt reads the position that starts at byte x of text and returns
+// the 1-based line and column with the byte one past the position. The
+// rules are linecol's, with the grep fallback: a LINE:COL that runs into
+// something that is not a colon or a closing delimiter falls back to the
+// line on its own, so a grep match starting with a digit is not read as a
+// column. A closing delimiter ends the reference instead, so a quoted
+// "a/b.go:12:3" names column 3.
+func positionAt(text string, x int) (line, col, end int, ok bool) {
+	line, col, n, ok := linecol.Parse(text[x:])
+	if !ok {
+		return 0, 0, 0, false
+	}
+	end = x + n
+	if end < len(text) && text[end] != ':' && !closesReference(rune(text[end])) {
+		lineEnd := x
+		for lineEnd < len(text) && isDigit(rune(text[lineEnd])) {
+			lineEnd++
+		}
+		if lineEnd > x && lineEnd < len(text) && text[lineEnd] == ':' {
+			return line, 0, lineEnd, true
+		}
+	}
+	return line, col, end, true
+}
+
 // parsePosition reads the position that starts at the given cell of the
-// row and returns the 1-based line and column with the cell one past
-// the position. The rules live in linecol: the cells are copied into a
-// byte slice, Parse decides what is a position, and its byte count is
-// the number of cells the position covers, since every cell in the run
-// is one ASCII byte.
+// row and returns the 1-based line and column with the cell one past the
+// position. The rules live in positionAt: the cells are copied into a
+// byte slice and its byte count is the number of cells the position
+// covers, since every cell in the run is one ASCII byte.
 func (s *rowScanner) parsePosition(row []term.Cell, x int) (line, col, end int, ok bool) {
 	s.pos = s.pos[:0]
 	for i := x; i < len(row); i++ {
 		c := row[i].Ch
+		if c == 0 {
+			// A blank the pane did not write: the run ends here and
+			// there is nothing for the caller to see.
+			break
+		}
+		// The cell that ends the run is copied too, so the caller can
+		// see what the position runs into.
+		s.pos = append(s.pos, byte(c))
 		if c != ':' && !isDigit(c) {
 			break
 		}
-		s.pos = append(s.pos, byte(c))
 	}
-	line, col, n, ok := linecol.Parse(string(s.pos))
+	line, col, rel, ok := positionAt(string(s.pos), 0)
 	if !ok {
 		return 0, 0, 0, false
 	}
-	return line, col, x + n, true
+	return line, col, x + rel, true
+}
+
+// closesReference reports whether r ends a reference written in prose,
+// so a position in front of it is complete rather than running into
+// something.
+func closesReference(r rune) bool {
+	switch r {
+	case '"', '\'', ')', ']', '}', '>':
+		return true
+	}
+	return false
 }
 
 // coveredBySpan reports whether the cells of the row between x0 and x1
@@ -737,11 +805,11 @@ func parsePathRef(text string) (path string, line, col, start, end int, ok bool)
 	if !isFilePath(path) {
 		return "", 0, 0, 0, 0, false
 	}
-	line, col, n, ok := linecol.Parse(text[pos+1:])
+	line, col, n, ok := positionAt(text, pos+1)
 	if !ok {
 		return "", 0, 0, 0, 0, false
 	}
-	return path, line, col, start, pos + 1 + n, true
+	return path, line, col, start, n, true
 }
 
 // linkStart returns the offset of the first cell that could begin a

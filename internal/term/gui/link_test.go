@@ -256,6 +256,33 @@ func TestRowScannerScanRow(t *testing.T) {
 			row:         cellRow("listening on 127.0.0.1:8080"),
 		},
 		{
+			description: "a grep match starting with a digit leaves the line",
+			row:         cellRow("data.csv:3:100,200"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 10, kind: linkPath, link: Link{
+					Path: "data.csv", Line: 3, Col: 0,
+				}},
+			},
+		},
+		{
+			description: "a grep match before a space leaves the line",
+			row:         cellRow("main.go:42:5 apples"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 10, kind: linkPath, link: Link{
+					Path: "main.go", Line: 42, Col: 0,
+				}},
+			},
+		},
+		{
+			description: "a grep match before a hex literal leaves the line",
+			row:         cellRow("main.go:7:0x10 := 1"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 9, kind: linkPath, link: Link{
+					Path: "main.go", Line: 7, Col: 0,
+				}},
+			},
+		},
+		{
 			description: "a scheme with a port stays one URL",
 			row:         cellRow("http://h:8080"),
 			expected: []linkSpan{
@@ -1418,6 +1445,22 @@ func TestLinkScannerHandleMouse(t *testing.T) {
 				{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 6},
 			},
 			consumed: []bool{true},
+			// The position runs into prose rather than a colon, so the
+			// line alone is the position, the way grep -n prints it.
+			opened: []Link{{
+				Path: "internal/x/y.go", Line: 76, Col: 0,
+			}},
+		},
+		{
+			description: "meta click on a compiler reference keeps its column",
+			cells:       linkGrid("see internal/x/y.go:76:7: undefined"),
+			meta:        true,
+			events: []term.Event{
+				{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 6},
+			},
+			consumed: []bool{true},
+			// The colon after the column is the compiler's separator, so
+			// the column is part of the reference.
 			opened: []Link{{
 				Path: "internal/x/y.go", Line: 76, Col: 7,
 			}},
@@ -2225,4 +2268,70 @@ func BenchmarkRowScannerScanLogs(b *testing.B) {
 			}
 		})
 	}
+}
+
+func TestRowScannerDropsAHalfPathInAFramedPane(t *testing.T) {
+	// The wrap marker sits at the pane's margin, not the row's last cell,
+	// so the row above has to be read through the pane the span is in.
+	const width, left, paneWidth = 40, 2, 18
+	cells := framed(width, left, paneWidth, "error in cmd/rune/", "main.go:12:3: boom")
+	cells[0][left+paneWidth-1].Bytes = cell.WrapMarker
+
+	got := new(rowScanner).scan(cells, nil)
+	assert.Empty(t, got, "main.go is the second half of cmd/rune/main.go")
+}
+
+func TestRowScannerDropsAHalfPathInARightHandPane(t *testing.T) {
+	// The pane on the row above is not the first one, so the row's last
+	// cell is the right pane's margin and the left pane's marker is
+	// missed by a check that only looks at the end of the row.
+	const width, left, paneWidth = 60, 8, 18
+	cells := pane(width, left, "error in cmd/rune/", "main.go:12:3: boom")
+	for y := range cells {
+		cells[y][left-1].Ch = '│'
+		cells[y][left+paneWidth].Ch = '█'
+	}
+	cells[0][left+paneWidth-1].Bytes = cell.WrapMarker
+	// A right-hand pane whose margin is the row's last written cell.
+	copy(cells[0][left+paneWidth+2:], cellRow("x.go:1"))
+
+	got := new(rowScanner).scan(cells, nil)
+	for _, span := range got {
+		assert.NotEqual(t, "main.go", span.link.Path,
+			"main.go is the second half of cmd/rune/main.go")
+		assert.NotContains(t, span.link.Path, "main.go:12")
+	}
+}
+
+func TestRowScannerKeepsAPathAfterAPendingURL(t *testing.T) {
+	// A pending wrapped URL in the left pane and a path in the right one:
+	// settling the URL must drop only the URL span, not the path span
+	// that was appended after it, and the path must not leave the URL
+	// pending with no text at all.
+	const width, left, paneWidth = 60, 2, 12
+	cells := pane(width, left, "see https://")
+	for y := range cells {
+		cells[y][left-1].Ch = '│'
+		cells[y][left+paneWidth].Ch = '█'
+	}
+	cells[0][left+paneWidth-1].Bytes = cell.WrapMarker
+	copy(cells[0][left+paneWidth+2:], cellRow("a/b.go:1 https://b.com"))
+
+	got := new(rowScanner).scan(cells, nil)
+
+	var paths, urls int
+	for _, span := range got {
+		switch span.kind {
+		case linkPath:
+			paths++
+			assert.Equal(t, "a/b.go", span.link.Path)
+			assert.Equal(t, 1, span.link.Line)
+		case linkScheme:
+			urls++
+			assert.NotEmpty(t, span.text,
+				"a scheme span must never reach the observer with no text")
+		}
+	}
+	assert.Equal(t, 1, paths, "the path in the right pane must survive")
+	assert.Equal(t, 1, urls, "only the right URL has a host")
 }
