@@ -1148,6 +1148,7 @@ func (a *Agent) run(
 				toolConversation = slices.Clone(messages)
 			}
 			var wg sync.WaitGroup
+			var ordered []func()
 			for i, info := range infos {
 				wg.Add(1)
 				run := func() {
@@ -1212,10 +1213,19 @@ func (a *Agent) run(
 					}(i, info)
 				}
 				if serialize {
-					run()
+					ordered = append(ordered, run)
 				} else {
 					go debug.CapturePanicReport(run)
 				}
+			}
+			if serialize {
+				// Off this goroutine so the fan-in below reports each result
+				// as its tool finishes, not once the whole batch has run.
+				go debug.CapturePanicReport(func() {
+					for _, run := range ordered {
+						run()
+					}
+				})
 			}
 			go debug.CapturePanicReport(func() {
 				wg.Wait()

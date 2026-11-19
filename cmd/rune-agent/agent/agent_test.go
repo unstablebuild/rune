@@ -731,6 +731,57 @@ func TestAgentRun_FSMutatorBatchRunsSequentially(t *testing.T) {
 			"second tool must start after the mutator finished; mutEnd=%v otherStart=%v", mutEnd, otherStart)
 	})
 
+	for _, tt := range []struct {
+		name       string
+		needsOrder bool
+	}{
+		{"batch with a mutator reports each result as soon as it finishes", true},
+		{"batch without a mutator reports each result as soon as it finishes", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			release := make(chan struct{})
+			var released atomic.Bool
+			fast := &mockTool{name: "tool_fast", needsOrder: tt.needsOrder, result: ToolResult{Content: "fast"}}
+			slow := &mockTool{name: "tool_slow"}
+			slow.executeFn = func(context.Context, string) ToolResult {
+				select {
+				case <-release:
+					released.Store(true)
+				case <-time.After(5 * time.Second):
+				}
+				return ToolResult{Content: "slow"}
+			}
+
+			svc := &mockService{responses: []mockResponse{
+				twoToolCallResponse("tool_fast", "tool_slow"),
+				stopResponse("done"),
+			}}
+			ag := NewAgent(svc, NewRegistry(fast, slow), noSkills(), newMockStore(), NoMemory(), Config{SystemPrompt: "test"})
+
+			ctx := context.Background()
+			it := ag.Run(ctx, "d", "go")
+			var results []Event
+			for {
+				ev, ok := it.Next(ctx)
+				if !ok {
+					break
+				}
+				if ev.Type != EventToolResult {
+					continue
+				}
+				results = append(results, ev)
+				if ev.ToolCallID == "c1" {
+					close(release)
+				}
+			}
+
+			require.Len(t, results, 2)
+			assert.Equal(t, "c1", results[0].ToolCallID)
+			assert.True(t, released.Load(),
+				"the fast tool's result must be reported while the slow tool is still running")
+		})
+	}
+
 	t.Run("batch without a mutator runs in parallel", func(t *testing.T) {
 		var mu sync.Mutex
 		var aStart, aEnd, bStart, bEnd time.Time
