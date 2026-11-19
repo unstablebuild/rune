@@ -504,13 +504,24 @@ func TestHandlerSearchOverlayCroppedTopStaysUsable(t *testing.T) {
 	assert.False(t, handled, "an un-dragged release is a no-op for the input")
 }
 
-func waitForScrollback(t *testing.T, h *Handler, want string) {
+// waitForOutput waits for the shell to print a row that reads output and
+// then its next prompt. The tty echoes the typed command before the shell
+// even starts, so finding the text anywhere does not mean the shell ran it.
+func waitForOutput(t *testing.T, h *Handler, output string) {
 	t.Helper()
 	require.Eventually(t, func() bool {
-		scroll, mu := h.comp.PrimaryScroll()
-		mu.Lock()
-		defer mu.Unlock()
-		return strings.Contains(scroll.Buffer().String(), want)
+		rows := strings.Split(scrollbackContent(h), "\n")
+		for i, row := range rows {
+			if strings.TrimRight(row, "\x00 ") != output {
+				continue
+			}
+			for _, next := range rows[i+1:] {
+				if strings.HasSuffix(strings.TrimRight(next, "\x00 "), "$") {
+					return true
+				}
+			}
+		}
+		return false
 	}, 5*time.Second, 10*time.Millisecond)
 }
 
@@ -540,7 +551,7 @@ func TestHandlerSearchResultsStayUntilDismissed(t *testing.T) {
 
 			_, err := handler.comp.pty.Master.Write([]byte("printf 'needle\\n'\n"))
 			require.NoError(t, err)
-			waitForScrollback(t, handler, "needle")
+			waitForOutput(t, handler, "needle")
 
 			_, handled := handler.Handle(term.Event{Type: term.EventKey, Mod: term.ModMeta, Ch: 'f'})
 			require.True(t, handled)
@@ -570,7 +581,7 @@ func TestHandlerSearchOpenCtrlCClosesInsteadOfInterrupting(t *testing.T) {
 
 	_, err := handler.comp.pty.Master.Write([]byte("printf 'needle\\n'\n"))
 	require.NoError(t, err)
-	waitForScrollback(t, handler, "needle")
+	waitForOutput(t, handler, "needle")
 
 	_, handled := handler.Handle(term.Event{Type: term.EventKey, Mod: term.ModMeta, Ch: 'f'})
 	require.True(t, handled)
@@ -605,7 +616,7 @@ func TestHandlerSearchViewSelection(t *testing.T) {
 
 	_, err := handler.comp.pty.Master.Write([]byte("printf 'needle\\n'\n"))
 	require.NoError(t, err)
-	waitForScrollback(t, handler, "needle")
+	waitForOutput(t, handler, "needle")
 
 	handler.Handle(term.Event{Type: term.EventKey, Mod: term.ModMeta, Ch: 'f'})
 	require.True(t, handler.searchOpen())
