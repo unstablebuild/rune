@@ -257,7 +257,7 @@ func TestHandleCommandSearches(t *testing.T) {
 	assert.Equal(t, searchapi.SemanticRequest{Query: "invoice total", Roots: []string{"billing"}, Limit: 2, Meaning: true},
 		h.searcher.request(t))
 
-	out := draw(t, picker)
+	out := draw(t, picker, "lines 40–47")
 	lines := strings.Split(out, "\n")
 	assert.Equal(t, "  SEMANTIC █▓▒░ score 3.14 · meaning z 2.50 cos 0.61 · words #2"+
 		strings.Repeat(" ", 25)+"lines 40–47 ", lines[len(lines)-1], "the status bar says how the focused result ranked")
@@ -276,7 +276,7 @@ func TestHandleCommandWithoutMeaning(t *testing.T) {
 	require.NotNil(t, picker, "a search by words needs no setup")
 	assert.Zero(t, h.prompt.count())
 	assert.False(t, h.searcher.request(t).Meaning)
-	draw(t, picker)
+	draw(t, picker, "words #1")
 }
 
 func TestHandleCommandFallsBackToWords(t *testing.T) {
@@ -328,7 +328,7 @@ func TestHandleCommandFallsBackToWords(t *testing.T) {
 			h.searcher.hits, h.searcher.status, h.searcher.err = tt.hits, tt.status, tt.err
 			h.searcher.lines, h.searcher.regexpErr = words, tt.regexpErr
 			require.NoError(t, h.run(tt.args...))
-			out := draw(t, h.wm.waitPicker(t))
+			out := draw(t, h.wm.waitPicker(t), tt.wantBar)
 			lines := strings.Split(out, "\n")
 			assert.True(t, strings.HasPrefix(lines[len(lines)-1], tt.wantBar), "%q", lines[len(lines)-1])
 			if !tt.wantWords {
@@ -358,7 +358,7 @@ func TestHandleCommandShowsTheSearchStatus(t *testing.T) {
 	h.searcher.hits = cannedHits[1:2]
 	h.searcher.status = searchapi.SemanticStatus{Indexing: true, Message: "12 files left to index"}
 	require.NoError(t, h.run("shortest"))
-	lines := strings.Split(draw(t, h.wm.waitPicker(t)), "\n")
+	lines := strings.Split(draw(t, h.wm.waitPicker(t), "words #1 · 12 files left to index"), "\n")
 	assert.True(t, strings.HasPrefix(lines[len(lines)-1],
 		"  SEMANTIC █▓▒░ score 2.00 · words #1 · 12 files left to index"), "%q", lines[len(lines)-1])
 }
@@ -446,8 +446,10 @@ func (h *harness) run(args ...string) error {
 	return h.handler.HandleCommand(context.Background(), textapi.Command{Name: Name, Args: args})
 }
 
-// draw renders the picker once its search is done.
-func draw(t *testing.T, picker *locationsearch.Handler) string {
+// draw renders the picker once it shows want. The search publishes its
+// status before its entries reach the list, so the end of the search
+// alone does not say the frame is complete.
+func draw(t *testing.T, picker *locationsearch.Handler, want string) string {
 	t.Helper()
 	const width, height = 100, 30
 	var out string
@@ -457,18 +459,8 @@ func draw(t *testing.T, picker *locationsearch.Handler) string {
 		picker.Draw(w)
 		require.NoError(t, w.Flush())
 		out = w.String()
-		return !strings.Contains(out, "Searching for")
-	}, waitFor, 10*time.Millisecond)
-	if _, ok := picker.Selection(); ok {
-		// The entries reach the list after the search's status does.
-		require.Eventually(t, func() bool {
-			w := term.NewStringWriter(width, height)
-			picker.Draw(w)
-			require.NoError(t, w.Flush())
-			out = w.String()
-			return strings.Contains(out, " score ")
-		}, waitFor, 10*time.Millisecond)
-	}
+		return strings.Contains(out, want)
+	}, waitFor, 10*time.Millisecond, "the picker never showed %q:\n%s", want, out)
 	return out
 }
 
