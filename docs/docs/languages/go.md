@@ -145,6 +145,17 @@ Three keys are reserved and never taken from your config: `langID` and
 drives Rune's own highlighting. To point Rune at a different gopls binary, set
 `extensions.go.config.lsp_path` instead of `command`.
 
+These settings are **session-level**. Rune sends them in `initializationOptions`
+when it starts gopls, and gopls ignores the same keys under
+`workspace/configuration`, so every workspace folder in the session shares
+them. Changing one takes effect after `:workspacereload`, which restarts the
+server.
+
+The per-folder route is `lsp.servers.<section>`, which gopls asks for once per
+workspace folder. Use it when a multi-root workspace needs a different value
+for each root; gopls ignores it for the keys it reads only at startup, which
+is why both routes exist.
+
 Settings you are likely to adjust:
 
 | Setting | What it does |
@@ -157,9 +168,10 @@ Settings you are likely to adjust:
 See the [gopls settings reference](https://github.com/golang/tools/blob/master/gopls/doc/settings.md)
 for the full list of supported settings and their defaults.
 
-Rune enables these codelenses by default: `generate`, `regenerate_cgo`,
-`run_govulncheck`, `tidy`, `upgrade_dependency`, `vendor`. It enables these
-hints: `assignVariableTypes`, `compositeLiteralFields`, `constantValues`,
+Rune enables these codelenses by default: `gc_details`, `generate`,
+`regenerate_cgo`, `run_govulncheck`, `test`, `tidy`, `upgrade_dependency`,
+`vendor`. It enables these hints: `assignVariableTypes`,
+`compositeLiteralFields`, `compositeLiteralTypes`, `constantValues`,
 `rangeVariableTypes`, `parameterNames`, `functionTypeParameters`. If you only
 want to change one lens or hint, set just that key under `codelenses` or
 `hints`; the rest keep Rune's defaults.

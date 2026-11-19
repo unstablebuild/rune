@@ -19,6 +19,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
@@ -101,18 +102,26 @@ func goplsInitializeParams(
 			continue
 		}
 		if goplsMergeableKeys[k] {
-			if defaultMap, ok := initOptions[k].(map[string]any); ok {
-				if userMap, ok := v.(map[string]any); ok {
-					merged := make(map[string]any, len(defaultMap)+len(userMap))
-					for dk, dv := range defaultMap {
-						merged[dk] = dv
-					}
-					for uk, uv := range userMap {
-						merged[uk] = uv
-					}
-					initOptions[k] = merged
-					continue
+			defaultMap, hasDefault := initOptions[k].(map[string]any)
+			userMap, isMap := v.(map[string]any)
+			if hasDefault && isMap {
+				merged := make(map[string]any, len(defaultMap)+len(userMap))
+				for dk, dv := range defaultMap {
+					merged[dk] = dv
 				}
+				for uk, uv := range userMap {
+					merged[uk] = uv
+				}
+				initOptions[k] = merged
+				continue
+			}
+			if hasDefault {
+				// A scalar where Rune's default is a map would replace the
+				// whole map with something gopls cannot read, silently
+				// dropping every default. Keep the defaults and say so.
+				slog.Warn("gopls setting ignored: expected a map",
+					"setting", k)
+				continue
 			}
 		}
 		initOptions[k] = v
