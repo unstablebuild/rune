@@ -761,6 +761,13 @@ func TestHandlerHandleInputPaths(t *testing.T) {
 			handled:     true,
 		},
 		{
+			name:        "ctrl-v",
+			ev:          term.Event{Type: term.EventKey, Ch: 'v', Mod: term.ModCtrl, Raw: []byte{0x16}},
+			expected:    []byte{0x16},
+			expectWrite: true,
+			handled:     true,
+		},
+		{
 			name: "application cursor",
 			ev:   term.Event{Type: term.EventKey, Key: term.KeyArrowUp, Raw: []byte("\x1b[A")},
 			configure: func(handler *Handler) {

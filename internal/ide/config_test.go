@@ -4726,3 +4726,22 @@ func TestSearchConfigInvalidKeepsDefaults(t *testing.T) {
 	assert.Empty(t, off.searchConfig().Model, "a disabled search needs no model")
 	assert.Empty(t, off.errors)
 }
+
+func TestIDEConfigClipboardImage(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  map[string]any
+		want bool
+	}{
+		{name: "system", cfg: map[string]any{"clipboard": "system"}, want: true},
+		{name: "memory", cfg: map[string]any{"clipboard": "memory"}},
+		{name: "unset", cfg: map[string]any{}},
+		{name: "unknown", cfg: map[string]any{"clipboard": "other"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := ideConfig{cfg: tc.cfg, errors: map[string]error{}}
+			assert.Equal(t, tc.want, cfg.clipboardImage() != nil)
+		})
+	}
+}
