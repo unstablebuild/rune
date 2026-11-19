@@ -149,6 +149,18 @@ func TestGoplsInitializeParamsUserSettings(t *testing.T) {
 			},
 		},
 		{
+			description: "a scalar where a map is expected keeps Rune's defaults",
+			settings: map[string]any{
+				"codelenses": true,
+			},
+			check: func(t *testing.T, initOpts map[string]any) {
+				lenses, ok := initOpts["codelenses"].(map[string]any)
+				require.True(t, ok, "codelenses must stay a map")
+				assert.Equal(t, true, lenses["gc_details"])
+				assert.Equal(t, true, lenses["test"])
+			},
+		},
+		{
 			description: "reserved keys are never taken from user config",
 			settings: map[string]any{
 				"langID":         "rust",
