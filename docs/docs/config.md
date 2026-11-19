@@ -505,6 +505,11 @@ config["gui"]["app_icon"] = "~/.rune/icon.png"
 
   ```yaml tab
   lsp:
+    icons:
+      error: "✖"
+      warning: "▲"
+      information: "◉"
+      hint: "󰌵"
     servers:
       gopls:
         analyses:

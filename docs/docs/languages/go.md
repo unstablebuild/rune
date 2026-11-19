@@ -121,8 +121,8 @@ stderr, so those logs do not appear in `process stdio`.
 Rune bundles gopls **v0.23.0** through `rune-language-go`. See the
 [gopls release notes](https://github.com/golang/tools/releases) for what
 changed. Some behaviors are opt-in settings that Rune forwards to the server.
-You can supply any gopls setting under `extensions.go.config.gopls` in your
-`config.yaml`:
+You can supply any gopls setting except the two reserved keys below under
+`extensions.go.config.gopls` in your `config.yaml`:
 
 ```yaml tab
 extensions:
@@ -243,8 +243,10 @@ extensions:
 |---------|--------|-------|
 | `renameMovesSubpackages` | `true`/`false` | Renaming a package also moves its subdirectories. Off by default. |
 
-Rune does not advertise `workspace.didChangeWatchedFiles`, so edits made
-outside the editor reach gopls only through `fileWatcher`. With `"off"`, the
+Rune sends `workspace/didChangeWatchedFiles` for edits made through its own
+tools, such as `apply_patch`, so those reach gopls without `fileWatcher`. For
+edits Rune does not see, through a formatter or a build script that rewrites
+files, set `fileWatcher` to `"poll"` or `"fsnotify"`. With `"off"`, the
 default, gopls relies on the editor's notifications. Use `"poll"` over a
 remote or network filesystem, or when an external tool rewrites files.
 `"fsnotify"` uses OS watchers and can exhaust file descriptors on macOS.
