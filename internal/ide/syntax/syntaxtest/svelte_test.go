@@ -58,11 +58,11 @@ var (
 	svelteTagAttr      = term.Attributes{Fg: term.ColorTeal}
 )
 
-const svelteWait = 20 * time.Second
+const compositeWait = 20 * time.Second
 
-// newSveltePackages installs the fixture grammars of langs through a real
+// newFixturePackages installs the fixture grammars of langs through a real
 // package manager, so each section tree finds its own language's package.
-func newSveltePackages(t *testing.T, langs ...string) *grammarfixture.Packages {
+func newFixturePackages(t *testing.T, langs ...string) *grammarfixture.Packages {
 	t.Helper()
 	wd, err := os.Getwd()
 	require.NoError(t, err)
@@ -78,16 +78,18 @@ func newSveltePackages(t *testing.T, langs ...string) *grammarfixture.Packages {
 }
 
 func newAllSveltePackages(t *testing.T) *grammarfixture.Packages {
-	return newSveltePackages(t, "svelte", "javascript", "typescript", "css")
+	return newFixturePackages(t, "svelte", "javascript", "typescript", "css")
 }
 
 // promptingPackages answers lookups the way the editor's package manager
 // does with updates.auto_install off: a lookup of a package that is not
 // installed waits for the user, who either installs it or declines, and a
-// declined package reads as storageapi.ErrNotFound.
+// declined package reads as storageapi.ErrNotFound, as does a package
+// outside the catalog, which the registry does not publish.
 type promptingPackages struct {
 	*grammarfixture.Packages
 
+	catalog map[string]bool
 	// done is closed when the test ends. Tree.Close does not cancel a
 	// download, and a lookup after the fixture's cleanup reads as not
 	// installed, so a prompt then would wait forever.
@@ -102,8 +104,10 @@ func newPromptingPackages(t *testing.T, catalog []string, installed ...string) *
 	wd, err := os.Getwd()
 	require.NoError(t, err)
 	versions := make(map[string][]string, len(catalog))
+	published := make(map[string]bool, len(catalog))
 	for _, lang := range catalog {
 		versions[lang] = []string{"1"}
+		published[lang] = true
 	}
 	pkgs := grammarfixture.NewPackages(t, versions)
 	for _, lang := range installed {
@@ -111,7 +115,9 @@ func newPromptingPackages(t *testing.T, catalog []string, installed ...string) *
 	}
 	done := make(chan struct{})
 	t.Cleanup(func() { close(done) })
-	return &promptingPackages{Packages: pkgs, done: done, prompts: make(map[string]chan struct{})}
+	return &promptingPackages{
+		Packages: pkgs, catalog: published, done: done, prompts: make(map[string]chan struct{}),
+	}
 }
 
 func (p *promptingPackages) LibDir(
@@ -120,6 +126,9 @@ func (p *promptingPackages) LibDir(
 	it, err := p.Packages.LibDir(ctx, pkgID)
 	if !errors.Is(err, idepkg.ErrNotInstalled) {
 		return it, err
+	}
+	if !p.catalog[pkgID] {
+		return nil, storageapi.ErrNotFound
 	}
 	p.mu.Lock()
 	answered, ok := p.prompts[pkgID]
@@ -152,7 +161,7 @@ func (p *promptingPackages) waitPrompts(t *testing.T, pkgIDs ...string) {
 			}
 		}
 		return true
-	}, svelteWait, 5*time.Millisecond, "waiting for install prompts for %v", pkgIDs)
+	}, compositeWait, 5*time.Millisecond, "waiting for install prompts for %v", pkgIDs)
 }
 
 func (p *promptingPackages) asked() []string {
@@ -183,9 +192,9 @@ func (p *promptingPackages) answer(pkgID string) {
 	close(p.prompts[pkgID])
 }
 
-// svelteSyntaxConfig serializes every tree's event-loop work through mu,
+// serializedSyntaxConfig serializes every tree's event-loop work through mu,
 // which the test holds while it edits or reads.
-func svelteSyntaxConfig(mu *sync.Mutex) syntax.Config {
+func serializedSyntaxConfig(mu *sync.Mutex) syntax.Config {
 	cfg := syntax.DefaultConfig()
 	cfg.ScheduleNextTick = func(fn func()) bool {
 		mu.Lock()
@@ -193,19 +202,24 @@ func svelteSyntaxConfig(mu *sync.Mutex) syntax.Config {
 		fn()
 		return true
 	}
+	return cfg
+}
+
+func svelteSyntaxConfig(mu *sync.Mutex) syntax.Config {
+	cfg := serializedSyntaxConfig(mu)
 	cfg.CaptureNamesAttributes["type"] = svelteTypeAttr
 	cfg.CaptureNamesAttributes["property"] = sveltePropertyAttr
 	cfg.CaptureNamesAttributes["tag"] = svelteTagAttr
 	return cfg
 }
 
-func svelteLocation(from, to term.Coordinates, attr term.Attributes) textapi.Location {
+func highlight(from, to term.Coordinates, attr term.Attributes) textapi.Location {
 	return textapi.Location{From: from, To: to, Attr: attr}
 }
 
-// svelteTree is a composite tree installed into a bare buffer, with the
+// compositeTree is a composite tree installed into a bare buffer, with the
 // highlights it publishes recorded.
-type svelteTree struct {
+type compositeTree struct {
 	t     *testing.T
 	mu    *sync.Mutex
 	buf   *cell.Buffer
@@ -215,13 +229,22 @@ type svelteTree struct {
 	locs []textapi.Location
 }
 
-func newSvelteTree(t *testing.T, pkgs syntax.PkgManager, content string) *svelteTree {
+func newSvelteTree(t *testing.T, pkgs syntax.PkgManager, content string) *compositeTree {
+	return newCompositeTree(t, pkgs, ".svelte", content, svelteSyntaxConfig)
+}
+
+// newCompositeTree installs into a buffer holding content the composite tree
+// of a file with extension ext, configured by cfg.
+func newCompositeTree(
+	t *testing.T, pkgs syntax.PkgManager, ext, content string,
+	cfg func(*sync.Mutex) syntax.Config,
+) *compositeTree {
 	t.Helper()
 	mu := new(sync.Mutex)
-	s := &svelteTree{t: t, mu: mu, buf: cell.NewBuffer(), notis: &recordingNotifications{}}
+	s := &compositeTree{t: t, mu: mu, buf: cell.NewBuffer(), notis: &recordingNotifications{}}
 	_, err := s.buf.ReadFrom(strings.NewReader(content))
 	require.NoError(t, err)
-	uri, err := workspaceapi.ParseURI("memory:///" + strconv.Itoa(int(i.Add(1))) + ".svelte")
+	uri, err := workspaceapi.ParseURI("memory:///" + strconv.Itoa(int(i.Add(1))) + ext)
 	require.NoError(t, err)
 	loc := syntax.FuncLocationSetter(func(ll textapi.LocationList) {
 		s.locs = collectLocations(ll)
@@ -229,30 +252,30 @@ func newSvelteTree(t *testing.T, pkgs syntax.PkgManager, content string) *svelte
 	mu.Lock()
 	defer mu.Unlock()
 	s.tree = multitree.New(context.Background(), s.notis, term.NopInterrupter(), pkgs, loc,
-		uri, s.buf, nopFlusherCloser{}, nil, svelteSyntaxConfig(mu)).(*multitree.Tree)
+		uri, s.buf, nopFlusherCloser{}, nil, cfg(mu)).(*multitree.Tree)
 	t.Cleanup(func() { require.NoError(t, s.tree.Close()) })
 	return s
 }
 
 // edit edits the buffer as the editor would, on the event loop.
-func (s *svelteTree) edit(start, end term.Coordinates, str string) {
+func (s *compositeTree) edit(start, end term.Coordinates, str string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.buf.Edit(context.Background(), start, end, str)
 }
 
 // locked runs fn with the event loop held.
-func (s *svelteTree) locked(fn func()) {
+func (s *compositeTree) locked(fn func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fn()
 }
 
-func (s *svelteTree) hasLocation(want textapi.Location) bool {
+func (s *compositeTree) hasLocation(want textapi.Location) bool {
 	return slices.Contains(s.locs, want)
 }
 
-func (s *svelteTree) hasAttrOnRow(attr term.Attributes, row int) bool {
+func (s *compositeTree) hasAttrOnRow(attr term.Attributes, row int) bool {
 	for _, l := range s.locs {
 		if l.Attr == attr && l.From.Y == row {
 			return true
@@ -263,29 +286,29 @@ func (s *svelteTree) hasAttrOnRow(attr term.Attributes, row int) bool {
 
 // waitLocation waits for the trees to publish want, which a section does
 // once its grammar is loaded and parsed.
-func (s *svelteTree) waitLocation(want textapi.Location) {
+func (s *compositeTree) waitLocation(want textapi.Location) {
 	s.t.Helper()
 	require.Eventually(s.t, func() bool {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return s.hasLocation(want)
-	}, svelteWait, 5*time.Millisecond, "waiting for highlight %+v", want)
+	}, compositeWait, 5*time.Millisecond, "waiting for highlight %+v", want)
 }
 
-func (s *svelteTree) waitSections(n int) {
+func (s *compositeTree) waitSections(n int) {
 	s.t.Helper()
 	require.Eventually(s.t, func() bool {
 		return len(s.tree.Sections()) == n
-	}, svelteWait, 5*time.Millisecond, "waiting for %d sections", n)
+	}, compositeWait, 5*time.Millisecond, "waiting for %d sections", n)
 }
 
-func (s *svelteTree) waitNotifications(n int) {
+func (s *compositeTree) waitNotifications(n int) {
 	s.t.Helper()
 	require.Eventually(s.t, func() bool {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return len(s.notis.messages) >= n
-	}, svelteWait, 5*time.Millisecond, "waiting for %d notifications", n)
+	}, compositeWait, 5*time.Millisecond, "waiting for %d notifications", n)
 }
 
 func newSvelteHostTree(t *testing.T, content string) *treesitter.Tree {
@@ -427,14 +450,14 @@ func TestSvelteCompositeHighlightsIntegration(t *testing.T) {
 
 	t.Run("every block is highlighted by its own grammar", func(t *testing.T) {
 		s := newSvelteTree(t, newAllSveltePackages(t), svelteComponentContent)
-		s.waitLocation(svelteLocation(xy(1, 1), xy(6, 1), svelteKeywordAttr))
-		s.waitLocation(svelteLocation(xy(5, 5), xy(10, 5), sveltePropertyAttr))
+		s.waitLocation(highlight(xy(1, 1), xy(6, 1), svelteKeywordAttr))
+		s.waitLocation(highlight(xy(5, 5), xy(10, 5), sveltePropertyAttr))
 		s.locked(func() {
-			assert.True(t, s.hasLocation(svelteLocation(xy(10, 1), xy(16, 1), svelteTypeAttr)),
+			assert.True(t, s.hasLocation(highlight(xy(10, 1), xy(16, 1), svelteTypeAttr)),
 				"typescript highlights the type annotation")
-			assert.True(t, s.hasLocation(svelteLocation(xy(1, 8), xy(2, 8), svelteTagAttr)),
+			assert.True(t, s.hasLocation(highlight(xy(1, 8), xy(2, 8), svelteTagAttr)),
 				"the host still highlights tags outside the blocks")
-			assert.True(t, s.hasLocation(svelteLocation(xy(1, 0), xy(7, 0), svelteTagAttr)),
+			assert.True(t, s.hasLocation(highlight(xy(1, 0), xy(7, 0), svelteTagAttr)),
 				"the host highlights the script tag itself")
 		})
 		assert.Equal(t, []multitree.Section{
@@ -446,9 +469,9 @@ func TestSvelteCompositeHighlightsIntegration(t *testing.T) {
 	t.Run("plain script is javascript", func(t *testing.T) {
 		content := strings.Replace(svelteComponentContent, `<script lang="ts">`, "<script>", 1)
 		s := newSvelteTree(t, newAllSveltePackages(t), content)
-		s.waitLocation(svelteLocation(xy(1, 1), xy(6, 1), svelteKeywordAttr))
+		s.waitLocation(highlight(xy(1, 1), xy(6, 1), svelteKeywordAttr))
 		s.locked(func() {
-			assert.False(t, s.hasLocation(svelteLocation(xy(10, 1), xy(16, 1), svelteTypeAttr)),
+			assert.False(t, s.hasLocation(highlight(xy(10, 1), xy(16, 1), svelteTypeAttr)),
 				"javascript has no type annotations")
 		})
 		assert.Equal(t, "javascript", s.tree.Sections()[0].Language)
@@ -456,9 +479,9 @@ func TestSvelteCompositeHighlightsIntegration(t *testing.T) {
 
 	t.Run("comments are highlighted by the comment grammar", func(t *testing.T) {
 		number := syntax.DefaultConfig().CaptureNamesAttributes["number"]
-		s := newSvelteTree(t, newSveltePackages(t, "svelte", "comment"),
+		s := newSvelteTree(t, newFixturePackages(t, "svelte", "comment"),
 			"<!-- TODO: fix #12 soon -->\n<p>hi</p>\n")
-		s.waitLocation(svelteLocation(xy(15, 0), xy(18, 0), number))
+		s.waitLocation(highlight(xy(15, 0), xy(18, 0), number))
 		s.locked(func() {
 			var numbers []textapi.Location
 			for _, l := range s.locs {
@@ -466,7 +489,7 @@ func TestSvelteCompositeHighlightsIntegration(t *testing.T) {
 					numbers = append(numbers, l)
 				}
 			}
-			assert.Equal(t, []textapi.Location{svelteLocation(xy(15, 0), xy(18, 0), number)},
+			assert.Equal(t, []textapi.Location{highlight(xy(15, 0), xy(18, 0), number)},
 				numbers, "only the issue number is a number, not every word")
 		})
 		assert.Equal(t, []multitree.Section{
@@ -478,7 +501,7 @@ func TestSvelteCompositeHighlightsIntegration(t *testing.T) {
 func TestSvelteCompositeEditsIntegration(t *testing.T) {
 	xy := func(x, y int) term.Coordinates { return term.Coordinates{X: x, Y: y} }
 	const content = "<p>top</p>\n<script>\n\tconst a = 1;\n</script>\n<p>bye</p>\n"
-	constKeyword := svelteLocation(xy(1, 2), xy(6, 2), svelteKeywordAttr)
+	constKeyword := highlight(xy(1, 2), xy(6, 2), svelteKeywordAttr)
 	section := func(sx, sy, ex, ey int) []multitree.Section {
 		return []multitree.Section{{
 			Language: "javascript",
@@ -491,7 +514,7 @@ func TestSvelteCompositeEditsIntegration(t *testing.T) {
 		s.waitLocation(constKeyword)
 		s.edit(xy(0, 0), xy(0, 0), "\n")
 		s.locked(func() {
-			assert.True(t, s.hasLocation(svelteLocation(xy(1, 3), xy(6, 3), svelteKeywordAttr)))
+			assert.True(t, s.hasLocation(highlight(xy(1, 3), xy(6, 3), svelteKeywordAttr)))
 			assert.False(t, s.hasLocation(constKeyword))
 		})
 		assert.Equal(t, section(8, 2, 0, 4), s.tree.Sections())
@@ -503,7 +526,7 @@ func TestSvelteCompositeEditsIntegration(t *testing.T) {
 		s.edit(xy(13, 2), xy(13, 2), "\n\tlet b = 2;")
 		s.locked(func() {
 			assert.True(t, s.hasLocation(constKeyword))
-			assert.True(t, s.hasLocation(svelteLocation(xy(1, 3), xy(4, 3), svelteKeywordAttr)))
+			assert.True(t, s.hasLocation(highlight(xy(1, 3), xy(4, 3), svelteKeywordAttr)))
 		})
 		assert.Equal(t, section(8, 1, 0, 4), s.tree.Sections())
 	})
@@ -511,11 +534,11 @@ func TestSvelteCompositeEditsIntegration(t *testing.T) {
 	t.Run("an end tag typed mid-block shrinks the block", func(t *testing.T) {
 		s := newSvelteTree(t, newAllSveltePackages(t),
 			"<script>\n\tconst a = 1;\n\tconst b = 2;\n</script>\n")
-		s.waitLocation(svelteLocation(xy(1, 2), xy(6, 2), svelteKeywordAttr))
+		s.waitLocation(highlight(xy(1, 2), xy(6, 2), svelteKeywordAttr))
 		s.edit(xy(0, 2), xy(0, 2), "</script>\n")
 		assert.Equal(t, section(8, 0, 0, 2), s.tree.Sections())
 		s.locked(func() {
-			assert.True(t, s.hasLocation(svelteLocation(xy(1, 1), xy(6, 1), svelteKeywordAttr)))
+			assert.True(t, s.hasLocation(highlight(xy(1, 1), xy(6, 1), svelteKeywordAttr)))
 			assert.False(t, s.hasAttrOnRow(svelteKeywordAttr, 3),
 				"text after the end tag is the host's, not javascript")
 		})
@@ -542,7 +565,7 @@ func TestSvelteCompositeFoldsIntegration(t *testing.T) {
 	xy := func(x, y int) term.Coordinates { return term.Coordinates{X: x, Y: y} }
 	s := newSvelteTree(t, newAllSveltePackages(t),
 		"<script>\n\tfunction f() {\n\t\treturn 1;\n\t}\n</script>\n")
-	s.waitLocation(svelteLocation(xy(1, 1), xy(9, 1), svelteKeywordAttr))
+	s.waitLocation(highlight(xy(1, 1), xy(9, 1), svelteKeywordAttr))
 
 	var folds, initial []term.Range
 	// Section fold iterators wait for their trees, which become ready on
@@ -565,7 +588,7 @@ func TestSvelteCompositeFoldsIntegration(t *testing.T) {
 	select {
 	case err := <-done:
 		require.NoError(t, err)
-	case <-time.After(svelteWait):
+	case <-time.After(compositeWait):
 		t.Fatal("initial folds did not complete")
 	}
 	assert.NotNil(t, initial)
@@ -574,7 +597,7 @@ func TestSvelteCompositeFoldsIntegration(t *testing.T) {
 func TestSvelteCompositeSelectionIntegration(t *testing.T) {
 	xy := func(x, y int) term.Coordinates { return term.Coordinates{X: x, Y: y} }
 	s := newSvelteTree(t, newAllSveltePackages(t), "<script>\n\tconst a = 1;\n</script>\n")
-	s.waitLocation(svelteLocation(xy(1, 1), xy(6, 1), svelteKeywordAttr))
+	s.waitLocation(highlight(xy(1, 1), xy(6, 1), svelteKeywordAttr))
 
 	caret := xy(7, 1)
 	current := term.Range{Start: caret, End: caret}
@@ -615,7 +638,7 @@ func TestSvelteCompositeIndentationAtIntegration(t *testing.T) {
 	// 4 (blank), 5 \t\t}, 6 (blank), 7 \t</script>, 8 </div>
 	s := newSvelteTree(t, newAllSveltePackages(t),
 		"<div>\n\t<script>\n\n\t\tfunction f() {\n\n\t\t}\n\n\t</script>\n</div>\n")
-	s.waitLocation(svelteLocation(term.Coordinates{X: 2, Y: 3}, term.Coordinates{X: 10, Y: 3}, svelteKeywordAttr))
+	s.waitLocation(highlight(term.Coordinates{X: 2, Y: 3}, term.Coordinates{X: 10, Y: 3}, svelteKeywordAttr))
 
 	cases := []struct {
 		name string
@@ -646,10 +669,13 @@ func TestSvelteCompositeIndentationAtIntegration(t *testing.T) {
 	})
 }
 
-// newSvelteComponent is newYAMLTestCase for a svelte buffer: the tabs
-// install syntaxTree and the component's notifications are recorded.
-func newSvelteComponent(
+// newCompositeComponent is newYAMLTestCase for a buffer of an embedding
+// language: the tabs install syntaxTree, configured by cfg, and the
+// component's notifications are recorded. Each of opts configures the
+// editor given the scheduler the trees serialize their event-loop work on.
+func newCompositeComponent(
 	t *testing.T, pkgs syntax.PkgManager, syntaxTree syntax.NewTreeFunc,
+	cfg func(*sync.Mutex) syntax.Config, opts ...func(tick func(func()) bool) vi.Option,
 ) (*sync.Mutex, *text.Component, *recordingNotifications, func()) {
 	t.Helper()
 	uri, err := workspaceapi.ParseURI("memory:///")
@@ -658,11 +684,15 @@ func newSvelteComponent(
 	require.NoError(t, err)
 
 	mu := new(sync.Mutex)
-	scfg := svelteSyntaxConfig(mu)
-	ed := vi.Editor(vi.WithStatusBarConfig(true, text.StatusBarConfig{
+	scfg := cfg(mu)
+	edOpts := []vi.Option{vi.WithStatusBarConfig(true, text.StatusBarConfig{
 		Publisher:        texttest.NopEditor(),
 		ScheduleNextTick: scfg.ScheduleNextTick,
-	}))
+	})}
+	for _, opt := range opts {
+		edOpts = append(edOpts, opt(scfg.ScheduleNextTick))
+	}
+	ed := vi.Editor(edOpts...)
 	w := workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule)
 	notis := &recordingNotifications{}
 	tcfg := text.DefaultConfig()
@@ -687,7 +717,7 @@ func waitSyntaxLocation(t *testing.T, mu *sync.Mutex, h text.Handler, want texta
 		mu.Lock()
 		defer mu.Unlock()
 		return slices.Contains(syntaxLocations(h.LocationLists()), want)
-	}, svelteWait, 5*time.Millisecond, "waiting for highlight %+v", want)
+	}, compositeWait, 5*time.Millisecond, "waiting for highlight %+v", want)
 }
 
 func pressKeys(t *testing.T, h text.Handler, input string) {
@@ -715,35 +745,35 @@ func TestSvelteCompositeEnterIndentsIntegration(t *testing.T) {
 		{
 			name:    "a block at one tab opens a function body at two",
 			content: "<script>\n\tfunction f() {\n\t}\n</script>\n",
-			ready:   svelteLocation(xy(1, 1), xy(9, 1), svelteKeywordAttr),
+			ready:   highlight(xy(1, 1), xy(9, 1), svelteKeywordAttr),
 			keys:    "ggjA<enter>x<esc>",
 			want:    "<script>\n\tfunction f() {\n\t\tx\n\t}\n</script>\n",
 		},
 		{
 			name:    "a block at one tab keeps its base after the last statement",
 			content: "<script>\n\tlet a = 1;\n</script>\n",
-			ready:   svelteLocation(xy(1, 1), xy(4, 1), svelteKeywordAttr),
+			ready:   highlight(xy(1, 1), xy(4, 1), svelteKeywordAttr),
 			keys:    "ggjA<enter>x<esc>",
 			want:    "<script>\n\tlet a = 1;\n\tx\n</script>\n",
 		},
 		{
 			name:    "a block at column zero opens a function body at one tab",
 			content: "<script>\nfunction f() {\n}\n</script>\n",
-			ready:   svelteLocation(xy(0, 1), xy(8, 1), svelteKeywordAttr),
+			ready:   highlight(xy(0, 1), xy(8, 1), svelteKeywordAttr),
 			keys:    "ggjA<enter>x<esc>",
 			want:    "<script>\nfunction f() {\n\tx\n}\n</script>\n",
 		},
 		{
 			name:    "a nested block keeps the base of its first statement",
 			content: "<div>\n\t<script>\n\t\tlet a = 1;\n\t</script>\n</div>\n",
-			ready:   svelteLocation(xy(2, 2), xy(5, 2), svelteKeywordAttr),
+			ready:   highlight(xy(2, 2), xy(5, 2), svelteKeywordAttr),
 			keys:    "ggjjA<enter>x<esc>",
 			want:    "<div>\n\t<script>\n\t\tlet a = 1;\n\t\tx\n\t</script>\n</div>\n",
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			mu, comp, _, cleanup := newSvelteComponent(t, newAllSveltePackages(t), multitree.New)
+			mu, comp, _, cleanup := newCompositeComponent(t, newAllSveltePackages(t), multitree.New, svelteSyntaxConfig)
 			defer cleanup()
 			mu.Lock()
 			_, h := newEditFileName(t, mu, comp, c.content,
@@ -771,21 +801,21 @@ func TestSvelteCompositeEnterIndentsIntegration(t *testing.T) {
 			name:      "the script line itself",
 			content:   "<div>\n\t<script>\n\t\tlet a = 1;\n\t</script>\n</div>\n",
 			keys:      "ggjA<enter>x<esc>",
-			ready:     svelteLocation(xy(2, 2), xy(5, 2), svelteKeywordAttr),
-			hostReady: svelteLocation(xy(1, 0), xy(4, 0), svelteTagAttr),
+			ready:     highlight(xy(2, 2), xy(5, 2), svelteKeywordAttr),
+			hostReady: highlight(xy(1, 0), xy(4, 0), svelteTagAttr),
 		},
 		{
 			name:      "a line inside an html comment",
 			content:   "<div>\n\t<!--\n\t\tnote\n\t-->\n\t<script>\n\t\tlet a = 1;\n\t</script>\n</div>\n",
 			keys:      "ggjjA<enter>x<esc>",
-			ready:     svelteLocation(xy(2, 5), xy(5, 5), svelteKeywordAttr),
-			hostReady: svelteLocation(xy(1, 0), xy(4, 0), svelteTagAttr),
+			ready:     highlight(xy(2, 5), xy(5, 5), svelteKeywordAttr),
+			hostReady: highlight(xy(1, 0), xy(4, 0), svelteTagAttr),
 		},
 	}
 	for _, c := range hostRuled {
 		t.Run(c.name+" follows the host", func(t *testing.T) {
 			run := func(tree syntax.NewTreeFunc, ready textapi.Location) string {
-				mu, comp, _, cleanup := newSvelteComponent(t, newAllSveltePackages(t), tree)
+				mu, comp, _, cleanup := newCompositeComponent(t, newAllSveltePackages(t), tree, svelteSyntaxConfig)
 				defer cleanup()
 				mu.Lock()
 				_, h := newEditFileName(t, mu, comp, c.content,
@@ -811,21 +841,21 @@ func TestSvelteCompositeMissingGrammarIntegration(t *testing.T) {
 	s := newSvelteTree(t, pkgs,
 		"<script>\n\tlet a = 1;\n</script>\n<!-- note -->\n"+
 			"<style>\n\tp { color: red; }\n</style>\n<style>\n\ta { color: red; }\n</style>\n")
-	s.waitLocation(svelteLocation(xy(1, 1), xy(4, 1), svelteKeywordAttr))
+	s.waitLocation(highlight(xy(1, 1), xy(4, 1), svelteKeywordAttr))
 
 	// A block's language is installed the way opening a file in it is:
 	// through the editor's package manager, which asks the user.
 	pkgs.waitPrompts(t, "css", "comment")
 	s.waitSections(4)
 	s.locked(func() {
-		assert.False(t, s.hasLocation(svelteLocation(xy(5, 5), xy(10, 5), sveltePropertyAttr)),
+		assert.False(t, s.hasLocation(highlight(xy(5, 5), xy(10, 5), sveltePropertyAttr)),
 			"the style block waits for the answer")
 	})
 
 	pkgs.install(t, "css")
 	pkgs.decline("comment")
-	s.waitLocation(svelteLocation(xy(5, 5), xy(10, 5), sveltePropertyAttr))
-	s.waitLocation(svelteLocation(xy(5, 8), xy(10, 8), sveltePropertyAttr))
+	s.waitLocation(highlight(xy(5, 5), xy(10, 5), sveltePropertyAttr))
+	s.waitLocation(highlight(xy(5, 8), xy(10, 8), sveltePropertyAttr))
 	assert.ElementsMatch(t, []string{"css", "comment"}, pkgs.asked())
 	s.locked(func() {
 		assert.Empty(t, s.notis.messages, "neither an installed nor a declined package warns")
@@ -856,7 +886,7 @@ func TestSvelteCompositeParseInstallIntegration(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, tree.Close()) })
 
 	require.GreaterOrEqual(t, installed, 1, "Install publishes the host's highlights")
-	assert.Contains(t, published[0], svelteLocation(xy(1, 0), xy(7, 0), svelteTagAttr))
+	assert.Contains(t, published[0], highlight(xy(1, 0), xy(7, 0), svelteTagAttr))
 	assert.Len(t, sections, 2, "Install creates the sections of the parsed host")
 	assert.Same(t, tree, buf.View())
 
@@ -868,12 +898,12 @@ func TestSvelteCompositeParseInstallIntegration(t *testing.T) {
 		}
 		last := published[len(published)-1]
 		for _, l := range last {
-			if l == svelteLocation(xy(1, 1), xy(6, 1), svelteKeywordAttr) {
+			if l == highlight(xy(1, 1), xy(6, 1), svelteKeywordAttr) {
 				return true
 			}
 		}
 		return false
-	}, svelteWait, 5*time.Millisecond, "the sections highlight once their trees are parsed")
+	}, compositeWait, 5*time.Millisecond, "the sections highlight once their trees are parsed")
 }
 
 func TestMultitreeMatchesTreesitterForSingleLanguageIntegration(t *testing.T) {

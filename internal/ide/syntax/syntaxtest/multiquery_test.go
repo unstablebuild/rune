@@ -486,7 +486,7 @@ func TestQueryMultiInjectedRegions(t *testing.T) {
 	}
 
 	t.Run("regions are parsed with their language in file coordinates", func(t *testing.T) {
-		hits := run(t, newSveltePackages(t, "svelte", "typescript", "javascript", "css"))
+		hits := run(t, newFixturePackages(t, "svelte", "typescript", "javascript", "css"))
 
 		assert.Equal(t, []hit{{"script", 0, 1}}, hits[0], "host queries see the host tree")
 		// The <script> block is TypeScript: its member read and function
@@ -499,7 +499,7 @@ func TestQueryMultiInjectedRegions(t *testing.T) {
 	})
 
 	t.Run("an injected language that is not installed yields nothing", func(t *testing.T) {
-		hits := run(t, newSveltePackages(t, "svelte", "javascript"))
+		hits := run(t, newFixturePackages(t, "svelte", "javascript"))
 
 		assert.Equal(t, []hit{{"script", 0, 1}}, hits[0])
 		assert.Empty(t, hits[1])

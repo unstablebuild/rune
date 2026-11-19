@@ -60,9 +60,11 @@ a set of query files, giving Rune a real parse tree for the file instead of
 plain text. That parse tree powers [syntax
 highlighting](../appearance/syntax-highlighting.md), code folding,
 indentation, and (most usefully) [structural search and navigation](../learn/search.md).
-Packages whose grammar marks embedded languages, such as `html`, `vue` and
-`astro`, highlight, fold and indent those regions with the embedded
-language's package.
+Packages whose grammar marks embedded languages, such as `html`, `vue`,
+`astro` and `markdown`, highlight, fold and indent those regions with the
+embedded language's package: a Markdown code block with the language named
+after its opening backticks, and its paragraphs, headings and table cells
+with `markdown_inline`.
 
 | | | | |
 | --- | --- | --- | --- |

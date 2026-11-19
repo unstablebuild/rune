@@ -548,6 +548,8 @@ pattern Rune would disable. Follow the existing
 [C++](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/cpp_test.go)
 and, for embedded languages,
 [Svelte](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/svelte_test.go)
+and
+[Markdown](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/md_test.go)
 suites. A test that mocks captures or reads different query files from the ones
 you package does not satisfy this requirement.
 
