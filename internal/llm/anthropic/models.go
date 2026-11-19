@@ -56,20 +56,6 @@ const (
 	ClaudeHaiku4Dot5 = "claude-haiku-4-5"
 	// ClaudeOpus4Dot5 is Anthropic's Claude Opus 4.5 model.
 	ClaudeOpus4Dot5 = "claude-opus-4-5"
-	// ClaudeSonnet4Dot5 is Anthropic's Claude Sonnet 4.5 model.
-	ClaudeSonnet4Dot5 = "claude-sonnet-4-5"
-	// ClaudeOpus4Dot1 is Anthropic's Claude Opus 4.1 model.
-	ClaudeOpus4Dot1 = "claude-opus-4-1"
-	// ClaudeSonnet4 is Anthropic's Claude Sonnet 4.0 model.
-	ClaudeSonnet4 = "claude-sonnet-4-0"
-	// ClaudeOpus4 is Anthropic's Claude Opus 4.0 model.
-	ClaudeOpus4 = "claude-opus-4-0"
-	// ClaudeOpus3 is Anthropic's Claude 3 Opus model.
-	ClaudeOpus3 = "claude-3-opus"
-	// ClaudeSonnet3 is Anthropic's Claude 3 Sonnet model.
-	ClaudeSonnet3 = "claude-3-sonnet"
-	// ClaudeHaiku3 is Anthropic's Claude 3 Haiku model.
-	ClaudeHaiku3 = "claude-3-haiku"
 )
 
 // AvailableModels returns a map from model identifier -> nominal maximum
@@ -93,13 +79,6 @@ func AvailableModels() map[string]int {
 		ClaudeSonnet4Dot6: 1000000,
 		ClaudeHaiku4Dot5:  200000,
 		ClaudeOpus4Dot5:   200000,
-		ClaudeSonnet4Dot5: 200000,
-		ClaudeOpus4Dot1:   200000,
-		ClaudeSonnet4:     200000,
-		ClaudeOpus4:       200000,
-		ClaudeOpus3:       200000,
-		ClaudeSonnet3:     200000,
-		ClaudeHaiku3:      200000,
 	}
 }
 
@@ -131,16 +110,9 @@ var maxOutputTokens = map[string]int{
 	ClaudeOpus4Dot8:   128000,
 	ClaudeOpus4Dot7:   128000,
 	ClaudeOpus4Dot6:   128000,
-	ClaudeSonnet4Dot6: 64000,
+	ClaudeSonnet4Dot6: 128000,
 	ClaudeHaiku4Dot5:  64000,
-	ClaudeSonnet4Dot5: 64000,
 	ClaudeOpus4Dot5:   64000,
-	ClaudeSonnet4:     64000,
-	ClaudeOpus4Dot1:   32000,
-	ClaudeOpus4:       32000,
-	ClaudeOpus3:       4096,
-	ClaudeSonnet3:     4096,
-	ClaudeHaiku3:      4096,
 }
 
 // MaxOutputTokens returns the model's documented maximum output-token
@@ -154,7 +126,8 @@ func SupportsEffort(model string) bool {
 	return !strings.HasPrefix(model, "claude-3")
 }
 
-// claude4Efforts are the effort levels supported by Claude 4.0–4.5 models.
+// claude4Efforts are the effort levels supported by Claude 4.x models
+// without adaptive thinking.
 var claude4Efforts = map[string]bool{
 	"low":    true,
 	"medium": true,

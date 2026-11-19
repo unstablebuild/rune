@@ -97,13 +97,13 @@ func newCatalog(api controlPlaneAPI) *catalogIterator {
 func TestListCatalog_PrefersInferenceProfiles(t *testing.T) {
 	api := &fakeControlPlane{
 		profiles: []bedrocktypes.InferenceProfileSummary{
-			profile(ClaudeSonnet45, string(bedrocktypes.InferenceProfileStatusActive),
-				"arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0"),
+			profile(ClaudeOpus45, string(bedrocktypes.InferenceProfileStatusActive),
+				"arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-4-5-20251101-v1:0"),
 			profile("us.legacy-v1:0", "INACTIVE"),
 		},
 		models: []bedrocktypes.FoundationModelSummary{
 			// Already routed by the profile above, so it must not appear twice.
-			foundationModel("anthropic.claude-sonnet-4-5-20250929-v1:0", true),
+			foundationModel("anthropic.claude-opus-4-5-20251101-v1:0", true),
 			foundationModel("mistral.mistral-large-2407-v1:0", true),
 			foundationModel("amazon.titan-embed-text-v2:0", false),
 		},
@@ -115,11 +115,16 @@ func TestListCatalog_PrefersInferenceProfiles(t *testing.T) {
 		names = append(names, e.Name)
 		assert.Equal(t, LLMProvider, e.Provider)
 	}
-	assert.Equal(t, []string{MistralLarge, ClaudeSonnet45}, names)
+	assert.Equal(t, []string{MistralLarge, ClaudeOpus45}, names)
 }
 
 func TestListCatalog_ResolvesContextWindowFromStaticCatalog(t *testing.T) {
 	api := &fakeControlPlane{
+		profiles: []bedrocktypes.InferenceProfileSummary{
+			// Geo and global profiles of catalog models.
+			profile("au.anthropic.claude-opus-5-5", string(bedrocktypes.InferenceProfileStatusActive)),
+			profile("global.openai.gpt-6.2-astra", string(bedrocktypes.InferenceProfileStatusActive)),
+		},
 		models: []bedrocktypes.FoundationModelSummary{
 			// Bare foundation-model ID of a catalog inference profile.
 			foundationModel("amazon.nova-pro-v1:0", true),
@@ -128,12 +133,14 @@ func TestListCatalog_ResolvesContextWindowFromStaticCatalog(t *testing.T) {
 	}
 
 	entries := drainCatalog(t, newCatalog(api))
-	require.Len(t, entries, 2)
+	require.Len(t, entries, 4)
 	byName := map[string]int{}
 	for _, e := range entries {
 		byName[e.Name] = e.ContextWindow
 	}
 	assert.Equal(t, AvailableModels()[NovaPro], byName["amazon.nova-pro-v1:0"])
+	assert.Equal(t, 1_000_000, byName["au.anthropic.claude-opus-5-5"])
+	assert.Equal(t, 1_050_000, byName["global.openai.gpt-6.2-astra"])
 	assert.Zero(t, byName["some.unknown-model-v1:0"])
 }
 

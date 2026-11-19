@@ -45,11 +45,9 @@ func TestDefaultEffortFor(t *testing.T) {
 		// Older models take an explicit thinking budget instead, and
 		// publish no default effort level.
 		{ClaudeOpus4Dot5, ""},
-		{ClaudeSonnet4, ""},
-		{ClaudeOpus4, ""},
+		{ClaudeHaiku4Dot5, ""},
 		// Claude 3 has no reasoning effort at all.
-		{ClaudeOpus3, ""},
-		{ClaudeHaiku3, ""},
+		{"claude-3-haiku", ""},
 		{"not-a-model", ""},
 	}
 	for _, tt := range tests {

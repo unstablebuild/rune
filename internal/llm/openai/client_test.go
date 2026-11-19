@@ -169,7 +169,7 @@ func TestCreateCompletion(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello sir!"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var builder strings.Builder
@@ -229,7 +229,7 @@ func TestCreateCompletion(t *testing.T) {
 			{Role: "system", Content: "We are roleplaying and you are an evil AI agent."},
 			{Role: llmapi.RoleUser, Content: "what is your purpouse?"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var builder strings.Builder
@@ -266,7 +266,7 @@ func TestCreateCompletion(t *testing.T) {
 				imgPart,
 			}},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT4Dot1Nano, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-4.1-nano", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var builder strings.Builder
@@ -317,7 +317,7 @@ func TestCreateCompletion(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "what's the weather like in San Francisco right now?"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT4, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-4", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var toolCalls []llmapi.ToolCall
@@ -415,7 +415,7 @@ func TestCreateCompletion(t *testing.T) {
 		}
 
 		t.Run("chat completions", func(t *testing.T) {
-			runOne(t, GPT4, 200000)
+			runOne(t, "gpt-4", 200000)
 		})
 		t.Run("responses API", func(t *testing.T) {
 			runOne(t, GPT5Dot3Codex, 200000)
@@ -440,7 +440,7 @@ func TestCreateCompletion(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "Is 2 greater than 1?"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT4Dot1Nano, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-4.1-nano", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var builder strings.Builder
@@ -740,7 +740,7 @@ func TestResponsesAPI(t *testing.T) {
 
 func TestContextWindows(t *testing.T) {
 	models := AvailableModels()
-	models[GPT4] = 50
+	models["gpt-4"] = 50
 
 	t.Run("CreateCompletion errors with ErrContextWindowExceeded", func(t *testing.T) {
 		c := NewClient("", Config{}).(*client)
@@ -749,7 +749,7 @@ func TestContextWindows(t *testing.T) {
 
 		// sut
 		req := llmapi.Request{Messages: msgs}
-		_, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT4, ContextWindow: 50}, req)
+		_, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-4", ContextWindow: 50}, req)
 		require.True(t, errors.Is(err, &llmapi.ErrContextWindowExceeded{}), err.Error())
 	})
 }
@@ -1463,7 +1463,7 @@ func captureRequestBody(t *testing.T, cfg Config, req llmapi.Request) map[string
 	cfg.BaseURL = srv.URL
 	c := NewClient("test-key", cfg)
 	ctx := context.Background()
-	it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT4Dot1Nano, ContextWindow: 200000}, req)
+	it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-4.1-nano", ContextWindow: 200000}, req)
 	require.NoError(t, err)
 	// Drain the stream.
 	for {
@@ -1501,7 +1501,7 @@ func captureRequestPath(t *testing.T, cfg Config, req llmapi.Request) string {
 	cfg.BaseURL = srv.URL
 	c := NewClient("test-key", cfg)
 	ctx := context.Background()
-	it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT4Dot1Nano, ContextWindow: 200000}, req)
+	it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-4.1-nano", ContextWindow: 200000}, req)
 	require.NoError(t, err)
 	for {
 		_, ok := it.Next(ctx)

@@ -120,7 +120,7 @@ func TestCompactConversationModelSelection(t *testing.T) {
 func TestCompactConversationMaxOutputTokens(t *testing.T) {
 	compactModel := llmapi.ModelEntry{
 		Provider:      anthropic.LLMProvider,
-		Name:          anthropic.ClaudeSonnet4Dot5, // 64000 output-token ceiling
+		Name:          anthropic.ClaudeOpus4Dot5, // 64000 output-token ceiling
 		ContextWindow: 200_000,
 	}
 
@@ -148,7 +148,7 @@ func TestCompactConversationMaxOutputTokens(t *testing.T) {
 			}}
 			s := &shell{
 				llmSvc:       &compactAliasService{Service: backend, target: compactModel},
-				defaultModel: "anthropic/" + anthropic.ClaudeSonnet4Dot5,
+				defaultModel: "anthropic/" + anthropic.ClaudeOpus4Dot5,
 				store:        store,
 				getMaxTokens: tc.getMaxTokens,
 			}

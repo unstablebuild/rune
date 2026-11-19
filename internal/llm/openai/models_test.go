@@ -25,13 +25,49 @@ import (
 func TestFlagshipModelInCatalog(t *testing.T) {
 	_, ok := AvailableModels()[FlagshipModel()]
 	assert.True(t, ok, "flagship %q must be in the catalog", FlagshipModel())
-	assert.Equal(t, GPT6Astra, FlagshipModel())
+	assert.Equal(t, GPT6Dot2Astra, FlagshipModel())
 }
 
 func TestGPT6AstraCatalog(t *testing.T) {
 	assert.Equal(t, 1050000, AvailableModels()[GPT6Astra])
 	assert.Equal(t, 128000, MaxOutputTokens(GPT6Astra))
 	assert.True(t, SupportsReasoning(GPT6Astra))
+}
+
+func TestNewModelsCatalog(t *testing.T) {
+	tests := []struct {
+		constant string
+		slug     string
+	}{
+		{GPT6Dot2Astra, "gpt-6.2-astra"},
+		{GPT6Dot2Sol, "gpt-6.2-sol"},
+		{GPT6Dot1Sol, "gpt-6.1-sol"},
+		{GPT5Dot5Pro, "gpt-5.5-pro"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.slug, func(t *testing.T) {
+			assert.Equal(t, tt.slug, tt.constant)
+			assert.Equal(t, 1050000, AvailableModels()[tt.constant])
+			assert.Equal(t, 128000, MaxOutputTokens(tt.constant))
+			assert.True(t, SupportsReasoning(tt.constant))
+		})
+	}
+}
+
+func TestRetiredModelsNotInCatalog(t *testing.T) {
+	retired := []string{
+		"gpt-5.2-chat-latest", "gpt-5", "gpt-5-mini", "gpt-5-nano",
+		"gpt-4.1-nano", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "gpt-3.5-turbo-16k",
+		"o1", "o1-mini", "o3", "o3-mini", "o3-pro", "o4-mini",
+	}
+	avail := AvailableModels()
+	for _, model := range retired {
+		t.Run(model, func(t *testing.T) {
+			_, ok := avail[model]
+			assert.False(t, ok)
+			assert.Zero(t, MaxOutputTokens(model))
+		})
+	}
 }
 
 func TestGPT6Dot1TerraCatalog(t *testing.T) {
@@ -47,15 +83,17 @@ func TestMaxOutputTokens(t *testing.T) {
 	}{
 		{GPT5Dot6, 128000},
 		{GPT6Astra, 128000},
+		{GPT6Dot2Astra, 128000},
+		{GPT6Dot2Sol, 128000},
+		{GPT6Dot1Sol, 128000},
 		{GPT6Dot1Terra, 128000},
 		{GPT5Dot6Sol, 128000},
 		{GPT5Dot6Terra, 128000},
 		{GPT5Dot6Luna, 128000},
+		{GPT5Dot5Pro, 128000},
 		{GPT5Dot5, 128000},
-		{O1, 100000},
-		{O3Mini, 65536},
+		{GPT4Dot1, 32768},
 		{GPT4o, 16384},
-		{GPT4, 8192},
 		{"unknown-model", 0},
 	}
 	for _, tt := range tests {
@@ -120,6 +158,10 @@ func TestSupportsReasoning(t *testing.T) {
 		{"gpt-5.6-terra", true},
 		{"gpt-5.6-luna", true},
 		{"gpt-6-astra", true},
+		{"gpt-6.2-astra", true},
+		{"gpt-6.2-sol", true},
+		{"gpt-6.1-sol", true},
+		{"gpt-5.5-pro", true},
 		{"gpt-6-sol", true},
 		{"gpt-6.1-terra", true},
 		{"gpt-6-luna", true},
@@ -202,15 +244,24 @@ func TestNormalizeEffort(t *testing.T) {
 		{"gpt-6-astra ultra", "gpt-6-astra", "ultra", "ultra", false},
 		{"gpt-6-astra none", "gpt-6-astra", "none", "", true},
 		{"gpt-6-astra minimal", "gpt-6-astra", "minimal", "", true},
+		{"gpt-6.2-astra low", "gpt-6.2-astra", "low", "low", false},
+		{"gpt-6.2-astra ultra", "gpt-6.2-astra", "ultra", "ultra", false},
+		{"gpt-6.2-astra none", "gpt-6.2-astra", "none", "", true},
+		{"gpt-6.2-sol max", "gpt-6.2-sol", "max", "max", false},
+		{"gpt-6.2-sol ultra", "gpt-6.2-sol", "ultra", "ultra", false},
+		{"gpt-6.2-sol none", "gpt-6.2-sol", "none", "", true},
+		{"gpt-6.1-sol low", "gpt-6.1-sol", "low", "low", false},
+		{"gpt-6.1-sol none", "gpt-6.1-sol", "none", "", true},
 
-		// GPT-6 Sol matches Astra; GPT-6.1 Terra accepts none but not ultra;
-		// GPT-6 Luna stops at max.
+		// GPT-6 Sol matches Astra; GPT-6.1 Terra and GPT-6 Luna accept none
+		// but stop at max.
 		{"gpt-6-sol max", "gpt-6-sol", "max", "max", false},
 		{"gpt-6-sol ultra", "gpt-6-sol", "ultra", "ultra", false},
 		{"gpt-6-sol none", "gpt-6-sol", "none", "", true},
 		{"gpt-6.1-terra none", "gpt-6.1-terra", "none", "none", false},
 		{"gpt-6.1-terra max", "gpt-6.1-terra", "max", "max", false},
 		{"gpt-6.1-terra ultra", "gpt-6.1-terra", "ultra", "", true},
+		{"gpt-6-luna none", "gpt-6-luna", "none", "none", false},
 		{"gpt-6-luna medium", "gpt-6-luna", "medium", "medium", false},
 		{"gpt-6-luna xhigh", "gpt-6-luna", "xhigh", "xhigh", false},
 		{"gpt-6-luna max", "gpt-6-luna", "max", "max", false},
@@ -233,6 +284,12 @@ func TestNormalizeEffort(t *testing.T) {
 		{"gpt-5.4-pro xhigh", "gpt-5.4-pro", "xhigh", "xhigh", false},
 		{"gpt-5.4-pro low", "gpt-5.4-pro", "low", "", true},
 		{"gpt-5.4-pro none", "gpt-5.4-pro", "none", "", true},
+
+		// GPT-5.5-pro: medium/high/xhigh only.
+		{"gpt-5.5-pro medium", "gpt-5.5-pro", "medium", "medium", false},
+		{"gpt-5.5-pro xhigh", "gpt-5.5-pro", "xhigh", "xhigh", false},
+		{"gpt-5.5-pro low", "gpt-5.5-pro", "low", "", true},
+		{"gpt-5.5-pro none", "gpt-5.5-pro", "none", "", true},
 
 		// GPT-5.2: none/low/medium/high/xhigh are supported.
 		{"gpt-5.2 none", "gpt-5.2", "none", "none", false},

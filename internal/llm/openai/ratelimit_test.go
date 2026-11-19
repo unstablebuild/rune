@@ -64,7 +64,7 @@ func TestRateLimitRetry(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var warnings []llmapi.Event
@@ -115,7 +115,7 @@ func TestRateLimitRetry(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 		}}
-		_, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		_, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.Error(t, err)
 		assert.Equal(t, int32(1), attempts.Load(), "should not retry insufficient_quota")
 	})
@@ -138,7 +138,7 @@ func TestRateLimitRetry(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 		}}
-		_, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		_, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.Error(t, err)
 		assert.Equal(t, int32(1), attempts.Load(), "should not retry 400 errors")
 	})
@@ -162,7 +162,7 @@ func TestRateLimitRetry(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var gotError bool
@@ -214,7 +214,7 @@ func TestToolCallParseRetry(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var gotDone bool
@@ -253,7 +253,7 @@ func TestToolCallParseRetry(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var streamErr error
@@ -301,7 +301,7 @@ func TestRateLimitHeaderCheck(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var warnings []llmapi.Event
@@ -343,7 +343,7 @@ func TestRateLimitHeaderCheck(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var warnings int
@@ -380,7 +380,7 @@ func TestRateLimitHeaderCheck(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var warnings int
@@ -419,7 +419,7 @@ func TestRateLimitHeaderCheck(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var warnings []llmapi.Event
@@ -460,7 +460,7 @@ func TestStandardRateLimitHeaderCheck(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var warnings []llmapi.Event
@@ -500,7 +500,7 @@ func TestStandardRateLimitHeaderCheck(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var warnings []llmapi.Event
@@ -541,7 +541,7 @@ func TestStandardRateLimitHeaderCheck(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var warnings int
@@ -824,7 +824,7 @@ func TestMidStreamRetry(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var events []llmapi.Event
@@ -889,7 +889,7 @@ func TestMidStreamRetry(t *testing.T) {
 		req := llmapi.Request{Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 		}}
-		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT3Dot5Turbo, ContextWindow: 200000}, req)
+		it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: "gpt-3.5-turbo", ContextWindow: 200000}, req)
 		require.NoError(t, err)
 
 		var resets, warnings int

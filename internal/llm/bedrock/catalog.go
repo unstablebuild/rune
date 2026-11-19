@@ -180,10 +180,12 @@ func contextWindowFor(id string) int {
 }
 
 // stripRegionPrefix removes the cross-region routing prefix ("us.", "eu.",
-// "apac.") that distinguishes an inference profile from the foundation model
-// it routes to.
+// "global.", ...) that distinguishes an inference profile from the
+// foundation model it routes to.
 func stripRegionPrefix(id string) string {
-	for _, prefix := range []string{"us.", "eu.", "apac.", "us-gov."} {
+	for _, prefix := range []string{
+		"us.", "eu.", "apac.", "us-gov.", "global.", "au.", "jp.", "ca.", "in.",
+	} {
 		if rest, ok := strings.CutPrefix(id, prefix); ok {
 			return rest
 		}

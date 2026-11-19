@@ -46,7 +46,7 @@ func blockText(t *testing.T, block types.ContentBlock) string {
 }
 
 func TestConverseInput_SplitsSystemAndMergesRoles(t *testing.T) {
-	in := converseInput(ClaudeSonnet45, llmapi.Request{
+	in := converseInput(ClaudeOpus45, llmapi.Request{
 		Messages: []llmapi.Message{
 			{Role: llmapi.RoleSystem, Content: "be brief"},
 			{Role: llmapi.RoleUser, Content: "hello"},
@@ -56,7 +56,7 @@ func TestConverseInput_SplitsSystemAndMergesRoles(t *testing.T) {
 		},
 	}, Config{})
 
-	require.Equal(t, ClaudeSonnet45, *in.ModelId)
+	require.Equal(t, ClaudeOpus45, *in.ModelId)
 	require.Len(t, in.System, 1)
 	assert.Equal(t, "be brief", in.System[0].(*types.SystemContentBlockMemberText).Value)
 
@@ -84,7 +84,7 @@ func TestConverseInput_EmptyUserTurnKeepsSentinel(t *testing.T) {
 }
 
 func TestConverseInput_ToolsBecomeToolConfig(t *testing.T) {
-	in := converseInput(ClaudeSonnet45, llmapi.Request{
+	in := converseInput(ClaudeOpus45, llmapi.Request{
 		Messages: []llmapi.Message{{Role: llmapi.RoleUser, Content: "go"}},
 		Tools: []llmapi.Tool{{
 			Type: llmapi.ToolTypeFunction,
@@ -120,7 +120,7 @@ func TestConverseInput_ImageDataURIBecomesImageBlock(t *testing.T) {
 	payload := []byte{0x89, 0x50, 0x4e, 0x47}
 	uri := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(payload)
 
-	in := converseInput(ClaudeSonnet45, llmapi.Request{
+	in := converseInput(ClaudeOpus45, llmapi.Request{
 		Messages: []llmapi.Message{{
 			Role: llmapi.RoleUser,
 			MultiContent: []llmapi.ContentPart{
@@ -140,7 +140,7 @@ func TestConverseInput_ImageDataURIBecomesImageBlock(t *testing.T) {
 }
 
 func TestConverseInput_RemoteImageURLIsDropped(t *testing.T) {
-	in := converseInput(ClaudeSonnet45, llmapi.Request{
+	in := converseInput(ClaudeOpus45, llmapi.Request{
 		Messages: []llmapi.Message{{
 			Role: llmapi.RoleUser,
 			MultiContent: []llmapi.ContentPart{
@@ -154,7 +154,7 @@ func TestConverseInput_RemoteImageURLIsDropped(t *testing.T) {
 }
 
 func TestConverseInput_ReasoningReplayRequiresSignature(t *testing.T) {
-	in := converseInput(ClaudeSonnet45, llmapi.Request{
+	in := converseInput(ClaudeOpus45, llmapi.Request{
 		Messages: []llmapi.Message{
 			{Role: llmapi.RoleUser, Content: "hello"},
 			{
@@ -212,12 +212,12 @@ func TestConverseInput_CachePointsOnlyWhenEnabled(t *testing.T) {
 		}},
 	}
 
-	off := converseInput(ClaudeSonnet45, request, Config{})
+	off := converseInput(ClaudeOpus45, request, Config{})
 	assert.Len(t, off.System, 1)
 	assert.Len(t, off.ToolConfig.Tools, 1)
 	assert.Len(t, off.Messages[1].Content, 1)
 
-	on := converseInput(ClaudeSonnet45, request, Config{CacheControl: "default"})
+	on := converseInput(ClaudeOpus45, request, Config{CacheControl: "default"})
 	require.Len(t, on.System, 2)
 	assert.IsType(t, &types.SystemContentBlockMemberCachePoint{}, on.System[1])
 	require.Len(t, on.ToolConfig.Tools, 2)
@@ -234,7 +234,7 @@ func TestConverseInput_ThinkingBudgetOnlyForClaude(t *testing.T) {
 		ReasoningEffort: llmapi.ReasoningEffort("medium"),
 	}
 
-	claude := converseInput(ClaudeSonnet45, request, Config{})
+	claude := converseInput(ClaudeOpus45, request, Config{})
 	fields := documentJSON(t, claude.AdditionalModelRequestFields)
 	thinking, ok := fields["thinking"].(map[string]any)
 	require.True(t, ok)
@@ -245,24 +245,49 @@ func TestConverseInput_ThinkingBudgetOnlyForClaude(t *testing.T) {
 	assert.Nil(t, nova.AdditionalModelRequestFields)
 }
 
+func TestConverseInput_AdaptiveThinkingForClaude46AndLater(t *testing.T) {
+	request := llmapi.Request{
+		Messages:        []llmapi.Message{{Role: llmapi.RoleUser, Content: "hi"}},
+		ReasoningEffort: llmapi.ReasoningEffort("xhigh"),
+	}
+
+	for _, model := range []string{ClaudeOpus55, ClaudeFable52, "global.anthropic.claude-opus-5-5"} {
+		t.Run(model, func(t *testing.T) {
+			fields := documentJSON(t, converseInput(model, request, Config{}).AdditionalModelRequestFields)
+			thinking, ok := fields["thinking"].(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, "adaptive", thinking["type"])
+			assert.NotContains(t, thinking, "budget_tokens",
+				"Claude 5 and Opus 4.7+ reject a fixed thinking budget")
+			outputConfig, ok := fields["output_config"].(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, "xhigh", outputConfig["effort"])
+		})
+	}
+
+	request.ReasoningEffort = ""
+	assert.Nil(t, converseInput(ClaudeOpus55, request, Config{}).AdditionalModelRequestFields,
+		"without an effort the model's own thinking default applies")
+}
+
 func TestInferenceConfig_MaxTokensPrecedence(t *testing.T) {
 	request := llmapi.Request{Messages: []llmapi.Message{{Role: llmapi.RoleUser, Content: "hi"}}}
 
-	fromModel := converseInput(ClaudeSonnet45, request, Config{})
-	assert.EqualValues(t, MaxOutputTokens(ClaudeSonnet45), *fromModel.InferenceConfig.MaxTokens)
+	fromModel := converseInput(ClaudeOpus45, request, Config{})
+	assert.EqualValues(t, MaxOutputTokens(ClaudeOpus45), *fromModel.InferenceConfig.MaxTokens)
 
-	fromConfig := converseInput(ClaudeSonnet45, request, Config{MaxTokens: 111})
+	fromConfig := converseInput(ClaudeOpus45, request, Config{MaxTokens: 111})
 	assert.EqualValues(t, 111, *fromConfig.InferenceConfig.MaxTokens)
 
 	request.MaxOutputTokens = 222
-	fromRequest := converseInput(ClaudeSonnet45, request, Config{MaxTokens: 111})
+	fromRequest := converseInput(ClaudeOpus45, request, Config{MaxTokens: 111})
 	assert.EqualValues(t, 222, *fromRequest.InferenceConfig.MaxTokens)
 }
 
 func TestConverseInput_ResponseFormatBecomesStructuredOutput(t *testing.T) {
 	request := llmapi.Request{Messages: []llmapi.Message{{Role: llmapi.RoleUser, Content: "hi"}}}
 
-	assert.Nil(t, converseInput(ClaudeSonnet45, request, Config{}).OutputConfig)
+	assert.Nil(t, converseInput(ClaudeOpus45, request, Config{}).OutputConfig)
 
 	request.ResponseFormat = &llmapi.ResponseFormat{
 		Type: llmapi.ResponseFormatTypeJSONSchema,
@@ -271,7 +296,7 @@ func TestConverseInput_ResponseFormatBecomesStructuredOutput(t *testing.T) {
 			Schema: json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`),
 		},
 	}
-	in := converseInput(ClaudeSonnet45, request, Config{})
+	in := converseInput(ClaudeOpus45, request, Config{})
 	require.NotNil(t, in.OutputConfig)
 	require.NotNil(t, in.OutputConfig.TextFormat)
 	assert.Equal(t, types.OutputFormatTypeJsonSchema, in.OutputConfig.TextFormat.Type)

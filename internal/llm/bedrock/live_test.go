@@ -34,7 +34,7 @@ import (
 // everywhere. The suite asserts on tool calls and signed reasoning replay,
 // so only models supporting extended thinking qualify.
 func pickLiveModel(entries []llmapi.ModelEntry, region string) (llmapi.ModelEntry, bool) {
-	preferred := RegionalProfile(ClaudeSonnet45, region)
+	preferred := RegionalProfile(ClaudeOpus45, region)
 	for _, e := range entries {
 		if e.Name == preferred {
 			return e, true
@@ -52,12 +52,12 @@ func TestPickLiveModel(t *testing.T) {
 	catalog := []llmapi.ModelEntry{
 		{Name: NovaPro},
 		{Name: "eu.anthropic.claude-haiku-4-5-20251001-v1:0"},
-		{Name: "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"},
+		{Name: "eu.anthropic.claude-opus-4-5-20251101-v1:0"},
 	}
 
 	got, ok := pickLiveModel(catalog, "eu-west-1")
 	require.True(t, ok)
-	assert.Equal(t, "eu.anthropic.claude-sonnet-4-5-20250929-v1:0", got.Name,
+	assert.Equal(t, "eu.anthropic.claude-opus-4-5-20251101-v1:0", got.Name,
 		"the region's own flagship profile wins")
 
 	// The us. profile is absent from an EU catalog, so the suite must fall

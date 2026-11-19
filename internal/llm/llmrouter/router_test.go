@@ -745,12 +745,12 @@ func TestRouter_Resolve_Gemini(t *testing.T) {
 	r := newTestRouter(t)
 	ctx := context.Background()
 	svc, err := r.resolve(ctx,
-		llmapi.ModelEntry{Provider: ProviderGemini, Name: gemini.Gemini_2_5_Pro})
+		llmapi.ModelEntry{Provider: ProviderGemini, Name: gemini.Gemini_4_Carbon})
 	require.NoError(t, err)
 	require.NotNil(t, svc)
 
 	svc2, err := r.resolve(ctx,
-		llmapi.ModelEntry{Provider: ProviderGemini, Name: gemini.Gemini_2_5_Pro})
+		llmapi.ModelEntry{Provider: ProviderGemini, Name: gemini.Gemini_4_Carbon})
 	require.NoError(t, err)
 	assert.Same(t, svc, svc2, "repeated resolves must return the cached client")
 }

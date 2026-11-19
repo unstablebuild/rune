@@ -37,8 +37,8 @@ func TestLiveCreateCompletion(t *testing.T) {
 	require.NotEmpty(t, token, "set GEMINI_TESTING_KEY to run the live Gemini suite")
 
 	resolve := NewClient(token, Config{})
-	model, err := resolve.GetModel(context.Background(), llmapi.ModelEntry{Name: Gemini_2_5_Flash})
-	require.NoError(t, err, "model %q must be in the live catalog", Gemini_2_5_Flash)
+	model, err := resolve.GetModel(context.Background(), llmapi.ModelEntry{Name: VerificationModel})
+	require.NoError(t, err, "model %q must be in the live catalog", VerificationModel)
 
 	t.Run("plain chat completion", func(t *testing.T) {
 		c := NewClient(token, Config{Temperature: 0.1})
@@ -306,7 +306,7 @@ func TestLiveCountTokens(t *testing.T) {
 	require.NotEmpty(t, token, "set GEMINI_TESTING_KEY to run the live Gemini suite")
 
 	c := NewClient(token, Config{})
-	model := llmapi.ModelEntry{Name: Gemini_2_5_Flash, Provider: LLMProvider}
+	model := llmapi.ModelEntry{Name: VerificationModel, Provider: LLMProvider}
 
 	short, err := c.CountTokens(model, []llmapi.Message{{Role: llmapi.RoleUser, Content: "hi"}})
 	require.NoError(t, err)

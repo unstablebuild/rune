@@ -209,6 +209,10 @@ func TestThinkingConfig(t *testing.T) {
 	require.NotNil(t, tc)
 	assert.Equal(t, genai.ThinkingLevelHigh, tc.ThinkingLevel)
 	assert.True(t, tc.IncludeThoughts)
+
+	tc = thinkingConfig("xhigh")
+	require.NotNil(t, tc)
+	assert.Equal(t, genai.ThinkingLevel("XHIGH"), tc.ThinkingLevel)
 }
 
 func TestNormalizeEffort(t *testing.T) {
@@ -228,11 +232,27 @@ func TestNormalizeEffort(t *testing.T) {
 		{"gemini-3-flash-preview", "xhigh", "medium", true},
 		{"gemini-3-flash-preview", "bogus", "medium", true},
 		{"gemini-3.1-pro-preview", "", "medium", false},
+		// Per-model levels: Gemini 4, 3.8 Flash and 3.1 Pro reject minimal;
+		// only Gemini 4 Neon and Hydrogen accept xhigh.
+		{"gemini-3.1-pro-preview", "minimal", "medium", true},
+		{"gemini-3.8-flash", "minimal", "medium", true},
+		{"gemini-3.8-flash", "low", "low", false},
+		{"gemini-4-carbon", "", "medium", false},
+		{"gemini-4-carbon", "high", "high", false},
+		{"gemini-4-carbon", "xhigh", "medium", true},
+		{"gemini-4-carbon", "minimal", "medium", true},
+		{"gemini-4-argon", "low", "low", false},
+		{"gemini-4-neon", "", "high", false},
+		{"gemini-4-neon", "none", "high", false},
+		{"gemini-4-neon", "xhigh", "xhigh", false},
+		{"gemini-4-neon", "minimal", "high", true},
+		{"gemini-4-hydrogen", "xhigh", "xhigh", false},
 		// Gemini 2.x does not require signatures; empty stays empty.
-		{"gemini-2.5-flash", "", "", false},
-		{"gemini-2.5-flash", "none", "", false},
-		{"gemini-2.5-flash", "high", "high", false},
-		{"gemini-2.5-flash", "xhigh", "", true},
+		{"gemini-2.5-flash-lite", "", "", false},
+		{"gemini-2.5-flash-lite", "none", "", false},
+		{"gemini-2.5-flash-lite", "high", "high", false},
+		{"gemini-2.5-flash-lite", "xhigh", "", true},
+		{"gemini-2.5-flash-lite", "minimal", "", true},
 	}
 	for _, tt := range tests {
 		got, warn := NormalizeEffort(tt.model, tt.effort)

@@ -41,7 +41,7 @@ func TestDefaultEffort(t *testing.T) {
 		},
 		{
 			name:     "anthropic without a published default",
-			provider: anthropic.LLMProvider, model: anthropic.ClaudeOpus4,
+			provider: anthropic.LLMProvider, model: anthropic.ClaudeOpus4Dot5,
 		},
 		{
 			name:     "gemini 3 always sends a thinking level",

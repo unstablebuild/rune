@@ -85,7 +85,7 @@ func TestClient_CountTokens_UsesNativeAPI(t *testing.T) {
 	c := testClient(t, api, Config{})
 
 	got, err := c.CountTokens(
-		llmapi.ModelEntry{Name: ClaudeSonnet45, Provider: LLMProvider},
+		llmapi.ModelEntry{Name: ClaudeOpus45, Provider: LLMProvider},
 		[]llmapi.Message{
 			{Role: llmapi.RoleSystem, Content: "be brief"},
 			{Role: llmapi.RoleUser, Content: "hello"},
@@ -94,7 +94,7 @@ func TestClient_CountTokens_UsesNativeAPI(t *testing.T) {
 	assert.Equal(t, 42, got)
 
 	require.NotNil(t, api.countedInput)
-	assert.Equal(t, ClaudeSonnet45, *api.countedInput.ModelId)
+	assert.Equal(t, ClaudeOpus45, *api.countedInput.ModelId)
 	converse, ok := api.countedInput.Input.(*types.CountTokensInputMemberConverse)
 	require.True(t, ok)
 	assert.Len(t, converse.Value.System, 1)
@@ -132,7 +132,7 @@ func TestClient_CreateCompletion_RetriesThrottling(t *testing.T) {
 	c := testClient(t, api, Config{})
 
 	it, err := c.CreateCompletion(t.Context(),
-		llmapi.ModelEntry{Name: ClaudeSonnet45, Provider: LLMProvider},
+		llmapi.ModelEntry{Name: ClaudeOpus45, Provider: LLMProvider},
 		llmapi.Request{Messages: []llmapi.Message{{Role: llmapi.RoleUser, Content: "hi"}}})
 	require.NoError(t, err)
 	defer func() { _ = it.Close() }()
@@ -150,7 +150,7 @@ func TestClient_CreateCompletion_NonRetryableErrorSurfacesOnNext(t *testing.T) {
 	c := testClient(t, api, Config{})
 
 	it, err := c.CreateCompletion(t.Context(),
-		llmapi.ModelEntry{Name: ClaudeSonnet45, Provider: LLMProvider},
+		llmapi.ModelEntry{Name: ClaudeOpus45, Provider: LLMProvider},
 		llmapi.Request{Messages: []llmapi.Message{{Role: llmapi.RoleUser, Content: "hi"}}})
 	require.NoError(t, err)
 	defer func() { _ = it.Close() }()

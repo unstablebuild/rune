@@ -2415,7 +2415,7 @@ func systemMessage(req llmapi.Request, text string) string {
 
 func TestE2EMaxTokensRejectedAboveModelCeiling(t *testing.T) {
 	model := llmapi.ModelEntry{
-		Provider: "anthropic", Name: "claude-sonnet-4-5", ContextWindow: 200_000,
+		Provider: "anthropic", Name: "claude-haiku-4-5", ContextWindow: 200_000,
 	}
 	h, ag := maxTokensE2EHandler(t, model)
 
@@ -2423,7 +2423,7 @@ func TestE2EMaxTokensRejectedAboveModelCeiling(t *testing.T) {
 		InputSequence: "/max_tokens<space>128000<enter>",
 		Expected: frame(
 			"/max_tokens 128000",
-			"! claude-sonnet-4-5 supports at most",
+			"! claude-haiku-4-5 supports at most",
 			"64000 max output tokens; 128000 is too",
 			"large",
 			blanks(), blanks(), blanks(),

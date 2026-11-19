@@ -130,11 +130,18 @@ func inferenceConfig(
 }
 
 // additionalRequestFields renders the model-family-specific request
-// extensions. Only Claude extended thinking is mapped today; the budget must
-// stay below the output-token ceiling or Bedrock rejects the request.
+// extensions. Only Claude thinking is mapped today: adaptive thinking with an
+// effort level on Claude 4.6 and later, and otherwise a fixed budget, which
+// must stay below the output-token ceiling or Bedrock rejects the request.
 func additionalRequestFields(model, effort string) document.Interface {
 	if effort == "" || !SupportsEffort(model) {
 		return nil
+	}
+	if SupportsAdaptiveThinking(model) {
+		return document.NewLazyDocument(map[string]any{
+			"thinking":      map[string]any{"type": "adaptive"},
+			"output_config": map[string]any{"effort": effort},
+		})
 	}
 	budget, ok := thinkingBudget[effort]
 	if !ok {

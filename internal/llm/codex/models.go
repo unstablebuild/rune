@@ -24,8 +24,14 @@ import (
 const LLMProvider = "codex"
 
 const (
+	// GPT6Dot2Astra is the GPT-6.2 Astra Codex model.
+	GPT6Dot2Astra = "gpt-6.2-astra"
+	// GPT6Dot2Sol is the GPT-6.2 Sol Codex model.
+	GPT6Dot2Sol = "gpt-6.2-sol"
 	// GPT6Astra is the GPT-6 Astra Codex model.
 	GPT6Astra = "gpt-6-astra"
+	// GPT6Dot1Sol is the GPT-6.1 Sol Codex model.
+	GPT6Dot1Sol = "gpt-6.1-sol"
 	// GPT6Sol is the GPT-6 Sol Codex model.
 	GPT6Sol = "gpt-6-sol"
 	// GPT6Dot1Terra is the GPT-6.1 Terra Codex model.
@@ -40,14 +46,6 @@ const (
 	GPT5Dot6Luna = "gpt-5.6-luna"
 	// GPT5Dot5 is the frontier Codex model.
 	GPT5Dot5 = "gpt-5.5"
-	// GPT5Dot4 is the strong everyday Codex coding model.
-	GPT5Dot4 = "gpt-5.4"
-	// GPT5Dot4Mini is the small Codex coding model.
-	GPT5Dot4Mini = "gpt-5.4-mini"
-	// GPT5Dot3Codex is the Codex-optimized GPT-5.3 model.
-	GPT5Dot3Codex = "gpt-5.3-codex"
-	// GPT5Dot2 is the older professional-work Codex model.
-	GPT5Dot2 = "gpt-5.2"
 	// CodexAutoReview is the Codex automatic review model.
 	CodexAutoReview = "codex-auto-review"
 
@@ -57,12 +55,14 @@ const (
 
 // AvailableModels returns Codex models exposed by the Codex backend.
 func AvailableModels() map[string]int {
-	// Context windows mirror codex-rs/models-manager/models.json. For
-	// `gpt-5.4` and `codex-auto-review` the bundled `max_context_window`
-	// is 1M (with a 272k default plan budget); the GPT-6 and GPT-5.6
-	// models have an 872k upstream ceiling.
+	// Context windows mirror max_context_window in
+	// codex-rs/models-manager/models.json, which can exceed the smaller
+	// default plan budget it also lists.
 	return map[string]int{
+		GPT6Dot2Astra:   872000,
+		GPT6Dot2Sol:     872000,
 		GPT6Astra:       872000,
+		GPT6Dot1Sol:     872000,
 		GPT6Sol:         872000,
 		GPT6Dot1Terra:   872000,
 		GPT6Luna:        872000,
@@ -70,11 +70,7 @@ func AvailableModels() map[string]int {
 		GPT5Dot6Terra:   872000,
 		GPT5Dot6Luna:    872000,
 		GPT5Dot5:        272000,
-		GPT5Dot4:        1000000,
-		GPT5Dot4Mini:    272000,
-		GPT5Dot3Codex:   272000,
-		GPT5Dot2:        272000,
-		CodexAutoReview: 1000000,
+		CodexAutoReview: 872000,
 	}
 }
 
@@ -98,7 +94,7 @@ func ModelEntries() []llmapi.ModelEntry {
 // FlagshipModel returns the provider's top model identifier. It is
 // deterministic, unlike iterating ModelEntries() whose order is
 // map-random.
-func FlagshipModel() string { return GPT6Astra }
+func FlagshipModel() string { return GPT6Dot2Astra }
 
 // UpstreamModelName returns the Codex backend model slug for a given
 // catalog name. The rune-side codex catalog stores the upstream slug

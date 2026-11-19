@@ -27,8 +27,14 @@ import (
 const LLMProvider = "openai"
 
 const (
+	// GPT6Dot2Astra is the GPT-6.2 Astra model.
+	GPT6Dot2Astra = "gpt-6.2-astra"
+	// GPT6Dot2Sol is the GPT-6.2 Sol model.
+	GPT6Dot2Sol = "gpt-6.2-sol"
 	// GPT6Astra is the GPT-6 Astra model.
 	GPT6Astra = "gpt-6-astra"
+	// GPT6Dot1Sol is the GPT-6.1 Sol model.
+	GPT6Dot1Sol = "gpt-6.1-sol"
 	// GPT6Sol is the GPT-6 Sol model.
 	GPT6Sol = "gpt-6-sol"
 	// GPT6Dot1Terra is the GPT-6.1 Terra model.
@@ -43,6 +49,8 @@ const (
 	GPT5Dot6Terra = "gpt-5.6-terra"
 	// GPT5Dot6Luna is the GPT-5.6 Luna model.
 	GPT5Dot6Luna = "gpt-5.6-luna"
+	// GPT5Dot5Pro is the GPT-5.5 Pro model.
+	GPT5Dot5Pro = "gpt-5.5-pro"
 	// GPT5Dot5 is the GPT-5.5 model.
 	GPT5Dot5 = "gpt-5.5"
 	// GPT5Dot4 is the GPT-5.4 model.
@@ -59,46 +67,16 @@ const (
 	GPT5Dot3Instant = "gpt-5.3-instant"
 	// GPT5Dot2 is the GPT-5.2 model.
 	GPT5Dot2 = "gpt-5.2"
-	// GPT5Dot2Chat is the GPT-5.2 chat-latest model.
-	GPT5Dot2Chat = "gpt-5.2-chat-latest"
 	// GPT5Dot2Pro is the GPT-5.2 Pro model.
 	GPT5Dot2Pro = "gpt-5.2-pro"
 	// GPT5Dot1 is the GPT-5.1 model.
 	GPT5Dot1 = "gpt-5.1"
-	// GPT5 is the base GPT-5 model.
-	GPT5 = "gpt-5"
-	// GPT5Mini is the GPT-5 Mini model.
-	GPT5Mini = "gpt-5-mini"
-	// GPT5Nano is the GPT-5 Nano model.
-	GPT5Nano = "gpt-5-nano"
 	// GPT4Dot1 is the GPT-4.1 model.
 	GPT4Dot1 = "gpt-4.1"
 	// GPT4Dot1Mini is the GPT-4.1 Mini model.
 	GPT4Dot1Mini = "gpt-4.1-mini"
-	// GPT4Dot1Nano is the GPT-4.1 Nano model.
-	GPT4Dot1Nano = "gpt-4.1-nano"
 	// GPT4o is the GPT-4o model.
 	GPT4o = "gpt-4o"
-	// GPT4Turbo is the GPT-4 Turbo model.
-	GPT4Turbo = "gpt-4-turbo"
-	// GPT4 is the GPT-4 model.
-	GPT4 = "gpt-4"
-	// GPT3Dot5Turbo is the GPT-3.5 Turbo model.
-	GPT3Dot5Turbo = "gpt-3.5-turbo"
-	// GPT3Dot5Turbo16K is the GPT-3.5 Turbo 16K model.
-	GPT3Dot5Turbo16K = "gpt-3.5-turbo-16k"
-	// O1 is the o1 reasoning model.
-	O1 = "o1"
-	// O1Mini is the o1-mini reasoning model.
-	O1Mini = "o1-mini"
-	// O3 is the o3 reasoning model.
-	O3 = "o3"
-	// O3Mini is the o3-mini reasoning model.
-	O3Mini = "o3-mini"
-	// O3Pro is the o3-pro reasoning model.
-	O3Pro = "o3-pro"
-	// O4Mini is the o4-mini reasoning model.
-	O4Mini = "o4-mini"
 
 	// OpenAICompatibleURL indicates use of the default OpenAI API endpoint.
 	OpenAICompatibleURL = "" // indicates to underlying client to use the default openai api
@@ -193,7 +171,7 @@ var gpt5Dot6Efforts = map[string]bool{
 	"ultra":  true,
 }
 
-// gpt6Efforts covers GPT-6 Astra and GPT-6 Sol.
+// gpt6Efforts covers GPT-6.x Astra and Sol.
 var gpt6Efforts = map[string]bool{
 	"low":    true,
 	"medium": true,
@@ -203,8 +181,9 @@ var gpt6Efforts = map[string]bool{
 	"ultra":  true,
 }
 
-// gpt6Dot1TerraEfforts covers GPT-6.1 Terra.
-var gpt6Dot1TerraEfforts = map[string]bool{
+// gpt6NoUltraEfforts covers GPT-6.1 Terra and GPT-6 Luna, which accept none
+// but stop at max.
+var gpt6NoUltraEfforts = map[string]bool{
 	"none":   true,
 	"low":    true,
 	"medium": true,
@@ -213,19 +192,9 @@ var gpt6Dot1TerraEfforts = map[string]bool{
 	"max":    true,
 }
 
-// gpt6LunaEfforts covers GPT-6 Luna, which stops at max: it has no
-// ultra level because it does not delegate work to sub-agents.
-var gpt6LunaEfforts = map[string]bool{
-	"low":    true,
-	"medium": true,
-	"high":   true,
-	"xhigh":  true,
-	"max":    true,
-}
-
-// gpt5Dot4ProEfforts covers GPT-5.4-pro.
+// gpt5ProEfforts covers GPT-5.4-pro and GPT-5.5-pro.
 // Per OpenAI docs: medium, high, xhigh.
-var gpt5Dot4ProEfforts = map[string]bool{
+var gpt5ProEfforts = map[string]bool{
 	"medium": true,
 	"high":   true,
 	"xhigh":  true,
@@ -236,14 +205,12 @@ var gpt5Dot4ProEfforts = map[string]bool{
 // (caller should fall back to gpt5Dot4Efforts for unknown gpt-5 prefixes).
 func supportedEfforts(model string) map[string]bool {
 	switch {
-	case model == GPT6Dot1Terra:
-		return gpt6Dot1TerraEfforts
-	case model == GPT6Luna:
-		return gpt6LunaEfforts
+	case model == GPT6Dot1Terra || model == GPT6Luna:
+		return gpt6NoUltraEfforts
 	case strings.HasPrefix(model, "gpt-6"):
 		return gpt6Efforts
-	case model == GPT5Dot4Pro:
-		return gpt5Dot4ProEfforts
+	case model == GPT5Dot4Pro || model == GPT5Dot5Pro:
+		return gpt5ProEfforts
 	case strings.HasPrefix(model, "gpt-5.6"):
 		return gpt5Dot6Efforts
 	case model == GPT5Dot5 || strings.HasPrefix(model, "gpt-5.4"):
@@ -306,42 +273,31 @@ func NormalizeEffort(model, effort string) (normalized string, warning string) {
 // provider at runtime for account- or region-specific limits.
 func AvailableModels() map[string]int {
 	return map[string]int{
-		GPT6Astra:        1050000,
-		GPT6Sol:          1050000,
-		GPT6Dot1Terra:    1050000,
-		GPT6Luna:         1050000,
-		GPT5Dot6:         1050000,
-		GPT5Dot6Sol:      1050000,
-		GPT5Dot6Terra:    1050000,
-		GPT5Dot6Luna:     1050000,
-		GPT5Dot5:         1050000,
-		GPT5Dot4:         1050000,
-		GPT5Dot4Pro:      1050000,
-		GPT5Dot4Mini:     1050000,
-		GPT5Dot4Nano:     1050000,
-		GPT5Dot3Codex:    400000,
-		GPT5Dot3Instant:  128000,
-		GPT5Dot2:         400000,
-		GPT5Dot2Chat:     400000,
-		GPT5Dot2Pro:      400000,
-		GPT5Dot1:         400000,
-		GPT5:             400000,
-		GPT5Mini:         400000,
-		GPT5Nano:         400000,
-		GPT4Dot1:         1047576,
-		GPT4Dot1Mini:     1047576,
-		GPT4Dot1Nano:     1047576,
-		GPT4o:            128000,
-		GPT4Turbo:        128000,
-		GPT4:             8192,
-		GPT3Dot5Turbo:    16000,
-		GPT3Dot5Turbo16K: 16000,
-		O1:               200000,
-		O1Mini:           128000,
-		O3:               200000,
-		O3Mini:           200000,
-		O3Pro:            200000,
-		O4Mini:           200000,
+		GPT6Dot2Astra:   1050000,
+		GPT6Dot2Sol:     1050000,
+		GPT6Astra:       1050000,
+		GPT6Dot1Sol:     1050000,
+		GPT6Sol:         1050000,
+		GPT6Dot1Terra:   1050000,
+		GPT6Luna:        1050000,
+		GPT5Dot6:        1050000,
+		GPT5Dot6Sol:     1050000,
+		GPT5Dot6Terra:   1050000,
+		GPT5Dot6Luna:    1050000,
+		GPT5Dot5Pro:     1050000,
+		GPT5Dot5:        1050000,
+		GPT5Dot4:        1050000,
+		GPT5Dot4Pro:     1050000,
+		GPT5Dot4Mini:    1050000,
+		GPT5Dot4Nano:    1050000,
+		GPT5Dot3Codex:   400000,
+		GPT5Dot3Instant: 128000,
+		GPT5Dot2:        400000,
+		GPT5Dot2Pro:     400000,
+		GPT5Dot1:        400000,
+		GPT4Dot1:        1047576,
+		GPT4Dot1Mini:    1047576,
+		GPT4o:           128000,
 	}
 }
 
@@ -365,48 +321,37 @@ func ModelEntries() []llmapi.ModelEntry {
 // FlagshipModel returns the provider's top model identifier. It is
 // deterministic, unlike iterating ModelEntries() whose order is
 // map-random.
-func FlagshipModel() string { return GPT6Astra }
+func FlagshipModel() string { return GPT6Dot2Astra }
 
 // maxOutputTokens maps each model to its documented maximum output-token
 // (API max_completion_tokens / max_tokens) ceiling. Models absent from the
 // map have an unknown ceiling; MaxOutputTokens returns 0 for them.
 var maxOutputTokens = map[string]int{
-	GPT6Astra:        128000,
-	GPT6Sol:          128000,
-	GPT6Dot1Terra:    128000,
-	GPT6Luna:         128000,
-	GPT5Dot6:         128000,
-	GPT5Dot6Sol:      128000,
-	GPT5Dot6Terra:    128000,
-	GPT5Dot6Luna:     128000,
-	GPT5Dot5:         128000,
-	GPT5Dot4:         128000,
-	GPT5Dot4Pro:      128000,
-	GPT5Dot4Mini:     128000,
-	GPT5Dot4Nano:     128000,
-	GPT5Dot3Codex:    128000,
-	GPT5Dot3Instant:  128000,
-	GPT5Dot2:         128000,
-	GPT5Dot2Chat:     128000,
-	GPT5Dot2Pro:      128000,
-	GPT5Dot1:         128000,
-	GPT5:             128000,
-	GPT5Mini:         128000,
-	GPT5Nano:         128000,
-	O1:               100000,
-	O3:               100000,
-	O3Pro:            100000,
-	O4Mini:           100000,
-	O1Mini:           65536,
-	O3Mini:           65536,
-	GPT4Dot1:         32768,
-	GPT4Dot1Mini:     32768,
-	GPT4Dot1Nano:     32768,
-	GPT4o:            16384,
-	GPT4Turbo:        16384,
-	GPT4:             8192,
-	GPT3Dot5Turbo:    4096,
-	GPT3Dot5Turbo16K: 4096,
+	GPT6Dot2Astra:   128000,
+	GPT6Dot2Sol:     128000,
+	GPT6Astra:       128000,
+	GPT6Dot1Sol:     128000,
+	GPT6Sol:         128000,
+	GPT6Dot1Terra:   128000,
+	GPT6Luna:        128000,
+	GPT5Dot6:        128000,
+	GPT5Dot6Sol:     128000,
+	GPT5Dot6Terra:   128000,
+	GPT5Dot6Luna:    128000,
+	GPT5Dot5Pro:     128000,
+	GPT5Dot5:        128000,
+	GPT5Dot4:        128000,
+	GPT5Dot4Pro:     128000,
+	GPT5Dot4Mini:    128000,
+	GPT5Dot4Nano:    128000,
+	GPT5Dot3Codex:   128000,
+	GPT5Dot3Instant: 128000,
+	GPT5Dot2:        128000,
+	GPT5Dot2Pro:     128000,
+	GPT5Dot1:        128000,
+	GPT4Dot1:        32768,
+	GPT4Dot1Mini:    32768,
+	GPT4o:           16384,
 }
 
 // MaxOutputTokens returns the model's documented maximum output-token

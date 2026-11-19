@@ -355,14 +355,14 @@ func TestAppMenuDirectChoicesAvailableFromHomeWorkspace(t *testing.T) {
 	models := b.appMenuModels()
 	tutorials := b.appMenuTutorials()
 	require.NotEmpty(t, models)
-	assert.Contains(t, models, "openai/gpt-5")
+	assert.Contains(t, models, "openai/gpt-6.2-astra")
 	assert.Equal(t, []string{"agent", "basics", "navigation"}, tutorials)
 
 	menus := testAppMenus(map[string]term.KeyComb{}, nil, models, tutorials)
 	agent := submenuByTitle(t, menuByTitle(t, menus, "Tools").Items, "Agent")
 	modelItems := submenuByTitle(t, agent.Items, "Change Model").Items
 	assert.Contains(t, modelItems, appmenu.Command{
-		Title: "openai/gpt-5", Command: "chatmodel", Args: []string{"openai/gpt-5"},
+		Title: "openai/gpt-6.2-astra", Command: "chatmodel", Args: []string{"openai/gpt-6.2-astra"},
 	})
 }
 

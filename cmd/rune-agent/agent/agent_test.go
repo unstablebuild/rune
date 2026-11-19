@@ -43,6 +43,7 @@ import (
 	"unstable.build/rune/cmd/rune-agent/agent/toolpolicy"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguemanager"
 	"unstable.build/rune/internal/llm/anthropic"
+	"unstable.build/rune/internal/llm/openai"
 )
 
 func TestAgentRun(t *testing.T) {
@@ -1164,7 +1165,7 @@ func TestCompactDialoguePlumbsMaxOutputTokens(t *testing.T) {
 }
 
 func TestSummarizeMaxOutputTokens(t *testing.T) {
-	capped := llmapi.ModelEntry{Provider: anthropic.LLMProvider, Name: anthropic.ClaudeSonnet4Dot5}
+	capped := llmapi.ModelEntry{Provider: anthropic.LLMProvider, Name: anthropic.ClaudeOpus4Dot5}
 	uncapped := llmapi.ModelEntry{Provider: "llamacpp", Name: "local"}
 
 	tests := []struct {
@@ -1175,8 +1176,8 @@ func TestSummarizeMaxOutputTokens(t *testing.T) {
 	}{
 		{"no override falls back to the default", 0, capped, defaultSummarizeMaxTokens},
 		{"default clamped to the ceiling", 0, llmapi.ModelEntry{
-			Provider: anthropic.LLMProvider, Name: anthropic.ClaudeHaiku3,
-		}, 4096},
+			Provider: openai.LLMProvider, Name: openai.GPT4o,
+		}, 16384},
 		{"override under the ceiling is respected", 50_000, capped, 50_000},
 		{"override above the ceiling is clamped", 128_000, capped, 64_000},
 		{"override kept when the ceiling is unknown", 128_000, uncapped, 128_000},
@@ -5098,7 +5099,7 @@ func TestAutoCompactPlumbsMaxOutputTokens(t *testing.T) {
 		SystemPrompt: "test system prompt",
 		Model: llmapi.ModelEntry{
 			Provider:      "anthropic",
-			Name:          "claude-sonnet-4-5",
+			Name:          "claude-haiku-4-5",
 			ContextWindow: 1000,
 		},
 	})
@@ -5150,7 +5151,7 @@ func TestAutoCompactUsesDefaultMaxOutputTokens(t *testing.T) {
 		SystemPrompt: "test system prompt",
 		Model: llmapi.ModelEntry{
 			Provider:      "anthropic",
-			Name:          "claude-sonnet-4-5",
+			Name:          "claude-haiku-4-5",
 			ContextWindow: 1000,
 		},
 	})
@@ -5271,7 +5272,7 @@ func TestSummarizeEmptySummaryReturnsError(t *testing.T) {
 }
 
 func TestSummarizeTruncatedSummaryError(t *testing.T) {
-	sonnet := llmapi.ModelEntry{Provider: anthropic.LLMProvider, Name: anthropic.ClaudeSonnet4Dot5}
+	capped := llmapi.ModelEntry{Provider: anthropic.LLMProvider, Name: anthropic.ClaudeOpus4Dot5}
 	tests := []struct {
 		name      string
 		model     llmapi.ModelEntry
@@ -5286,14 +5287,14 @@ func TestSummarizeTruncatedSummaryError(t *testing.T) {
 		},
 		{
 			name:      "budget below the model ceiling",
-			model:     sonnet,
+			model:     capped,
 			budget:    32768,
 			want:      "summary truncated at the 32768-token output budget",
 			wantRaise: true,
 		},
 		{
 			name:   "budget at the model ceiling",
-			model:  sonnet,
+			model:  capped,
 			budget: 64000,
 			want:   "summary truncated at the 64000-token output budget; compact with a model that allows longer output",
 		},

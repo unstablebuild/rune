@@ -195,8 +195,8 @@ After a provider is authenticated, run `models` (or `agent models`) in the
 [Rune console](../learn/console.md) to see its models in the list. Because the same
 model name can be served by more than one provider, Rune identifies models as
 `provider/name`, for example
-`openai/gpt-5.4`, `anthropic/claude-opus-4-6`, `claude/claude-opus-4-6`, or
-`codex/gpt-5.4`. A bare name resolves when only one provider exposes it;
+`openai/gpt-6.2-sol`, `anthropic/claude-opus-4-6`, `claude/claude-opus-4-6`, or
+`codex/gpt-6.2-sol`. A bare name resolves when only one provider exposes it;
 otherwise prefix it with the provider.
 
 Set the default model for new chats by pointing the `default` alias at it:

@@ -284,6 +284,10 @@ func thinkingConfig(effort string) *genai.ThinkingConfig {
 		level = genai.ThinkingLevelMedium
 	case "high":
 		level = genai.ThinkingLevelHigh
+	case "xhigh":
+		// The pinned genai SDK predates the XHIGH level Gemini 4 Neon and
+		// Hydrogen accept.
+		level = genai.ThinkingLevel("XHIGH")
 	default:
 		return nil
 	}

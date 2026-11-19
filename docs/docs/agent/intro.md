@@ -247,10 +247,10 @@ questions, compaction, and memory consolidation to smaller, cheaper
 models:
 
 ```
-models alias set default codex/gpt-5.5
-models alias set query codex/gpt-5.4-mini
-models alias set compact codex/gpt-5.4-mini
-models alias set dream codex/gpt-5.4-mini
+models alias set default codex/gpt-6.2-astra
+models alias set query codex/gpt-6-luna
+models alias set compact codex/gpt-6-luna
+models alias set dream codex/gpt-6-luna
 ```
 
 The `models alias <name> <provider/model>` shorthand (without `set`) does

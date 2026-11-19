@@ -34,8 +34,8 @@ func TestAnthropicParamsMaxTokens(t *testing.T) {
 		{"request overrides all", ClaudeOpus4Dot8, llmapi.Request{MaxOutputTokens: 222}, Config{MaxTokens: 111}, 222},
 		{"config overrides model ceiling", ClaudeOpus4Dot8, llmapi.Request{}, Config{MaxTokens: 111}, 111},
 		{"defaults to model ceiling", ClaudeOpus4Dot8, llmapi.Request{}, Config{}, 128000},
-		{"defaults to model ceiling with thinking", ClaudeSonnet4Dot6, llmapi.Request{}, Config{EnableThinking: true}, 64000},
-		{"legacy model ceiling", ClaudeHaiku3, llmapi.Request{}, Config{}, 4096},
+		{"defaults to model ceiling with thinking", ClaudeSonnet4Dot6, llmapi.Request{}, Config{EnableThinking: true}, 128000},
+		{"legacy model ceiling", ClaudeHaiku4Dot5, llmapi.Request{}, Config{}, 64000},
 		{"unknown model with thinking", "claude-unknown", llmapi.Request{}, Config{EnableThinking: true}, 32768},
 		{"unknown model", "claude-unknown", llmapi.Request{}, Config{}, 8192},
 	}

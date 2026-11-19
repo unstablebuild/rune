@@ -23,12 +23,26 @@ import (
 )
 
 func TestDefaultEffortFor(t *testing.T) {
-	for model := range AvailableModels() {
-		want := ""
-		if isGemini3(model) {
-			want = defaultGemini3Effort
-		}
-		assert.Equal(t, want, DefaultEffortFor(model), "model %s", model)
+	tests := []struct {
+		model string
+		want  string
+	}{
+		// Gemini 4 Neon and Hydrogen document high as their default.
+		{Gemini_4_Neon, "high"},
+		{Gemini_4_Hydrogen, "high"},
+		{Gemini_4_Carbon, "medium"},
+		{Gemini_4_Argon, "medium"},
+		{Gemini_3_8_Flash, "medium"},
+		{Gemini_3_6_Flash, "medium"},
+		{Gemini_3_1_Pro_Preview, "medium"},
+		{"gemini-4-unreleased", "medium"},
+		// Gemini 2.x does not require a thinking config.
+		{Gemini_2_5_FlashLite, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			assert.Equal(t, tt.want, DefaultEffortFor(tt.model))
+		})
 	}
 }
 
@@ -36,5 +50,17 @@ func TestDefaultEffortForMatchesNormalize(t *testing.T) {
 	for model := range AvailableModels() {
 		normalized, _ := NormalizeEffort(model, "")
 		assert.Equal(t, normalized, DefaultEffortFor(model), "model %s", model)
+	}
+}
+
+func TestDefaultEffortForIsSupported(t *testing.T) {
+	for model := range AvailableModels() {
+		def := DefaultEffortFor(model)
+		if def == "" {
+			continue
+		}
+		normalized, warning := NormalizeEffort(model, def)
+		assert.Equal(t, def, normalized, "model %s", model)
+		assert.Empty(t, warning, "model %s", model)
 	}
 }

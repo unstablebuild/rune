@@ -300,7 +300,7 @@ func TestCreateCompletionAlwaysSendsThinkingConfigForGemini3(t *testing.T) {
 	t.Run("gemini 2.5 with no effort omits thinkingConfig", func(t *testing.T) {
 		body, cfg := capturingSSEServer(t, []string{doneChunk})
 		svc := NewClient("k", cfg)
-		model := llmapi.ModelEntry{Name: Gemini_2_5_Flash, Provider: LLMProvider}
+		model := llmapi.ModelEntry{Name: Gemini_2_5_FlashLite, Provider: LLMProvider}
 		drain(t, svc, model, llmapi.Request{
 			Messages: []llmapi.Message{{Role: llmapi.RoleUser, Content: "hi"}},
 		})
@@ -310,7 +310,7 @@ func TestCreateCompletionAlwaysSendsThinkingConfigForGemini3(t *testing.T) {
 
 func TestCreateCompletionEffortWarningProvenance(t *testing.T) {
 	doneChunk := `{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`
-	model := llmapi.ModelEntry{Name: Gemini_2_5_Flash, Provider: LLMProvider}
+	model := llmapi.ModelEntry{Name: Gemini_2_5_FlashLite, Provider: LLMProvider}
 
 	t.Run("request effort warns", func(t *testing.T) {
 		_, cfg := sseServer(t, []string{doneChunk})
@@ -502,7 +502,7 @@ func TestGetModel(t *testing.T) {
 func TestGetModelFallsBackToStatic(t *testing.T) {
 	svc := NewClient("", Config{})
 
-	got, err := svc.GetModel(context.Background(), llmapi.ModelEntry{Name: Gemini_2_5_Pro})
+	got, err := svc.GetModel(context.Background(), llmapi.ModelEntry{Name: Gemini_4_Carbon})
 	require.NoError(t, err)
 	assert.Equal(t, LLMProvider, got.Provider)
 	assert.Positive(t, got.ContextWindow)

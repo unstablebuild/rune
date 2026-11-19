@@ -408,9 +408,13 @@ type modelEncoder struct {
 	tokensPerName    int
 }
 
+// fallbackEncodingModel names the tiktoken-go encoding used for models it
+// does not recognise.
+const fallbackEncodingModel = "gpt-4"
+
 // encoderFor returns a per-model tiktoken encoder, cached across requests.
-// Falls back to the GPT4 encoder if the model is not recognised by
-// tiktoken-go.
+// Falls back to the fallbackEncodingModel encoder if the model is not
+// recognised by tiktoken-go.
 func (a *client) encoderFor(modelName string) *modelEncoder {
 	if v, ok := a.encoders.Load(modelName); ok {
 		return v.(*modelEncoder)
@@ -419,10 +423,10 @@ func (a *client) encoderFor(modelName string) *modelEncoder {
 	if err != nil {
 		slog.Warn("token counting might be off: encoding error",
 			"model", modelName, "error", err)
-		tkm, err = tiktoken.EncodingForModel(GPT4)
+		tkm, err = tiktoken.EncodingForModel(fallbackEncodingModel)
 		if err != nil {
 			panic(fmt.Errorf("fallback encoding for model "+
-				"from %s to %s failed: %v", modelName, GPT4, err))
+				"from %s to %s failed: %v", modelName, fallbackEncodingModel, err))
 		}
 	}
 	enc := &modelEncoder{tk: tkm, tokensPerMessage: 3, tokensPerName: 1}

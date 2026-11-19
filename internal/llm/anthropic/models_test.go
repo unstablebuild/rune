@@ -83,14 +83,29 @@ func TestMaxOutputTokens(t *testing.T) {
 		{ClaudeFable5Dot2, 128000},
 		{ClaudeFable5Dot1, 128000},
 		{ClaudeFable5, 128000},
-		{ClaudeSonnet4Dot5, 64000},
-		{ClaudeOpus4, 32000},
-		{ClaudeHaiku3, 4096},
+		{ClaudeSonnet4Dot6, 128000},
+		{ClaudeOpus4Dot5, 64000},
+		{ClaudeHaiku4Dot5, 64000},
 		{"unknown-model", 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
 			assert.Equal(t, tt.want, MaxOutputTokens(tt.model))
+		})
+	}
+}
+
+func TestRetiredModelsNotInCatalog(t *testing.T) {
+	retired := []string{
+		"claude-sonnet-4-5", "claude-opus-4-1", "claude-sonnet-4-0", "claude-opus-4-0",
+		"claude-3-opus", "claude-3-sonnet", "claude-3-haiku",
+	}
+	avail := AvailableModels()
+	for _, model := range retired {
+		t.Run(model, func(t *testing.T) {
+			_, ok := avail[model]
+			assert.False(t, ok)
+			assert.Zero(t, MaxOutputTokens(model))
 		})
 	}
 }
@@ -110,13 +125,8 @@ func TestSupportsEffort(t *testing.T) {
 		{ClaudeSonnet4Dot6, true},
 		{ClaudeHaiku4Dot5, true},
 		{ClaudeOpus4Dot5, true},
-		{ClaudeSonnet4Dot5, true},
-		{ClaudeOpus4Dot1, true},
-		{ClaudeSonnet4, true},
-		{ClaudeOpus4, true},
-		{ClaudeOpus3, false},
-		{ClaudeSonnet3, false},
-		{ClaudeHaiku3, false},
+		{"claude-3-opus", false},
+		{"claude-3-haiku", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
@@ -141,9 +151,7 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{ClaudeSonnet4Dot6, true},
 		{ClaudeHaiku4Dot5, false},
 		{ClaudeOpus4Dot5, false},
-		{ClaudeSonnet4Dot5, false},
-		{ClaudeOpus4Dot1, false},
-		{ClaudeOpus3, false},
+		{"claude-3-opus", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
@@ -164,24 +172,20 @@ func TestNormalizeEffort(t *testing.T) {
 		{"empty effort", ClaudeOpus4Dot6, "", "", false},
 
 		// Claude 3 models: effort is dropped with warning.
-		{"claude-3 opus with high", ClaudeOpus3, "high", "", true},
-		{"claude-3 sonnet with low", ClaudeSonnet3, "low", "", true},
-		{"claude-3 haiku with medium", ClaudeHaiku3, "medium", "", true},
+		{"claude-3 opus with high", "claude-3-opus", "high", "", true},
+		{"claude-3 haiku with medium", "claude-3-haiku", "medium", "", true},
 
-		// Claude 4.0–4.5: low/medium/high are supported.
-		{"opus-4 low", ClaudeOpus4, "low", "low", false},
-		{"opus-4 medium", ClaudeOpus4, "medium", "medium", false},
-		{"opus-4 high", ClaudeOpus4, "high", "high", false},
-		{"sonnet-4.5 low", ClaudeSonnet4Dot5, "low", "low", false},
+		// Claude 4.5: low/medium/high are supported.
+		{"opus-4.5 low", ClaudeOpus4Dot5, "low", "low", false},
+		{"opus-4.5 medium", ClaudeOpus4Dot5, "medium", "medium", false},
 		{"opus-4.5 high", ClaudeOpus4Dot5, "high", "high", false},
 		{"haiku-4.5 medium", ClaudeHaiku4Dot5, "medium", "medium", false},
 
-		// Claude 4.0–4.5: unsupported levels are dropped with warning.
-		{"opus-4 none", ClaudeOpus4, "none", "", true},
-		{"opus-4 minimal", ClaudeOpus4, "minimal", "", true},
-		{"opus-4 xhigh", ClaudeOpus4, "xhigh", "", true},
-		{"opus-4 max", ClaudeOpus4, "max", "", true},
-		{"sonnet-4.5 xhigh", ClaudeSonnet4Dot5, "xhigh", "", true},
+		// Claude 4.5: unsupported levels are dropped with warning.
+		{"opus-4.5 none", ClaudeOpus4Dot5, "none", "", true},
+		{"opus-4.5 minimal", ClaudeOpus4Dot5, "minimal", "", true},
+		{"opus-4.5 xhigh", ClaudeOpus4Dot5, "xhigh", "", true},
+		{"opus-4.5 max", ClaudeOpus4Dot5, "max", "", true},
 		{"haiku-4.5 max", ClaudeHaiku4Dot5, "max", "", true},
 
 		// Claude 4.6+: low/medium/high/xhigh/max are all supported.
