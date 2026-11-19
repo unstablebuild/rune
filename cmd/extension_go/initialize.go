@@ -45,9 +45,10 @@ type goplsDebugOptions struct {
 	Trace semanticapi.TraceValue
 }
 
-// goplsReservedKeys are Rune routing fields that gopls ignores, so a user
-// map must not clobber them. A user who wants another gopls binary sets
-// lsp_path instead of command.
+// goplsReservedKeys are Rune routing fields. Rune strips them from the
+// options before the request reaches gopls, so a user map must not clobber
+// them. A user who wants another gopls binary sets lsp_path instead of
+// command.
 var goplsReservedKeys = map[string]bool{
 	"langID":  true,
 	"command": true,
@@ -90,10 +91,7 @@ func goplsInitializeParams(
 		},
 	}
 
-	// Merge user-supplied gopls settings over Rune's defaults. User keys win
-	// at the top level except the reserved ones, and the settings whose
-	// defaults are maps merge key by key so one entry can be flipped without
-	// replacing the rest.
+	// User keys win over the defaults, except the reserved ones.
 	for k, v := range userSettings {
 		if goplsReservedKeys[k] {
 			continue

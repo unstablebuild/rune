@@ -182,7 +182,7 @@ command; the guest editor or the OS may be claiming it.
 
 ## gopls keeps asking to run govulncheck
 
-gopls prompts when a `go.mod` or `go.work` is saved with changed
+gopls prompts when a `go.mod` or `go.work` is created or saved with changed
 require/exclude/replace directives. Answering **Always** or **Never** writes
 your choice to `gopls/vulncheck/settings.json` under your user config
 directory, and gopls stops asking after that.
@@ -197,8 +197,8 @@ The file is written on the machine gopls runs on, so over an SSH workspace it
 is on the remote host, not your local machine.
 
 To turn the prompt off from Rune config instead, set `vulncheck` to `"Imports"`
-or `"Off"` as an initialization option, which needs the setting wired into
-`initializationOptions` (see [Vulnerability checks](./languages/go.md#vulnerability-checks)).
+or `"Off"` as an initialization option (see
+[Vulnerability checks](./languages/go.md#vulnerability-checks)).
 
 ## Inspect any process Rune starts
 
