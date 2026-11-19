@@ -210,15 +210,15 @@ func TestDream_E2E_InProgress(t *testing.T) {
 	handlertest.RunHandlerSequence(t, f.flush, testWidth, testHeight, []handlertest.SequenceTestCase{
 		{
 			InputSequence: "dream<enter>",
-			Expected: f.expected(6,
+			Expected: f.expected(5,
 				"dream> dream",
 				"✓ initializing memory workspace",
 				"⚙ Phase: Extract memories from conversations",
 				"⚙ conversation \"d1\" (1/1 conversations)",
-				// While dream is mid-run the REPL's built-in
-				// progress bar overlays the last output row using
-				// the totals fed via pw.Progress.
-				"╢░░░░░░░░░░░░░░░░░░░░░░░░░╟ 100% 1/1 conversations",
+				"⚙ extracting memories (1/1 conversations)",
+				// While dream is mid-run the REPL shows the totals fed
+				// via pw.Progress on the command's row.
+				"dream ╢░░░░░░░░░░░░░░░░░░░╟ 100% 1/1 conversations",
 				"dream> \u2590",
 			),
 		},

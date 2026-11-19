@@ -922,7 +922,9 @@ func (wm *WindowManager) drawWindowBar(f *floatingNode, w term.Writer) {
 			}
 		default:
 			if gr.Overlay {
-				w.SetCell(at, cell)
+				under := cell
+				under.Attrs |= term.AttrKeepBackground
+				w.SetCell(at, under)
 			}
 			cw.keep = true
 			cw.layer = term.ImageLayerAboveText
@@ -951,7 +953,8 @@ type windowBarCell struct {
 	// foreground as its background so it reads as part of the bar.
 	solid term.Cell
 	// onImage is the cell over an image that replaces the bar's runes,
-	// on the frame's background.
+	// on whatever is under the window, so that the image's transparent
+	// pixels show it like those of the rest of the bar.
 	onImage term.Cell
 }
 
@@ -962,7 +965,8 @@ func (wm *WindowManager) windowBarText(
 ) (ret []windowBarCell) {
 	if wm.config.CloseIcon != 0 {
 		solid, onImage := wm.config.CloseIconAttr, wm.config.CloseIconAttr
-		solid.Bg, onImage.Bg = barAttr.Fg, barAttr.Bg
+		solid.Bg = barAttr.Fg
+		onImage.Bg, onImage.Attrs = term.ColorDefault, onImage.Attrs|term.AttrKeepBackground
 		ret = append(ret, windowBarCell{
 			x:       WindowBarCloseIconX,
 			solid:   term.NewCell(wm.config.CloseIcon, 1, solid),
@@ -985,7 +989,7 @@ func (wm *WindowManager) windowBarText(
 		title = title[:avail]
 	}
 	solid := term.Attributes{Fg: barAttr.Bg, Bg: barAttr.Fg}
-	onImage := term.Attributes{Fg: barAttr.Fg, Bg: barAttr.Bg}
+	onImage := term.Attributes{Fg: barAttr.Fg, Attrs: term.AttrKeepBackground}
 	start := minX + (avail-len(title))/2
 	for i, r := range title {
 		ret = append(ret, windowBarCell{

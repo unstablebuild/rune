@@ -176,6 +176,9 @@ would need percent-encoding in a `file://` URI.
      floating window's frame and window bar they show whatever is under the
      window, including its text: make those sprites opaque inside the window
      and transparent only outside it, such as beyond a rounded corner.
+     The close icon and title over bar sprites keep that background too, so
+     `close_icon_attr`'s background only applies to a bar drawn with
+     characters; pick the icon and title colours to read over the sprites.
 5. **The terminal UI ignores images** and draws the characters. The GUI also
    falls back when images are unavailable, except separator junctions try the
    frame's vertical side image first (see Fallbacks). Keep characters sensible.

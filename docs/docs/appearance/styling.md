@@ -208,6 +208,9 @@ frame_charset:
   background. On a floating window's frame and window bar, they show whatever
   is under the window instead, so a rounded corner stays round over a coloured
   pane. Make those images opaque inside the window and transparent outside it.
+  The close icon and the title over a window bar's images sit on that same
+  background, so the background of `close_icon_attr` applies only where the
+  bar draws characters.
 - Image URIs are absolute `file://` or `https://` URIs. In a `file://` URI,
   Rune expands `$RUNE_DATADIR` and no other variable. The wallpaper and the
   app icon take plain paths instead. A URI Rune cannot parse rejects its whole

@@ -229,10 +229,11 @@ func (g *FrameGraphics) Draw(
 // that its transparent pixels show what was drawn there before, and
 // every other cell takes its slot's rune, as do the cells whose image is
 // not loaded yet, failed to load or that w cannot draw, and those under
-// Overlay images. The cells of f's scroll bar take the bar's runes, and
-// with bar the top row is left to a window bar. A nil g draws runes
-// only. It draws nothing when width or height is below 3, where f draws
-// no border.
+// Overlay images, which keep the background under the window so that
+// the image's transparent pixels show it. The cells of f's scroll bar
+// take the bar's runes, and with bar the top row is left to a window
+// bar. A nil g draws runes only. It draws nothing when width or height
+// is below 3, where f draws no border.
 func (g *FrameGraphics) drawBorder(
 	w term.Writer, f *component.Frame, width, height int, bar bool,
 ) {
@@ -252,7 +253,9 @@ func (g *FrameGraphics) drawBorder(
 			return
 		}
 		if gr.Overlay {
-			w.SetCell(pos, cell)
+			under := cell
+			under.Attrs |= term.AttrKeepBackground
+			w.SetCell(pos, under)
 		}
 		if cw == nil {
 			cw = &cellImageWriter{Writer: w, keep: true}

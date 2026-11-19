@@ -3009,6 +3009,7 @@ RRRRRRRRRRRR`,
 func TestWindowBarGraphics(t *testing.T) {
 	pics := newFramePictures(t)
 	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
+	tileAttr := term.Attributes{Fg: term.ColorWhite, Bg: term.ColorTeal}
 	every := WindowBarGraphics{Left: "L", Horizontal: "R", Right: "L"}
 	overlay := every
 	overlay.Overlay = true
@@ -3033,8 +3034,9 @@ func TestWindowBarGraphics(t *testing.T) {
 		// below are the columns of the images drawn under the bar's text.
 		below []int
 		// icon and title are the attributes of the close icon and of the
-		// title's first letter.
-		icon, title term.Attributes
+		// title's first letter, and bar those of the bar cell right of
+		// the icon.
+		icon, title, bar term.Attributes
 	}{
 		{
 			name:     "every slot is drawn under the icon and title",
@@ -3052,8 +3054,9 @@ func TestWindowBarGraphics(t *testing.T) {
 │└────────┘│
 └──────────┘`,
 			below: []int{2, 5, 6, 7, 8},
-			icon:  term.Attributes{Fg: term.ColorRed, Bg: attr.Bg},
-			title: attr,
+			icon:  term.Attributes{Fg: term.ColorRed, Bg: tileAttr.Bg},
+			title: term.Attributes{Fg: attr.Fg, Bg: tileAttr.Bg},
+			bar:   tileAttr,
 		},
 		{
 			name:     "overlay keeps the bar's colors under the text",
@@ -3068,6 +3071,7 @@ func TestWindowBarGraphics(t *testing.T) {
 			below:      []int{2, 5, 6, 7, 8},
 			icon:       solidIcon,
 			title:      solidTitle,
+			bar:        term.Attributes{Fg: attr.Fg, Bg: tileAttr.Bg},
 		},
 		{
 			name:     "only the ends leave the middle to its runes",
@@ -3086,6 +3090,7 @@ func TestWindowBarGraphics(t *testing.T) {
 └──────────┘`,
 			icon:  solidIcon,
 			title: solidTitle,
+			bar:   attr,
 		},
 		{
 			name:     "a writer that cannot draw images gets the runes",
@@ -3094,6 +3099,7 @@ func TestWindowBarGraphics(t *testing.T) {
 			expected: runes,
 			icon:     solidIcon,
 			title:    solidTitle,
+			bar:      attr,
 		},
 		{
 			name:      "images that are not loaded yet leave the runes",
@@ -3102,6 +3108,7 @@ func TestWindowBarGraphics(t *testing.T) {
 			expected:  runes,
 			icon:      solidIcon,
 			title:     solidTitle,
+			bar:       attr,
 		},
 		{
 			name:     "a window without a bar draws no bar images",
@@ -3124,7 +3131,7 @@ func TestWindowBarGraphics(t *testing.T) {
 			cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
 			irq := make(interruptCounter, 16)
 			cfg.Interrupter = irq
-			wm, _ := NewWindowManager(&component.TestComponent{Ch: 'C'}, cfg)
+			wm, _ := NewWindowManager(&component.TestComponent{Ch: 'C', Attributes: tileAttr}, cfg)
 			t.Cleanup(func() { assert.NoError(t, wm.Close()) })
 			wm.Resize(12, 5)
 			wm.FloatingWindow(
@@ -3160,6 +3167,7 @@ func TestWindowBarGraphics(t *testing.T) {
 			if !tt.noBar {
 				assert.Equal(t, tt.icon, s.Cells()[1*12+2].Attributes(), "close icon")
 				assert.Equal(t, tt.title, s.Cells()[1*12+6].Attributes(), "title")
+				assert.Equal(t, tt.bar, s.Cells()[1*12+3].Attributes(), "bar")
 			}
 
 			if tt.notLoaded {
@@ -3468,10 +3476,17 @@ func TestWindowManagerFloatingGraphicsShowWhatIsUnder(t *testing.T) {
 			wm.Draw(s)
 			assert.Equal(t, tt.expected, s.composite(t, pics))
 			for _, img := range s.images {
-				if tt.graphics.Overlay || img.Layer != term.ImageLayerAboveText {
+				cell := s.Cells()[img.Pos.Y*12+img.Pos.X]
+				if img.Layer == term.ImageLayerBelowText {
+					assert.Equal(t, tileAttr.Bg, cell.Bg, "the text over the image at %v", img.Pos)
 					continue
 				}
-				cell := s.Cells()[img.Pos.Y*12+img.Pos.X]
+				if tt.graphics.Overlay {
+					assert.NotEqual(t, 'C', cell.Ch, "the rune under the overlay image at %v", img.Pos)
+					assert.Equal(t, term.Attributes{Fg: attr.Fg, Bg: tileAttr.Bg}, cell.Attributes(),
+						"the rune under the overlay image at %v", img.Pos)
+					continue
+				}
 				assert.Equal(t, 'C', cell.Ch, "the cell under the image at %v", img.Pos)
 				assert.Equal(t, tileAttr, cell.Attributes(), "the cell under the image at %v", img.Pos)
 			}

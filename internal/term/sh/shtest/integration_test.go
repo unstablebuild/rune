@@ -18,6 +18,7 @@ package shtest
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -58,15 +59,48 @@ func (t *testHandler) Complete(
 	return iterator.FromSlice[string](nil), nil
 }
 
-// Note: The REPL handler dispatches commands
-// asynchronously via scheduleNextTick, which requires
-// the tui.Run event loop. In tests without the event
-// loop, command output callbacks are dropped. Expected
-// strings verify echoed command lines (added
-// synchronously) and prompt state.
-
 func nopSchedule(func()) bool          { return false }
 func nopInterrupter() term.Interrupter { return term.NopInterrupter() }
+
+// settledREPL draws a repl.Handler once the commands it runs have ended,
+// running the callbacks they schedule as the event loop would: a
+// command's row spins until its end is applied on the loop.
+type settledREPL struct {
+	*repl.Handler
+	mu      sync.Mutex
+	pending []func()
+}
+
+func newSettledREPL(underlying repl.CommandHandler) *settledREPL {
+	s := new(settledREPL)
+	s.Handler = repl.New(sh.New(underlying, workspaceapi.URI{}),
+		s.scheduleNextTick, nopInterrupter(), repl.WithPrompt("$ "))
+	return s
+}
+
+func (s *settledREPL) scheduleNextTick(fn func()) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pending = append(s.pending, fn)
+	return true
+}
+
+func (s *settledREPL) Draw(w term.Writer) {
+	for {
+		s.Wait()
+		s.mu.Lock()
+		pending := s.pending
+		s.pending = nil
+		s.mu.Unlock()
+		if len(pending) == 0 {
+			break
+		}
+		for _, fn := range pending {
+			fn()
+		}
+	}
+	s.Handler.Draw(w)
+}
 
 func TestIntegration(t *testing.T) {
 	cases := []struct {
@@ -103,8 +137,8 @@ func TestIntegration(t *testing.T) {
 						"                    \n" +
 						"                    \n" +
 						"                    \n" +
-						"                    \n" +
 						"$ echo hello        \n" +
+						"hello               \n" +
 						"$ ▐                 ",
 				},
 			},
@@ -193,8 +227,8 @@ func TestIntegration(t *testing.T) {
 						"                    \n" +
 						"                    \n" +
 						"                    \n" +
-						"                    \n" +
 						"$ (echo hi)         \n" +
+						"hi                  \n" +
 						"$ ▐                 ",
 				},
 			},
@@ -295,10 +329,10 @@ func TestIntegration(t *testing.T) {
 						"                    \n" +
 						"                    \n" +
 						"                    \n" +
-						"                    \n" +
-						"                    \n" +
-						"                    \n" +
 						"$ echo \"unterminated\n" +
+						"1:6: reached EOF wit\n" +
+						"hout closing quote `\n" +
+						"\"`                  \n" +
 						"$ ▐                 ",
 				},
 			},
@@ -307,15 +341,7 @@ func TestIntegration(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			underlying := &testHandler{}
-			h := repl.New(
-				sh.New(underlying, workspaceapi.URI{}),
-				nopSchedule, nopInterrupter(),
-				repl.WithPrompt("$ "),
-			)
-			handlertest.RunHandlerSequence(
-				t, h, 20, 10, tc.cases,
-			)
+			handlertest.RunHandlerSequence(t, newSettledREPL(&testHandler{}), 20, 10, tc.cases)
 		})
 	}
 }

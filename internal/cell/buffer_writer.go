@@ -118,6 +118,10 @@ func (w *BufferWriter) SetCell(pos term.Coordinates, c term.Cell) {
 	if pos.X < 0 || pos.X >= len(row) {
 		return
 	}
+	if c.Attrs&term.AttrKeepBackground != 0 {
+		c.Bg = row[pos.X].Bg
+		c.Attrs &^= term.AttrKeepBackground
+	}
 	row[pos.X] = c
 }
 
@@ -126,6 +130,7 @@ func (w *BufferWriter) UnionAttributes(pos term.Coordinates, attr term.Attribute
 	if pos.X >= w.width || pos.Y >= w.height || pos.X < 0 || pos.Y < 0 {
 		return
 	}
+	attr.Attrs &^= term.AttrKeepBackground
 	w.cells[pos.Y][pos.X].SetAttributes(term.AttributesUnion(
 		w.cells[pos.Y][pos.X].Attributes(), attr))
 }

@@ -87,6 +87,59 @@ func TestBufferWriterSetCellOutOfBounds(t *testing.T) {
 	}
 }
 
+func TestBufferWriterSetCellKeepsBackground(t *testing.T) {
+	teal := term.NewRGBColor(0, 128, 128)
+	plum := term.NewRGBColor(128, 0, 128)
+	white := term.NewRGBColor(255, 255, 255)
+	pos := term.Coordinates{X: 1, Y: 1}
+	keep := term.NewCell('x', 1, term.Attributes{Fg: white, Bg: plum, Attrs: term.AttrBold | term.AttrKeepBackground})
+
+	for _, tt := range []struct {
+		name     string
+		existing term.Cell
+		want     term.Cell
+	}{
+		{
+			name:     "coloured background underneath",
+			existing: term.NewCell('C', 1, term.Attributes{Fg: plum, Bg: teal, Attrs: term.AttrItalic}),
+			want:     term.NewCell('x', 1, term.Attributes{Fg: white, Bg: teal, Attrs: term.AttrBold}),
+		},
+		{
+			name:     "default background underneath",
+			existing: term.NewCell('C', 1, term.Attributes{Fg: plum}),
+			want:     term.NewCell('x', 1, term.Attributes{Fg: white, Attrs: term.AttrBold}),
+		},
+		{
+			name:     "wide cell underneath",
+			existing: term.NewCell('漢', 2, term.Attributes{Bg: teal}),
+			want:     term.NewCell('x', 1, term.Attributes{Fg: white, Bg: teal, Attrs: term.AttrBold}),
+		},
+		{
+			name: "blank cell underneath",
+			want: term.NewCell('x', 1, term.Attributes{Fg: white, Attrs: term.AttrBold}),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			writer := NewBufferWriter(context.Background(), 3, 3)
+			writer.SetCell(pos, tt.existing)
+			writer.SetCell(pos, keep)
+			assert.Equal(t, tt.want, writer.RawCells()[pos.Y][pos.X])
+		})
+	}
+
+	t.Run("union keeps its own background semantics", func(t *testing.T) {
+		writer := NewBufferWriter(context.Background(), 3, 3)
+		writer.SetCell(pos, term.NewCell('C', 1, term.Attributes{Bg: teal}))
+		writer.UnionAttributes(pos, term.Attributes{Fg: white, Attrs: term.AttrKeepBackground})
+		assert.Equal(t, term.NewCell('C', 1, term.Attributes{Fg: white, Bg: teal}), writer.RawCells()[pos.Y][pos.X])
+	})
+
+	t.Run("out of bounds", func(t *testing.T) {
+		writer := NewBufferWriter(context.Background(), 3, 3)
+		assert.NotPanics(t, func() { writer.SetCell(term.Coordinates{X: 3, Y: 3}, keep) })
+	})
+}
+
 func TestBufferWriterClear(t *testing.T) {
 	tests := []struct {
 		name string

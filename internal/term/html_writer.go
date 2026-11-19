@@ -64,6 +64,10 @@ func (w *HTMLWriter) SetCell(pos term.Coordinates, cell term.Cell) {
 		return
 	}
 	idx := pos.Y*w.width + pos.X
+	if cell.Attrs&term.AttrKeepBackground != 0 {
+		cell.Bg = w.cellbuf[idx].Bg
+		cell.Attrs &^= term.AttrKeepBackground
+	}
 	w.cellbuf[idx] = cell
 }
 
@@ -73,6 +77,7 @@ func (w *HTMLWriter) UnionAttributes(pos term.Coordinates, attr term.Attributes)
 		return
 	}
 	idx := pos.Y*w.width + pos.X
+	attr.Attrs &^= term.AttrKeepBackground
 	w.cellbuf[idx].SetAttributes(term.AttributesUnion(w.cellbuf[idx].Attributes(), attr))
 }
 

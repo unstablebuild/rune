@@ -117,6 +117,25 @@ func TestHTMLWriterClear(t *testing.T) {
 	expectInnerHTMLWithCursor(t, writer, expectedHTML)
 }
 
+func TestHTMLWriterSetCellKeepsBackground(t *testing.T) {
+	pos := term.Coordinates{}
+	keep := term.NewCell('x', 1, term.Attributes{Fg: term.ColorFuchsia, Bg: term.ColorRed, Attrs: term.AttrBold | term.AttrKeepBackground})
+
+	t.Run("set cell", func(t *testing.T) {
+		writer := newWriterNoCursor()
+		writer.SetCell(pos, term.NewCell('C', 1, term.Attributes{Fg: term.ColorRed, Bg: term.ColorAqua}))
+		writer.SetCell(pos, keep)
+		assert.Equal(t, term.NewCell('x', 1, term.Attributes{Fg: term.ColorFuchsia, Bg: term.ColorAqua, Attrs: term.AttrBold}), writer.cellbuf[0])
+	})
+
+	t.Run("union keeps its own background semantics", func(t *testing.T) {
+		writer := newWriterNoCursor()
+		writer.SetCell(pos, term.NewCell('C', 1, term.Attributes{Bg: term.ColorAqua}))
+		writer.UnionAttributes(pos, term.Attributes{Fg: term.ColorFuchsia, Attrs: term.AttrKeepBackground})
+		assert.Equal(t, term.NewCell('C', 1, term.Attributes{Fg: term.ColorFuchsia, Bg: term.ColorAqua}), writer.cellbuf[0])
+	})
+}
+
 func TestHTMLWriterSetCursor(t *testing.T) {
 	t.Run("sets cursor", func(t *testing.T) {
 		writer := NewHTMLWriter(2, 2)
