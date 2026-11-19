@@ -143,6 +143,15 @@ func TestCut(t *testing.T) {
 			wantRest: "matched line content", wantOK: true},
 		{description: "a number running into letters is not a position",
 			in: "x.go:42abc", wantPath: "x.go:42abc"},
+		{description: "a matched text starting with a digit leaves the line",
+			in: "data.csv:3:100,200", wantPath: "data.csv", wantLine: 3, wantCol: 0,
+			wantRest: "100,200", wantOK: true},
+		{description: "a matched text before a space leaves the line",
+			in: "main.go:42:5 apples", wantPath: "main.go", wantLine: 42, wantCol: 0,
+			wantRest: "5 apples", wantOK: true},
+		{description: "a matched text before a hex literal leaves the line",
+			in: "main.go:7:0x10 := 1", wantPath: "main.go", wantLine: 7, wantCol: 0,
+			wantRest: "0x10 := 1", wantOK: true},
 	}
 
 	for _, tc := range suite {

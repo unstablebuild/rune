@@ -105,6 +105,22 @@ func Cut(s string) (path string, pos Position, rest string, ok bool) {
 		// another colon follows: "42abc" and "1.5" are not, and
 		// neither is the drive of "C:\x".
 		if end < len(s) && s[end] != ':' {
+			// A LINE:COL that is not followed by a colon or the end is
+			// not the position the line prints. grep -n puts the
+			// matched text after a colon, so fall back to the line on
+			// its own when a colon follows it: "data.csv:3:100,200"
+			// names line 3 with "100,200" as the match, and
+			// "main.go:7:0x10 := 1" names line 7.
+			lineEnd := i + 1
+			for lineEnd < len(s) && isDigit(s[lineEnd]) {
+				lineEnd++
+			}
+			if lineEnd > i+1 && lineEnd < len(s) && s[lineEnd] == ':' {
+				if i == 0 {
+					return s, Position{}, "", false
+				}
+				return s[:i], Position{Line: line}, s[lineEnd+1:], true
+			}
 			continue
 		}
 		if end < len(s) {
