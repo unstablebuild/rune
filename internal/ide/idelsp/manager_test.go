@@ -176,6 +176,45 @@ func TestRestartBringsUpNewProcessAndReopensFiles(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestInitializeRunningServerRestartsWithNewParams(t *testing.T) {
+	t.Parallel()
+	exec := newFakeProcExecutor()
+	restarted := make(chan struct{})
+	exec.resumeAfterShutdown = restarted
+	m := newLifecycleTestManager(t, exec, &mockNotifications{}, Config{})
+	_, err := m.Initialize(t.Context(), goInitParams(t, "/bin/gopls serve"))
+	require.NoError(t, err)
+	openURI := lifecycleRoot + "/main.go"
+	m.mu.Lock()
+	m.files[openURI] = newFile(makeURI(t, openURI), "package main\n", "go",
+		serverKey{languageID: "go", rootURI: lifecycleRoot})
+	m.mu.Unlock()
+
+	_, err = m.Initialize(t.Context(), goInitParams(t, "/bin/gopls serve -rpc.trace"))
+	close(restarted)
+	require.NoError(t, err)
+
+	st := onlyServer(t, m)
+	assert.Equal(t, ServerRunning, st.State)
+	assert.Equal(t, workspaceapi.Pid(2), st.Pid)
+	exec.mu.Lock()
+	require.Len(t, exec.cmds, 2)
+	assert.Equal(t, []string{"serve", "-rpc.trace"}, exec.cmds[1].Args,
+		"the new process must run with the new initialize params")
+	exec.mu.Unlock()
+	assert.Eventually(t, func() bool {
+		oldMethods, _ := exec.proc(1).received()
+		return slices.Contains(oldMethods, "shutdown") && slices.Contains(oldMethods, "exit")
+	}, 5*time.Second, 10*time.Millisecond, "the old server must be shut down cleanly")
+	assert.Eventually(t, func() bool {
+		_, opens := exec.proc(2).received()
+		return len(opens) == 1 && opens[0] == openURI
+	}, 5*time.Second, 10*time.Millisecond, "open files must be reopened on the new server")
+	m.mu.Lock()
+	assert.Len(t, m.servers, 1)
+	m.mu.Unlock()
+}
+
 func TestStopAndStart(t *testing.T) {
 	t.Parallel()
 	exec := newFakeProcExecutor()
@@ -635,6 +674,139 @@ func TestTypeScriptDialectsShareServerWithPerFileLanguageID(t *testing.T) {
 			require.Len(t, opens, 1)
 			assert.Equal(t, fileURI, opens[0].TextDocument.URI)
 			assert.Equal(t, tt.wantDocID, opens[0].TextDocument.LanguageID)
+		})
+	}
+}
+
+func TestCAndCppShareClangdWithPerFileLanguageID(t *testing.T) {
+	t.Parallel()
+	files := []struct {
+		name      string
+		wantDocID string
+	}{
+		{"main.c", "c"},
+		{"util.h", "cpp"},
+		{"main.cpp", "cpp"},
+		{"util.hpp", "cpp"},
+	}
+	tmpDir := t.TempDir()
+	rootURI := "file://" + tmpDir
+	m := New(makeURI(t, rootURI), newTestScheme(), nil, nil, nil, nil,
+		Config{NoInitializeServer: true})
+	t.Cleanup(func() { _ = m.Close() })
+	srv := &fakeChild{childName: "ccpp", rootURI: rootURI}
+	m.mu.Lock()
+	m.servers[serverKey{languageID: "ccpp", rootURI: rootURI}] = srv
+	m.mu.Unlock()
+
+	for _, f := range files {
+		filePath := filepath.Join(tmpDir, f.name)
+		require.NoError(t, os.WriteFile(filePath, []byte("int x;\n"), 0o644))
+		require.NoError(t, m.handle(textapi.Event{
+			Type:    textapi.EventTypeOpen,
+			URI:     makeURI(t, "file://"+filePath),
+			Content: "int x;\n",
+		}))
+	}
+
+	opens := srv.didOpens()
+	require.Len(t, opens, len(files), "every file must reach the one clangd")
+	for i, f := range files {
+		assert.Equal(t, "file://"+filepath.Join(tmpDir, f.name), opens[i].TextDocument.URI)
+		assert.Equal(t, f.wantDocID, opens[i].TextDocument.LanguageID)
+	}
+	m.mu.Lock()
+	assert.Len(t, m.servers, 1, "no second server may be registered")
+	m.mu.Unlock()
+}
+
+func TestCodeActionCarriesPublishedDiagnosticsToPushOnlyServer(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "main.c")
+	require.NoError(t, os.WriteFile(filePath, []byte("int x;\n"), 0o644))
+	fileURI := "file://" + filePath
+	rootURI := "file://" + tmpDir
+	at := func(line uint32) semanticapi.Range {
+		return semanticapi.Range{
+			Start: semanticapi.Position{Line: line, Character: 0},
+			End:   semanticapi.Position{Line: line, Character: 5},
+		}
+	}
+	published := []semanticapi.Diagnostic{
+		{Range: at(0), Message: "on the requested line"},
+		{Range: at(7), Message: "elsewhere"},
+	}
+	pullCaps := json.RawMessage(`{"textDocument":{"diagnostic":{}}}`)
+	pullRes := semanticapi.InitializeResult{
+		Capabilities: semanticapi.ServerCapabilities{
+			DiagnosticProvider: &semanticapi.DiagnosticOptions{},
+		},
+	}
+
+	cases := []struct {
+		name      string
+		srv       *fakeChild
+		sent      []semanticapi.Diagnostic
+		published []semanticapi.Diagnostic
+		want      []semanticapi.Diagnostic
+	}{
+		{
+			name:      "push-only server gets the overlapping diagnostics",
+			srv:       &fakeChild{childName: "ccpp", rootURI: rootURI},
+			sent:      []semanticapi.Diagnostic{},
+			published: published,
+			want:      published[:1],
+		},
+		{
+			name: "nothing published keeps the empty slice",
+			srv:  &fakeChild{childName: "ccpp", rootURI: rootURI},
+			sent: []semanticapi.Diagnostic{},
+			want: []semanticapi.Diagnostic{},
+		},
+		{
+			name:      "caller diagnostics are forwarded untouched",
+			srv:       &fakeChild{childName: "ccpp", rootURI: rootURI},
+			sent:      published[1:],
+			published: published,
+			want:      published[1:],
+		},
+		{
+			name: "pull-capable server is left to compute its own",
+			srv: &fakeChild{childName: "ccpp", rootURI: rootURI,
+				clientCaps: pullCaps, initRes: pullRes},
+			sent:      []semanticapi.Diagnostic{},
+			published: published,
+			want:      []semanticapi.Diagnostic{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cb := &testCallback{}
+			m := New(makeURI(t, rootURI), newTestScheme(), nil, nil, nil, nil,
+				Config{NoInitializeServer: true, Callback: cb})
+			t.Cleanup(func() { _ = m.Close() })
+			m.mu.Lock()
+			m.servers[tc.srv.key()] = tc.srv
+			m.mu.Unlock()
+			if tc.published != nil {
+				require.NoError(t, cb.PublishDiagnostics(t.Context(),
+					semanticapi.PublishDiagnosticsParams{URI: fileURI, Diagnostics: tc.published}))
+			}
+
+			_, err := m.CodeAction(t.Context(), semanticapi.CodeActionParams{
+				TextDocument: semanticapi.TextDocumentIdentifier{URI: fileURI},
+				Range:        at(0),
+				Context:      semanticapi.CodeActionContext{Diagnostics: tc.sent},
+			})
+			require.NoError(t, err)
+
+			tc.srv.mu.Lock()
+			defer tc.srv.mu.Unlock()
+			require.Len(t, tc.srv.params, 1)
+			sent, ok := tc.srv.params[0].(semanticapi.CodeActionParams)
+			require.True(t, ok)
+			assert.Equal(t, tc.want, sent.Context.Diagnostics)
 		})
 	}
 }

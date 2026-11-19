@@ -149,27 +149,10 @@ func rootContains(rootURI, fileURI string) bool {
 // a recently sent didChange before issuing the request.
 type Callback interface {
 	semanticapi.LSPCallback
-	// FileDidChange reports that a file changed and how the next
-	// WaitFileProcessed should wait for the server to reconcile it.
-	// version is the editor's document version, open reports whether
-	// the file is open in the editor, and oob reports whether the
-	// change is out-of-band (a file watcher event or a
-	// workspace/didChangeWatchedFiles triggered by a tool such as
-	// apply_patch) rather than a versioned editor edit. An
-	// out-of-band change to an open file makes the wait block for a
-	// strictly newer version (using version as the floor), while one
-	// to a closed file waits for the next diagnostics push.
 	FileDidChange(uri string, version int32, open, oob bool)
-	// InvalidateAllPending marks every URI tracked by the callback
-	// as having a pending unversioned change, so that the next
-	// WaitFileProcessed call for any of those URIs blocks until a
-	// fresh publishDiagnostics push arrives. This is used when an
-	// out-of-band workspace event (e.g. a file deletion) can
-	// invalidate diagnostics for unrelated files in the same
-	// package, and we want to avoid returning a stale snapshot from
-	// the LSP cache.
 	InvalidateAllPending()
 	WaitFileProcessed(ctx context.Context, uri string) error
+	PublishedDiagnostics(uri string) []semanticapi.Diagnostic
 }
 
 // Config provides optional configuration for a Manager.

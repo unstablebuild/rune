@@ -640,6 +640,8 @@ func (c *testCallback) WaitFileProcessed(_ context.Context, _ string) error {
 	return nil
 }
 
+func (c *testCallback) PublishedDiagnostics(_ string) []semanticapi.Diagnostic { return nil }
+
 // localScheme implements schemeapi.FileSystem, schemeapi.Executor,
 // and workspaceapi.Executor using the local OS for e2e testing.
 type localScheme struct {

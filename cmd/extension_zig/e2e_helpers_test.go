@@ -194,6 +194,7 @@ func (c *zlsCallback) InvalidateAllPending()                         {}
 func (c *zlsCallback) WaitFileProcessed(_ context.Context, _ string) error {
 	return nil
 }
+func (c *zlsCallback) PublishedDiagnostics(_ string) []semanticapi.Diagnostic { return nil }
 
 func (c *zlsCallback) HandleNotification(
 	_ context.Context, _ string, _ json.RawMessage,

@@ -63,6 +63,14 @@ var typescriptConfig = langConfig{
 	args:    []string{"--lsp", "--stdio"},
 }
 
+// clangd serves C and C++ from one index and finds each file's
+// compilation database itself, so both languages route to one server
+// while the didOpen languageId still tells it which dialect to parse.
+var ccppConfig = langConfig{
+	id:      "ccpp",
+	command: "clangd",
+}
+
 var langConfigs = map[string]langConfig{
 	"go": {
 		id:      "go",
@@ -84,11 +92,8 @@ var langConfigs = map[string]langConfig{
 		command: "rust-analyzer",
 		args:    nil,
 	},
-	"c": {
-		id:      "c",
-		command: "clangd",
-		args:    nil,
-	},
+	"c":   ccppConfig,
+	"cpp": ccppConfig,
 	"zig": {
 		id:      "zig",
 		command: "zls",

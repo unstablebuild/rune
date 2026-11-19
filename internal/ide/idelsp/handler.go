@@ -395,6 +395,21 @@ func (h *CallbackHandler) Diagnostics() map[string][]semanticapi.Diagnostic {
 	return out
 }
 
+// PublishedDiagnostics implements Callback.
+func (h *CallbackHandler) PublishedDiagnostics(uri string) []semanticapi.Diagnostic {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	entry, ok := h.diagnostics[h.uriKey(uri)]
+	if !ok {
+		return nil
+	}
+	var merged []semanticapi.Diagnostic
+	for _, diags := range entry.byServer {
+		merged = append(merged, diags...)
+	}
+	return merged
+}
+
 // Progress handles $/progress notifications.
 func (h *CallbackHandler) Progress(
 	_ context.Context, params semanticapi.ProgressParams,

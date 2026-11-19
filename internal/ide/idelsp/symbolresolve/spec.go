@@ -153,6 +153,9 @@ type Spec struct {
 	// Qualifier returns the prefix applied to bare definition names
 	// during the definitions phase when the language has no package
 	// clause (e.g. a Python module name derived from the file path).
+	// A language with a package clause may also set it to qualify the
+	// files that declare none, such as C++ sources outside any
+	// namespace; files with a clause keep the declared package.
 	Qualifier func(qc QualifierContext, uri string) string
 
 	// DisplayPathFromURI derives a human-readable display prefix from a

@@ -1,0 +1,27 @@
+[
+  {
+    "directory": "@ROOT@",
+    "command": "c++ -std=c++17 -Wall -DFROM_COMPDB=1 -c @ROOT@/src/main.cpp -o /tmp/main.cpp.o",
+    "file": "@ROOT@/src/main.cpp"
+  },
+  {
+    "directory": "@ROOT@",
+    "command": "c++ -std=c++17 -Wall -DFROM_COMPDB=1 -c @ROOT@/src/shape.cpp -o /tmp/shape.cpp.o",
+    "file": "@ROOT@/src/shape.cpp"
+  },
+  {
+    "directory": "@ROOT@",
+    "command": "cc -std=c11 -Wall -DFROM_COMPDB=1 -c @ROOT@/src/util.c -o /tmp/util.c.o",
+    "file": "@ROOT@/src/util.c"
+  },
+  {
+    "directory": "@ROOT@",
+    "command": "cc -std=c11 -Wall -DFROM_COMPDB=1 -c @ROOT@/src/flags.c -o /tmp/flags.c.o",
+    "file": "@ROOT@/src/flags.c"
+  },
+  {
+    "directory": "@ROOT@",
+    "command": "cc -std=c11 -Wall -DFROM_COMPDB=1 -c @ROOT@/src/broken.c -o /tmp/broken.c.o",
+    "file": "@ROOT@/src/broken.c"
+  }
+]

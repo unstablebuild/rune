@@ -101,6 +101,15 @@ func TestLanguageForFile(t *testing.T) {
 		{"App.tsx", "tsx", false},
 		{"index.mts", "typescript", false},
 		{"snippet.rs", "rust", false},
+		{"main.c", "c", false},
+		// Headers parse as C++ so classes and templates survive.
+		{"util.h", "cpp", false},
+		{"main.cpp", "cpp", false},
+		{"main.cc", "cpp", false},
+		{"util.hpp", "cpp", false},
+		{"vector.inl", "cpp", false},
+		{"vector.ipp", "cpp", false},
+		{"vector.tpp", "cpp", false},
 
 		// Regression: .log files must NOT be parsed as Salesforce
 		// sflog. The mapping has been removed; .log falls through to

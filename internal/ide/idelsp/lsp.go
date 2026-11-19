@@ -66,7 +66,9 @@ const diagnosticSettleTimeout = 2 * time.Second
 // Initialize initializes an LSP server. The incoming InitializeParams.InitializeOptions
 // json object, must have two extra properties set: `langID` and `command`, which
 // determine the language identifier and the command (absolute path of the LSP
-// executable + args) used to run the server.
+// executable + args) used to run the server. Initializing a language and root
+// whose server is running restarts it with the new params and reopens the
+// files it served.
 func (m *Manager) Initialize(ctx context.Context, params semanticapi.InitializeParams) (
 	ret semanticapi.InitializeResult, err error,
 ) {
@@ -130,12 +132,17 @@ func (m *Manager) Initialize(ctx context.Context, params semanticapi.InitializeP
 	}
 	key := serverKey{languageID: id, rootURI: params.RootURI}
 	m.mu.Lock()
-	_, ok = m.servers[key]
+	running, restart := m.servers[key]
+	delete(m.servers, key)
 	m.mu.Unlock()
-	if ok {
-		err = errors.New("language server for " +
-			"this language and root already initialized")
-		return
+	// An extension initializes a running server again to apply new
+	// options, say a different compilation database, so the old process
+	// makes way for one started from the new params, which then reopens
+	// the files the old one served.
+	var files []*file
+	if restart {
+		files = m.filesOf(key)
+		m.shutdown(ctx, running)
 	}
 
 	// delete these options so the lsp server doesn't choke on them
@@ -165,6 +172,9 @@ func (m *Manager) Initialize(ctx context.Context, params semanticapi.InitializeP
 			err = fmt.Errorf("initialize multi server: %w", err)
 		}
 		return
+	}
+	if restart {
+		m.reopen(ctx, srv, files)
 	}
 	return srv.initResult(), nil
 }
@@ -571,6 +581,17 @@ func (m *Manager) CodeAction(
 	if err != nil {
 		return nil, err
 	}
+	// A server without pull diagnostics, derives its quick
+	// fixes from the diagnostics the request names, so a request that
+	// names none gets the published diagnostics overlapping its range.
+	if len(params.Context.Diagnostics) == 0 && !srv.supportsPullDiagnostics() && m.callback != nil {
+		published := m.callback.PublishedDiagnostics(params.TextDocument.URI)
+		for _, d := range published {
+			if rangesOverlap(d.Range, params.Range) {
+				params.Context.Diagnostics = append(params.Context.Diagnostics, d)
+			}
+		}
+	}
 	var result []lspCodeAction
 	err = srv.call(ctx, "textDocument/codeAction", params, &result)
 	if err != nil {
@@ -584,6 +605,16 @@ func (m *Manager) CodeAction(
 		}
 	}
 	return ret, nil
+}
+
+// rangesOverlap reports whether a and b share at least a position; a
+// diagnostic ending exactly at a collapsed cursor counts.
+func rangesOverlap(a, b semanticapi.Range) bool {
+	return !positionLess(b.End, a.Start) && !positionLess(a.End, b.Start)
+}
+
+func positionLess(a, b semanticapi.Position) bool {
+	return a.Line < b.Line || (a.Line == b.Line && a.Character < b.Character)
 }
 
 // CodeLens routes to the owning server.

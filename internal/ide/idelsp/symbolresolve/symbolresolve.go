@@ -276,6 +276,11 @@ func runResolvePass(
 			ID: aliasID, Query: spec.ImportAliasQuery, Captures: spec.ImportAliasCaptures,
 		})
 	}
+	// A language without qualified references, such as C, has nothing
+	// to collect here; skip the workspace walk the pass would cost.
+	if len(queries) == 0 {
+		return passResult{}, nil
+	}
 
 	it, err := parser.SearchMulti(queries, spec.LangID)
 	if err != nil {
@@ -495,21 +500,27 @@ func collectFileMethods(
 }
 
 // definitionFiles returns the file URIs whose qualifier equals pkg. When
-// the spec has a package clause it consults the packages map; otherwise
-// it derives the qualifier from each file's URI via spec.Qualifier,
-// matching pkg against any dotted suffix of the module path.
+// the spec has a package clause it consults the packages map, and files
+// absent from it fall back to spec.Qualifier when the spec has one;
+// otherwise it derives the qualifier from each file's URI via
+// spec.Qualifier, matching pkg against any dotted suffix of the module
+// path.
 func definitionFiles(
 	ctx context.Context, parser Searcher, spec *Spec, qc QualifierContext,
 	packages map[workspaceapi.URI]string, pkg string,
 ) ([]workspaceapi.URI, error) {
+	seen := make(map[workspaceapi.URI]bool)
+	var files []workspaceapi.URI
 	if spec.hasPackages() {
-		var files []workspaceapi.URI
 		for fileURI, pkgName := range packages {
 			if pkgName == pkg {
+				seen[fileURI] = true
 				files = append(files, fileURI)
 			}
 		}
-		return files, nil
+		if spec.Qualifier == nil {
+			return files, nil
+		}
 	}
 	iter, err := parser.SearchNode(
 		syntaxapi.NodeCaptureDefinitionFunc|syntaxapi.NodeCaptureDefinitionType,
@@ -519,21 +530,37 @@ func definitionFiles(
 		return nil, err
 	}
 	defer func() { _ = iter.Close() }()
-	seen := make(map[workspaceapi.URI]bool)
-	var files []workspaceapi.URI
 	for {
 		r, ok := iter.Next(ctx)
 		if !ok {
 			return files, iter.Err()
 		}
 		uri := r.File.String()
-		if seen[r.File] || !spec.matchesFile(uri) ||
+		if seen[r.File] || !spec.matchesFile(uri) {
+			continue
+		}
+		if _, declared := packages[r.File]; declared ||
 			!modulePathHasSuffix(spec.qualifier(qc, uri), pkg) {
 			continue
 		}
 		seen[r.File] = true
 		files = append(files, r.File)
 	}
+}
+
+// filePackage returns the qualifier of a file: its declared package when
+// the spec has a package clause and the file declares one, otherwise
+// whatever spec.Qualifier derives from the URI, or "".
+func filePackage(
+	spec *Spec, qc QualifierContext, packages map[workspaceapi.URI]string,
+	file workspaceapi.URI,
+) string {
+	if spec.hasPackages() {
+		if pkgName, ok := packages[file]; ok {
+			return pkgName
+		}
+	}
+	return spec.qualifier(qc, file.String())
 }
 
 // FilePackages returns a map from file URI to the package name declared
@@ -572,8 +599,9 @@ func reducePackages(
 // SearchDefinitions streams package-qualified definition names
 // ("pkg.Name") for every function and type defined in the workspace,
 // according to spec. When the spec has a package clause, packages
-// provides the file→package mapping and files absent from it are
-// skipped; otherwise the qualifier is derived from each file's URI.
+// provides the file→package mapping and files absent from it fall
+// back to the spec's Qualifier, if any; otherwise the qualifier is
+// derived from each file's URI.
 // Nested-module qualifiers stream one name per dotted suffix of the
 // module path, and re-export bindings are streamed as definitions.
 // Names rejected by keep are skipped. keep may be nil.
@@ -601,12 +629,7 @@ func SearchDefinitions(
 		if !spec.matchesFile(r.File.String()) {
 			continue
 		}
-		var pkgName string
-		if spec.hasPackages() {
-			pkgName = packages[r.File]
-		} else {
-			pkgName = spec.qualifier(qc, r.File.String())
-		}
+		pkgName := filePackage(spec, qc, packages, r.File)
 		if pkgName == "" {
 			continue
 		}
@@ -656,12 +679,7 @@ func SearchMethodDefinitions(
 		if !spec.matchesFile(method.File.String()) {
 			continue
 		}
-		var pkgName string
-		if spec.hasPackages() {
-			pkgName = packages[method.File]
-		} else {
-			pkgName = spec.qualifier(qc, method.File.String())
-		}
+		pkgName := filePackage(spec, qc, packages, method.File)
 		if pkgName == "" {
 			continue
 		}

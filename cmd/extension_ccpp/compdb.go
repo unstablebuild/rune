@@ -1,0 +1,381 @@
+// Copyright (C) 2017-2026 The Rune Authors
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or (at
+// your option) any later version.
+//
+// This program is distributed in the hope that it will be useful, but
+// WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+// General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+package main
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"slices"
+	"sort"
+	"time"
+
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+)
+
+const compileCommandsName = "compile_commands.json"
+
+// compdbDoc records the compilation database directory the user picked
+// for a workspace with `ccpp compdb use`.
+type compdbDoc struct {
+	Workspace string
+	Dir       string
+	UpdatedAt time.Time
+}
+
+// compdbSetting persists the per-workspace compilation database
+// override. The extension storage service is process-wide and shared
+// with every other extension, so it is partitioned before any document
+// is written.
+type compdbSetting struct {
+	store storageapi.Service
+	wsURI workspaceapi.URI
+}
+
+func newCompdbSetting(store storageapi.Service, wsURI workspaceapi.URI) *compdbSetting {
+	s := &compdbSetting{wsURI: wsURI}
+	if store != nil {
+		s.store = storageapi.WithPartition(store, ccppLanguageID)
+	}
+	return s
+}
+
+func (s *compdbSetting) id() string { return "compdb:" + s.wsURI.String() }
+
+// get returns the stored override. ok is false when none is stored;
+// storage being unavailable degrades to the same answer so the
+// extension still runs when the storage permission is denied.
+func (s *compdbSetting) get(ctx context.Context) (dir string, ok bool, err error) {
+	if s.store == nil {
+		return "", false, nil
+	}
+	var doc compdbDoc
+	if err := s.store.Get(ctx, s.id(), &doc); err != nil {
+		if errors.Is(err, storageapi.ErrNotFound) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return doc.Dir, doc.Dir != "", nil
+}
+
+func (s *compdbSetting) set(ctx context.Context, dir string) error {
+	if s.store == nil {
+		return errors.New("extension storage is unavailable; set extensions.ccpp.config.compile_commands_dir instead")
+	}
+	return s.store.Set(ctx, s.id(), &compdbDoc{Workspace: s.wsURI.String(), Dir: dir})
+}
+
+func (s *compdbSetting) clear(ctx context.Context) error {
+	if s.store == nil {
+		return nil
+	}
+	return s.store.Delete(ctx, s.id())
+}
+
+// effectiveDir returns the directory clangd is told to read
+// compile_commands.json from: the stored override, else the configured
+// compile_commands_dir resolved against the workspace root, else "" to
+// let clangd find one per file.
+func (s *compdbSetting) effectiveDir(
+	ctx context.Context, cfg config.Config, notify browserapi.Notifications,
+) (string, error) {
+	dir, ok, err := s.get(ctx)
+	if ok {
+		return dir, err
+	}
+	if configured, set := readCompileCommandsDir(cfg, notify); set {
+		if !filepath.IsAbs(configured) {
+			configured = filepath.Join(s.wsURI.Path(), configured)
+		}
+		return filepath.Clean(configured), err
+	}
+	return "", err
+}
+
+// compdbSource says where clangd takes a file's compile flags from.
+type compdbSource struct {
+	// Kind is one of "override" (ccpp compdb use), "config"
+	// (compile_commands_dir), "compile_commands.json", "compile_flags.txt"
+	// or "none".
+	Kind string
+	// Path is the directory of the database or the flags file, "" for
+	// "none".
+	Path string
+}
+
+// compdbInEffect reports the compilation database clangd uses for file,
+// mirroring clangd's own lookup once the extension's overrides are out of
+// the way: up from the file's directory, each ancestor is probed for
+// compile_commands.json and compile_flags.txt, in the directory itself
+// and in its build/ subdirectory.
+func compdbInEffect(fs workspaceapi.FileSystem, override, configured, file string) compdbSource {
+	if override != "" {
+		return compdbSource{Kind: "override", Path: override}
+	}
+	if configured != "" {
+		return compdbSource{Kind: "config", Path: configured}
+	}
+	for dir := filepath.Dir(file); ; dir = filepath.Dir(dir) {
+		for _, sub := range []string{"", "build"} {
+			probe := filepath.Join(dir, sub)
+			if isFile(fs, filepath.Join(probe, compileCommandsName)) {
+				return compdbSource{Kind: compileCommandsName, Path: probe}
+			}
+			if isFile(fs, filepath.Join(probe, "compile_flags.txt")) {
+				return compdbSource{Kind: "compile_flags.txt", Path: filepath.Join(probe, "compile_flags.txt")}
+			}
+		}
+		if dir == filepath.Dir(dir) {
+			break
+		}
+	}
+	return compdbSource{Kind: "none"}
+}
+
+// compdbBuildDirs are the directory names, as glob patterns, where build
+// systems commonly write compile_commands.json below a project root.
+var compdbBuildDirs = []string{
+	"build", "build*", "builddir", "_build", "out", "cmake-build-*",
+}
+
+// compdbCandidates lists the directories at or below projectDir that
+// hold a compile_commands.json: the project root, its build directories
+// and their children, so CMake multi-config trees such as out/Debug are
+// found without walking the whole project. Results are absolute and
+// sorted.
+func compdbCandidates(fs workspaceapi.FileSystem, projectDir string) []string {
+	seen := map[string]bool{}
+	var out []string
+	consider := func(dir string) {
+		if seen[dir] {
+			return
+		}
+		seen[dir] = true
+		if isFile(fs, filepath.Join(dir, compileCommandsName)) {
+			out = append(out, dir)
+		}
+	}
+	consider(projectDir)
+	for _, build := range matchingSubdirs(fs, projectDir, compdbBuildDirs) {
+		consider(build)
+		entries, err := fs.ReadDir(build)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				consider(filepath.Join(build, e.Name()))
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// matchingSubdirs returns the subdirectories of dir whose name matches
+// any of the patterns, in directory order.
+func matchingSubdirs(fs workspaceapi.FileSystem, dir string, patterns []string) []string {
+	entries, err := fs.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		for _, p := range patterns {
+			if ok, _ := filepath.Match(p, e.Name()); ok {
+				out = append(out, filepath.Join(dir, e.Name()))
+				break
+			}
+		}
+	}
+	return out
+}
+
+// buildSystem is the tool that writes a project's build files, which
+// decides how its compilation database is produced. The empty system is
+// clangd's own files, which configure a tree without building it.
+type buildSystem string
+
+const (
+	systemCMake     buildSystem = "cmake"
+	systemMeson     buildSystem = "meson"
+	systemBazel     buildSystem = "bazel"
+	systemAutotools buildSystem = "autotools"
+	systemMake      buildSystem = "make"
+)
+
+// marker is a file that roots a C or C++ project.
+type marker struct {
+	name   string
+	system buildSystem
+}
+
+// ccppMarkers root a C or C++ project for `ccpp status` and `ccpp
+// compdb`, which look for the compilation database of the focused file's
+// project. The order ranks build systems when a root carries several, as
+// an in-source CMake build leaves a Makefile behind. They never pick a
+// server root: clangd finds the compilation database per file, so one
+// server at the workspace root serves every project in it.
+var ccppMarkers = []marker{
+	{"compile_commands.json", ""},
+	{"compile_flags.txt", ""},
+	{".clangd", ""},
+	{"CMakeLists.txt", systemCMake},
+	{"meson.build", systemMeson},
+	{"MODULE.bazel", systemBazel},
+	{"BUILD.bazel", systemBazel},
+	{"configure.ac", systemAutotools},
+	{"configure", systemAutotools},
+	{"Makefile.am", systemAutotools},
+	{"Makefile.in", systemAutotools},
+	{"Makefile", systemMake},
+	{"GNUmakefile", systemMake},
+}
+
+// projectMarkers lists the markers present in dir, in ccppMarkers order.
+func projectMarkers(fs workspaceapi.FileSystem, dir string) []marker {
+	var out []marker
+	for _, m := range ccppMarkers {
+		if isFile(fs, filepath.Join(dir, m.name)) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// markerNames names markers for display, one per build system so an
+// autotools root reads as configure.ac rather than four generated files.
+func markerNames(ms []marker) []string {
+	seen := map[buildSystem]bool{}
+	var out []string
+	for _, m := range ms {
+		if m.system != "" {
+			if seen[m.system] {
+				continue
+			}
+			seen[m.system] = true
+		}
+		out = append(out, m.name)
+	}
+	return out
+}
+
+// buildSystems lists the build systems behind markers, without
+// duplicates and without clangd's own files.
+func buildSystems(ms []marker) []buildSystem {
+	var out []buildSystem
+	for _, m := range ms {
+		if m.system != "" && !slices.Contains(out, m.system) {
+			out = append(out, m.system)
+		}
+	}
+	return out
+}
+
+func shareSystem(a, b []buildSystem) bool {
+	return slices.ContainsFunc(a, func(s buildSystem) bool { return slices.Contains(b, s) })
+}
+
+// projectDirOf returns the directory of the project that builds file,
+// within the workspace, falling back to the workspace root. Build files
+// nest, a Makefile or CMakeLists.txt per source directory, so the project
+// is the outermost ancestor built by the same system as the nearest build
+// file rather than the nearest marker. An ancestor built by another
+// system ends the climb, which keeps a nested project of its own. clangd's
+// own files root a project only when no build file does.
+func projectDirOf(fs workspaceapi.FileSystem, wsDir, file string) string {
+	project := ""
+	var system []buildSystem
+	for dir := filepath.Dir(file); insideDir(wsDir, dir); dir = filepath.Dir(dir) {
+		ms := projectMarkers(fs, dir)
+		systems := buildSystems(ms)
+		switch {
+		case len(systems) > 0 && (len(system) == 0 || shareSystem(system, systems)):
+			project = dir
+			if len(system) == 0 {
+				system = systems
+			}
+		case len(systems) > 0:
+			return project
+		case len(ms) > 0 && project == "":
+			project = dir
+		}
+		if dir == wsDir {
+			break
+		}
+	}
+	if project == "" {
+		return wsDir
+	}
+	return project
+}
+
+// compdbHowTo tells how to produce a compilation database for a project
+// rooted by markers, with the build system's own recipe: Bear records a
+// build the system does not describe itself. bear says how to invoke
+// Bear on the workspace host, "" when it is not available; it is
+// consulted only when Bear is advised.
+func compdbHowTo(ms []marker, bear func() string) string {
+	const restart = " Run `ccpp restart` afterwards so files already open pick it up."
+	record := func(before string) string {
+		cmd := bear()
+		if cmd == "" {
+			return "Record the build with Bear, which the ccpp package ships: run `pkg install ccpp`, then `" +
+				before + "bear -- make` writes `" + compileCommandsName + "` at the project root." + restart
+		}
+		return "Record the build with Bear: `" + before + cmd + " -- make` writes `" +
+			compileCommandsName + "` at the project root." + restart
+	}
+	systems := buildSystems(ms)
+	if len(systems) == 0 {
+		return "No build system roots this file. Write a `compile_flags.txt` next to it with one compiler " +
+			"flag per line, such as `-Iinclude`; clangd applies it to every file below." + restart
+	}
+	switch systems[0] {
+	case systemCMake:
+		return "Generate one with `cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`; clangd finds " +
+			"`build/" + compileCommandsName + "` by itself." + restart
+	case systemMeson:
+		return "Generate one with `meson setup build`; it writes `build/" + compileCommandsName +
+			"`, which clangd finds by itself." + restart
+	case systemBazel:
+		return "Bazel does not write one. Add the hedron_compile_commands extractor " +
+			"(github.com/hedronvision/bazel-compile-commands-extractor) to `MODULE.bazel` and run " +
+			"`bazel run @hedron_compile_commands//:refresh_all`, which writes `" + compileCommandsName +
+			"` at the workspace root." + restart
+	case systemAutotools:
+		configured := slices.ContainsFunc(ms, func(m marker) bool { return m.name == "configure" })
+		if configured {
+			return record("./configure && ")
+		}
+		return record("autoreconf -i && ./configure && ")
+	default:
+		return record("")
+	}
+}
+
+func isFile(fs workspaceapi.FileSystem, path string) bool {
+	info, err := fs.Stat(path)
+	return err == nil && info != nil && !info.IsDir()
+}

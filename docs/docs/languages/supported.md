@@ -25,6 +25,7 @@ so every supported capability remains available as a language moves up.
 | [Rust](./rust.md) | Beta |
 | [Zig](./zig.md) | Beta |
 | [TypeScript and JavaScript](./typescript.md) | Beta |
+| [C and C++](./ccpp.md) | Beta |
 
 Beta means the language is complete enough for daily work and shipped
 by default, while its commands and defaults may still change between

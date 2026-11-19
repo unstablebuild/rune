@@ -40,6 +40,12 @@ func TestLanguageForFilename(t *testing.T) {
 		{"/ws/src/index.mjs", "typescript", "javascript", "tsgo"},
 		{"/ws/src/index.cjs", "typescript", "javascript", "tsgo"},
 		{"/ws/src/App.jsx", "typescript", "javascriptreact", "tsgo"},
+		{"/ws/src/main.c", "ccpp", "c", "clangd"},
+		{"/ws/src/util.h", "ccpp", "cpp", "clangd"},
+		{"/ws/src/main.cpp", "ccpp", "cpp", "clangd"},
+		{"/ws/src/main.cc", "ccpp", "cpp", "clangd"},
+		{"/ws/src/util.hpp", "ccpp", "cpp", "clangd"},
+		{"/ws/src/vector.inl", "ccpp", "cpp", "clangd"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.filename, func(t *testing.T) {

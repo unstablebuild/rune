@@ -254,6 +254,20 @@ func (c *testCallback) WaitFileProcessed(_ context.Context, _ string) error {
 	return nil
 }
 
+// PublishedDiagnostics returns the diagnostics of the latest publish
+// for uri, the way CallbackHandler keeps them.
+func (c *testCallback) PublishedDiagnostics(uri string) []semanticapi.Diagnostic {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var latest []semanticapi.Diagnostic
+	for _, p := range c.diagnostics {
+		if p.URI == uri {
+			latest = p.Diagnostics
+		}
+	}
+	return latest
+}
+
 // localScheme implements schemeapi.FileSystem and schemeapi.Executor
 // using the local OS for e2e testing.
 type localScheme struct {

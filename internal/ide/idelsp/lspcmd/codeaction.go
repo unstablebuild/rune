@@ -32,6 +32,25 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
+// CodeActionFilter selects which of the actions a server returns a
+// command keeps. Kind is sent as the request's Only filter and matched
+// as a prefix against each result; an empty Kind requests every kind,
+// which is how a caller exposes a "list everything" subcommand. Title,
+// when set, must also accept the action's title. It exists for servers
+// such as clangd that file every tweak under the same broad kind, so
+// only the title tells one apart from another.
+type CodeActionFilter struct {
+	Kind  semanticapi.CodeActionKind
+	Title func(title string) bool
+}
+
+func (f CodeActionFilter) matches(a semanticapi.CodeAction) bool {
+	if f.Kind != "" && !strings.HasPrefix(string(a.Kind), string(f.Kind)) {
+		return false
+	}
+	return f.Title == nil || f.Title(a.Title)
+}
+
 // CodeActionHandler creates a textapi.CommandHandler that requests
 // textDocument/codeAction of the given kind at the cursor or selection
 // and applies the chosen action. An empty kind requests every kind and
@@ -54,8 +73,24 @@ func CodeActionHandler(
 	applyLoneAction bool,
 	noActionHint string,
 ) textapi.CommandHandler {
+	return FilteredCodeActionHandler(lsp, editor, notify, wm, sel,
+		CodeActionFilter{Kind: kind}, applyLoneAction, noActionHint)
+}
+
+// FilteredCodeActionHandler is CodeActionHandler with a full
+// CodeActionFilter, so a caller can narrow a broad kind down to the
+// actions whose title it recognizes.
+func FilteredCodeActionHandler(
+	lsp semanticapi.LSP, editor textapi.Editor,
+	notify browserapi.Notifications,
+	wm browserapi.WindowManager,
+	sel *SelectionTracker,
+	filter CodeActionFilter,
+	applyLoneAction bool,
+	noActionHint string,
+) textapi.CommandHandler {
 	return &codeActionCmd{lsp: lsp, editor: editor, notify: notify,
-		wm: wm, sel: sel, kind: kind, applyLoneAction: applyLoneAction,
+		wm: wm, sel: sel, filter: filter, applyLoneAction: applyLoneAction,
 		noActionHint: noActionHint}
 }
 
@@ -67,7 +102,7 @@ type codeActionCmd struct {
 	notify          browserapi.Notifications
 	wm              browserapi.WindowManager
 	sel             *SelectionTracker
-	kind            semanticapi.CodeActionKind
+	filter          CodeActionFilter
 	applyLoneAction bool
 	noActionHint    string
 }
@@ -94,8 +129,8 @@ func (h *codeActionCmd) HandleCommand(
 	// refactor.extract, ...), so a nil Only filter is how the user browses
 	// the full menu rather than pre-selecting a single kind.
 	var only []semanticapi.CodeActionKind
-	if h.kind != "" {
-		only = []semanticapi.CodeActionKind{h.kind}
+	if h.filter.Kind != "" {
+		only = []semanticapi.CodeActionKind{h.filter.Kind}
 	}
 	params := semanticapi.CodeActionParams{
 		TextDocument: TextDocID(cmd.URI),
@@ -119,7 +154,7 @@ func (h *codeActionCmd) HandleCommand(
 		if r.CodeAction == nil {
 			continue
 		}
-		if h.kind == "" || strings.HasPrefix(string(r.CodeAction.Kind), string(h.kind)) {
+		if h.filter.matches(*r.CodeAction) {
 			actions = append(actions, *r.CodeAction)
 		}
 	}

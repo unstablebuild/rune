@@ -64,7 +64,10 @@ var extensionToLanguageID = map[string]string{
 
 	// C
 	".c": "c",
-	".h": "c",
+	// .h headers parse as C++: the C++ grammar reads C headers fine,
+	// while the C grammar turns classes and templates into ERROR nodes
+	// and hides most C++ declarations from the indexer.
+	".h": "cpp",
 
 	// C#
 	".cs": "c_sharp",
@@ -97,6 +100,9 @@ var extensionToLanguageID = map[string]string{
 	".hxx": "cpp",
 	".hh":  "cpp",
 	".h++": "cpp",
+	".inl": "cpp",
+	".ipp": "cpp",
+	".tpp": "cpp",
 
 	// CSS
 	".css": "css",

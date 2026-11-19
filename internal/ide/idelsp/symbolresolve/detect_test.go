@@ -75,6 +75,22 @@ func TestDetectSpecs(t *testing.T) {
 			want:  []*symbolresolve.Spec{symbolresolve.TypeScript},
 		},
 		{
+			// Headers parse as C++, so a C project selects both specs.
+			name:  "c sources and headers",
+			files: []string{"main.c", "lib/greeter.h"},
+			want:  []*symbolresolve.Spec{symbolresolve.C, symbolresolve.Cpp},
+		},
+		{
+			name:  "c sources alone select c",
+			files: []string{"main.c"},
+			want:  []*symbolresolve.Spec{symbolresolve.C},
+		},
+		{
+			name:  "cpp only",
+			files: []string{"src/main.cpp", "include/geo.hpp", "src/impl.inl"},
+			want:  []*symbolresolve.Spec{symbolresolve.Cpp},
+		},
+		{
 			name:  "mixed go and python",
 			files: []string{"main.go", "app.py"},
 			want:  []*symbolresolve.Spec{symbolresolve.Go, symbolresolve.Python},

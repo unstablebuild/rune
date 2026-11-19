@@ -148,6 +148,7 @@ func (c *raCallback) InvalidateAllPending()                         {}
 func (c *raCallback) WaitFileProcessed(_ context.Context, _ string) error {
 	return nil
 }
+func (c *raCallback) PublishedDiagnostics(_ string) []semanticapi.Diagnostic { return nil }
 
 func (c *raCallback) HandleNotification(
 	_ context.Context, method string, params json.RawMessage,

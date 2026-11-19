@@ -15,8 +15,9 @@ parts without requiring you to understand every Rune subsystem first. It finds
 projects, performs the project-specific setup needed by its language server,
 requests LSP initialization, and registers Python-specific commands. It is a Go
 program, but it supports Python. The
-[Rust](https://github.com/unstablebuild/rune/tree/main/cmd/extension_rust) and
-[Zig](https://github.com/unstablebuild/rune/tree/main/cmd/extension_zig)
+[Rust](https://github.com/unstablebuild/rune/tree/main/cmd/extension_rust),
+[Zig](https://github.com/unstablebuild/rune/tree/main/cmd/extension_zig), and
+[C/C++](https://github.com/unstablebuild/rune/tree/main/cmd/extension_ccpp)
 extensions work the same way: the language an extension is written in does not
 have to be the language it supports.
 
@@ -79,8 +80,9 @@ There are two layers to that syntax support:
   imports, aliases, methods, visibility, and re-exports. Read the existing
   [Go](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/golang.go),
   [Rust](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/rust.go),
+  [Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/zig.go),
   and
-  [Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/zig.go)
+  [C/C++](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/ccpp.go)
   specifications before writing yours.
 
 The extension is responsible for the parts that depend on a real workspace and
@@ -94,8 +96,9 @@ its tools:
   [Go](https://github.com/unstablebuild/rune/blob/main/cmd/extension_go/extension.go#L170-L177),
   [Python](https://github.com/unstablebuild/rune/blob/main/cmd/extension_python/extension.go#L170-L187),
   [Rust](https://github.com/unstablebuild/rune/blob/main/cmd/extension_rust/extension.go#L210-L217),
+  [Zig](https://github.com/unstablebuild/rune/blob/main/cmd/extension_zig/extension.go#L169-L181),
   and
-  [Zig](https://github.com/unstablebuild/rune/blob/main/cmd/extension_zig/extension.go#L169-L181).
+  [C/C++](https://github.com/unstablebuild/rune/blob/main/cmd/extension_ccpp/extension.go#L195-L233).
 - **Find and prepare projects.** A workspace may contain several independent
   projects. The extension decides which files mark a project root, associates
   opened source files with the nearest root, and prepares that project's
@@ -377,9 +380,10 @@ The complete parameter builders for
 [Go](https://github.com/unstablebuild/rune/blob/main/cmd/extension_go/initialize.go#L47-L208),
 [Python](https://github.com/unstablebuild/rune/blob/main/cmd/extension_python/initialize.go#L48-L217),
 [Rust](https://github.com/unstablebuild/rune/blob/main/cmd/extension_rust/initialize.go#L26-L253),
+[Zig](https://github.com/unstablebuild/rune/blob/main/cmd/extension_zig/initialize.go#L45-L209),
 and
-[Zig](https://github.com/unstablebuild/rune/blob/main/cmd/extension_zig/initialize.go#L45-L209)
-show how four different servers are configured.
+[C/C++](https://github.com/unstablebuild/rune/blob/main/cmd/extension_ccpp/initialize.go#L64-L219)
+show how five different servers are configured.
 
 An initialization request has three important parts.
 
@@ -437,8 +441,9 @@ committed project under `internal/ide/idelsp/testdata/`. The existing
 [Go](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/go_test.go),
 [Python](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/py_test.go),
 [Rust](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/rs_test.go),
+[Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/zig_test.go),
 and
-[Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/zig_test.go)
+[C/C++](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/c_test.go)
 suites are the pattern to follow. These are end-to-end tests behind the `e2e`
 build tag, not mocked protocol tests.
 
@@ -509,8 +514,10 @@ including incomplete code. Follow the existing
 [Go](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/go_test.go),
 [Python](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/py_test.go),
 [Rust](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/rs_test.go),
+[Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/zig_test.go),
+[C](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/c_test.go),
 and
-[Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/zig_test.go)
+[C++](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/cpp_test.go)
 suites. A test that mocks captures or reads different query files from the ones
 you package does not satisfy this requirement.
 
@@ -549,6 +556,10 @@ Choose examples by semantics, not syntax:
   demonstrates one language served by several specs (TypeScript, TSX, and
   JavaScript), namespace and `require` imports, and re-exports from `index.*`
   files.
+- [C/C++](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/ccpp.go#L34-L101)
+  demonstrates two specs sharing one language server, file-stem qualifiers
+  for a language without packages (C), and namespace-derived packages with
+  `ns::name` and `Type::method` qualified references (C++).
 
 Add focused fixtures while writing the spec. Test imports with and without
 aliases, two symbols with the same name, nested modules, private declarations,
@@ -565,8 +576,10 @@ parser, the packaged syntax queries, and the real resolver specification. The
 [Python](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/py_test.go),
 [Rust](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/rs_test.go),
 [Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/zig_test.go),
+[TypeScript](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/ts_test.go),
+[C](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/c_test.go),
 and
-[TypeScript](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/ts_test.go)
+[C++](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/cpp_test.go)
 suites show the required structure. A passing language-server test does not
 replace this suite because Rune's indexer resolves these names independently of
 the language server.
@@ -598,8 +611,10 @@ and the language's real syntax assets. Follow the
 [Go](https://github.com/unstablebuild/rune/blob/main/internal/ide/console/ideconsole/debugshell/go_test.go),
 [Python](https://github.com/unstablebuild/rune/blob/main/internal/ide/console/ideconsole/debugshell/py_test.go),
 [Rust](https://github.com/unstablebuild/rune/blob/main/internal/ide/console/ideconsole/debugshell/rs_test.go),
+[Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/console/ideconsole/debugshell/zig_test.go),
+[C](https://github.com/unstablebuild/rune/blob/main/internal/ide/console/ideconsole/debugshell/c_test.go),
 and
-[Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/console/ideconsole/debugshell/zig_test.go)
+[C++](https://github.com/unstablebuild/rune/blob/main/internal/ide/console/ideconsole/debugshell/cpp_test.go)
 suites. These tests belong behind the `e2e` build tag because they launch real
 tools and speak the Debug Adapter Protocol through Rune's production path.
 
@@ -737,7 +752,11 @@ The filename token normally follows the source suffix used by the existing
 suite. Go uses `go_test.go`, Python uses `py_test.go`, Rust uses `rs_test.go`, and
 Zig uses `zig_test.go`. This token is not always the runtime language ID. For
 example, `py_test.go` still initializes the server with `langID: "python"`, and
-`rs_test.go` uses `langID: "rust"`.
+`rs_test.go` uses `langID: "rust"`. One server can also stand behind several
+suffixes: C and C++ share `clangd` under `langID: "ccpp"`, so the language-server
+suite is the single `c_test.go` opening `.c`, `.cpp`, and `.h` files, while the
+syntax, indexer, and debugger layers, which are per-grammar and per-adapter
+registration, keep separate `c_test.go` and `cpp_test.go` suites.
 
 Each suite protects a different boundary:
 

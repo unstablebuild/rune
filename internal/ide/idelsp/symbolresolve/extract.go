@@ -150,11 +150,9 @@ func ExtractFile(
 	}
 
 	// References need the resolved imports and definitions need the
-	// package qualifier, so reduce those first.
-	pkg := ""
-	if !spec.hasPackages() {
-		pkg = spec.qualifier(qc, file.String())
-	}
+	// package qualifier, so reduce those first. A declared package
+	// clause overrides the path-derived qualifier.
+	pkg := spec.qualifier(qc, file.String())
 	var paths map[workspaceapi.URI][]string
 	var explicit map[workspaceapi.URI]map[string]string
 	for _, r := range results {

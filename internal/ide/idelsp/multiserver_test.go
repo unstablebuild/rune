@@ -37,6 +37,7 @@ type fakeChild struct {
 
 	mu      sync.Mutex
 	calls   []string
+	params  []any
 	notifs  []string
 	events  []string
 	opens   []semanticapi.DidOpenTextDocumentParams
@@ -61,10 +62,11 @@ type fakeChild struct {
 	initRes    semanticapi.InitializeResult
 }
 
-func (f *fakeChild) call(_ context.Context, method string, _, result any) error {
+func (f *fakeChild) call(_ context.Context, method string, params, result any) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, method)
+	f.params = append(f.params, params)
 	f.events = append(f.events, "call:"+method)
 	if f.callResult != nil {
 		if raw, ok := result.(*json.RawMessage); ok {

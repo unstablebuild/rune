@@ -1075,13 +1075,14 @@ func (c *tsCallback) RegisterCapability(context.Context, semanticapi.Registratio
 func (c *tsCallback) UnregisterCapability(context.Context, semanticapi.UnregistrationParams) error {
 	return nil
 }
-func (c *tsCallback) CodeLensRefresh(context.Context) error           { return nil }
-func (c *tsCallback) SemanticTokensRefresh(context.Context) error     { return nil }
-func (c *tsCallback) InlayHintRefresh(context.Context) error          { return nil }
-func (c *tsCallback) DiagnosticRefresh(context.Context) error         { return nil }
-func (c *tsCallback) FileDidChange(string, int32, bool, bool)         {}
-func (c *tsCallback) InvalidateAllPending()                           {}
-func (c *tsCallback) WaitFileProcessed(context.Context, string) error { return nil }
+func (c *tsCallback) CodeLensRefresh(context.Context) error                { return nil }
+func (c *tsCallback) SemanticTokensRefresh(context.Context) error          { return nil }
+func (c *tsCallback) InlayHintRefresh(context.Context) error               { return nil }
+func (c *tsCallback) DiagnosticRefresh(context.Context) error              { return nil }
+func (c *tsCallback) FileDidChange(string, int32, bool, bool)              {}
+func (c *tsCallback) InvalidateAllPending()                                {}
+func (c *tsCallback) WaitFileProcessed(context.Context, string) error      { return nil }
+func (c *tsCallback) PublishedDiagnostics(string) []semanticapi.Diagnostic { return nil }
 func (c *tsCallback) HandleNotification(context.Context, string, json.RawMessage) error {
 	return nil
 }

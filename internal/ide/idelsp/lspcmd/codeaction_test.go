@@ -302,6 +302,123 @@ func TestCodeActionListRequestsAllKinds(t *testing.T) {
 	require.Error(t, <-done)
 }
 
+func TestFilteredCodeActionMatchesKindAndTitle(t *testing.T) {
+	t.Parallel()
+
+	// clangd files every tweak under the same broad kind, so the title
+	// is the only thing that tells "Extract to function" apart from
+	// "Define outline". The filter must narrow by both.
+	results := []semanticapi.CodeActionResult{
+		codeActionResult("Extract to function", "refactor",
+			&semanticapi.Command{Command: "extract-function"}),
+		codeActionResult("Extract subexpression to variable", "refactor",
+			&semanticapi.Command{Command: "extract-variable"}),
+		codeActionResult("Move function body out-of-line", "refactor",
+			&semanticapi.Command{Command: "define-outline"}),
+		codeActionResult("Add #include", "quickfix",
+			&semanticapi.Command{Command: "add-include"}),
+	}
+	hasPrefix := func(p string) func(string) bool {
+		return func(title string) bool { return strings.HasPrefix(title, p) }
+	}
+
+	tests := []struct {
+		name     string
+		filter   CodeActionFilter
+		wantOnly []semanticapi.CodeActionKind
+		wantExec []string
+	}{
+		{
+			name:     "kind only keeps every title",
+			filter:   CodeActionFilter{Kind: "quickfix"},
+			wantOnly: []semanticapi.CodeActionKind{"quickfix"},
+			wantExec: []string{"add-include"},
+		},
+		{
+			name:     "title only requests every kind",
+			filter:   CodeActionFilter{Title: hasPrefix("Move function")},
+			wantExec: []string{"define-outline"},
+		},
+		{
+			name: "kind and title both apply",
+			filter: CodeActionFilter{
+				Kind:  "refactor",
+				Title: func(title string) bool { return title == "Extract to function" },
+			},
+			wantOnly: []semanticapi.CodeActionKind{"refactor"},
+			wantExec: []string{"extract-function"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			uri := codeActionTestURI(t)
+			lsp := &codeActionLSP{results: results}
+			notify := &notifyRecorder{}
+			floats := &floatRecorder{}
+			h := FilteredCodeActionHandler(lsp, &mockEditor{}, notify.notifications(),
+				floats.manager(), NewSelectionTracker(), tt.filter, true, "hint")
+
+			require.NoError(t, h.HandleCommand(t.Context(), codeActionCommand(uri, "run")))
+			assert.Nil(t, floats.floated(), "a sole match runs without the picker")
+			assert.Equal(t, tt.wantOnly, lsp.request().Context.Only)
+			assert.Equal(t, tt.wantExec, lsp.commands())
+		})
+	}
+
+	t.Run("no title match notifies the hint", func(t *testing.T) {
+		t.Parallel()
+
+		uri := codeActionTestURI(t)
+		lsp := &codeActionLSP{results: results}
+		notify := &notifyRecorder{}
+		floats := &floatRecorder{}
+		h := FilteredCodeActionHandler(lsp, &mockEditor{}, notify.notifications(),
+			floats.manager(), NewSelectionTracker(),
+			CodeActionFilter{Kind: "refactor", Title: hasPrefix("Expand macro")},
+			true, "no macro to expand")
+
+		require.NoError(t, h.HandleCommand(t.Context(), codeActionCommand(uri, "run")))
+		assert.Nil(t, floats.floated())
+		assert.Empty(t, lsp.commands())
+		assert.Equal(t, []string{"no macro to expand"}, notify.messages())
+	})
+
+	t.Run("several title matches go through the picker", func(t *testing.T) {
+		t.Parallel()
+
+		uri := codeActionTestURI(t)
+		lsp := &codeActionLSP{results: results}
+		notify := &notifyRecorder{}
+		floats := &floatRecorder{}
+		h := FilteredCodeActionHandler(lsp, &mockEditor{}, notify.notifications(),
+			floats.manager(), NewSelectionTracker(),
+			CodeActionFilter{Kind: "refactor", Title: hasPrefix("Extract")},
+			true, "hint")
+
+		done := make(chan error, 1)
+		go func() {
+			done <- h.HandleCommand(context.Background(), codeActionCommand(uri, "run"))
+		}()
+
+		picker := floats.picker(t)
+		offered := make([]string, 0, len(picker.Actions()))
+		for _, a := range picker.Actions() {
+			offered = append(offered, a.Title)
+		}
+		assert.Equal(t, []string{
+			"Extract to function", "Extract subexpression to variable",
+		}, offered)
+		assert.Empty(t, lsp.commands())
+
+		picker.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
+		require.NoError(t, <-done)
+		assert.Equal(t, []string{"extract-function"}, lsp.commands())
+	})
+}
+
 func TestCodeActionAppliesLoneAction(t *testing.T) {
 	t.Parallel()
 

@@ -42,6 +42,8 @@ func TestSpecFor(t *testing.T) {
 	assert.Same(t, symbolresolve.TypeScript, symbolresolve.SpecFor("typescript"))
 	assert.Same(t, symbolresolve.TSX, symbolresolve.SpecFor("tsx"))
 	assert.Same(t, symbolresolve.JavaScript, symbolresolve.SpecFor("javascript"))
+	assert.Same(t, symbolresolve.C, symbolresolve.SpecFor("c"))
+	assert.Same(t, symbolresolve.Cpp, symbolresolve.SpecFor("cpp"))
 	assert.Nil(t, symbolresolve.SpecFor("ruby"))
 }
 

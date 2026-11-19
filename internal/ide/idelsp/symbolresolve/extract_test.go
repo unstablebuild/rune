@@ -49,6 +49,13 @@ func TestSpecForFile(t *testing.T) {
 		{"a.mjs", symbolresolve.JavaScript},
 		{"a.cjs", symbolresolve.JavaScript},
 		{"a.jsx", symbolresolve.JavaScript},
+		{"a.c", symbolresolve.C},
+		// Headers parse as C++, so the Cpp spec claims them.
+		{"a.h", symbolresolve.Cpp},
+		{"a.cpp", symbolresolve.Cpp},
+		{"a.cc", symbolresolve.Cpp},
+		{"a.hpp", symbolresolve.Cpp},
+		{"a.inl", symbolresolve.Cpp},
 		{"a.txt", nil},
 		{"go", nil},
 	} {
