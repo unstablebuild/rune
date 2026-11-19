@@ -34,6 +34,7 @@ type floatingNode struct {
 	minimizedPadding            int
 	noBar                       bool
 	title                       string
+	barCharSet                  *WindowBarCharSet
 	moved                       bool
 	maximized                   bool
 	restoreAlignment            component.Alignment
@@ -44,6 +45,10 @@ type floatingNode struct {
 
 	wm      *WindowManager
 	content component.Virtual[component.Floating]
+	// contentWriter places the frame's content and borderWriter its
+	// border when the window manager draws the border; they are kept to
+	// draw without allocating.
+	contentWriter, borderWriter component.VirtualWriter
 }
 
 // reachableBarCells is how many cells of a moved window's bar stay on
@@ -113,13 +118,39 @@ func (w *floatingNode) Draw(wr term.Writer) {
 	if desiredWidth != w.desiredWidth || desiredHeight != w.desiredHeight {
 		w.resize()
 	}
-	// clear content
-	for y := w.realOffset.Y; y < w.realOffset.Y+w.realHeight; y++ {
-		for x := w.realOffset.X; x < w.realOffset.X+w.realWidth; x++ {
+	frame, ok := w.bordered()
+	if !ok {
+		w.clear(wr, w.realOffset, w.realWidth, w.realHeight)
+		w.content.Draw(wr)
+		return
+	}
+	// The window manager draws the border after the content, over the
+	// cells under the window, which its images show through their
+	// transparent pixels.
+	pos := frame.ContentPosition()
+	pos.X += w.realOffset.X
+	pos.Y += w.realOffset.Y
+	width, height := frame.ContentSize()
+	w.clear(wr, pos, width, height)
+	w.contentWriter = component.VirtualWriter{Writer: wr, Offset: pos, Width: width, Height: height}
+	frame.Content().Draw(&w.contentWriter)
+}
+
+// bordered returns the frame of w when the window manager draws its
+// border rather than the frame, which is whenever the frame has one.
+func (w *floatingNode) bordered() (*component.Frame, bool) {
+	if !w.wm.config.Frame || w.realWidth < 3 || w.realHeight < 3 {
+		return nil, false
+	}
+	return w.Content().(*component.Frame), true
+}
+
+func (w *floatingNode) clear(wr term.Writer, pos term.Coordinates, width, height int) {
+	for y := pos.Y; y < pos.Y+height; y++ {
+		for x := pos.X; x < pos.X+width; x++ {
 			wr.SetCell(term.Coordinates{Y: y, X: x}, term.Cell{})
 		}
 	}
-	w.content.Draw(wr)
 }
 
 func (w *floatingNode) SetContentResize(c tui.Component, resize bool) (

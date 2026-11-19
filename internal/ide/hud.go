@@ -87,6 +87,12 @@ func (s hudStyle) imageURIs() []string {
 	}
 	frame(wm.FrameCharSet)
 	frame(wm.FocusFrameCharSet)
+	if wm.FloatingFrameCharSet != nil {
+		frame(*wm.FloatingFrameCharSet)
+	}
+	if wm.FocusFloatingFrameCharSet != nil {
+		frame(*wm.FocusFloatingFrameCharSet)
+	}
 	frame(s.browser.FrameUnionCharSet.FrameCharSet)
 	if s.commandPromptFrame != nil {
 		frame(*s.commandPromptFrame)
@@ -99,6 +105,10 @@ func (s hudStyle) imageURIs() []string {
 	scrollBar(wm.ScrollBarHoverCharSet)
 	bar, sep := wm.WindowBarCharSet.Graphics, s.commandPromptSeparator.Graphics
 	uris = append(uris, bar.Left, bar.Horizontal, bar.Right, sep.Left, sep.Horizontal, sep.Right)
+	if wm.FocusWindowBarCharSet != nil {
+		g := wm.FocusWindowBarCharSet.Graphics
+		uris = append(uris, g.Left, g.Horizontal, g.Right)
+	}
 	buttons := func(images browser.PromptImages) {
 		for _, b := range []browser.PromptButtonImage{
 			images.Idle, images.Selected, images.Hover, images.Pressed,

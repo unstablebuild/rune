@@ -17,9 +17,12 @@
 package component
 
 import (
+	"image"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 )
@@ -87,4 +90,43 @@ func TestWindowContentSize(t *testing.T) {
 			assert.Equal(t, []int{tc.wantW, tc.wantH}, []int{w, h})
 		})
 	}
+}
+
+func TestWindowSetWindowBarCharSet(t *testing.T) {
+	pics := newFramePictures(t)
+	cfg := testWindowManagerConfig()
+	cfg.WindowBar = true
+	cfg.CloseIcon = 0
+	cfg.WindowBarCharSet.Graphics = pics.resolveWindowBar(WindowBarGraphics{Left: "L", Horizontal: "L", Right: "L"})
+	cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	irq := make(interruptCounter, 8)
+	cfg.Interrupter = irq
+	wm, root := NewWindowManager(&component.TestComponent{Ch: 'C'}, cfg)
+	t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+	wm.Resize(12, 5)
+	floating := wm.FloatingWindow(component.StaticFloating(&component.TestComponent{Ch: 'B'}, 8, 2), FloatingConfig{Offset: term.Coordinates{X: 1, Y: 1}})
+	override := WindowBarCharSet{Left: '^', Horizontal: '^', Right: '^', Graphics: pics.resolveWindowBar(WindowBarGraphics{Left: "R", Horizontal: "R", Right: "R"})}
+	assert.False(t, root.SetWindowBarCharSet(&override))
+	check := func(row string, loads int) {
+		t.Helper()
+		wm.Draw(term.NewStringWriter(12, 5))
+		irq.wait(t, loads)
+		screen := newImageScreen(12, 5)
+		screen.over = image.Rect(1, 1, 11, 5)
+		wm.Draw(screen)
+		assert.Contains(t, screen.render(t, pics, cfg.FrameAttr, false), "\n│"+row+"│\n")
+	}
+	check("LLLLLLLLLL", 1)
+	require.True(t, floating.SetWindowBarCharSet(&override))
+	check("RRRRRRRRRR", 1)
+	floating.SetContent(&component.TestComponent{Ch: 'X'})
+	check("RRRRRRRRRR", 0)
+	override.Graphics = WindowBarGraphics{}
+	require.True(t, floating.SetWindowBarCharSet(&override))
+	check("^^^^^^^^^^", 0)
+	require.True(t, floating.SetWindowBarCharSet(nil))
+	check("LLLLLLLLLL", 0)
+	cfg.WindowBarCharSet = WindowBarCharSet{Left: 'd', Horizontal: 'd', Right: 'd'}
+	wm.Restyle(cfg)
+	check("dddddddddd", 0)
 }

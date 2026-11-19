@@ -37,6 +37,13 @@ type WindowManagerConfig struct {
 	BW                bool
 	FocusFrameAttr    term.Attributes
 	FocusFrameCharSet compapi.FrameCharSet
+	// FocusFloatingFrameCharSet overrides focused floating frames, including
+	// windows without a title bar. Nil keeps FocusFrameCharSet, independently
+	// of the normal floating frame override.
+	FocusFloatingFrameCharSet *compapi.FrameCharSet
+	// FocusWindowBarCharSet overrides a focused floating window's title bar.
+	// Nil keeps WindowBarCharSet; empty slots in an override remain empty.
+	FocusWindowBarCharSet *component.WindowBarCharSet
 	// ScrollBarHoverCharSet draws the scroll bar under the pointer, and
 	// the one it drags. Each rune or image it leaves empty is
 	// ScrollBarCharSet's, and its graphics are Overlay when
@@ -209,13 +216,26 @@ func (wm *WindowManager) SetFrameCharSet(def, focus compapi.FrameCharSet) {
 
 func (wm *WindowManager) setFocusAttr(win Window) {
 	// only set focus attr+charset if there's more than one window
-	if wm.SizeTiles()+wm.SizeFloating() > 1 {
-		win.SetFrameAttr(wm.config.FocusFrameAttr)
-		win.SetFrameCharSet(wm.config.FocusFrameCharSet)
-	} else {
-		win.SetFrameAttr(wm.config.FrameAttr)
-		win.SetFrameCharSet(wm.config.FrameCharSet)
+	wm.setFrameStyle(win, wm.SizeTiles()+wm.SizeFloating() > 1)
+}
+
+func (wm *WindowManager) setFrameStyle(win Window, focused bool) {
+	attr, charset := wm.config.FrameAttr, wm.config.FrameCharSet
+	var bar *component.WindowBarCharSet
+	if focused {
+		attr, charset = wm.config.FocusFrameAttr, wm.config.FocusFrameCharSet
+		bar = wm.config.FocusWindowBarCharSet
 	}
+	if win.IsFloating() {
+		if focused && wm.config.FocusFloatingFrameCharSet != nil {
+			charset = *wm.config.FocusFloatingFrameCharSet
+		} else if !focused && wm.config.FloatingFrameCharSet != nil {
+			charset = *wm.config.FloatingFrameCharSet
+		}
+	}
+	win.SetFrameAttr(attr)
+	win.SetWindowBarCharSet(bar)
+	win.SetFrameCharSet(charset)
 }
 
 // SetAttr sets the default and focus window border attributes. Note that
@@ -237,6 +257,8 @@ func (c WindowManagerConfig) Restyled(s WindowManagerConfig) WindowManagerConfig
 	c.WindowManagerConfig = c.WindowManagerConfig.Restyled(s.WindowManagerConfig)
 	c.FocusFrameAttr = s.FocusFrameAttr
 	c.FocusFrameCharSet = s.FocusFrameCharSet
+	c.FocusFloatingFrameCharSet = s.FocusFloatingFrameCharSet
+	c.FocusWindowBarCharSet = s.FocusWindowBarCharSet
 	c.ScrollBarHoverCharSet = s.ScrollBarHoverCharSet
 	return c
 }
@@ -760,8 +782,7 @@ func (wm *WindowManager) SetFocus(tile Window) (
 			"this window manager: %p vs %p", wm, tile.wm))
 	}
 	if wm.config.Frame {
-		wm.focus.Window.SetFrameAttr(wm.config.FrameAttr)
-		wm.focus.Window.SetFrameCharSet(wm.config.FrameCharSet)
+		wm.setFrameStyle(wm.focus, false)
 		wm.setFocusAttr(tile)
 	}
 	prev = wm.focus

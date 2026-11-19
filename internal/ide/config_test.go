@@ -2881,6 +2881,107 @@ func TestConfigWindowFrameGraphics(t *testing.T) {
 	}
 }
 
+func TestConfigOptionalFloatingCharsets(t *testing.T) {
+	for _, key := range []string{"floating_frame_charset", "focus_floating_frame_charset", "focus_window_bar_charset"} {
+		for _, tc := range []struct {
+			name             string
+			value            any
+			present, invalid bool
+		}{
+			{name: "omitted"},
+			{name: "empty", present: true, value: map[string]any{}},
+			{name: "partial", present: true, value: map[string]any{"topleft": "X", "left": "X", "graphics": map[string]any{"mode": "overlay"}}},
+			{name: "cleared", present: true, value: map[string]any{"graphics": map[string]any{"topleft": "", "left": ""}}},
+			{name: "invalid table", present: true, invalid: true, value: true},
+			{name: "invalid graphics", present: true, invalid: true, value: map[string]any{"graphics": true}},
+			{name: "invalid URI", present: true, invalid: true, value: map[string]any{"graphics": map[string]any{"topleft": "ftp://bad/image.png", "left": "ftp://bad/image.png"}}},
+			{name: "invalid mode", present: true, invalid: true, value: map[string]any{"graphics": map[string]any{"mode": "bad"}}},
+		} {
+			t.Run(key+"/"+tc.name, func(t *testing.T) {
+				wm := map[string]any{
+					"frame_charset":       map[string]any{"graphics": map[string]any{"topleft": "file:///normal.png"}},
+					"focus_frame_charset": map[string]any{"graphics": map[string]any{"topleft": "file:///focus.png"}},
+					"window_bar_charset":  map[string]any{"graphics": map[string]any{"left": "file:///bar.png", "outset": map[string]any{"top": 2, "sides": 1}}},
+				}
+				if key == "focus_floating_frame_charset" {
+					wm["floating_frame_charset"] = map[string]any{"graphics": map[string]any{"topleft": "file:///floating.png"}}
+				}
+				if tc.present {
+					wm[key] = tc.value
+				}
+				cfg := &ideConfig{cfg: map[string]any{"browser": map[string]any{"window_manager": wm}}, errors: map[string]error{}}
+				got := cfg.windowManagerConfig()
+				assert.Equal(t, "file:///normal.png", got.FrameCharSet.Graphics.TopLeft)
+				assert.Equal(t, "file:///focus.png", got.FocusFrameCharSet.Graphics.TopLeft)
+				assert.Equal(t, "file:///bar.png", got.WindowBarCharSet.Graphics.Left)
+				var actual any
+				var expected any
+				switch key {
+				case "floating_frame_charset", "focus_floating_frame_charset":
+					p, base := got.FloatingFrameCharSet, got.FrameCharSet
+					if key == "focus_floating_frame_charset" {
+						p, base = got.FocusFloatingFrameCharSet, got.FocusFrameCharSet
+					}
+					if tc.name == "partial" {
+						base.TopLeft = 'X'
+						base.Graphics.Overlay = true
+					}
+					if tc.name == "cleared" {
+						base.Graphics.TopLeft = ""
+					}
+					actual, expected = p, &base
+				default:
+					base := got.WindowBarCharSet
+					if tc.name == "partial" {
+						base.Left = 'X'
+						base.Graphics.Overlay = true
+					}
+					if tc.name == "cleared" {
+						base.Graphics.Left = ""
+					}
+					actual, expected = got.FocusWindowBarCharSet, &base
+				}
+				if !tc.present || tc.invalid {
+					assert.Nil(t, actual)
+				} else {
+					assert.Equal(t, expected, actual)
+				}
+				if tc.invalid {
+					assert.Contains(t, cfg.errors, "window_manager."+key)
+				} else {
+					assert.Empty(t, cfg.errors)
+				}
+			})
+		}
+	}
+}
+
+func TestConfigFloatingHUDImageURIs(t *testing.T) {
+	wm := map[string]any{}
+	want := []string{}
+	for _, key := range []string{"floating_frame_charset", "focus_floating_frame_charset", "focus_window_bar_charset"} {
+		slots := []string{"topleft", "topright", "bottomleft", "bottomright", "horizontaltop", "horizontalbottom", "verticalleft", "verticalright"}
+		if key == "focus_window_bar_charset" {
+			slots = []string{"left", "horizontal", "right"}
+		}
+		g := map[string]any{}
+		for _, slot := range slots {
+			uri := "file:///" + key + "/" + slot + ".png"
+			g[slot] = uri
+			want = append(want, uri)
+		}
+		wm[key] = map[string]any{"graphics": g}
+	}
+	cfg := &ideConfig{cfg: map[string]any{"browser": map[string]any{"window_manager": wm}}, errors: map[string]error{}}
+	var style hudStyle
+	style.browser.WindowManager = cfg.windowManagerConfig()
+	assert.ElementsMatch(t, want, style.imageURIs())
+	assert.Empty(t, cfg.errors)
+	clear(wm)
+	style.browser.WindowManager = cfg.windowManagerConfig()
+	assert.Empty(t, style.imageURIs(), "removing optional styles removes their image URIs")
+}
+
 func TestConfigWindowScrollBarCharset(t *testing.T) {
 	every := map[string]any{
 		"top_char": "▗", "middle_char": "▐", "bottom_char": "▝",

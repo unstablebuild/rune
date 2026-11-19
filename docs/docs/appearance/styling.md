@@ -205,7 +205,9 @@ frame_charset:
 - Images are drawn as they are. Attributes, the theme and
   [dimming](#dimming) don't tint them, so ship separate images for each state,
   such as focused and unfocused frames. Transparent pixels show the cell's
-  background.
+  background. On a floating window's frame and window bar, they show whatever
+  is under the window instead, so a rounded corner stays round over a coloured
+  pane. Make those images opaque inside the window and transparent outside it.
 - Image URIs are absolute `file://` or `https://` URIs. In a `file://` URI,
   Rune expands `$RUNE_DATADIR` and no other variable. The wallpaper and the
   app icon take plain paths instead. A URI Rune cannot parse rejects its whole
@@ -528,6 +530,58 @@ wm["close_icon"] = "×"
 
 <Shot name="vl-wbar" alt="A floating terminal window with a flat dark header, a lavender close cross and the command as its title, over the editor" />
 
+#### Floating-only frames and focused headers
+
+To leave tiled frames untouched, set `floating_frame_charset` and
+`focus_floating_frame_charset` under `browser.window_manager`, rather than
+changing the shared `frame_charset` and `focus_frame_charset`. They accept
+the same eight rune and graphics slots. For a shadow on each float, bake it
+into the floating frame's right and bottom sprites within their cells;
+these frame keys do not add an outset or change window geometry.
+
+`focus_window_bar_charset` accepts the same runes, graphics, mode and outsets
+as `window_bar_charset`. For example, use black header sprites normally and
+lavender sprites in focus, with shadow edges in both floating states:
+
+```yaml
+browser:
+  window_manager:
+    # Leave the shared frame_charset and focus_frame_charset unchanged.
+    floating_frame_charset:
+      graphics: &float_shadow
+        verticalright: file://$RUNE_DATADIR/hud/custom/float-shadow-right.png
+        horizontalbottom: file://$RUNE_DATADIR/hud/custom/float-shadow-bottom.png
+        bottomright: file://$RUNE_DATADIR/hud/custom/float-shadow-corner.png
+    focus_floating_frame_charset:
+      graphics: *float_shadow
+    window_bar_charset:
+      graphics:
+        mode: replace
+        left: file://$RUNE_DATADIR/hud/custom/black-left.png
+        horizontal: file://$RUNE_DATADIR/hud/custom/black-middle.png
+        right: file://$RUNE_DATADIR/hud/custom/black-right.png
+    focus_window_bar_charset:
+      graphics:
+        left: file://$RUNE_DATADIR/hud/custom/lavender-left.png
+        horizontal: file://$RUNE_DATADIR/hud/custom/lavender-middle.png
+        right: file://$RUNE_DATADIR/hud/custom/lavender-right.png
+```
+
+Create those assets before using the example. Missing fields in an explicit
+table inherit from the shared normal frame, shared focused frame, or normal
+window bar, respectively. An absent focused floating override uses the shared
+focused frame, **not** `floating_frame_charset`. An empty table (`{}`) is a
+present override resolved from those defaults. A graphics slot set to `""`
+explicitly clears its inherited image; it is not merged back at draw time.
+Invalid optional tables report config errors and fall back to the shared style.
+
+Run `runectl screenshot` or `themereload` after edits. Both refresh these image
+URIs, including files overwritten in place, and restyle existing floats.
+Inspect a focused and an unfocused float and the unchanged tiled frames.
+Remove the optional keys and capture again to restore shared styling; use
+`graphics: {verticalright: ""}` instead when only that inherited image should
+be cleared. Removing a field from a partial table restores inheritance.
+
 ### Notifications {/* #graphical-notifications */}
 
 Violet Ledger draws notifications as rounded cards with
@@ -715,8 +769,9 @@ theme's surroundings.
 | Surface | Key | Images | `outset` |
 | --- | --- | --- | --- |
 | Window frames | `browser.window_manager.frame_charset.graphics`, `focus_frame_charset.graphics` | The eight frame slots. | |
+| Floating-only frames | `browser.window_manager.floating_frame_charset.graphics`, `focus_floating_frame_charset.graphics` | The eight frame slots; tiled frames stay unchanged. | |
 | Scroll bar | `browser.window_manager.scroll_bar_charset.graphics` | `top_char`, `middle_char`, `bottom_char` and their `hover_` versions. | `left` |
-| Floating window bar | `browser.window_manager.window_bar_charset.graphics` | `left`, `horizontal` and `right`. | `top`, `bottom`, `sides`, `inward`, `horizontal_top` |
+| Floating window bar | `browser.window_manager.window_bar_charset.graphics`, `focus_window_bar_charset.graphics` | `left`, `horizontal` and `right`. | `top`, `bottom`, `sides`, `inward`, `horizontal_top` |
 | Tabs | `browser.tab_images`, `workspace.tab_images` | `left`, `middle` and `right` for `focus`, `focus_window`, `non_focus`, `hover` and `pressed`. | `top`, `bottom`, `sides` |
 | Tab highlight | `browser.focus_tab_highlight_graphics`, `workspace.focus_tab_highlight_graphics` | `left`, `horizontal` and `right`. | |
 | Command prompt | `command.frame_charset.graphics`, `command.separator_charset.graphics` | The eight frame slots; the separator's `left`, `horizontal` and `right`. | separator: `top`, `bottom`, `inward` |

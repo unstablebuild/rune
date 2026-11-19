@@ -72,6 +72,148 @@ func TestWindowManagerSetFocusFrame(t *testing.T) {
 	testWindowManagerSetFocus(t, true)
 }
 
+func TestWindowManagerFloatingStyles(t *testing.T) {
+	charset := func(ch rune) compapi.FrameCharSet {
+		return compapi.FrameCharSet{
+			TopLeft: ch, TopRight: ch, BottomLeft: ch, BottomRight: ch,
+			HorizontalTop: ch, HorizontalBottom: ch, VerticalLeft: ch, VerticalRight: ch,
+			Graphics: compapi.FrameCharSetGraphics{BottomLeft: fmt.Sprintf("file:///%c.png", ch)},
+		}
+	}
+	for _, tt := range []struct {
+		name     string
+		normal   bool
+		focused  bool
+		focusBar bool
+		noBar    bool
+	}{
+		{name: "legacy defaults"},
+		{name: "normal floating override", normal: true},
+		{name: "focused floating override", focused: true},
+		{name: "all floating overrides", normal: true, focused: true, focusBar: true},
+		{name: "plain floating frame", normal: true, focused: true, focusBar: true, noBar: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultWindowManagerConfig()
+			cfg.FrameCharSet, cfg.FocusFrameCharSet = charset('t'), charset('T')
+			normal, focused := charset('f'), charset('F')
+			normalBar := component.WindowBarCharSet{Left: 'l', Horizontal: '-', Right: 'r'}
+			focusedBar := component.WindowBarCharSet{Left: 'L', Horizontal: '=', Right: 'R'}
+			cfg.WindowBarCharSet = normalBar
+			if tt.normal {
+				cfg.FloatingFrameCharSet = &normal
+			}
+			if tt.focused {
+				cfg.FocusFloatingFrameCharSet = &focused
+			}
+			if tt.focusBar {
+				cfg.FocusWindowBarCharSet = &focusedBar
+			}
+			wm := NewWindowManager(handler.NewTestHandler(), cfg)
+			t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+			wm.Resize(30, 12)
+			tile := wm.Focus()
+			floating := wm.FloatingWindow(handler.StaticFloating(handler.NewTestHandler(), 8, 3), component.FloatingConfig{NoBar: tt.noBar})
+			check := func(win Window, want compapi.FrameCharSet, bar component.WindowBarCharSet) {
+				t.Helper()
+				if win.IsFloating() && !tt.noBar {
+					want.TopLeft, want.HorizontalTop, want.TopRight = bar.Left, bar.Horizontal, bar.Right
+					want.Graphics.TopLeft, want.Graphics.HorizontalTop, want.Graphics.TopRight = "", "", ""
+				}
+				got, ok := win.FrameCharSet()
+				require.True(t, ok)
+				assert.Equal(t, want, got)
+			}
+			wantNormal, wantFocus, wantBar := cfg.FrameCharSet, cfg.FocusFrameCharSet, normalBar
+			if tt.normal {
+				wantNormal = normal
+			}
+			if tt.focused {
+				wantFocus = focused
+			}
+			if tt.focusBar {
+				wantBar = focusedBar
+			}
+			check(tile, cfg.FocusFrameCharSet, normalBar)
+			check(floating, wantNormal, normalBar)
+			wm.SetFocus(floating)
+			check(tile, cfg.FrameCharSet, normalBar)
+			check(floating, wantFocus, wantBar)
+			floating.SetContent(handler.NewTestHandler())
+			check(floating, wantFocus, wantBar)
+			wm.SetFocus(tile)
+			check(tile, cfg.FocusFrameCharSet, normalBar)
+			check(floating, wantNormal, normalBar)
+			floating.SetContent(handler.NewTestHandler())
+			check(floating, wantNormal, normalBar)
+			wm.SetFocus(floating)
+			wm.Restyle(cfg)
+			check(floating, wantFocus, wantBar)
+			check(tile, cfg.FrameCharSet, normalBar)
+
+			cfg.FrameCharSet, cfg.FocusFrameCharSet = charset('u'), charset('U')
+			wm.SetFrameCharSet(cfg.FrameCharSet, cfg.FocusFrameCharSet)
+			if !tt.focused {
+				wantFocus = cfg.FocusFrameCharSet
+			}
+			check(floating, wantFocus, wantBar)
+			check(tile, cfg.FrameCharSet, normalBar)
+
+			cfg.FloatingFrameCharSet = nil
+			cfg.FocusFloatingFrameCharSet = nil
+			cfg.FocusWindowBarCharSet = nil
+			wm.Restyle(cfg)
+			check(floating, cfg.FocusFrameCharSet, normalBar)
+			wm.SetFocus(tile)
+			check(floating, cfg.FrameCharSet, normalBar)
+		})
+	}
+}
+
+func TestWindowManagerFocusWindowBarGraphics(t *testing.T) {
+	dir := t.TempDir()
+	normal := grayImageURI(t, dir, "bar.png", 128)
+	focused := grayImageURI(t, dir, "focus-bar.png", 200)
+	cfg := DefaultWindowManagerConfig()
+	cfg.Dim, cfg.BW, cfg.CloseIcon = false, false, 0
+	cfg.WindowBarCharSet.Graphics = component.WindowBarGraphics{Left: normal, Horizontal: normal, Right: normal}
+	focusBar := cfg.WindowBarCharSet
+	focusBar.Graphics = component.WindowBarGraphics{Left: focused, Horizontal: focused, Right: focused}
+	cfg.FocusWindowBarCharSet = &focusBar
+	cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	irq := make(chan struct{}, 4)
+	cfg.Interrupter = interruptFunc(func() { irq <- struct{}{} })
+	wm := NewWindowManager(handler.NewTestHandler(), cfg)
+	t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+	wm.Resize(12, 5)
+	tile := wm.Focus()
+	floating := wm.FloatingWindow(handler.StaticFloating(handler.NewTestHandler(), 8, 2), component.FloatingConfig{Offset: term.Coordinates{X: 1, Y: 1}})
+	check := func(row string, load bool) {
+		t.Helper()
+		wm.Draw(term.NewStringWriter(12, 5))
+		if load {
+			select {
+			case <-irq:
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "timed out waiting for the title-bar image")
+			}
+		}
+		writer := asciiart.NewStringWriter(12, 5, asciiart.DefaultConfig())
+		wm.Draw(writer)
+		require.NoError(t, writer.Flush())
+		assert.Contains(t, writer.String(), "│"+row+"│")
+	}
+	check("aaaaaaaaaa", true)
+	wm.SetFocus(floating)
+	check("6666666666", true)
+	wm.SetFocus(tile)
+	check("aaaaaaaaaa", false)
+	wm.SetFocus(floating)
+	cfg.FocusWindowBarCharSet = nil
+	wm.Restyle(cfg)
+	check("aaaaaaaaaa", false)
+}
+
 func TestWindowManagerFocusFrameGraphics(t *testing.T) {
 	dir := t.TempDir()
 	every := func(uri string) compapi.FrameCharSetGraphics {

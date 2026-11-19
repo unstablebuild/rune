@@ -2,7 +2,7 @@
 name: rune-hud
 description: >
   Update Rune's configuration and generate sprites to refine its UI:
-  window frames, scroll bars, floating window bars, command prompts, editor
+  window frames, floating-only frames and focused headers, scroll bars, command prompts, editor
   and agent status-bar layouts, the quick menu, prompt buttons, wallpaper, the
   app icon and sounds. Discover the configuration, edit it, run runectl
   screenshot and inspect the result yourself. This is configuration and asset
@@ -34,6 +34,9 @@ or provide screenshots you can capture yourself.
   do not turn the styling task into a code change.
 - Verify appearance with `runectl screenshot` and image inspection, not source
   analysis or test programs.
+- Floating-only shadows and distinct focused headers are supported config
+  surfaces. Use the optional charsets below, not core changes or shared tiled
+  frame edits, when the request concerns only floating windows.
 
 ## Checking your work
 Take a baseline screenshot before editing. Run `runectl screenshot` yourself,
@@ -45,7 +48,8 @@ Before each capture, Rune reads the active configuration file again and applies
 these keys to every open workspace:
 
 - `browser.window_manager`: `frame_attr`, `focus_frame_attr`, `frame_charset`,
-  `focus_frame_charset`, `scroll_bar_attr`, `scroll_bar_charset`,
+  `focus_frame_charset`, `floating_frame_charset`, `focus_floating_frame_charset`,
+  `focus_window_bar_charset`, `scroll_bar_attr`, `scroll_bar_charset`,
   `scroll_bar_char`, `scroll_bar_hover_char`, `window_bar`, `window_bar_charset`,
   `close_icon` and `close_icon_attr`;
 - `browser.frameunion_charset`;
@@ -167,8 +171,11 @@ would need percent-encoding in a `file://` URI.
 4. **Images are drawn as they are.** Attrs, dimming, b&w and the theme do not
    tint them, so bake the colours in.
    - Ship separate normal and focused frame sets.
-   - Transparent pixels show the cell background behind them (for frames, the
-     background of `frame_attr` or `focus_frame_attr`).
+   - Transparent pixels show the cell background behind them (for tiled
+     frames, the background of `frame_attr` or `focus_frame_attr`). On a
+     floating window's frame and window bar they show whatever is under the
+     window, including its text: make those sprites opaque inside the window
+     and transparent only outside it, such as beyond a rounded corner.
 5. **The terminal UI ignores images** and draws the characters. The GUI also
    falls back when images are unavailable, except separator junctions try the
    frame's vertical side image first (see Fallbacks). Keep characters sensible.
@@ -333,6 +340,8 @@ Abbreviations:
 | Window frame | `browser.window_manager.frame_charset.graphics` | `topleft` `topright` `bottomleft` `bottomright` | 1 × 1 | fill |
 | | | `horizontaltop` `horizontalbottom` (tiles →), `verticalleft` `verticalright` (tiles ↓) | 1 × 1 | fill |
 | Focused frame | `browser.window_manager.focus_frame_charset.graphics` | same 8 | 1 × 1 | fill |
+| Floating-only frame | `browser.window_manager.floating_frame_charset.graphics` | same 8 | 1 × 1 | fill |
+| Focused floating-only frame | `browser.window_manager.focus_floating_frame_charset.graphics` | same 8 | 1 × 1 | fill |
 | Command prompt frame | `command.frame_charset.graphics` | same 8 | 1 × 1 | fill |
 | Command separator | `command.separator_charset.graphics` | `left`, `right` | (1+I) × (T+1+B) | fill |
 | | | `horizontal` (tiles →) | 1 × 1 | fill |
@@ -344,6 +353,7 @@ Abbreviations:
 | Floating window bar | `browser.window_manager.window_bar_charset.graphics` | `left` | (S+1+I) × (T+1+B) | fill |
 | | | `right` | (I+1+S) × (T+1+B) | fill |
 | | | `horizontal` (tiles →) | 1 × (H+1) | fill |
+| Focused floating window bar | `browser.window_manager.focus_window_bar_charset.graphics` | same 3 and outsets as the normal window bar | same as above | fill |
 | Prompt buttons | `browser.prompt.images.<idle\|selected\|hover\|pressed>` | `left` | (S+1) × (T+1+B) | fill |
 | | | `middle` (tiles →) | 1 × (T+1+B) | fill |
 | | | `right` | (1+S) × (T+1+B) | fill |
@@ -371,6 +381,54 @@ Abbreviations:
 | Quick menu | `gui.quick_menu[i].sprite` | `idle` `hover` `pressed` | square, each side as wide as 4 text columns | contain |
 | Wallpaper | `workspace.wallpaper_image` | a path, or `{path, width, height, fit}` | `width`/`height` in cells or `N%`, default 60% | `contain` (default), `cover` or `fill` |
 | App icon | `gui.app_icon` | a path | none: a square image, 256 px or larger | `contain`, centered on a transparent square |
+
+### Floating-only styling
+
+Under `browser.window_manager`, optional `floating_frame_charset` inherits
+missing slots from `frame_charset`; `focus_floating_frame_charset` inherits
+from `focus_frame_charset`, never from the normal floating override.
+`focus_window_bar_charset` inherits runes, graphics, mode and outsets from
+`window_bar_charset`. Omitted keys preserve the shared legacy styles. A present
+`{}` resolves inherited defaults but stays an explicit override. A graphics URI
+of `""` clears that image; no empty-field merging restores it at draw time.
+
+For a per-float shadow with tiled frames untouched, leave both shared frame
+charsets alone and put shadow sprites in both floating overrides' right and
+bottom graphics slots. Bake the shadow within the frame cells; frame charsets
+have no outset. For normal black versus focused lavender headers, put black
+`left`, `horizontal`, `right` sprites in `window_bar_charset.graphics` and
+lavender versions in `focus_window_bar_charset.graphics`. Colours belong in
+the sprites, not invented per-floating attribute keys. For example:
+
+```yaml
+browser:
+  window_manager:
+    floating_frame_charset:
+      graphics: &float_shadow
+        verticalright: file://$RUNE_DATADIR/hud/custom/v1/shadow-right.png
+        horizontalbottom: file://$RUNE_DATADIR/hud/custom/v1/shadow-bottom.png
+        bottomright: file://$RUNE_DATADIR/hud/custom/v1/shadow-corner.png
+    focus_floating_frame_charset:
+      graphics: *float_shadow
+    window_bar_charset:
+      graphics:
+        left: file://$RUNE_DATADIR/hud/custom/v1/black-left.png
+        horizontal: file://$RUNE_DATADIR/hud/custom/v1/black-middle.png
+        right: file://$RUNE_DATADIR/hud/custom/v1/black-right.png
+    focus_window_bar_charset:
+      graphics:
+        left: file://$RUNE_DATADIR/hud/custom/v1/lavender-left.png
+        horizontal: file://$RUNE_DATADIR/hud/custom/v1/lavender-middle.png
+        right: file://$RUNE_DATADIR/hud/custom/v1/lavender-right.png
+```
+
+Create the assets and merge only the requested keys into the existing config.
+`runectl screenshot` and `themereload` refresh every optional image URI, even
+when overwritten at the same path. Removing an optional key restores its
+shared fallback on existing floats on the next capture; removing just a slot
+restores inheritance, while `""` explicitly clears it. Inspect focused and
+unfocused floats, check shadows and header joins, and confirm tiled frames
+remain unchanged. Do not claim a focus state was verified unless visible.
 
 ### Requirements
 - Frame and scroll bar images are drawn only while

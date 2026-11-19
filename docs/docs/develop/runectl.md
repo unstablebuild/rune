@@ -77,7 +77,8 @@ Before the capture, Rune reads its config file again and applies these
 keys to every open workspace, as `themereload` does:
 
 - `browser.window_manager`: `frame_attr`, `focus_frame_attr`,
-  `frame_charset`, `focus_frame_charset`, `scroll_bar_attr`,
+  `frame_charset`, `focus_frame_charset`, `floating_frame_charset`,
+  `focus_floating_frame_charset`, `focus_window_bar_charset`, `scroll_bar_attr`,
   `scroll_bar_charset`, `scroll_bar_char`, `scroll_bar_hover_char`,
   `window_bar`, `window_bar_charset`, `close_icon` and `close_icon_attr`;
 - `browser.frameunion_charset`;
@@ -111,6 +112,11 @@ It also reads again every image these keys name, even a file overwritten
 at the same path, so you can edit an image and see it in the next
 screenshot. Config errors show up as notifications in the capture. If the
 config file does not parse, none of its keys are applied.
+This includes all images in the optional floating frame and focused header
+charsets. Remove an optional key and capture again to restore its shared
+fallback on existing floating windows; `{}` instead keeps an explicit
+override with inherited slots. Set a graphics slot to `""` to clear its image.
+Check both focused and unfocused floats and confirm tiled frames stay unchanged.
 `gui.default_theme` and `gui.sound_volume` apply only when they differ
 from the values Rune read last, so a theme or volume picked since then
 stays. Prompts already open keep their style until reopened. Other keys

@@ -987,6 +987,17 @@ config = {
             "focus_frame_attr":      attr(fg = "silver", bg = "default"),
             "frame_charset":         GUI_FRAME_CHARSET,
             "focus_frame_charset":   GUI_FRAME_CHARSET,
+            # Optional floating-only overrides leave tiled frames untouched.
+            # Missing slots inherit frame_charset / focus_frame_charset,
+            # respectively; focused floats never inherit the normal override.
+            # An empty table keeps the override present with inherited slots.
+            # An explicitly empty graphics URI clears that slot.
+            # "floating_frame_charset": {"graphics": {
+            #     "verticalright": "file:///path/to/float-shadow-right.png",
+            # }},
+            # "focus_floating_frame_charset": {"graphics": {
+            #     "verticalright": "file:///path/to/float-shadow-right.png",
+            # }},
             "scroll_bar_attr":       attr(fg = "blue", bg = "default"),
             # The scroll bar's "top_char" draws its first cell and
             # "bottom_char" its last, when it spans two cells or more,
@@ -1026,7 +1037,7 @@ config = {
             # A "graphics" table in window_bar_charset names an image for
             # "left", the bar's first cell, "right", its last, and
             # "horizontal", every cell between. Focused and unfocused
-            # windows share them:
+            # windows share them unless focus_window_bar_charset is set:
             #
             #     "graphics": {
             #         "mode":       "replace",
@@ -1047,6 +1058,12 @@ config = {
                 "horizontal": "█",
                 "right":      "█",
             },
+            # Optional focused header; missing slots inherit window_bar_charset.
+            # "focus_window_bar_charset": {"graphics": {
+            #     "left":       "file:///path/to/lavender-left.png",
+            #     "horizontal": "file:///path/to/lavender-middle.png",
+            #     "right":      "file:///path/to/lavender-right.png",
+            # }},
             "close_icon":            "",
             "close_icon_attr":       attr(fg = "red"),
         },

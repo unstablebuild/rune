@@ -200,8 +200,11 @@ func (w Window) SetContentResize(content tui.Component, resize bool) (
 	} else if w.wm.config.Frame {
 		content = w.wm.withFrame(content)
 	}
-	if f, ok := content.(*component.Frame); ok && w.HasWindowBar() {
-		f.FrameCharSet = w.wm.barCharSet(f.FrameCharSet)
+	if f, ok := content.(*component.Frame); ok && w.wm.config.Frame {
+		f.FrameCharSet = w.wm.normalFrameCharSet(w)
+		if w.HasWindowBar() {
+			f.FrameCharSet = w.wm.barCharSet(f.FrameCharSet, w.node.(*floatingNode))
+		}
 	}
 	prev = w.node.SetContentResize(content, resize)
 
@@ -237,9 +240,29 @@ func (w Window) SetFrameCharSet(b component.FrameCharSet) bool {
 		return false
 	}
 	if w.HasWindowBar() {
-		b = w.wm.barCharSet(b)
+		b = w.wm.barCharSet(b, w.node.(*floatingNode))
 	}
 	w.node.Content().(*component.Frame).FrameCharSet = b
+	return true
+}
+
+// SetWindowBarCharSet overrides this floating window's title bar. Nil restores
+// the manager's default. It returns false for tiles or managers without frames;
+// a floating window with NoBar retains the override without drawing a bar.
+func (w Window) SetWindowBarCharSet(cs *WindowBarCharSet) bool {
+	if w.wm == nil {
+		panic(errCalledZeroValuedWin)
+	}
+	f, ok := w.node.(*floatingNode)
+	if !ok || !w.wm.config.Frame {
+		return false
+	}
+	f.barCharSet = nil
+	if cs != nil {
+		copy := *cs
+		f.barCharSet = &copy
+	}
+	w.wm.applyWindowBar(f)
 	return true
 }
 

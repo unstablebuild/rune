@@ -223,6 +223,73 @@ func (g *FrameGraphics) Draw(
 	draw(gr.BottomRight, f.BottomRight, limitX, limitY)
 }
 
+// drawBorder draws the border that f draws when it is width x height at
+// 0,0 of w, in place of f, which must not draw it: the image of each
+// slot of f.Graphics that names one goes over the cell as w holds it, so
+// that its transparent pixels show what was drawn there before, and
+// every other cell takes its slot's rune, as do the cells whose image is
+// not loaded yet, failed to load or that w cannot draw, and those under
+// Overlay images. The cells of f's scroll bar take the bar's runes, and
+// with bar the top row is left to a window bar. A nil g draws runes
+// only. It draws nothing when width or height is below 3, where f draws
+// no border.
+func (g *FrameGraphics) drawBorder(
+	w term.Writer, f *component.Frame, width, height int, bar bool,
+) {
+	if width < 3 || height < 3 {
+		return
+	}
+	limitX, limitY := width-1, height-1
+	sbPos, sbHeight, sb := f.ScrollBar()
+	gr := f.Graphics
+	// cw escapes, so it is allocated by the first image only.
+	var cw *cellImageWriter
+	draw := func(uri string, ch rune, x, y int) {
+		pos := term.Coordinates{X: x, Y: y}
+		cell := term.NewCell(ch, 1, f.Attributes)
+		if g == nil || uri == "" {
+			w.SetCell(pos, cell)
+			return
+		}
+		if gr.Overlay {
+			w.SetCell(pos, cell)
+		}
+		if cw == nil {
+			cw = &cellImageWriter{Writer: w, keep: true}
+		}
+		if !g.drawCell(cw, uri, pos) && !gr.Overlay {
+			w.SetCell(pos, cell)
+		}
+	}
+
+	if !bar {
+		for x := 1; x < limitX; x++ {
+			draw(gr.HorizontalTop, f.HorizontalTop, x, 0)
+		}
+	}
+	for x := 1; x < limitX; x++ {
+		draw(gr.HorizontalBottom, f.HorizontalBottom, x, limitY)
+	}
+	for y := 1; y < limitY; y++ {
+		draw(gr.VerticalLeft, f.VerticalLeft, 0, y)
+		if !sb || y < sbPos.Y || y >= sbPos.Y+sbHeight {
+			draw(gr.VerticalRight, f.VerticalRight, limitX, y)
+			continue
+		}
+		ch, _ := f.ScrollBarCharSet.At(y-sbPos.Y, sbHeight)
+		if ch == 0 {
+			ch = f.VerticalRight
+		}
+		w.SetCell(term.Coordinates{X: limitX, Y: y}, term.NewCell(ch, 1, f.ScrollBarAttributes))
+	}
+	if !bar {
+		draw(gr.TopLeft, f.TopLeft, 0, 0)
+		draw(gr.TopRight, f.TopRight, limitX, 0)
+	}
+	draw(gr.BottomLeft, f.BottomLeft, 0, limitY)
+	draw(gr.BottomRight, f.BottomRight, limitX, limitY)
+}
+
 // DrawSeparator draws images over an already drawn separator at y inside
 // the frame. Unavailable junctions keep the frame's side images; writers
 // without image support keep the separator's runes. Junction outsets are

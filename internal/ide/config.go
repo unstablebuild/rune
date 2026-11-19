@@ -3157,18 +3157,25 @@ func (c ideConfig) windowBar() bool {
 }
 
 func (c ideConfig) windowBarCharset() (cs tcomponent.WindowBarCharSet) {
-	cs = defaultWindowManagerConfig.WindowBarCharSet
+	cs, _ = c.windowBarCharsetWithDefault("window_bar_charset", defaultWindowManagerConfig.WindowBarCharSet)
+	return
+}
+
+func (c ideConfig) windowBarCharsetWithDefault(key string, def tcomponent.WindowBarCharSet) (cs tcomponent.WindowBarCharSet, valid bool) {
+	cs = def
 	cfg, ok := c.windowManager()
 	if !ok {
 		return
 	}
-	sub, err := cfg.GetConfig("window_bar_charset")
+	name := "window_manager." + key
+	sub, err := cfg.GetConfig(key)
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["window_manager.window_bar_charset"] = err
+			c.errors[name] = err
 		}
 		return
 	}
+	valid = true
 	fields := []struct {
 		key string
 		dst *rune
@@ -3181,7 +3188,8 @@ func (c ideConfig) windowBarCharset() (cs tcomponent.WindowBarCharSet) {
 		r, err := sub.GetRune(f.key)
 		if err != nil {
 			if err != config.ErrNotFound {
-				c.errors[fmt.Sprintf("window_manager.window_bar_charset.%s", f.key)] = err
+				c.errors[name+"."+f.key] = err
+				valid = false
 			}
 			continue
 		}
@@ -3193,10 +3201,11 @@ func (c ideConfig) windowBarCharset() (cs tcomponent.WindowBarCharSet) {
 		tconfig.GraphicsSlot{Key: "horizontal", URI: &g.Horizontal},
 		tconfig.GraphicsSlot{Key: "right", URI: &g.Right},
 	); err != nil {
-		c.errors["window_manager.window_bar_charset"] = err
+		c.errors[name] = err
+		valid = false
 		return
 	}
-	c.graphicsOutset(sub, "graphics", "window_manager.window_bar_charset",
+	c.graphicsOutset(sub, "graphics", name,
 		outsetSide{&g.Outset.Top, "top"},
 		outsetSide{&g.Outset.Bottom, "bottom"},
 		outsetSide{&g.Outset.Sides, "sides"},
@@ -3204,6 +3213,11 @@ func (c ideConfig) windowBarCharset() (cs tcomponent.WindowBarCharSet) {
 		outsetSide{&g.Outset.HorizontalTop, "horizontal_top"},
 	)
 	cs.Graphics = g
+	for errorKey := range c.errors {
+		if strings.HasPrefix(errorKey, name+".graphics.outset") {
+			valid = false
+		}
+	}
 	return
 }
 
@@ -3292,6 +3306,21 @@ func (c ideConfig) windowCharset(key string, def component.FrameCharSet) (
 	}
 	cs = cfgCs
 	return
+}
+
+func (c ideConfig) optionalWindowCharset(key string, def component.FrameCharSet) *component.FrameCharSet {
+	cfg, ok := c.windowManager()
+	if !ok {
+		return nil
+	}
+	cs, err := tconfig.GetFrameCharset(cfg, key, def)
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors["window_manager."+key] = err
+		}
+		return nil
+	}
+	return &cs
 }
 
 func (c ideConfig) windowManagerBool(key string, def bool) (frame bool) {
@@ -3436,6 +3465,11 @@ func (c ideConfig) windowManagerConfig() handler.WindowManagerConfig {
 			CloseIcon:        c.windowCloseIcon(),
 			CloseIconAttr:    c.windowCloseIconAttr(),
 		},
+	}
+	ret.FloatingFrameCharSet = c.optionalWindowCharset("floating_frame_charset", ret.FrameCharSet)
+	ret.FocusFloatingFrameCharSet = c.optionalWindowCharset("focus_floating_frame_charset", ret.FocusFrameCharSet)
+	if cs, ok := c.windowBarCharsetWithDefault("focus_window_bar_charset", ret.WindowBarCharSet); ok {
+		ret.FocusWindowBarCharSet = &cs
 	}
 	if c.storage != nil {
 		ret.FrameGraphicsStorage = storageapi.WithPartition(c.storage, frameImagesPartition)

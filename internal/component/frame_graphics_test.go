@@ -1215,6 +1215,9 @@ type imageScreen struct {
 	writtenAt []int
 	writes    int
 	noImages  bool
+	// over is where images go over the cells as they are, as those of a
+	// floating window's frame do, rather than over blank cells.
+	over image.Rectangle
 }
 
 func newImageScreen(width, height int) *imageScreen {
@@ -1248,8 +1251,8 @@ func (s *imageScreen) DrawImage(img term.Image) bool {
 // replaced by the name of its picture, and those of an image below the
 // text as they are, since their text covers it. It checks that every
 // image fills its cells, that the cell under each one-cell image above
-// the text has attr and is blank unless overlay, and that each picture
-// has a single ImageID.
+// the text and outside over has attr and is blank unless overlay, and
+// that each picture has a single ImageID.
 func (s *imageScreen) render(
 	t *testing.T, pics framePictures, attr term.Attributes, overlay bool,
 ) string {
@@ -1264,7 +1267,8 @@ func (s *imageScreen) render(
 	for _, img := range s.images {
 		assert.Equal(t, term.ImageFitFill, img.Fit)
 		above := img.Layer == term.ImageLayerAboveText
-		if above && img.Width == 1 && img.Height == 1 {
+		at := image.Pt(img.Pos.X, img.Pos.Y)
+		if above && img.Width == 1 && img.Height == 1 && !at.In(s.over) {
 			cell := s.Cells()[img.Pos.Y*s.width+img.Pos.X]
 			if !overlay {
 				assert.Equal(t, ' ', cell.Ch, "the cell under the image at %v", img.Pos)
