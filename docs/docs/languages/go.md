@@ -118,9 +118,11 @@ stderr, so those logs do not appear in `process stdio`.
 
 ### gopls server settings
 
-gopls v0.22 and later opt many behaviors into initialization settings that
-Rune forwards to the server. You can supply any gopls setting under
-`extensions.go.config.gopls` in your `config.yaml`:
+Rune bundles gopls **v0.23.0** through `rune-language-go`. See the
+[gopls release notes](https://github.com/golang/tools/releases) for what
+changed. Some behaviors are opt-in settings that Rune forwards to the server.
+You can supply any gopls setting under `extensions.go.config.gopls` in your
+`config.yaml`:
 
 ```yaml tab
 extensions:
@@ -140,27 +142,31 @@ User keys win over Rune's built-in defaults. The `codelenses` and `hints`
 maps are merged key by key, so setting `gc_details: false` disables just that
 lens without clearing every other lens Rune enables by default.
 
-Three keys are reserved and never taken from your config: `langID` and
-`command` are how Rune routes the session to gopls, and `semanticTokens`
-drives Rune's own highlighting. To point Rune at a different gopls binary, set
-`extensions.go.config.lsp_path` instead of `command`.
+Two keys are reserved and never taken from your config: `langID` and
+`command` are how Rune routes the session to gopls. To point Rune at a
+different gopls binary, set `extensions.go.config.lsp_path` instead of
+`command`.
 
-These settings are **session-level**. Rune sends them in `initializationOptions`
-when it starts gopls, and gopls ignores the same keys under
-`workspace/configuration`, so every workspace folder in the session shares
-them. Changing one takes effect after `:workspacereload`, which restarts the
+The settings under `extensions.go.config.gopls` split into two groups.
+
+**Session-level** settings go to gopls in `initializationOptions` when it
+starts, and gopls ignores the same keys under `workspace/configuration`, so
+every workspace folder in the session shares them. Two settings are in this
+group: `fileWatcher`, and the `vulncheck` prompt (`"Prompt"`, the default).
+Changing either takes effect after `:workspacereload`, which restarts the
 server.
 
-The per-folder route is `lsp.servers.<section>`, which gopls asks for once per
-workspace folder. Use it when a multi-root workspace needs a different value
-for each root; gopls ignores it for the keys it reads only at startup, which
-is why both routes exist.
+Everything else is read per folder: `analyses`, `codelenses`, `hints`,
+`renameMovesSubpackages`, and the `vulncheck` diagnostics modes `"Imports"`
+and `"Off"`. gopls asks for those with `workspace/configuration`, once per
+workspace folder, so a multi-root workspace can give each root its own values
+through `lsp.servers.<section>`.
 
 Settings you are likely to adjust:
 
 | Setting | What it does |
 |---------|--------------|
-| `fileWatcher` | Server-side watch strategy: `"off"` (default), `"poll"`, or `"fsnotify"`. With `"off"` gopls relies on the editor's own change notifications. |
+| `fileWatcher` | Watch strategy: `"off"` (default), `"poll"`, `"fsnotify"`. |
 | [`vulncheck`](https://github.com/golang/tools/blob/master/gopls/doc/settings.md#vulncheck) | Vulnerability analysis mode: `"Prompt"` (default), `"Imports"`, or `"Off"`. |
 | `codelenses.<name>` | Per-code-lens toggle (e.g. `gc_details`, `tidy`, `test`, `vendor`). |
 | `hints.<name>` | Per-inlay-hint toggle (e.g. `parameterNames`, `constantValues`, `rangeVariableTypes`). |
@@ -172,9 +178,31 @@ Rune enables these codelenses by default: `gc_details`, `generate`,
 `regenerate_cgo`, `run_govulncheck`, `test`, `tidy`, `upgrade_dependency`,
 `vendor`. It enables these hints: `assignVariableTypes`,
 `compositeLiteralFields`, `compositeLiteralTypes`, `constantValues`,
-`rangeVariableTypes`, `parameterNames`, `functionTypeParameters`. If you only
-want to change one lens or hint, set just that key under `codelenses` or
-`hints`; the rest keep Rune's defaults.
+`rangeVariableTypes`, `parameterNames`, `functionTypeParameters`.
+
+The two routes behave differently. Under `extensions.go.config.gopls`, the
+`codelenses` and `hints` maps merge key by key with Rune's defaults, so
+setting one key leaves the rest alone.
+
+Under `lsp.servers.gopls` the map is passed to gopls as it is written, so
+setting `codelenses` or `hints` there replaces Rune's whole default map for
+that folder. To change one lens that way, write out every key you want to
+keep:
+
+```yaml tab
+lsp:
+  servers:
+    gopls:
+      codelenses:
+        gc_details: false
+        generate: true
+        regenerate_cgo: true
+        run_govulncheck: true
+        test: true
+        tidy: true
+        upgrade_dependency: true
+        vendor: true
+```
 
 #### Analyzers
 
@@ -184,7 +212,7 @@ match exactly.
 
 | Analyzer | Notes |
 |----------|-------|
-| `fieldalignment` | Reports structs whose fields could be reordered to use less memory. Off by default. |
+| `fieldalignment` | Reports structs whose fields could be reordered to use less memory. Off by default. The v0.22 release notes call it `fieldassignment`, but the real name is `fieldalignment`, and unknown names are ignored silently. |
 | `atomictypes` | Suggests `sync/atomic` types instead of manual locking. On by default. |
 | `embedlit` | Drops redundant embedded-struct literals under Go 1.27. On by default. |
 | `scannererr` | Flags missing `Err()` after a `bufio.Scanner` loop. On by default. |
@@ -194,6 +222,9 @@ match exactly.
 Renamed analyzers: the `waitgroup` modernizer is now `waitgroupgo`
 (`waitgroup` remains the misuse checker), and the `errorsastype` shadowing
 analyzer is now `errorsastypeshadow` (`errorsastype` remains the modernizer).
+
+To turn off a noisy analyzer, set it to `false` under `analyses`. To turn
+on one that is off by default, such as `fieldalignment`, set it to `true`.
 
 Example:
 

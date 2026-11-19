@@ -163,15 +163,22 @@ func TestGoplsInitializeParamsUserSettings(t *testing.T) {
 		{
 			description: "reserved keys are never taken from user config",
 			settings: map[string]any{
-				"langID":         "rust",
-				"command":        "not-a-gopls-command",
-				"semanticTokens": false,
+				"langID":  "rust",
+				"command": "not-a-gopls-command",
 			},
 			check: func(t *testing.T, initOpts map[string]any) {
 				assert.Equal(t, "go", initOpts["langID"])
 				assert.Equal(t, goplsCommand(goplsDebugOptions{}, ""),
 					initOpts["command"])
-				assert.Equal(t, true, initOpts["semanticTokens"])
+			},
+		},
+		{
+			description: "a gopls setting Rune also sets is still the user's",
+			settings: map[string]any{
+				"semanticTokens": false,
+			},
+			check: func(t *testing.T, initOpts map[string]any) {
+				assert.Equal(t, false, initOpts["semanticTokens"])
 			},
 		},
 	}

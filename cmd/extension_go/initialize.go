@@ -45,15 +45,12 @@ type goplsDebugOptions struct {
 	Trace semanticapi.TraceValue
 }
 
-// goplsReservedKeys are Rune routing fields and settings Rune itself owns.
-// gopls ignores langID and command, so a user map must not clobber them, and
-// Rune's semantic highlighting depends on semanticTokens being on. A user who
-// wants another gopls binary sets lsp_path instead, and one who wants no
-// semantic highlighting turns it off in Rune rather than here.
+// goplsReservedKeys are Rune routing fields that gopls ignores, so a user
+// map must not clobber them. A user who wants another gopls binary sets
+// lsp_path instead of command.
 var goplsReservedKeys = map[string]bool{
-	"langID":         true,
-	"command":        true,
-	"semanticTokens": true,
+	"langID":  true,
+	"command": true,
 }
 
 // goplsMergeableKeys name the settings whose Rune defaults are maps, so a

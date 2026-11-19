@@ -513,9 +513,12 @@ config["gui"]["app_icon"] = "~/.rune/icon.png"
   ```
 
   ```python tab
-  config["lsp"]["servers"]["gopls"]["analyses"]["fieldalignment"] = True
+  config["lsp"]["servers"] = {"gopls": {"analyses": {"fieldalignment": True}}}
   ```
 
-  A server that only reads its settings from `initializationOptions` takes
-  them at startup, so changing this needs `:workspacereload` before it takes
-  effect.
+  `lsp` already exists in the default config with its `icons`, so add the
+  `servers` key to it rather than replacing the whole table.
+
+  Keys gopls reads only at startup, such as `fileWatcher`, are not answered
+  here. Set those under `extensions.go.config.gopls` instead; changing them
+  needs `:workspacereload` before they take effect.
