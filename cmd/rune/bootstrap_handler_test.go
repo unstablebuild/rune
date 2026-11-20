@@ -1099,15 +1099,24 @@ func TestBootstrapLinkObserverOpensBarePaths(t *testing.T) {
 
 	// linkObserver is the entry point the GUI calls. It reports the
 	// failure through the notifications rather than returning it, so it
-	// must not panic and must not open a tab.
+	// must raise a notification and open no tab.
+	var notified []string
+	b.notify = func(context string, err error) {
+		notified = append(notified, context+": "+err.Error())
+	}
 	b.linkObserver(gui.Link{Path: "missing.go", Line: 1})
 	assert.NotContains(t, tabsOf(t, b), missing,
 		"linkObserver must not open a tab for a missing file")
+	assert.NotEmpty(t, notified,
+		"linkObserver must raise an error notification for a missing file")
 
 	// The same for a file link that names no file.
+	notified = nil
 	b.linkObserver(gui.Link{URL: mustParseURL(t, missing.String())})
 	assert.NotContains(t, tabsOf(t, b), missing,
 		"linkObserver must not open a tab for a missing file link")
+	assert.NotEmpty(t, notified,
+		"linkObserver must raise an error notification for a missing file link")
 }
 
 func TestBootstrapLinkObserverOpensURLs(t *testing.T) {

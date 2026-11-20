@@ -625,8 +625,6 @@ func (s *rowScanner) scanPath(
 		return dst, x + 1
 	}
 
-	// grep -n prints the path first, so only a reference that starts
-	// the run of text can be one. Prose in front keeps the column.
 	// grep -n prints the path first, so only a reference that starts its
 	// pane can be one. Prose in front keeps the column. The pane matters:
 	// a framed pane or a right-hand pane has cells to its left that are

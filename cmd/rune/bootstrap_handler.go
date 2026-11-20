@@ -68,21 +68,24 @@ type bootstrapPrompter interface {
 }
 
 type bootstrapHandler struct {
-	inner             tui.Handler
-	dataDir           string
-	storage           storageapi.Service
-	configPath        string
-	workspace         string
-	shellRCDir        string
-	host              *hostenv.Host
-	filenames         []string
-	launchCmd         []string
-	runner            ide.ExtensionsRunner
-	trust             *pkgtrust.Store
-	mu                *sync.Mutex
-	publishEvent      func(term.Event) bool
-	cellPixelSize     func() (int, int)
-	openBrowser       func(*url.URL) error
+	inner         tui.Handler
+	dataDir       string
+	storage       storageapi.Service
+	configPath    string
+	workspace     string
+	shellRCDir    string
+	host          *hostenv.Host
+	filenames     []string
+	launchCmd     []string
+	runner        ide.ExtensionsRunner
+	trust         *pkgtrust.Store
+	mu            *sync.Mutex
+	publishEvent  func(term.Event) bool
+	cellPixelSize func() (int, int)
+	openBrowser   func(*url.URL) error
+	// notify reports a bootstrap failure. Tests set it to observe the
+	// notification; when it is nil the error goes to the IDE.
+	notify            func(context string, err error)
 	clip              clipboard.Register
 	soundOutput       *gui.Sounds
 	installBackupDir  string
@@ -438,6 +441,10 @@ func (b *bootstrapHandler) notifications() browserapi.Notifications {
 // notifyError surfaces a bootstrap-flow failure to the user. The
 // bootstrap UI has no log pane, so log-only reporting is invisible.
 func (b *bootstrapHandler) notifyError(context string, err error) {
+	if b.notify != nil {
+		b.notify(context, err)
+		return
+	}
 	log.Errorf("bootstrap %s: %v", context, err)
 	_, nerr := b.notifications().Notify(browserapi.LevelError, "%s: %v", context, err)
 	if nerr != nil {
