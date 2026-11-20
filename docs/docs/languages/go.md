@@ -212,7 +212,7 @@ match exactly.
 
 | Analyzer | Notes |
 |----------|-------|
-| `fieldalignment` | Reports structs whose fields could be reordered to use less memory. Off by default. The v0.22 release notes call it `fieldassignment`, but the real name is `fieldalignment`, and unknown names are ignored silently. |
+| `fieldalignment` | Reports structs whose fields could be reordered to use less memory. Off by default. The name is `fieldalignment`, and an unknown name is ignored silently. |
 | `atomictypes` | Suggests typed atomics such as `atomic.Int32` instead of the `sync/atomic` functions. On by default. |
 | `embedlit` | Drops redundant embedded-struct literals under Go 1.27. On by default. |
 | `scannererr` | Flags missing `Err()` after a `bufio.Scanner` loop. On by default. |
