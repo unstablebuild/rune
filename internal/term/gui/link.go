@@ -1107,7 +1107,7 @@ func (l *linkScanner) handleMouse(ev term.Event, cells [][]term.Cell) bool {
 	if !ok {
 		// A URL that does not parse is not openable, and saying so is
 		// the only way a malformed link in the frame is ever explained.
-		log.Warnf("gui: link %q: %v", span.text, "does not parse")
+		log.Warnf("gui: link %q does not parse", span.text)
 		return true
 	}
 	l.observer(link)
