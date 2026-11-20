@@ -54,12 +54,40 @@ jobs:
           uv tool install "ty==$ty_version"
           uv tool install "ruff==$ruff_version"
 
+      # The C/C++ suites fail, rather than skip, when clangd is not the
+      # major the language package distributes, and the runners ship an
+      # older one or none. Install clangd's own build of the major the
+      # suite pins, alone: the rest of an LLVM toolchain on PATH would
+      # replace the runner's compiler and debugger for every other suite.
+      - name: Install pinned clangd
+        run: |
+          c=internal/ide/idelsp/c_test.go
+          major=$(sed -n 's/.*pinnedClangdMajor[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' $c)
+          if [ -z "$major" ]; then
+            echo "could not read the clangd pin from $c" >&2
+            exit 1
+          fi
+          case "$RUNNER_OS" in
+            Linux) os=linux ;;
+            *) os=mac ;;
+          esac
+          tag=$(git ls-remote --tags --refs https://github.com/clangd/clangd "refs/tags/$major.*" |
+            sed 's|.*refs/tags/||' | sort -V | tail -n 1)
+          if [ -z "$tag" ]; then
+            echo "clangd has no release of major $major" >&2
+            exit 1
+          fi
+          curl -fsSL -o "$RUNNER_TEMP/clangd.zip" \
+            "https://github.com/clangd/clangd/releases/download/$tag/clangd-$os-$tag.zip"
+          unzip -q "$RUNNER_TEMP/clangd.zip" -d "$HOME/.local"
+          echo "$HOME/.local/clangd_$tag/bin" >> "$GITHUB_PATH"
+
       # Every suite gates on exec.LookPath, so an unexported install dir
       # turns into skipped coverage that still reports success.
       - name: Verify toolchains resolve on PATH
         run: |
           status=0
-          for bin in gopls dlv rust-analyzer cargo uv uvx ty ruff; do
+          for bin in gopls dlv rust-analyzer cargo uv uvx ty ruff clangd; do
             if ! command -v "$bin"; then
               echo "$bin is not on PATH; e2e suites would silently skip" >&2
               status=1
