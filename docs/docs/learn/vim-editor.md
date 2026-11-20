@@ -574,6 +574,7 @@ the [Command Prompt](./command-prompt.md).
 | `gq{motion}` | wrap at ruler |
 | `gw{motion}` | wrap, keep cursor |
 | `g;` `g,` | older / newer change |
+| `gf` | edit file under cursor, `path:line[:col]` lands there |
 
 ## `z` mode
 

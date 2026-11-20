@@ -73,5 +73,11 @@ func KeyBindings() (ret map[handler.Sequence][][]string) {
 	ret[seq] = [][]string{
 		{text.CommandLocationJumpLine, "next", visualSelectionEndMarkID},
 	}
+	// gf — edit file under cursor; vi's gMode declines f, so the key
+	// dispatcher completes the sequence.
+	seq = handler.Sequence{First: term.KeyComb{Ch: 'g'}, Last: term.KeyComb{Ch: 'f'}}
+	ret[seq] = [][]string{
+		{"editfileoncursor"},
+	}
 	return ret
 }
