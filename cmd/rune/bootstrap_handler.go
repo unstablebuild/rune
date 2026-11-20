@@ -364,9 +364,9 @@ func (b *bootstrapHandler) wallpaperTheme() string {
 // returned, and those read the state the setter writes, so the seed
 // takes the event loop lock like a loop iteration would.
 func (b *bootstrapHandler) applyInitialThemeAttr(i *ide.IDE) {
-	b.initialThemeAttr = resolveInitialThemeAttr(i.Browser(), i.Config())
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.initialThemeAttr = resolveInitialThemeAttr(i.Browser(), i.Config())
 	i.SetDefaultAttributes(b.initialThemeAttr)
 }
 
