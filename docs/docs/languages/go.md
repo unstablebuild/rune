@@ -119,7 +119,7 @@ stderr, so those logs do not appear in `process stdio`.
 ### gopls server settings
 
 Rune bundles gopls **v0.23.0** through `rune-language-go`. See the
-[gopls release notes](https://github.com/golang/tools/releases) for what
+[gopls release notes](https://github.com/golang/tools/releases/tag/gopls%2Fv0.23.0) for what
 changed. Some behaviors are opt-in settings that Rune forwards to the server.
 You can supply any gopls setting except the two reserved keys below under
 `extensions.go.config.gopls` in your `config.yaml`:
@@ -167,11 +167,11 @@ Settings you are likely to adjust:
 | Setting | What it does |
 |---------|--------------|
 | `fileWatcher` | Watch strategy: `"off"` (default), `"poll"`, `"fsnotify"`. |
-| [`vulncheck`](https://github.com/golang/tools/blob/master/gopls/doc/settings.md#vulncheck) | Vulnerability analysis mode: `"Prompt"` (default), `"Imports"`, or `"Off"`. |
+| [`vulncheck`](https://github.com/golang/tools/blob/gopls/v0.23.0/gopls/doc/settings.md#vulncheck) | Vulnerability analysis mode: `"Prompt"` (default), `"Imports"`, or `"Off"`. |
 | `codelenses.<name>` | Per-code-lens toggle (e.g. `gc_details`, `tidy`, `test`, `vendor`). |
 | `hints.<name>` | Per-inlay-hint toggle (e.g. `parameterNames`, `constantValues`, `rangeVariableTypes`). |
 
-See the [gopls settings reference](https://github.com/golang/tools/blob/master/gopls/doc/settings.md)
+See the [gopls settings reference](https://github.com/golang/tools/blob/gopls/v0.23.0/gopls/doc/settings.md)
 for the full list of supported settings and their defaults.
 
 Rune enables these codelenses by default: `gc_details`, `generate`,
@@ -213,7 +213,7 @@ match exactly.
 | Analyzer | Notes |
 |----------|-------|
 | `fieldalignment` | Reports structs whose fields could be reordered to use less memory. Off by default. The v0.22 release notes call it `fieldassignment`, but the real name is `fieldalignment`, and unknown names are ignored silently. |
-| `atomictypes` | Suggests `sync/atomic` types instead of manual locking. On by default. |
+| `atomictypes` | Suggests typed atomics such as `atomic.Int32` instead of the `sync/atomic` functions. On by default. |
 | `embedlit` | Drops redundant embedded-struct literals under Go 1.27. On by default. |
 | `scannererr` | Flags missing `Err()` after a `bufio.Scanner` loop. On by default. |
 | `writestring` | Flags `WriteString(a+b)`. On by default. |
@@ -222,6 +222,17 @@ match exactly.
 Renamed analyzers: the `waitgroup` modernizer is now `waitgroupgo`
 (`waitgroup` remains the misuse checker), and the `errorsastype` shadowing
 analyzer is now `errorsastypeshadow` (`errorsastype` remains the modernizer).
+
+Go 1.27 brings editing features that need no config: completion of promoted
+fields in struct literals, `compositeLiteralFields` hints showing the promoted
+path, `go fill-struct` filling promoted fields, a "declare missing methods"
+quick fix for generic interfaces, and `go add-test` using `t.Context()` on
+Go 1.24+ modules. `embedlit` drops the redundant literals that Go 1.27 lets
+you set directly.
+
+Staticcheck is bundled at **2026.2rc1** (module `v0.8.0-rc1`), not a stable
+release. Its checks follow the `staticcheck` analyzer names rather than the
+gopls ones, and they are configured the same way under `analyses`.
 
 To turn off a noisy analyzer, set it to `false` under `analyses`. To turn
 on one that is off by default, such as `fieldalignment`, set it to `true`.
@@ -251,8 +262,8 @@ default, gopls relies on the editor's notifications. Use `"poll"` over a
 remote or network filesystem, or when an external tool rewrites files.
 `"fsnotify"` uses OS watchers and can exhaust file descriptors on macOS.
 
-See the [gopls settings reference](https://github.com/golang/tools/blob/master/gopls/doc/settings.md)
-and [analyzers reference](https://github.com/golang/tools/blob/master/gopls/doc/analyzers.md)
+See the [gopls settings reference](https://github.com/golang/tools/blob/gopls/v0.23.0/gopls/doc/settings.md)
+and [analyzers reference](https://github.com/golang/tools/blob/gopls/v0.23.0/gopls/doc/analyzers.md)
 for the full list.
 
 ### Interesting queries
