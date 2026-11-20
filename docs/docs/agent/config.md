@@ -19,7 +19,7 @@ extensions:
         commit: 'Co-Authored-By: Rune Agent ({{provider}}/{{model}}) <agent@rune.build>'
       skills:
         - .rune/skills
-        - ~/.rune/skills
+        - $RUNE_DATADIR/skills
         - .agents/skills
         - ~/.agents/skills
       editor_modal_start_insert: true
