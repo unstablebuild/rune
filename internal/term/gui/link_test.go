@@ -2372,3 +2372,19 @@ func TestRowScannerKeepsAPathAfterAPendingURL(t *testing.T) {
 	assert.Equal(t, 1, paths, "the path in the right pane must survive")
 	assert.Equal(t, 1, urls, "only the right URL has a host")
 }
+
+func TestRowScannerReadsAGrepLineOnlyWhenThePathStartsItsPane(t *testing.T) {
+	// A framed pane puts a border to the left of the text, so a check
+	// that scans from column zero sees the border and stops treating
+	// the reference as a grep line. The pane's own start is what
+	// matters.
+	const width, left, paneWidth = 40, 2, 30
+	cells := framed(width, left, paneWidth, "data.csv:3:100,200")
+
+	got := new(rowScanner).scan(cells, nil)
+	require.Len(t, got, 1)
+	assert.Equal(t, "data.csv", got[0].link.Path)
+	assert.Equal(t, 3, got[0].link.Line)
+	assert.Equal(t, 0, got[0].link.Col,
+		"the match is grep output, not a column")
+}

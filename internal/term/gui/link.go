@@ -627,8 +627,12 @@ func (s *rowScanner) scanPath(
 
 	// grep -n prints the path first, so only a reference that starts
 	// the run of text can be one. Prose in front keeps the column.
+	// grep -n prints the path first, so only a reference that starts its
+	// pane can be one. Prose in front keeps the column. The pane matters:
+	// a framed pane or a right-hand pane has cells to its left that are
+	// not prose.
 	grepLike := true
-	for i := 0; i < start; i++ {
+	for i := paneStart(row, start); i < start; i++ {
 		if ch := row[i].Ch; ch != ' ' && ch != '\t' && ch != 0 {
 			grepLike = false
 			break

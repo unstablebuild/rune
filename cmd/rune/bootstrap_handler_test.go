@@ -1114,6 +1114,8 @@ func TestBootstrapLinkObserverOpensURLs(t *testing.T) {
 	assert.Empty(t, tabsOf(t, b), "a url link must open no tab")
 
 	// A file link opens in the editor.
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.go"),
+		[]byte("package main\n"), 0o644))
 	uri, err := workspaceapi.ParseURI("file://" + filepath.Join(root, "a.go"))
 	require.NoError(t, err)
 	require.NoError(t, b.openLink(gui.Link{
@@ -1122,6 +1124,15 @@ func TestBootstrapLinkObserverOpensURLs(t *testing.T) {
 	}))
 	assert.Contains(t, tabsOf(t, b), uri,
 		"a file link must open the file in a tab")
+
+	// A file link that names no file is reported rather than opening an
+	// empty buffer, the way a bare path is.
+	missing, err := workspaceapi.ParseURI("file://" + filepath.Join(root, "gone.go"))
+	require.NoError(t, err)
+	assert.Error(t, b.openLink(gui.Link{URL: mustParseURL(t, missing.String())}),
+		"a file link to a missing file must be reported")
+	assert.NotContains(t, tabsOf(t, b), missing,
+		"a missing file must open no tab")
 }
 
 func mustParseURL(t *testing.T, raw string) *url.URL {
