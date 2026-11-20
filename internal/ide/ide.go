@@ -723,7 +723,13 @@ func (i *IDE) init(
 	intro := i.ideConfig.intro()
 	screensaver := i.ideConfig.screensaver()
 	i.playIntro = i.ideConfig.animationsIntro()
-	i.workspaceHandler.logNonFatalErrs(i.workspaceHandler.focusBrowser(),
+	// The workspace builds in the background and lands on the event
+	// loop, which takes the locker to install it. Reading the focused
+	// browser here has to take it too, or the two race.
+	i.locker.Lock()
+	initialBrowser := i.workspaceHandler.focusBrowser()
+	i.locker.Unlock()
+	i.workspaceHandler.logNonFatalErrs(initialBrowser,
 		configErr, i.ideConfig.errors)
 
 	shutdownShaderCfg := nopShutdownShaderConfig()
