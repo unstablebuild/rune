@@ -23,6 +23,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/workspace/linecol"
@@ -624,7 +625,16 @@ func (s *rowScanner) scanPath(
 		return dst, x + 1
 	}
 
-	line, col, end, ok := s.parsePosition(row, x+1)
+	// grep -n prints the path first, so only a reference that starts
+	// the run of text can be one. Prose in front keeps the column.
+	grepLike := true
+	for i := 0; i < start; i++ {
+		if ch := row[i].Ch; ch != ' ' && ch != '\t' && ch != 0 {
+			grepLike = false
+			break
+		}
+	}
+	line, col, end, ok := s.parsePosition(row, x+1, grepLike)
 	if !ok {
 		return dst, x + 1
 	}
@@ -641,27 +651,10 @@ func (s *rowScanner) scanPath(
 
 // positionAt reads the position that starts at byte x of text and returns
 // the 1-based line and column with the byte one past the position. The
-// rules are linecol's, with the grep fallback: a LINE:COL that runs into
-// something that is not a colon or a closing delimiter falls back to the
-// line on its own, so a grep match starting with a digit is not read as a
-// column. A closing delimiter ends the reference instead, so a quoted
-// "a/b.go:12:3" names column 3.
-func positionAt(text string, x int) (line, col, end int, ok bool) {
-	line, col, n, ok := linecol.Parse(text[x:])
-	if !ok {
-		return 0, 0, 0, false
-	}
-	end = x + n
-	if end < len(text) && text[end] != ':' && !closesReference(rune(text[end])) {
-		lineEnd := x
-		for lineEnd < len(text) && isDigit(rune(text[lineEnd])) {
-			lineEnd++
-		}
-		if lineEnd > x && lineEnd < len(text) && text[lineEnd] == ':' {
-			return line, 0, lineEnd, true
-		}
-	}
-	return line, col, end, true
+// rule lives in linecol: grepLike says nothing but the path precedes the
+// position, which enables the grep -n fallback.
+func positionAt(text string, x int, grepLike bool) (line, col, end int, ok bool) {
+	return linecol.ParseAt(text, x, grepLike)
 }
 
 // parsePosition reads the position that starts at the given cell of the
@@ -669,7 +662,9 @@ func positionAt(text string, x int) (line, col, end int, ok bool) {
 // position. The rules live in positionAt: the cells are copied into a
 // byte slice and its byte count is the number of cells the position
 // covers, since every cell in the run is one ASCII byte.
-func (s *rowScanner) parsePosition(row []term.Cell, x int) (line, col, end int, ok bool) {
+func (s *rowScanner) parsePosition(
+	row []term.Cell, x int, grepLike bool,
+) (line, col, end int, ok bool) {
 	s.pos = s.pos[:0]
 	for i := x; i < len(row); i++ {
 		c := row[i].Ch
@@ -685,22 +680,11 @@ func (s *rowScanner) parsePosition(row []term.Cell, x int) (line, col, end int, 
 			break
 		}
 	}
-	line, col, rel, ok := positionAt(string(s.pos), 0)
+	line, col, rel, ok := positionAt(string(s.pos), 0, grepLike)
 	if !ok {
 		return 0, 0, 0, false
 	}
 	return line, col, x + rel, true
-}
-
-// closesReference reports whether r ends a reference written in prose,
-// so a position in front of it is complete rather than running into
-// something.
-func closesReference(r rune) bool {
-	switch r {
-	case '"', '\'', ')', ']', '}', '>':
-		return true
-	}
-	return false
 }
 
 // coveredBySpan reports whether the cells of the row between x0 and x1
@@ -805,7 +789,16 @@ func parsePathRef(text string) (path string, line, col, start, end int, ok bool)
 	if !isFilePath(path) {
 		return "", 0, 0, 0, 0, false
 	}
-	line, col, n, ok := positionAt(text, pos+1)
+	// grep -n prints the path first, so only a reference that starts
+	// the joined text can be one.
+	grepLike := true
+	for i := 0; i < start; i++ {
+		if ch := text[i]; ch != ' ' && ch != '\t' {
+			grepLike = false
+			break
+		}
+	}
+	line, col, n, ok := positionAt(text, pos+1, grepLike)
 	if !ok {
 		return "", 0, 0, 0, 0, false
 	}
@@ -860,7 +853,7 @@ func appendCluster(dst []byte, c *term.Cell) []byte {
 	return appendWideCluster(dst, c)
 }
 
-// appendWideCluster is split out from appendCluster so that the ASCII cell
+// appendWideCluster is split out of appendCluster so that the ASCII cell
 // a URL is almost entirely made of inlines at the call site.
 func appendWideCluster(dst []byte, c *term.Cell) []byte {
 	dst = utf8.AppendRune(dst, c.Ch)
@@ -907,7 +900,7 @@ func isURLRune(r rune) bool {
 // bar. The frame covers the whole window, so this chrome is rendered
 // hard against the text it surrounds, and no address contains it.
 func isFrameRune(r rune) bool {
-	return r >= '─' && r <= '▟'
+	return r >= '\u2500' && r <= '\u259f'
 }
 
 // isURLByte reports whether b can appear in a URL rendered in prose.
@@ -1112,7 +1105,9 @@ func (l *linkScanner) handleMouse(ev term.Event, cells [][]term.Cell) bool {
 	l.clicking = true
 	link, ok := span.buildLink()
 	if !ok {
-		// A URL that does not parse is not openable.
+		// A URL that does not parse is not openable, and saying so is
+		// the only way a malformed link in the frame is ever explained.
+		log.Warnf("gui: link %q: %v", span.text, "does not parse")
 		return true
 	}
 	l.observer(link)

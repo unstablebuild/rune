@@ -1445,10 +1445,10 @@ func TestLinkScannerHandleMouse(t *testing.T) {
 				{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 6},
 			},
 			consumed: []bool{true},
-			// The position runs into prose rather than a colon, so the
-			// line alone is the position, the way grep -n prints it.
+			// Prose in front of the path, so this is a reference in a
+			// sentence and the column is part of it.
 			opened: []Link{{
-				Path: "internal/x/y.go", Line: 76, Col: 0,
+				Path: "internal/x/y.go", Line: 76, Col: 7,
 			}},
 		},
 		{
@@ -1713,6 +1713,43 @@ func TestGUIMetaClickOpensLinkAndIsNotForwarded(t *testing.T) {
 
 	require.Len(t, opened, 1)
 	assert.Equal(t, urlLink("https://example.com"), opened[0])
+	assert.Empty(t, handled, "the whole gesture is consumed")
+}
+
+func TestGUIMetaClickOpensABarePathAndIsNotForwarded(t *testing.T) {
+	var handled []term.Event
+	mock := mockHandler{
+		assertDraw: func(w term.Writer) {
+			writeRow(w, 0, "see internal/x/y.go:76:7 here")
+		},
+		assertEvent: func(ev term.Event) (bool, bool) {
+			handled = append(handled, ev)
+			return false, true
+		},
+	}
+	g, input := newTestGUI(t, &mock)
+	var opened []Link
+	require.NoError(t, WithLinkObserver(func(l Link) {
+		opened = append(opened, l)
+	})(g))
+	g.drawHandler(g.ctx)
+
+	metaDown(input)
+	require.NoError(t, g.Update())
+	input.events = nil
+
+	g.pendingEvents = append(g.pendingEvents,
+		term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 6},
+		term.Event{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 6})
+	require.NoError(t, g.Update())
+
+	// The whole Link, not a field: the path, the line and the column all
+	// reach the observer, and no URL does.
+	require.Len(t, opened, 1)
+	assert.Equal(t, Link{
+		Path: "internal/x/y.go", Line: 76, Col: 7,
+	}, opened[0])
+	assert.Nil(t, opened[0].URL, "a bare path carries no URL")
 	assert.Empty(t, handled, "the whole gesture is consumed")
 }
 

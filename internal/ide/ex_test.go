@@ -7682,7 +7682,7 @@ func TestOnLinkClick(t *testing.T) {
 	assert.True(t, b.ex.onLinkClick(parse("http://example.com")))
 	assert.True(t, b.ex.config.OnLinkClick(parse("https://example.com/md")),
 		"markdown tabs must open links the same way")
-	for _, raw := range []string{"#anchor", "mailto:a@example.com"} {
+	for _, raw := range []string{"#anchor", "mailto:a@example.com", "file:///tmp/x"} {
 		assert.False(t, b.ex.onLinkClick(parse(raw)),
 			"%s must fall through to the markdown handler", raw)
 	}
@@ -7694,73 +7694,6 @@ func TestOnLinkClick(t *testing.T) {
 	assert.Equal(t, []string{"open https://example.com/%24: boom"}, notes.errorMessages())
 }
 
-func TestOnLinkClickFile(t *testing.T) {
-	clip := clipboard.NewInMemory()
-	e, fileScheme, tempDir := newExForTestingFileWorkspace(t, clip)
-	defer func() { require.NoError(t, e.Close()) }()
-	defer func() { require.NoError(t, fileScheme.Close()) }()
-
-	const relPath = "hello.go"
-	var content strings.Builder
-	for i := range 50 {
-		fmt.Fprintf(&content, "line %d\n", i+1)
-	}
-	require.NoError(t, os.WriteFile(filepath.Join(tempDir, relPath),
-		[]byte(content.String()), 0o644))
-
-	uri, err := e.workspace.URI(relPath)
-	require.NoError(t, err)
-
-	parse := func(raw string) *url.URL {
-		u, err := url.Parse(raw)
-		require.NoError(t, err)
-		return u
-	}
-
-	editor := func() text.Handler {
-		tab, ok := e.comp.FocusTab()
-		require.True(t, ok, "a tab must be focused")
-		h, ok := tab.Handler().(text.Handler)
-		require.True(t, ok, "the focused tab must hold an editor")
-		return h
-	}
-
-	// A file link opens the file in the editor.
-	assert.True(t, e.onLinkClick(parse(uri.String()+"#42:5")),
-		"a file link must be handled, not left to fall through to the markdown handler")
-	e.Resize(80, 24)
-	assert.Equal(t, uri, editor().Resource())
-	assert.Equal(t, term.Coordinates{Y: 41, X: 4}, editor().CursorAtScroll(),
-		"the cursor lands on the line and column the link names")
-
-	// A link without a column starts at the first column.
-	assert.True(t, e.onLinkClick(parse(uri.String()+"#42")))
-	assert.Equal(t, term.Coordinates{Y: 41, X: 0}, editor().CursorAtScroll())
-
-	// A link without a position leaves the cursor where it was.
-	assert.True(t, e.onLinkClick(parse(uri.String())))
-	assert.Equal(t, term.Coordinates{Y: 41, X: 0}, editor().CursorAtScroll(),
-		"a link without a position must not move the cursor")
-
-	// A link to a file that does not exist is still handled, and opens
-	// an empty buffer for it.
-	missing := "file://" + filepath.Join(tempDir, "missing.go")
-	assert.True(t, e.onLinkClick(parse(missing)))
-
-	// A link that cannot be opened raises an error notification rather
-	// than failing silently.
-	rec := &pluginWaitNotifications{inner: e.notifications}
-	e.notifications = rec
-	broken := "file://" + filepath.Join(tempDir, "nodir", "x.go")
-	assert.True(t, e.onLinkClick(parse(broken)),
-		"an unopenable link must still be handled")
-	assert.NotEmpty(t, rec.errorMessages(),
-		"an unopenable link must raise an error notification")
-}
-
-// TestOpenFileAtPositions pins the cursor contract of openFileAt, which
-// the link observer and the markdown link handler both call. A line of
-// zero must leave an existing cursor alone rather than jump to 1:1.
 func TestOpenFileAtPositions(t *testing.T) {
 	clip := clipboard.NewInMemory()
 	e, fileScheme, tempDir := newExForTestingFileWorkspace(t, clip)

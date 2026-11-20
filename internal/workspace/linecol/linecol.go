@@ -96,31 +96,14 @@ func Cut(s string) (path string, pos Position, rest string, ok bool) {
 		if i > 0 && s[i-1] == ':' {
 			continue
 		}
-		line, col, n, ok := Parse(s[i+1:])
+		line, col, end, ok := ParseAt(s, i+1, grepLine(s[:i]))
 		if !ok {
 			continue
 		}
-		end := i + 1 + n
 		// A position is only a position when the text ends it or
 		// another colon follows: "42abc" and "1.5" are not, and
 		// neither is the drive of "C:\x".
 		if end < len(s) && s[end] != ':' {
-			// A LINE:COL that is not followed by a colon or the end is
-			// not the position the line prints. grep -n puts the
-			// matched text after a colon, so fall back to the line on
-			// its own when a colon follows it: "data.csv:3:100,200"
-			// names line 3 with "100,200" as the match, and
-			// "main.go:7:0x10 := 1" names line 7.
-			lineEnd := i + 1
-			for lineEnd < len(s) && isDigit(s[lineEnd]) {
-				lineEnd++
-			}
-			if lineEnd > i+1 && lineEnd < len(s) && s[lineEnd] == ':' {
-				if i == 0 {
-					return s, Position{}, "", false
-				}
-				return s[:i], Position{Line: line}, s[lineEnd+1:], true
-			}
 			continue
 		}
 		if end < len(s) {
@@ -133,6 +116,60 @@ func Cut(s string) (path string, pos Position, rest string, ok bool) {
 		return s[:i], Position{Line: line, Col: col}, rest, true
 	}
 	return s, Position{}, "", false
+}
+
+// grepLine reports whether the text in front of a position is the path
+// itself, with no prose in front of it. grep -n prints
+// "path:line:col:match", so when nothing but the path precedes the
+// position the text after it is the match. A reference written inside a
+// sentence has prose in front and keeps its column.
+func grepLine(before string) bool {
+	for i := 0; i < len(before); i++ {
+		if before[i] == ' ' || before[i] == '\t' {
+			return false
+		}
+	}
+	return true
+}
+
+// ParseAt reads the position that starts at byte x of s and returns the
+// 1-based line and column with the byte one past the position. It is
+// Parse with the grep -n fallback: when grepLike is set and the position
+// is followed by something that is neither a colon nor the end, the line
+// on its own is the position, because grep puts the matched text after
+// the position. A closing delimiter ends the reference instead, so a
+// quoted "a/b.go:12:3" names column 3.
+func ParseAt(s string, x int, grepLike bool) (line, col, end int, ok bool) {
+	line, col, n, ok := Parse(s[x:])
+	if !ok {
+		return 0, 0, 0, false
+	}
+	end = x + n
+	if !grepLike || end >= len(s) || s[end] == ':' {
+		return line, col, end, true
+	}
+	if closesReference(s[end]) {
+		return line, col, end, true
+	}
+	lineEnd := x
+	for lineEnd < len(s) && isDigit(s[lineEnd]) {
+		lineEnd++
+	}
+	if lineEnd > x && lineEnd < len(s) && s[lineEnd] == ':' {
+		return line, 0, lineEnd, true
+	}
+	return line, col, end, true
+}
+
+// closesReference reports whether c ends a reference written in prose, so
+// a position in front of it is complete rather than running into
+// something.
+func closesReference(c byte) bool {
+	switch c {
+	case '"', '\'', ')', ']', '}', '>':
+		return true
+	}
+	return false
 }
 
 // Coord converts a 1-based position to the 0-based coordinates an

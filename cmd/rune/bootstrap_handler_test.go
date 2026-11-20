@@ -44,7 +44,6 @@ import (
 	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idepkg/pkgtrust"
-	"unstable.build/rune/internal/ide/starlarkconfig"
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/gui"
 	"unstable.build/rune/internal/term/gui/glassbar"

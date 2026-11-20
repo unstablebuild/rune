@@ -482,7 +482,7 @@ Holding `<meta>` and clicking a `path:line:column` reference in the rendered
 frame opens that file in the editor with the cursor on that line and column.
 The reference is the form a compiler error, a stack trace or `grep -n` prints,
 with or without a `file://` prefix. A relative path resolves against the
-workspace root, and a path that names no file is reported.
+workspace root, and a bare path that names no file is reported.
 
 - `meta_open_url`: how an `http://` or `https://` link opens when you click it
   in a markdown tab, a hover, a workspace notice, the cheatsheet or a Rune
