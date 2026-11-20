@@ -334,7 +334,7 @@ type wirePty struct {
 
 var (
 	_ workspaceapi.File = (*wirePty)(nil)
-	_ vte.ReplicaReader   = (*wirePty)(nil)
+	_ vte.ReplicaReader = (*wirePty)(nil)
 )
 
 func newWirePty(v *replica, name string) *wirePty {
