@@ -1096,6 +1096,18 @@ func TestBootstrapLinkObserverOpensBarePaths(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, tabsOf(t, b), missing,
 		"a path that names no file must open no tab")
+
+	// linkObserver is the entry point the GUI calls. It reports the
+	// failure through the notifications rather than returning it, so it
+	// must not panic and must not open a tab.
+	b.linkObserver(gui.Link{Path: "missing.go", Line: 1})
+	assert.NotContains(t, tabsOf(t, b), missing,
+		"linkObserver must not open a tab for a missing file")
+
+	// The same for a file link that names no file.
+	b.linkObserver(gui.Link{URL: mustParseURL(t, missing.String())})
+	assert.NotContains(t, tabsOf(t, b), missing,
+		"linkObserver must not open a tab for a missing file link")
 }
 
 func TestBootstrapLinkObserverOpensURLs(t *testing.T) {
@@ -1106,10 +1118,10 @@ func TestBootstrapLinkObserverOpensURLs(t *testing.T) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// An http link opens in the browser, not in the editor.
-	require.NoError(t, b.openLink(gui.Link{
-		URL: mustParseURL(t, "https://example.com"),
-	}))
+	// An http link opens in the browser, not in the editor. Go through
+	// linkObserver, which is what the GUI calls, so the notification
+	// wrapper is exercised too.
+	b.linkObserver(gui.Link{URL: mustParseURL(t, "https://example.com")})
 	assert.Equal(t, []string{"https://example.com/"}, *opened)
 	assert.Empty(t, tabsOf(t, b), "a url link must open no tab")
 
