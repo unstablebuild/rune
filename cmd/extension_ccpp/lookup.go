@@ -191,23 +191,26 @@ func resolveClangd(
 	return ""
 }
 
-// resolveBear returns how to invoke Bear on the workspace host: its bare
-// name when it is on PATH, the path of the one the ccpp package ships
-// otherwise, "" when there is neither. PATH is tried first so the
-// recipe stays short, and so a host that has Bear is never asked to
-// install the package for it.
+// resolveBear returns the Bear `ccpp compdb generate` runs: the one the
+// ccpp package ships, whose parse-sh command it relies on, else the one
+// on the workspace host's PATH, "" when there is neither. The package
+// wins since a Bear older than 4 has no parse-sh.
 func resolveBear(
 	ctx context.Context,
 	notify browserapi.Notifications,
 	exec workspaceapi.Executor,
 	tools *langext.Tools,
 ) string {
+	if packaged := findPackaged(ctx, tools, notify, "bear"); packaged != "" {
+		return packaged
+	}
 	lookCtx, cancel := context.WithTimeout(ctx, resolutionTimeout)
 	defer cancel()
-	if _, err := lookPath(lookCtx, exec, "bear"); err == nil {
-		return "bear"
+	bin, err := lookPath(lookCtx, exec, "bear")
+	if err != nil {
+		return ""
 	}
-	return findPackaged(ctx, tools, notify, "bear")
+	return bin
 }
 
 // findPackaged returns the path of name in the ccpp package, or "" so

@@ -257,31 +257,14 @@ func TestCompdbHowTo(t *testing.T) {
 	tests := []struct {
 		name     string
 		markers  []string
-		bear     string
 		contains []string
 		excludes []string
 	}{
-		{"cmake", []string{"CMakeLists.txt"}, "",
-			[]string{"cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"}, []string{"bear"}},
-		{"cmake outranks the Makefile of an in-source build", []string{"CMakeLists.txt", "Makefile"}, "",
-			[]string{"CMAKE_EXPORT_COMPILE_COMMANDS"}, []string{"bear"}},
-		{"meson", []string{"meson.build"}, "",
-			[]string{"meson setup build"}, []string{"cmake", "bear"}},
-		{"bazel", []string{"MODULE.bazel", "BUILD.bazel"}, "",
+		{"bazel", []string{"MODULE.bazel", "BUILD.bazel"},
 			[]string{"bazel run @hedron_compile_commands//:refresh_all"}, []string{"cmake", "bear"}},
-		{"autotools with a configure script", []string{"configure.ac", "configure", "Makefile.in", "Makefile"}, "bear",
-			[]string{"`./configure && bear -- make`"}, []string{"autoreconf", "cmake", "meson", "pkg install"}},
-		{"autotools before autoreconf", []string{"configure.ac", "Makefile.am"}, "bear",
-			[]string{"`autoreconf -i && ./configure && bear -- make`"}, []string{"cmake"}},
-		{"plain make", []string{"Makefile"}, "bear",
-			[]string{"`bear -- make`"}, []string{"configure", "cmake", "meson", "pkg install"}},
-		{"packaged bear off PATH is named by its path", []string{"configure.ac", "configure"}, "/data/ccpp/bin/bear",
-			[]string{"`./configure && /data/ccpp/bin/bear -- make`"}, []string{"pkg install"}},
-		{"bear missing points at the package that ships it", []string{"GNUmakefile"}, "",
-			[]string{"`pkg install ccpp`", "`bear -- make`"}, []string{"brew", "apt"}},
-		{"clangd's own files do not pick a build system", []string{".clangd", "Makefile"}, "bear",
-			[]string{"`bear -- make`"}, nil},
-		{"no build system", nil, "",
+		{"no build system", nil,
+			[]string{"compile_flags.txt", "one compiler flag per line"}, []string{"cmake", "bear"}},
+		{"clangd's own files are no build system", []string{".clangd"},
 			[]string{"compile_flags.txt", "one compiler flag per line"}, []string{"cmake", "bear"}},
 	}
 	for _, tt := range tests {
@@ -290,7 +273,7 @@ func TestCompdbHowTo(t *testing.T) {
 			for _, m := range tt.markers {
 				fs.addFile("/ws/" + m)
 			}
-			got := compdbHowTo(projectMarkers(fs, "/ws"), func() string { return tt.bear })
+			got := compdbHowTo(projectMarkers(fs, "/ws"))
 			for _, s := range tt.contains {
 				assert.Contains(t, got, s)
 			}

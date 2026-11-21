@@ -193,7 +193,7 @@ func TestExtendWorkspaceWithoutClangdFailsTheBringUpAndReports(t *testing.T) {
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{"main.c": "int main() { return 0; }\n"})
 	notInstalled := &langexttest.Installer{Err: errors.New("ccpp: not installed")}
-	env := runExtensionOnFS(t, dir, noClangdFS{realFS{root: dir}}, nil, notInstalled)
+	env := runExtensionOnFS(t, dir, noClangdFS{realFS{root: dir}}, nil, notInstalled, &fakePrompter{})
 	env.editor.open(t, filepath.Join(dir, "main.c"))
 
 	state := envState(t, env)

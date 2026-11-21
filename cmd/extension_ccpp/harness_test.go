@@ -42,6 +42,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/extension/langext/langexttest"
@@ -127,8 +129,10 @@ func (f *memFile) Write([]byte) (int, error)  { return 0, errors.New("not suppor
 // fakeFS implements workspaceapi.FileSystem for resolver and detection
 // tests. ReadDir returns the scripted entries for any path, except for
 // directory keys registered via addReadDir. Files registered with
-// addContent are readable through OpenFile.
+// addContent are readable through OpenFile. A scripted command may add
+// files while the extension reads, so access is locked.
 type fakeFS struct {
+	mu       sync.Mutex
 	files    map[string]bool
 	dirs     map[string]bool
 	contents map[string][]byte
@@ -145,21 +149,38 @@ func newFakeFS() *fakeFS {
 	}
 }
 
-func (f *fakeFS) addFile(p string) *fakeFS { f.files[p] = true; return f }
-func (f *fakeFS) addDir(p string) *fakeFS  { f.dirs[p] = true; return f }
+func (f *fakeFS) addFile(p string) *fakeFS {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.files[p] = true
+	return f
+}
+
+func (f *fakeFS) addDir(p string) *fakeFS {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dirs[p] = true
+	return f
+}
 
 func (f *fakeFS) addContent(p string, content []byte) *fakeFS {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.files[p] = true
 	f.contents[p] = content
 	return f
 }
 
 func (f *fakeFS) addEntry(name string, dir bool) *fakeFS {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.entries = append(f.entries, fakeDirEntry{name: name, dir: dir})
 	return f
 }
 
 func (f *fakeFS) addReadDir(path string, entries ...os.DirEntry) *fakeFS {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.readDirs[path] = entries
 	return f
 }
@@ -169,6 +190,8 @@ func (f *fakeFS) URI(p string) (workspaceapi.URI, error) {
 }
 
 func (f *fakeFS) OpenFile(p string, _ int, _ os.FileMode) (workspaceapi.File, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if content, ok := f.contents[p]; ok {
 		return &memFile{Reader: bytes.NewReader(content), name: p}, nil
 	}
@@ -180,6 +203,8 @@ func (f *fakeFS) Remove(_ string) error { return errors.New("not supported") }
 func (f *fakeFS) MkdirAll(string, os.FileMode) error { return nil }
 
 func (f *fakeFS) Stat(name string) (os.FileInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.files[name] {
 		return fakeFileInfo{name: name, dir: false}, nil
 	}
@@ -190,6 +215,8 @@ func (f *fakeFS) Stat(name string) (os.FileInfo, error) {
 }
 
 func (f *fakeFS) ReadDir(p string) ([]os.DirEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if entries, ok := f.readDirs[p]; ok {
 		return entries, nil
 	}
@@ -200,22 +227,34 @@ func (f *fakeFS) ReadDir(p string) ([]os.DirEntry, error) {
 }
 
 // scriptedCmd records the stdout/stderr payload and exit error returned
-// by the fake executor for a matching command key.
+// by the fake executor for a matching command key. effect, when set,
+// runs before the command exits, as the files a real one writes.
 type scriptedCmd struct {
 	stdout string
 	stderr string
 	err    error
+	effect func()
 }
 
 // fakeExecutor implements workspaceapi.Executor. It dispatches on the
 // space-joined (cmd.Path, cmd.Args...) key. Unknown commands succeed
-// with empty output. LookPath answers from paths.
+// with empty output. LookPath answers from paths. It records each
+// command, with its directory, description and standard input.
 type fakeExecutor struct {
 	mu        sync.Mutex
 	responses map[string]scriptedCmd
 	paths     map[string]string
 	calls     []string
+	started   []startedCmd
 	nextPid   workspaceapi.Pid
+}
+
+// startedCmd is what the fake executor saw of a started command.
+type startedCmd struct {
+	key         string
+	dir         string
+	description string
+	stdin       string
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -237,14 +276,24 @@ func (e *fakeExecutor) callKey(cmd workspaceapi.Cmd) string {
 }
 
 func (e *fakeExecutor) Start(_ context.Context, cmd workspaceapi.Cmd) (workspaceapi.Pid, error) {
+	var stdin []byte
+	if cmd.Stdin != nil {
+		stdin, _ = io.ReadAll(cmd.Stdin)
+	}
 	e.mu.Lock()
 	key := e.callKey(cmd)
 	e.calls = append(e.calls, key)
+	e.started = append(e.started, startedCmd{
+		key: key, dir: cmd.Dir, description: cmd.Description, stdin: string(stdin),
+	})
 	resp := e.responses[key]
 	pid := e.nextPid
 	e.nextPid++
 	e.mu.Unlock()
 
+	if resp.effect != nil {
+		resp.effect()
+	}
 	if cmd.Stdout != nil && resp.stdout != "" {
 		_, _ = io.Copy(cmd.Stdout, bytes.NewBufferString(resp.stdout))
 	}
@@ -271,6 +320,12 @@ func (e *fakeExecutor) callsSnapshot() []string {
 	out := make([]string, len(e.calls))
 	copy(out, e.calls)
 	return out
+}
+
+func (e *fakeExecutor) startedSnapshot() []startedCmd {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]startedCmd(nil), e.started...)
 }
 
 // captureLSP records the InitializeParams it received and otherwise
@@ -632,10 +687,12 @@ func (c *fakeCellEditor) snapshot() []fakeEdit {
 	return append([]fakeEdit(nil), c.edits...)
 }
 
-// fakeNotifications records notify and notify-once calls for assertions.
+// fakeNotifications records notify and notify-once calls for assertions,
+// and the progress updates, holding them to the API's contract.
 type fakeNotifications struct {
-	mu     sync.Mutex
-	notifs []string
+	mu       sync.Mutex
+	notifs   []string
+	progress []string
 }
 
 func newFakeNotifications() *fakeNotifications {
@@ -653,8 +710,20 @@ func (n *fakeNotifications) NotifyOnce(level browserapi.NotificationLevel, msg s
 	return n.Notify(level, msg, args...)
 }
 
-func (n *fakeNotifications) UpdateNotificationProgress(_, _ string, _, _ int64) error {
+func (n *fakeNotifications) UpdateNotificationProgress(_, message string, progress, total int64) error {
+	if total <= 0 || progress < 0 || progress > total {
+		return fmt.Errorf("progress %d of %d", progress, total)
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.progress = append(n.progress, fmt.Sprintf("%d/%d %s", progress, total, message))
 	return nil
+}
+
+func (n *fakeNotifications) progressMessages() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.progress...)
 }
 
 func (n *fakeNotifications) notifMessages() []string {
@@ -727,6 +796,7 @@ func (e realExecutor) Start(ctx context.Context, c workspaceapi.Cmd) (workspacea
 	if c.Env != nil {
 		cmd.Env = c.Env
 	}
+	cmd.Stdin = c.Stdin
 	cmd.Stdout = c.Stdout
 	cmd.Stderr = c.Stderr
 	if err := cmd.Start(); err != nil {
@@ -749,40 +819,44 @@ func (realExecutor) Close() error                                  { return nil 
 // a real workspace directory: the captured LSP and notifications, plus
 // the handlers registered for the `ccpp`, `c` and `cpp` commands.
 type ccppEnv struct {
-	dir     string
-	lsp     *captureLSP
-	notify  *fakeNotifications
-	editor  *fakeEditor
-	wm      *fakeWM
-	storage storageapi.Service
-	manuals []textapi.CommandManual
-	repl    textapi.REPLHandler
-	cmds    []textapi.CommandManual
-	actions map[string]textapi.CommandHandler
+	dir      string
+	lsp      *captureLSP
+	notify   *fakeNotifications
+	editor   *fakeEditor
+	wm       *fakeWM
+	prompter *fakePrompter
+	storage  storageapi.Service
+	manuals  []textapi.CommandManual
+	repl     textapi.REPLHandler
+	cmds     []textapi.CommandManual
+	actions  map[string]textapi.CommandHandler
 }
 
 // runExtensionOnDir runs the extension's full bring-up against the
 // prepared workspace directory dir, using a real FileSystem and Executor
 // rooted there with a fake LSP, Notifications and an in-memory storage,
-// and returns the resulting environment for assertions.
+// and returns the resulting environment for assertions. Every prompt is
+// dismissed.
 func runExtensionOnDir(
 	t *testing.T, dir string, cfg config.Config, inst *langexttest.Installer,
 ) *ccppEnv {
-	return runExtensionOnFS(t, dir, realFS{root: dir}, cfg, inst)
+	return runExtensionOnFS(t, dir, realFS{root: dir}, cfg, inst, &fakePrompter{})
 }
 
 func runExtensionOnFS(
 	t *testing.T, dir string, fs workspaceapi.FileSystem, cfg config.Config, inst *langexttest.Installer,
+	prompter *fakePrompter,
 ) *ccppEnv {
 	t.Helper()
 	env := &ccppEnv{
-		dir:     dir,
-		lsp:     &captureLSP{},
-		notify:  newFakeNotifications(),
-		editor:  &fakeEditor{},
-		wm:      &fakeWM{},
-		storage: storagestub.NewInMemoryService(),
-		actions: map[string]textapi.CommandHandler{},
+		dir:      dir,
+		lsp:      &captureLSP{},
+		notify:   newFakeNotifications(),
+		editor:   &fakeEditor{},
+		wm:       &fakeWM{},
+		prompter: prompter,
+		storage:  storagestub.NewInMemoryService(),
+		actions:  map[string]textapi.CommandHandler{},
 	}
 
 	ext := &ccppExtension{}
@@ -793,6 +867,7 @@ func runExtensionOnFS(
 		env.lsp,
 		env.editor,
 		env.wm,
+		env.prompter,
 		&fakeOpener{},
 		env.storage,
 		inst,
@@ -810,6 +885,51 @@ func runExtensionOnFS(
 	)
 	require.NoError(t, err)
 	return env
+}
+
+// fakePrompter opens every prompt as the host does, replays a scripted
+// key sequence into it and then closes it, matching the host, which
+// tears the window down once the prompt reports exit. With no keys the
+// prompt is dismissed. It records each prompt's message.
+type fakePrompter struct {
+	events []term.Event
+
+	mu       sync.Mutex
+	messages []string
+}
+
+var _ browserapi.Prompter = (*fakePrompter)(nil)
+
+func (p *fakePrompter) Prompt(cfg browserapi.PromptConfig, ph handler.PromptHandler) (browserapi.Window, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	p.messages = append(p.messages, cfg.Message)
+	p.mu.Unlock()
+	h := handler.NewPrompt(handler.PromptConfig{
+		PromptConfig:   component.PromptConfig{Message: cfg.Message, Options: cfg.Options},
+		OptionBindings: cfg.Bindings,
+		PromptHandler:  ph,
+	})
+	h.Resize(80, 16)
+	for _, ev := range p.events {
+		if exit, _ := h.Handle(ev); exit {
+			break
+		}
+	}
+	return nil, h.Close()
+}
+
+func (p *fakePrompter) asked() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.messages...)
+}
+
+// key is the key press that picks the prompt option bound to ch.
+func key(ch rune) []term.Event {
+	return []term.Event{{Type: term.EventKey, Ch: ch}}
 }
 
 // fakeOpener is a browserapi.ResourceOpener that records the resources

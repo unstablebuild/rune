@@ -48,11 +48,22 @@ var ccppManual = textapi.CommandManual{
 		{Name: "status", Summary: "Show the clangd in use and the compilation database in effect for the focused file."},
 		{
 			Name:     "compdb",
-			Summary:  "List the compilation databases of the focused file's project, marking the active one; pin or unpin one.",
-			Synopsis: "[use <dir> | clear]",
+			Summary:  "List the compilation databases of the focused file's project, marking the active one; pin, unpin or generate one.",
+			Synopsis: "[use <dir> | clear | generate | auto [on | off]]",
 			Commands: []textapi.CommandManual{
 				{Name: "use", Summary: "Make clangd read compile_commands.json from a directory and restart it.", Synopsis: "<dir>"},
 				{Name: "clear", Summary: "Drop the compilation database override and restart clangd."},
+				{
+					Name: "generate",
+					Summary: "Write compile_commands.json for the focused file's project with its build system " +
+						"(CMake, Meson, or Autotools and Make through Bear) and restart clangd.",
+				},
+				{
+					Name: "auto",
+					Summary: "Show or set whether a project that opens without compile_commands.json gets one " +
+						"without asking first.",
+					Synopsis: "[on | off]",
+				},
 			},
 		},
 		{Name: "restart", Summary: "Restart the clangd language server."},
@@ -70,10 +81,10 @@ type ccppHandlerConfig struct {
 	focus  *focusTracker
 	compdb *compdbSetting
 	state  *serverState
-	// clangd and bear resolve their binaries lazily, so one installed
-	// after the workspace opened is still found.
+	gen    *compdbGenerator
+	// clangd resolves the binary lazily, so one installed after the
+	// workspace opened is still found.
 	clangd  func(ctx context.Context) string
-	bear    func(ctx context.Context) string
 	restart func(ctx context.Context) error
 }
 
@@ -86,8 +97,8 @@ var _ textapi.REPLHandler = (*ccppHandler)(nil)
 // newCcppHandler builds the `ccpp` console command and its manual.
 // cfg.focus must be the tracker subscribed to the editor's focus events.
 func newCcppHandler(cfg ccppHandlerConfig) (textapi.CommandManual, textapi.REPLHandler) {
-	if cfg.focus == nil || cfg.compdb == nil || cfg.state == nil {
-		panic("newCcppHandler: focus tracker, compdb setting and server state are required")
+	if cfg.focus == nil || cfg.compdb == nil || cfg.state == nil || cfg.gen == nil {
+		panic("newCcppHandler: focus tracker, compdb setting, server state and generator are required")
 	}
 	return ccppManual, &ccppHandler{ccppHandlerConfig: cfg}
 }
@@ -176,11 +187,21 @@ func (h *ccppHandler) status(ctx context.Context) (iterator.Iterator[component.R
 		if candidates := compdbCandidates(h.fs, project); len(candidates) > 0 {
 			fmt.Fprintf(&b, "Pick one with `ccpp compdb use %s`.", h.rel(candidates[0]))
 		} else {
-			b.WriteString(compdbHowTo(markers, func() string { return h.bear(ctx) }))
+			b.WriteString(h.compdbAdvice(project, markers))
 		}
 	}
 	b.WriteByte('\n')
 	return markdownOutput(b.String()), nil
+}
+
+// compdbAdvice tells how to produce a compilation database for the
+// project at dir: `ccpp compdb generate` when Rune can, else the manual
+// recipe.
+func (h *ccppHandler) compdbAdvice(dir string, markers []marker) string {
+	if plan, ok := planCompdb(h.fs, dir, markers); ok {
+		return fmt.Sprintf("`ccpp compdb generate` writes one by running `%s`.", plan)
+	}
+	return compdbHowTo(markers)
 }
 
 func (h *ccppHandler) compdbCommand(
@@ -210,15 +231,69 @@ func (h *ccppHandler) compdbCommand(
 			return nil, fmt.Errorf("forget compilation database: %w", err)
 		}
 		return h.restartServer(ctx, "Dropped the compilation database override; clangd finds one per file again.")
+	case "generate":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("usage: %s compdb generate", ccppCommandName)
+		}
+		return h.generate(ctx)
+	case "auto":
+		return h.autoGenerate(ctx, args[1:])
 	}
 	return nil, fmt.Errorf("unknown compdb command: %s", args[0])
 }
 
-func (h *ccppHandler) listCompdbs(ctx context.Context) (iterator.Iterator[component.Responsive], error) {
-	project := h.wsRoot.Dir
-	if file := h.focus.lastFile(); file != "" {
-		project = projectDirOf(h.fs, h.wsRoot.Dir, file)
+// generate writes the compilation database of the focused file's
+// project, whether or not it has one.
+func (h *ccppHandler) generate(ctx context.Context) (iterator.Iterator[component.Responsive], error) {
+	project := h.focusedProject()
+	markers := projectMarkers(h.fs, project)
+	plan, ok := planCompdb(h.fs, project, markers)
+	if !ok {
+		return markdownOutput(fmt.Sprintf("Rune cannot generate a %s for `%s`. %s", compileCommandsName,
+			h.rel(project), compdbHowTo(markers))), nil
 	}
+	res, err := h.gen.generate(ctx, project, plan, h.rel(project))
+	if err != nil {
+		return nil, err
+	}
+	msg := res.summary(h.rel)
+	dir, err := h.compdb.effectiveDir(ctx, h.cfg, h.notify)
+	if err == nil && dir != "" && dir != filepath.Dir(res.output) {
+		msg += fmt.Sprintf(" clangd is pointed at `%s` instead; `ccpp status` says by what.", h.rel(dir))
+	}
+	return markdownOutput(msg), nil
+}
+
+// autoGenerate shows, or with on or off sets, whether a project that
+// opens without a compilation database gets one without asking.
+func (h *ccppHandler) autoGenerate(
+	ctx context.Context, args []string,
+) (iterator.Iterator[component.Responsive], error) {
+	var enabled bool
+	switch {
+	case len(args) == 0:
+		var err error
+		if enabled, err = h.compdb.autoGenerate(ctx); err != nil {
+			return nil, fmt.Errorf("read compile_commands.json generation preference: %w", err)
+		}
+	case len(args) == 1 && (args[0] == "on" || args[0] == "off"):
+		enabled = args[0] == "on"
+		if err := h.compdb.setAutoGenerate(ctx, enabled); err != nil {
+			return nil, fmt.Errorf("remember compile_commands.json generation preference: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("usage: %s compdb auto [on | off]", ccppCommandName)
+	}
+	if enabled {
+		return markdownOutput("A C or C++ project that opens without " + compileCommandsName +
+			" gets one without asking. `ccpp compdb auto off` asks first again."), nil
+	}
+	return markdownOutput("Rune asks before generating " + compileCommandsName +
+		" for a C or C++ project that opens without one."), nil
+}
+
+func (h *ccppHandler) listCompdbs(ctx context.Context) (iterator.Iterator[component.Responsive], error) {
+	project := h.focusedProject()
 	active, _, err := h.compdb.get(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read compilation database override: %w", err)
@@ -230,8 +305,8 @@ func (h *ccppHandler) listCompdbs(ctx context.Context) (iterator.Iterator[compon
 	}
 	candidates := compdbCandidates(h.fs, project)
 	if len(candidates) == 0 {
-		howTo := compdbHowTo(projectMarkers(h.fs, project), func() string { return h.bear(ctx) })
-		return markdownOutput(fmt.Sprintf("No %s below `%s`. %s", compileCommandsName, h.rel(project), howTo)), nil
+		advice := h.compdbAdvice(project, projectMarkers(h.fs, project))
+		return markdownOutput(fmt.Sprintf("No %s below `%s`. %s", compileCommandsName, h.rel(project), advice)), nil
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "### Compilation databases below `%s`\n\n", h.rel(project))
@@ -286,7 +361,8 @@ func (h *ccppHandler) version(ctx context.Context) (iterator.Iterator[component.
 }
 
 // Complete offers the subcommands, then the compdb actions, then the
-// candidate directories after `compdb use`.
+// candidate directories after `compdb use` and the settings after
+// `compdb auto`.
 func (h *ccppHandler) Complete(
 	_ context.Context, _ string, args []string,
 ) (iterator.Iterator[string], error) {
@@ -304,19 +380,26 @@ func (h *ccppHandler) Complete(
 	prefix := rest[len(rest)-1]
 	switch {
 	case len(rest) == 1:
-		return iterator.FromSlice(filterNames([]string{"clear", "use"}, prefix)), nil
+		return iterator.FromSlice(filterNames([]string{"auto", "clear", "generate", "use"}, prefix)), nil
+	case len(rest) == 2 && rest[0] == "auto":
+		return iterator.FromSlice(filterNames([]string{"off", "on"}, prefix)), nil
 	case len(rest) == 2 && rest[0] == "use":
-		project := h.wsRoot.Dir
-		if file := h.focus.lastFile(); file != "" {
-			project = projectDirOf(h.fs, h.wsRoot.Dir, file)
-		}
 		var names []string
-		for _, dir := range compdbCandidates(h.fs, project) {
+		for _, dir := range compdbCandidates(h.fs, h.focusedProject()) {
 			names = append(names, h.rel(dir))
 		}
 		return iterator.FromSlice(filterNames(names, prefix)), nil
 	}
 	return iterator.FromSlice[string](nil), nil
+}
+
+// focusedProject returns the project of the file focused last, the
+// workspace root when none has been.
+func (h *ccppHandler) focusedProject() string {
+	if file := h.focus.lastFile(); file != "" {
+		return projectDirOf(h.fs, h.wsRoot.Dir, file)
+	}
+	return h.wsRoot.Dir
 }
 
 // Help renders the manual for the command tree, descending into
@@ -348,13 +431,16 @@ func (h *ccppHandler) resolvePath(p string) (string, error) {
 	return abs, nil
 }
 
-// rel names path relative to the workspace root, "." for the root and
+// rel names path relative to the workspace root (see wsRel).
+func (h *ccppHandler) rel(path string) string { return wsRel(h.wsRoot.Dir, path) }
+
+// wsRel names path relative to wsDir, "." for wsDir itself and
 // absolutely when it is outside.
-func (h *ccppHandler) rel(path string) string {
-	if !insideDir(h.wsRoot.Dir, path) {
+func wsRel(wsDir, path string) string {
+	if !insideDir(wsDir, path) {
 		return path
 	}
-	rel, err := filepath.Rel(h.wsRoot.Dir, path)
+	rel, err := filepath.Rel(wsDir, path)
 	if err != nil {
 		return path
 	}
