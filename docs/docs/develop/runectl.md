@@ -102,7 +102,8 @@ keys to every open workspace, as `themereload` does:
 - `terminal.bell`;
 - `workspace`: `wallpaper_image`, `wallpaper_image_ascii`,
   `wallpaper_ascii`, `wallpaper`, `wallpaper_attr`,
-  `wallpaper_background_attr`, `wallpaper_density_characters`,
+  `wallpaper_background_attr`, `wallpaper_density_characters`, their
+  `focus_` versions such as `focus_wallpaper_image`,
   `focus_tab_highlight_char`, `tab_images`,
   `focus_tab_highlight_graphics` and `tab_sounds`;
 - `sounds`.

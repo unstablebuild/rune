@@ -790,7 +790,7 @@ theme's surroundings.
 | Status bars | `{{ .Image }}` in `editor.status_bar.layout` and the agent's `status_bar.layout`, and in their `focus` blocks | An image of any size, placed in the layout. | |
 | Agent composer | `extensions.rune-agent.config.input_box_frame_charset.graphics`, and the same under `focus` | The eight frame slots. | |
 | Quick menu | `gui.quick_menu[].sprite` | `idle`, `hover` and `pressed`. | |
-| Wallpaper, app icon | `workspace.wallpaper_image`, `gui.app_icon` | One image each. | |
+| Wallpaper, app icon | `workspace.wallpaper_image`, `focus_wallpaper_image`, `gui.app_icon` | One image each. | |
 
 ### Tips from Violet Ledger
 
@@ -1283,8 +1283,8 @@ config["browser"]["window_manager"]["window_bar"] = False
 
 The window in focus can stand out by more than its frame. It can have its own
 background color, a background image, and its own scroll bar, status bars,
-program status inbox and agent chat. With those, a frame can be blank or
-turned off, and the background marks the focused window instead.
+program status inbox, agent chat and wallpaper. With those, a frame can be
+blank or turned off, and the background marks the focused window instead.
 
 As with `focus_frame_attr`, the focus style applies only when there is more
 than one window, and only the window focus counts: switching to another app
@@ -1417,6 +1417,18 @@ config["editor"]["status_bar"]["focus"] = {"background_attr": {"bg": "#262b38"}}
 A chat whose `background_attr` sets a color keeps it over the window's
 background. Its `focus` block's `background_attr` replaces that color in
 every cell the chat draws with it.
+
+### Wallpaper
+
+An empty window in focus shows the focused wallpaper. Its keys live under
+`workspace` and take the same forms as the [wallpaper](./wallpaper.md) keys:
+`focus_wallpaper_image`, `focus_wallpaper_image_ascii`,
+`focus_wallpaper_ascii`, `focus_wallpaper_attr`,
+`focus_wallpaper_background_attr` and `focus_wallpaper_density_characters`.
+Without any of them, a focused window shows the normal wallpaper. The
+focused wallpaper keeps the normal picture, art or text unless one of the
+first three is set, and takes each attribute, and the density characters, the
+focus keys leave out from the normal ones.
 
 ## Tab bar
 

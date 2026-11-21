@@ -5069,23 +5069,57 @@ func (c ideConfig) intro() initShaderConfig {
 // workspace.wallpaper_image_ascii, else the text of workspace.wallpaper_ascii,
 // else the built-in logo, which it returns too. An empty value turns its
 // wallpaper off, as the defaults do, so the logo shows when all three are
-// empty.
+// empty. Its Focus is the wallpaper the focus_ keys resolve to the same way,
+// or nil when none is set. The focus wallpaper takes its picture, art or
+// text from the normal keys unless a focus_ one of them is set, and each
+// attribute and the density characters a focus_ key leaves out from the
+// normal key.
 func (c ideConfig) resolveWallpaper() (browser.Wallpaper, Logo) {
+	wallpaper, logo := c.resolveWallpaperKeys("", "")
+	if c.cfg == nil {
+		return wallpaper, logo
+	}
+	cfg := c.workspace()
+	has := func(keys ...string) bool {
+		return slices.ContainsFunc(keys, func(key string) bool {
+			_, err := cfg.GetString("focus_" + key)
+			return !errors.Is(err, config.ErrNotFound)
+		})
+	}
+	content := []string{"wallpaper_image", "wallpaper_image_ascii", "wallpaper_ascii"}
+	style := []string{"wallpaper_attr", "wallpaper_background_attr", "wallpaper_density_characters"}
+	if !has(content...) && !has(style...) {
+		return wallpaper, logo
+	}
+	contentPrefix := ""
+	if has(content...) {
+		contentPrefix = "focus_"
+	}
+	focus, _ := c.resolveWallpaperKeys(contentPrefix, "focus_")
+	wallpaper.Focus = &focus
+	return wallpaper, logo
+}
+
+// resolveWallpaperKeys resolves a wallpaper as resolveWallpaper does, from
+// the picture, art and text keys named with content before them, and the
+// attribute and density keys named with style before them, or without it
+// when those are not set.
+func (c ideConfig) resolveWallpaperKeys(content, style string) (browser.Wallpaper, Logo) {
 	wallpaper := browser.NopWallpaper()
 	var logo Logo
 	if c.cfg != nil {
 		cfg := c.workspace()
-		if w, ok := c.wallpaperImage(cfg); ok {
+		if w, ok := c.wallpaperImage(cfg, content, style); ok {
 			wallpaper = w
-		} else if w, ok := c.wallpaperImageASCII(cfg); ok {
+		} else if w, ok := c.wallpaperImageASCII(cfg, content, style); ok {
 			wallpaper = w
-		} else if w, ok := c.wallpaperText(cfg); ok {
+		} else if w, ok := c.wallpaperText(cfg, content, style); ok {
 			wallpaper = w
 		} else if c.logo != nil {
 			wallpaper, logo = c.logo.Wallpaper, *c.logo
 		}
 	}
-	wallpaper.BackgroundAttr = c.workspaceWallpaperBackgroundAttr()
+	wallpaper.BackgroundAttr = c.wallpaperStyleAttr(style, "wallpaper_background_attr")
 	return wallpaper, logo
 }
 
@@ -5107,29 +5141,31 @@ var wallpaperImageFits = map[string]imagecomp.Fit{
 // workspace.wallpaper_image, as the GUI cannot draw larger pictures.
 const maxWallpaperImageSize = 8192
 
-// wallpaperImage returns the picture of workspace.wallpaper_image: the path
-// of an image, or a section with the path and how the picture is sized,
-// which a path alone leaves at [defaultWallpaperImage].
-func (c ideConfig) wallpaperImage(cfg config.Config) (browser.Wallpaper, bool) {
+// wallpaperImage returns the picture of workspace.wallpaper_image, named with
+// prefix before it: the path of an image, or a section with the path and how
+// the picture is sized, which a path alone leaves at [defaultWallpaperImage].
+// Its ASCII art takes the density characters of style.
+func (c ideConfig) wallpaperImage(cfg config.Config, prefix, style string) (browser.Wallpaper, bool) {
+	key := prefix + "wallpaper_image"
 	pcfg := defaultWallpaperImage
-	path, err := cfg.GetString("wallpaper_image")
+	path, err := cfg.GetString(key)
 	if err == config.ErrInvalidType {
 		var section config.Config
-		if section, err = cfg.GetConfig("wallpaper_image"); err != nil {
-			c.errors["workspace.wallpaper_image"] = errors.New(
+		if section, err = cfg.GetConfig(key); err != nil {
+			c.errors["workspace."+key] = errors.New(
 				"must be the path of an image or a section with its path")
 			return browser.Wallpaper{}, false
 		}
-		pcfg = c.wallpaperImageConfig(section)
+		pcfg = c.wallpaperImageConfig(section, key)
 		if path, err = section.GetString("path"); err != nil {
 			if err != config.ErrNotFound {
-				c.errors["workspace.wallpaper_image.path"] = err
+				c.errors["workspace."+key+".path"] = err
 			}
 			return browser.Wallpaper{}, false
 		}
 	} else if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["workspace.wallpaper_image"] = err
+			c.errors["workspace."+key] = err
 		}
 		return browser.Wallpaper{}, false
 	}
@@ -5138,15 +5174,15 @@ func (c ideConfig) wallpaperImage(cfg config.Config) (browser.Wallpaper, bool) {
 	}
 	img, err := openImage(os.ExpandEnv(path))
 	if err != nil {
-		c.errors["workspace.wallpaper_image"] = err
+		c.errors["workspace."+key] = err
 		return browser.Wallpaper{}, false
 	}
 	if size := img.Bounds().Size(); size.X > maxWallpaperImageSize || size.Y > maxWallpaperImageSize {
-		c.errors["workspace.wallpaper_image"] = fmt.Errorf("image is %dx%d, larger than %dx%d",
+		c.errors["workspace."+key] = fmt.Errorf("image is %dx%d, larger than %dx%d",
 			size.X, size.Y, maxWallpaperImageSize, maxWallpaperImageSize)
 		return browser.Wallpaper{}, false
 	}
-	pcfg.ASCII = c.wallpaperImageASCIIConfig(cfg)
+	pcfg.ASCII = c.wallpaperImageASCIIConfig(cfg, style)
 	// Shared by every window, so the screen keeps one copy of the pixels.
 	id := term.NewImageID()
 	return browser.Wallpaper{
@@ -5154,20 +5190,22 @@ func (c ideConfig) wallpaperImage(cfg config.Config) (browser.Wallpaper, bool) {
 	}, true
 }
 
-func (c ideConfig) wallpaperImageConfig(section config.Config) imagecomp.Config {
+// wallpaperImageConfig returns how the section of the workspace key sizes
+// its picture.
+func (c ideConfig) wallpaperImageConfig(section config.Config, key string) imagecomp.Config {
 	pcfg := defaultWallpaperImage
-	pcfg.Width = c.wallpaperImageLength(section, "width", pcfg.Width)
-	pcfg.Height = c.wallpaperImageLength(section, "height", pcfg.Height)
+	pcfg.Width = c.wallpaperImageLength(section, key, "width", pcfg.Width)
+	pcfg.Height = c.wallpaperImageLength(section, key, "height", pcfg.Height)
 	name, err := section.GetString("fit")
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["workspace.wallpaper_image.fit"] = err
+			c.errors["workspace."+key+".fit"] = err
 		}
 		return pcfg
 	}
 	fit, ok := wallpaperImageFits[name]
 	if !ok {
-		c.errors["workspace.wallpaper_image.fit"] = fmt.Errorf(
+		c.errors["workspace."+key+".fit"] = fmt.Errorf(
 			"unknown fit %q, expected one of: %s", name,
 			strings.Join(slices.Sorted(maps.Keys(wallpaperImageFits)), ", "))
 		return pcfg
@@ -5176,12 +5214,13 @@ func (c ideConfig) wallpaperImageConfig(section config.Config) imagecomp.Config 
 	return pcfg
 }
 
-// wallpaperImageLength returns the length key sets in section: a number of
-// cells, or a percentage of the window such as "100%".
+// wallpaperImageLength returns the length key sets in section, the section
+// of the workspace image key: a number of cells, or a percentage of the
+// window such as "100%".
 func (c ideConfig) wallpaperImageLength(
-	section config.Config, key string, def imagecomp.Length,
+	section config.Config, image, key string, def imagecomp.Length,
 ) imagecomp.Length {
-	errKey := "workspace.wallpaper_image." + key
+	errKey := "workspace." + image + "." + key
 	n, err := section.GetInt(key)
 	if err == config.ErrNotFound {
 		return def
@@ -5205,12 +5244,14 @@ func (c ideConfig) wallpaperImageLength(
 }
 
 // wallpaperImageASCII returns the ASCII art of the image of
-// workspace.wallpaper_image_ascii.
-func (c ideConfig) wallpaperImageASCII(cfg config.Config) (browser.Wallpaper, bool) {
-	path, err := cfg.GetString("wallpaper_image_ascii")
+// workspace.wallpaper_image_ascii, named with prefix before it, in the
+// density characters of style.
+func (c ideConfig) wallpaperImageASCII(cfg config.Config, prefix, style string) (browser.Wallpaper, bool) {
+	key := prefix + "wallpaper_image_ascii"
+	path, err := cfg.GetString(key)
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["workspace.wallpaper_image_ascii"] = err
+			c.errors["workspace."+key] = err
 		}
 		return browser.Wallpaper{}, false
 	}
@@ -5219,10 +5260,10 @@ func (c ideConfig) wallpaperImageASCII(cfg config.Config) (browser.Wallpaper, bo
 	}
 	img, err := openImage(os.ExpandEnv(path))
 	if err != nil {
-		c.errors["workspace.wallpaper_image_ascii"] = err
+		c.errors["workspace."+key] = err
 		return browser.Wallpaper{}, false
 	}
-	ascii := c.wallpaperImageASCIIConfig(cfg)
+	ascii := c.wallpaperImageASCIIConfig(cfg, style)
 	return browser.Wallpaper{
 		NewComponent: func() tui.Component {
 			return component.NewSpan(asciiart.NewComponent(img, ascii), component.SpanConfig{
@@ -5235,15 +5276,20 @@ func (c ideConfig) wallpaperImageASCII(cfg config.Config) (browser.Wallpaper, bo
 }
 
 // wallpaperImageASCIIConfig returns how the image wallpapers are encoded as
-// ASCII art, with the characters of workspace.wallpaper_density_characters.
-func (c ideConfig) wallpaperImageASCIIConfig(cfg config.Config) asciiart.Config {
-	densityChars, err := cfg.GetString("wallpaper_density_characters")
+// ASCII art, with the characters of workspace.wallpaper_density_characters,
+// named with style before it unless that is not set.
+func (c ideConfig) wallpaperImageASCIIConfig(cfg config.Config, style string) asciiart.Config {
+	key := "wallpaper_density_characters"
+	if _, err := cfg.GetString(style + key); !errors.Is(err, config.ErrNotFound) {
+		key = style + key
+	}
+	densityChars, err := cfg.GetString(key)
 	if err == nil && densityChars == "" {
 		err = errors.New("must not be empty")
 	}
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["workspace.wallpaper_density_characters"] = err
+			c.errors["workspace."+key] = err
 		}
 		densityChars = " ▓▓▓▓"
 	}
@@ -5273,12 +5319,17 @@ func openImage(imagePath string) (image.Image, error) {
 	return img, nil
 }
 
-// wallpaperText returns the text art of wallpaper_ascii, else of its
-// deprecated name wallpaper, which configs written before the rename still
-// set and the defaults leave out.
-func (c ideConfig) wallpaperText(cfg config.Config) (browser.Wallpaper, bool) {
+// wallpaperText returns the text art of wallpaper_ascii, named with prefix
+// before it, else of its deprecated name wallpaper, which configs written
+// before the rename still set and the defaults leave out, in the
+// attributes of style.
+func (c ideConfig) wallpaperText(cfg config.Config, prefix, style string) (browser.Wallpaper, bool) {
+	keys := []string{prefix + "wallpaper_ascii"}
+	if prefix == "" {
+		keys = append(keys, "wallpaper")
+	}
 	var cfgText string
-	for _, key := range []string{"wallpaper_ascii", "wallpaper"} {
+	for _, key := range keys {
 		text, err := cfg.GetString(key)
 		if err != nil {
 			if err != config.ErrNotFound {
@@ -5295,8 +5346,8 @@ func (c ideConfig) wallpaperText(cfg config.Config) (browser.Wallpaper, bool) {
 		return browser.Wallpaper{}, false
 	}
 	strcfg := component.StringConfig{
-		Attributes:           c.workspaceWallpaperAttr(),
-		BackgroundAttributes: c.workspaceWallpaperBackgroundAttr(),
+		Attributes:           c.wallpaperStyleAttr(style, "wallpaper_attr"),
+		BackgroundAttributes: c.wallpaperStyleAttr(style, "wallpaper_background_attr"),
 		Alignment:            component.AlignmentCentered,
 	}
 	return browser.Wallpaper{
@@ -5510,11 +5561,6 @@ func (c ideConfig) workspace() config.Config {
 	return config.NopConfig()
 }
 
-func (c ideConfig) workspaceWallpaperAttr() term.Attributes {
-	return c.getConfigAttr("workspace", "wallpaper_attr",
-		term.Attributes{})
-}
-
 // workspaceHome returns the configured home workspace path with
 // environment variables expanded. It defaults to "~" when unset;
 // callers are responsible for expanding the "~" shortcut against the
@@ -5568,9 +5614,15 @@ func (c ideConfig) workspaceRegexSearch() bool {
 	return enabled
 }
 
-func (c ideConfig) workspaceWallpaperBackgroundAttr() term.Attributes {
-	return c.getConfigAttr("workspace", "wallpaper_background_attr",
-		term.Attributes{})
+// wallpaperStyleAttr returns the workspace attributes of key named with
+// style before it, or of key when that is not set.
+func (c ideConfig) wallpaperStyleAttr(style, key string) term.Attributes {
+	if style != "" {
+		if _, err := c.workspace().GetString(style + key); !errors.Is(err, config.ErrNotFound) {
+			key = style + key
+		}
+	}
+	return c.getConfigAttr("workspace", key, term.Attributes{})
 }
 
 func (c ideConfig) workspaceNotice() (path, literal, show string) {

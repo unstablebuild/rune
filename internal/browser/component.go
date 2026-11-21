@@ -2176,7 +2176,20 @@ func (c *Component) overwriteFocusWindowUnion(w term.Writer) {
 }
 
 func (c *Component) wallpaper() browserapi.Handler {
-	wallpaper := c.config.Wallpaper
+	w := &wallpaper{normal: newWallpaperComponent(c.config.Wallpaper)}
+	if focus := c.config.Wallpaper.Focus; focus != nil {
+		w.focused = newWallpaperComponent(*focus)
+	}
+	return &browserContent{
+		Handler:   w,
+		c:         c,
+		wallpaper: true,
+	}
+}
+
+// newWallpaperComponent returns a new component of wallpaper, on its
+// BackgroundAttr.
+func newWallpaperComponent(wallpaper Wallpaper) tui.Component {
 	if wallpaper.NewComponent == nil {
 		wallpaper.NewComponent = component.Nop
 	}
@@ -2196,15 +2209,66 @@ func (c *Component) wallpaper() browserapi.Handler {
 				term.NewCell(nonZeroCh, 0, wallpaper.BackgroundAttr))
 		}
 	}
-	// make wallpaper satisfy Floating to avoid browserContent panic
-	// if wallpaper is being set as a default on a floating window
-	floating := component.StaticFloating(instance, 80, 40)
-	return &browserContent{
-		Handler:   NopFloatingHandler(handler.NopFloatingFromComponent(floating)),
-		c:         c,
-		wallpaper: true,
+	return instance
+}
+
+// wallpaper is the content of a window with nothing else to show. It
+// draws focused, if any, in a window holding the window manager's focus
+// style, and normal in any other. It ignores input. As the content of a
+// floating window, it asks for the size its components need, or keeps
+// the size it was given when they don't know it.
+type wallpaper struct {
+	normal, focused tui.Component
+	width, height   int
+}
+
+var _ browserapi.Floating = (*wallpaper)(nil)
+
+// Resize satisfies tui.Component.
+func (w *wallpaper) Resize(width, height int) {
+	w.width, w.height = width, height
+	w.normal.Resize(width, height)
+	if w.focused != nil {
+		w.focused.Resize(width, height)
 	}
 }
+
+// Draw satisfies tui.Component.
+func (w *wallpaper) Draw(wr term.Writer) {
+	if focused, _ := term.WindowFocusFromContext(wr.Context()); focused && w.focused != nil {
+		w.focused.Draw(wr)
+		return
+	}
+	w.normal.Draw(wr)
+}
+
+// Dimensions satisfies component.Floating.
+func (w *wallpaper) Dimensions() (width, height int) {
+	f, ok := w.normal.(component.Floating)
+	if !ok {
+		return w.width, w.height
+	}
+	width, height = f.Dimensions()
+	if f, ok := w.focused.(component.Floating); ok {
+		fw, fh := f.Dimensions()
+		width, height = max(width, fw), max(height, fh)
+	}
+	return width, height
+}
+
+// Handle satisfies tui.Handler.
+func (*wallpaper) Handle(term.Event) (exit, handled bool) { return false, false }
+
+// Cursor satisfies tui.Handler.
+func (*wallpaper) Cursor() (c term.Coordinates, s term.CursorStyle, show bool) {
+	return c, s, false
+}
+
+// Selection satisfies tui.Handler.
+func (*wallpaper) Selection() (string, bool) { return "", false }
+
+// Close satisfies browserapi.Handler.
+func (*wallpaper) Close() error { return nil }
 
 func isWallpaper(h browserapi.Handler) bool {
 	bc, ok := h.(*browserContent)

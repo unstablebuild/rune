@@ -1254,6 +1254,17 @@ config = {
         # wallpaper, the built-in logo included.
         "wallpaper_attr":               attr(fg = "blue", bg = "default"),
         "wallpaper_background_attr":    attr(bg = "default"),
+        # The wallpaper of the focused window while more than one is open,
+        # with the same forms and precedence as the keys above. Without a
+        # focus_ picture, art or text, it shows the picture, art or text
+        # above; the attributes and density characters left out inherit
+        # theirs. With no focus_ key set, it is the wallpaper above.
+        # "focus_wallpaper_image":              "",
+        # "focus_wallpaper_image_ascii":        "",
+        # "focus_wallpaper_ascii":              "",
+        # "focus_wallpaper_density_characters": " ▓▓▓▓",
+        # "focus_wallpaper_attr":               attr(fg = "silver", bg = "default"),
+        # "focus_wallpaper_background_attr":    attr(bg = "default"),
         # Character drawn on the bottom row of the workspace tab bar to
         # highlight the workspace currently in focus.
         "focus_tab_highlight_char":  "",

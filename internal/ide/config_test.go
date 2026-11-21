@@ -485,8 +485,8 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 
 	assert.Equal(t, browser.DefaultConfig().FocusTabAttr, cfg.focusTabAttr())
 	assert.Equal(t, browser.DefaultConfig().NonFocusTabAttr, cfg.nonFocusTabAttr())
-	assert.Equal(t, term.Attributes{}, cfg.workspaceWallpaperAttr())
-	assert.Equal(t, term.Attributes{}, cfg.workspaceWallpaperBackgroundAttr())
+	assert.Equal(t, term.Attributes{}, cfg.wallpaperStyleAttr("", "wallpaper_attr"))
+	assert.Equal(t, term.Attributes{}, cfg.wallpaperStyleAttr("", "wallpaper_background_attr"))
 	selectAttr := term.Attributes{Attrs: term.AttrReverse}
 
 	reservoir := cfg.initialTerminalCapacity()
@@ -2316,8 +2316,10 @@ func TestConfigSetting(t *testing.T) {
 
 	assert.Equal(t, term.Attributes{Fg: term.GetColor("#f0f0f0")}, cfg.focusTabAttr())
 	assert.Equal(t, term.Attributes{Fg: term.ColorWhite}, cfg.nonFocusTabAttr())
-	assert.Equal(t, term.Attributes{Fg: term.ColorYellow, Bg: term.ColorWhite}, cfg.workspaceWallpaperAttr())
-	assert.Equal(t, term.Attributes{Bg: term.ColorWhite}, cfg.workspaceWallpaperBackgroundAttr())
+	assert.Equal(t, term.Attributes{Fg: term.ColorYellow, Bg: term.ColorWhite},
+		cfg.wallpaperStyleAttr("", "wallpaper_attr"))
+	assert.Equal(t, term.Attributes{Bg: term.ColorWhite},
+		cfg.wallpaperStyleAttr("", "wallpaper_background_attr"))
 
 	reservoir := cfg.initialTerminalCapacity()
 	assert.Equal(t, 0, reservoir)
@@ -2765,6 +2767,107 @@ func TestConfigWallpaperResolvesTheImagesThenTheTextThenTheLogo(t *testing.T) {
 	}
 }
 
+func TestConfigWallpaperResolvesTheFocusWallpaper(t *testing.T) {
+	logo := Logo{
+		Wallpaper: browser.Wallpaper{NewComponent: func() tui.Component {
+			return component.NewString("logo")
+		}},
+		ShaderFPS: 1,
+	}
+	yellow := term.Attributes{Fg: term.ColorYellow}
+	navy := term.Attributes{Bg: term.ColorNavy}
+	// drawn returns the text w draws and the foreground of its first rune.
+	drawn := func(w browser.Wallpaper) (string, term.Color) {
+		comp := w.NewComponent()
+		comp.Resize(10, 1)
+		sw := term.NewStringWriter(10, 1)
+		comp.Draw(sw)
+		require.NoError(t, sw.Flush())
+		var fg term.Color
+		for _, c := range sw.Cells() {
+			if c.Ch != 0 && c.Ch != ' ' {
+				fg = c.Fg
+				break
+			}
+		}
+		return strings.TrimSpace(sw.String()), fg
+	}
+	cases := []struct {
+		name      string
+		workspace map[string]any
+		// wantFocus is the focus wallpaper's text, empty for none.
+		wantFocus   string
+		wantFocusFg term.Color
+		wantFocusBg term.Attributes
+		wantErr     string
+	}{
+		{
+			name:      "no focus keys show the normal wallpaper",
+			workspace: map[string]any{"wallpaper_ascii": "N"},
+		},
+		{
+			name: "the focus text with the normal attributes",
+			workspace: map[string]any{
+				"wallpaper_ascii": "N", "focus_wallpaper_ascii": "F",
+				"wallpaper_attr": map[string]any{"fg": "yellow"},
+			},
+			wantFocus:   "F",
+			wantFocusFg: yellow.Fg,
+		},
+		{
+			name: "a focus attribute alone restyles the normal text",
+			workspace: map[string]any{
+				"wallpaper_ascii":                 "N",
+				"focus_wallpaper_background_attr": map[string]any{"bg": "navy"},
+			},
+			wantFocus:   "N",
+			wantFocusBg: navy,
+		},
+		{
+			name: "an empty focus text shows the logo",
+			workspace: map[string]any{
+				"wallpaper_ascii": "N", "focus_wallpaper_ascii": "",
+			},
+			wantFocus: "logo",
+		},
+		{
+			name: "focus errors are reported under their own keys",
+			workspace: map[string]any{
+				"wallpaper_ascii": "N", "focus_wallpaper_image": "/nonexistent.png",
+			},
+			wantFocus: "logo",
+			wantErr:   "workspace.focus_wallpaper_image",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ideConfig{
+				cfg:    map[string]any{"workspace": tc.workspace},
+				errors: map[string]error{},
+				logo:   &logo,
+			}
+			wallpaper := cfg.wallpaper()
+			text, _ := drawn(wallpaper)
+			assert.Equal(t, "N", text, "the normal wallpaper keeps the normal keys")
+			assert.Equal(t, term.Attributes{}, wallpaper.BackgroundAttr)
+			if tc.wantFocus == "" {
+				assert.Nil(t, wallpaper.Focus)
+			} else if assert.NotNil(t, wallpaper.Focus) {
+				text, fg := drawn(*wallpaper.Focus)
+				assert.Equal(t, tc.wantFocus, text)
+				assert.Equal(t, tc.wantFocusFg, fg)
+				assert.Equal(t, tc.wantFocusBg, wallpaper.Focus.BackgroundAttr)
+			}
+			if tc.wantErr == "" {
+				assert.Empty(t, cfg.errors)
+			} else {
+				assert.Len(t, cfg.errors, 1)
+				assert.Contains(t, cfg.errors, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestConfigWallpaperImageSection(t *testing.T) {
 	const lengthErr = `must be a number of cells, such as 40, or a percentage of the ` +
 		`window from 1% to 100%, such as "60%"`
@@ -2821,7 +2924,7 @@ func TestConfigWallpaperImageSection(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &ideConfig{errors: map[string]error{}}
-			assert.Equal(t, tc.want, cfg.wallpaperImageConfig(config.MapConfig(tc.section)))
+			assert.Equal(t, tc.want, cfg.wallpaperImageConfig(config.MapConfig(tc.section), "wallpaper_image"))
 			errs := map[string]string{}
 			for key, err := range cfg.errors {
 				errs[key] = err.Error()
