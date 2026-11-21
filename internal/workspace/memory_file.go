@@ -41,6 +41,9 @@ type memFile struct {
 	mode     os.FileMode
 	offset   int64
 	link     string
+	// dirty is set by writes no Sync has announced yet, so that Close
+	// announces them as closing a host file makes them visible.
+	dirty bool
 }
 
 // MemoryFileSys is returned in calls to a memory file's os.FileInfo's Sys.
@@ -87,6 +90,7 @@ func (c *memFile) Write(p []byte) (n int, err error) {
 	copy((*c.data)[c.offset:], p)
 	n = len(p)
 	c.offset += int64(n)
+	c.dirty = true
 
 	c.reader.i = 0
 	_, err = c.reader.seek(c.offset, io.SeekStart)
@@ -122,6 +126,7 @@ func (c *memFile) Sync() error {
 	c.locker.Lock()
 
 	c.modTime = time.Now()
+	c.dirty = false
 	if c.m == nil {
 		c.locker.Unlock()
 		return nil
@@ -149,6 +154,7 @@ func (c *memFile) Truncate(size int64) error {
 	*c.data = (*c.data)[:size]
 	c.offset = 0
 	c.reader.i = 0
+	c.dirty = true
 	return nil
 }
 
@@ -173,9 +179,16 @@ func (c *memFile) Seek(offset int64, whence int) (int64, error) {
 	return c.offset, nil
 }
 
-// Close satisfies workspaceapi.File.
+// Close satisfies workspaceapi.File. Handles of one file are shared,
+// so it releases nothing; it announces the writes not yet synced.
 func (c *memFile) Close() error {
-	return nil
+	c.locker.Lock()
+	dirty := c.dirty
+	c.locker.Unlock()
+	if !dirty {
+		return nil
+	}
+	return c.Sync()
 }
 
 // memFileInfo is an os.FileInfo implementation

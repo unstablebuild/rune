@@ -681,8 +681,7 @@ func (t *ttyFile) Close() error { return nil }
 
 // fileWriter writes a workspace file at its own offset, since handles
 // of an in-memory file share one, and reads it too when opened for
-// reading and writing. Close syncs it so that watchers learn of the
-// write.
+// reading and writing.
 type fileWriter struct {
 	f      workspaceapi.File
 	off    int64
@@ -714,10 +713,4 @@ func (w *fileWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func (w *fileWriter) Close() error {
-	err := w.f.Sync()
-	if cerr := w.f.Close(); err == nil {
-		err = cerr
-	}
-	return err
-}
+func (w *fileWriter) Close() error { return w.f.Close() }

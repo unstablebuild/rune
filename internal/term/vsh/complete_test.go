@@ -60,6 +60,7 @@ var completionFiles = map[string]string{
 	"sp/star*x":        "",
 	"sp/brack[x]":      "",
 	"sp/semi;x":        "",
+	"sp/#hash":         "",
 	"sp/~tilde":        "",
 	"sp/paren(x)":      "",
 	"sp/amp&x":         "",
@@ -69,7 +70,7 @@ var completionFiles = map[string]string{
 	"sp/lt<x>":         "",
 	"sp/bs\\x":         "",
 	"sp/tick`x":        "",
-	"sp/eq=x,y:z@w":    "",
+	"sp/eq=x,y:z@w%":   "",
 }
 
 // completionFixture is a workspace holding completionFiles, the empty
@@ -358,6 +359,7 @@ func TestCompleteLine(t *testing.T) {
 		{name: "a glob character is escaped", line: "cat sp/st", want: `cat sp/star\*x ‸`},
 		{name: "brackets are escaped", line: "cat sp/brack", want: `cat sp/brack\[x\] ‸`},
 		{name: "an operator is escaped", line: "cat sp/se", want: `cat sp/semi\;x ‸`},
+		{name: "a hash is escaped", line: "cat sp/#", want: `cat sp/\#hash ‸`},
 		{name: "a tilde past the start is not escaped", line: "cat sp/~", want: "cat sp/~tilde ‸"},
 		{name: "a leading tilde of a file is escaped", dir: "sp", line: "cat ./~", want: "cat ./~tilde ‸"},
 		{name: "parentheses are escaped", line: "cat sp/pa", want: `cat sp/paren\(x\) ‸`},
@@ -370,7 +372,7 @@ func TestCompleteLine(t *testing.T) {
 		{name: "a backslash is escaped", line: "cat sp/bs", want: `cat sp/bs\\x ‸`},
 		{name: "a backtick is escaped", line: "cat sp/ti", want: "cat sp/tick\\`x ‸"},
 		{name: "a backtick in double quotes", line: `cat "sp/ti`, want: "cat \"sp/tick\\`x\" ‸"},
-		{name: "harmless punctuation is not escaped", line: "cat sp/e", want: "cat sp/eq=x,y:z@w ‸"},
+		{name: "harmless punctuation is not escaped", line: "cat sp/e", want: "cat sp/eq=x,y:z@w% ‸"},
 		{name: "HOME is kept", line: "cat ~/con", want: "cat ~/config.md ‸"},
 		{name: "a tilde completes to HOME", line: "cat ~", want: "cat ~/‸"},
 		{name: "HOME stays outside the quotes", line: `cat ~/"my`, want: `cat ~/"my file.txt" ‸`},
@@ -433,6 +435,7 @@ func TestCompleteLine(t *testing.T) {
 		{name: "cd lists directories", line: "cd a", list: []string{"acc/", "agent/", "appearance/"}},
 		{name: "cd completes no file", line: "cd con"},
 		{name: "a comment completes nothing", line: "echo # con"},
+		{name: "a hash in a word is no comment", line: "cat sp/#h", want: `cat sp/\#hash ‸`},
 		{name: "a quoted hash is no comment", line: "echo '#' con", want: "echo '#' config.md ‸"},
 	}
 	for _, backend := range vshtest.Backends {
@@ -498,8 +501,7 @@ func TestInsertionIsReadBack(t *testing.T) {
 func TestCompleteLineQuotesNamesTheShellReadsBack(t *testing.T) {
 	t.Parallel()
 	prefixes := []string{"", "'", `"`, "~/", "~/'", `~/"`}
-	// The memory scheme cannot hold the names a URI escapes.
-	for _, backend := range []vshtest.Backend{vshtest.File} {
+	for _, backend := range vshtest.Backends {
 		t.Run(backend.Name, func(t *testing.T) {
 			t.Parallel()
 			f := vshtest.New(t, vshtest.Options{Backend: backend})

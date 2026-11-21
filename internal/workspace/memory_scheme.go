@@ -471,8 +471,18 @@ func (m *memoryScheme) URI(path string) (workspaceapi.URI, error) {
 	if err != nil {
 		return workspaceapi.URI{}, err
 	}
-	uriStr := m.scheme + "://" + absPath
-	return workspaceapi.ParseURI(uriStr)
+	return m.pathURI(absPath)
+}
+
+// pathURI is the URI of absolute path p. The path is escaped, rather
+// than parsed as URI text, so that names holding "%", "?" or "#" map
+// to one URI and back.
+func (m *memoryScheme) pathURI(p string) (workspaceapi.URI, error) {
+	base, err := workspaceapi.ParseURI(m.scheme + ":///")
+	if err != nil {
+		return workspaceapi.URI{}, err
+	}
+	return workspaceapi.WithPath(base, p)
 }
 
 func (m *memoryScheme) StartCommand(ctx context.Context, cmd workspaceapi.Cmd) (
@@ -707,7 +717,14 @@ func (m *memoryScheme) MkdirAll(path string, perm os.FileMode) error {
 		if p == m.workspace.Path() {
 			continue
 		}
-		uriStr := m.scheme + "://" + p
+		// Key the entry by the URI's canonical form, as every other
+		// method does, so that names the URI escapes are found again.
+		dirURI, err := m.pathURI(p)
+		if err != nil {
+			m.mu.Unlock()
+			return err
+		}
+		uriStr := dirURI.String()
 		if f, ok := m.files[uriStr]; ok {
 			if !f.mode.IsDir() {
 				m.mu.Unlock()
@@ -719,10 +736,6 @@ func (m *memoryScheme) MkdirAll(path string, perm os.FileMode) error {
 		dir.m = m
 		dir.modTime = time.Now()
 		m.files[uriStr] = dir
-		dirURI, err := workspaceapi.ParseURI(uriStr)
-		if err != nil {
-			panic("could not parse internal uri")
-		}
 		created = append(created, watchFileInfo{
 			event: schemeapi.Create,
 			uri:   dirURI,

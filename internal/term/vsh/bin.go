@@ -101,10 +101,6 @@ func (e *Executor) installBin() error {
 			_ = f.Close()
 			return fmt.Errorf("install %s: %w", p, err)
 		}
-		if err := f.Sync(); err != nil {
-			_ = f.Close()
-			return fmt.Errorf("install %s: %w", p, err)
-		}
 		if err := f.Close(); err != nil {
 			return fmt.Errorf("install %s: %w", p, err)
 		}

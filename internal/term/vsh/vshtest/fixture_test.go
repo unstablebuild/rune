@@ -306,6 +306,10 @@ var scriptCases = []scriptCase{
 		stderr: "cp: cannot create regular file 'no/x': No such file or directory\ntee: no/y: No such file or directory\n" +
 			"touch: cannot touch 'no/z': No such file or directory\nmkdir: cannot create directory 'no/w': No such file or directory\n",
 		absent: []string{"no"}},
+	{name: "names with spaces and other characters",
+		files:  map[string]string{"a b/c d.txt": "spaced\n", "ünï/çödé.txt": "unicode\n", "x'y": "quote\n"},
+		argv:   sh(`cat "a b/c d.txt" ünï/çödé.txt "x'y"; ls "a b"; echo a\ b/*; mv "a b" "e f" && ls "e f"`),
+		stdout: "spaced\nunicode\nquote\nc d.txt\na b/c d.txt\nc d.txt\n"},
 	{name: "mv replaces an existing file",
 		files: map[string]string{"a": "new\n", "b": "old\n"},
 		argv:  sh(`mv a b`), after: map[string]string{"b": "new\n"}, absent: []string{"a"}},

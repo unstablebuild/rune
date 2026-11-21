@@ -155,7 +155,6 @@ func (f *Fixture) Seed(t testing.TB, name, content string) {
 	require.NoError(t, err)
 	_, err = file.Write([]byte(content))
 	require.NoError(t, err)
-	require.NoError(t, file.Sync())
 	require.NoError(t, file.Close())
 }
 

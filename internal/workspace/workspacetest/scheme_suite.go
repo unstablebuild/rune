@@ -1615,6 +1615,41 @@ func TestWorkspaceSchemeMkdirAll(
 		_, err = scheme.OpenFile("./dir", os.O_RDWR|os.O_CREATE, 0o644)
 		require.Error(t, err)
 	})
+
+	t.Run("names that a URI escapes", func(t *testing.T) {
+		scheme := schemeFn(t)
+		defer scheme.Close()
+
+		names := []string{"a b", "per%cent", "q?uery", "h#ash"}
+		for _, name := range names {
+			dir := "./" + name
+			require.NoErrorf(t, scheme.MkdirAll(dir, 0o755), "MkdirAll(%q)", dir)
+			info, err := scheme.Stat(dir)
+			require.NoErrorf(t, err, "Stat(%q)", dir)
+			assert.Truef(t, info.IsDir(), "Stat(%q).IsDir", dir)
+			_, cleanup := createTestFile(t, scheme, dir+"/f", "")
+			cleanup()
+		}
+		entries, err := scheme.ReadDir(".")
+		require.NoError(t, err)
+		var listed []string
+		for _, e := range entries {
+			listed = append(listed, e.Name())
+		}
+		assert.Subset(t, listed, names, "the parent lists every directory by its name")
+
+		for _, name := range names {
+			dir := "./" + name
+			require.NoErrorf(t, scheme.Remove(dir), "Remove(%q)", dir)
+			_, err := scheme.Stat(dir)
+			assert.ErrorIsf(t, err, fs.ErrNotExist, "Stat(%q) after Remove", dir)
+		}
+		entries, err = scheme.ReadDir(".")
+		require.NoError(t, err)
+		for _, e := range entries {
+			assert.NotContains(t, names, e.Name(), "a removed directory is listed")
+		}
+	})
 }
 
 func expectNoMoreEvents(t *testing.T, ch chan schemeapi.EventInfo) {
@@ -1687,6 +1722,33 @@ func TestWorkspaceSchemeWatch(
 		assert.Equal(t, filepath.Base(f.Name()), filepath.Base(ei.URI().Path()), ei.URI().Path())
 		assert.Equal(t, schemeapi.Write, ei.Event())
 
+		expectNoMoreEvents(t, ch)
+
+		require.NoError(t, scheme.StopWatch(id))
+	})
+
+	t.Run("schemeapi.Write watches for writes closed without a sync", func(t *testing.T) {
+		scheme := schemeFn(t)
+		defer scheme.Close()
+
+		f, cleanup := createTestFile(t, scheme, "szb", "")
+		defer cleanup()
+
+		ch := make(chan schemeapi.EventInfo, 2)
+		id, err := scheme.Watch(".", ch, schemeapi.Write)
+		require.NoError(t, err)
+
+		_, err = f.Write([]byte("1234"))
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+
+		select {
+		case ei := <-ch:
+			assert.Equal(t, filepath.Base(f.Name()), filepath.Base(ei.URI().Path()), ei.URI().Path())
+			assert.Equal(t, schemeapi.Write, ei.Event())
+		case <-time.After(5 * time.Second):
+			t.Fatal("no Write event for a write closed without a sync")
+		}
 		expectNoMoreEvents(t, ch)
 
 		require.NoError(t, scheme.StopWatch(id))
