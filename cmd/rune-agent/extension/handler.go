@@ -1070,6 +1070,7 @@ func (h *aiEditorHandler) reloadStyle(ctx context.Context, host config.Config) e
 	h.cfg.InputBox.FrameAttr = cfg.InputBox.FrameAttr
 	h.cfg.InputBox.ContentAttr = cfg.InputBox.ContentAttr
 	h.cfg.InputBackgroundColor = cfg.InputBackgroundColor
+	h.cfg.Focus = cfg.Focus
 	h.statusBarMu.Unlock()
 	h.openChats.Range(func(_, v any) bool {
 		// Chats still opening hold no component yet; they read the

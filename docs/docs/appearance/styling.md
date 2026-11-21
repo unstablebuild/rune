@@ -324,8 +324,8 @@ The scroll bar works the same way, with `top_char`, `middle_char`,
 
 A theme can mark the focused window with a background image instead of a
 brighter frame: `focus_background_graphics` draws a panel behind it, and
-`focus_scroll_bar_charset`, the status bars and the inbox take images
-painted for that panel. See [Focus styles](#focus-styles).
+`focus_scroll_bar_charset`, the status bars, the inbox and the agent chat
+take images painted for that panel. See [Focus styles](#focus-styles).
 
 ### Tabs
 
@@ -787,8 +787,8 @@ theme's surroundings.
 | Dialog buttons | `browser.prompt.images` | `left`, `middle` and `right` for `idle`, `selected`, `hover` and `pressed`. | `top`, `bottom`, `sides` |
 | Notifications | `notifications.frame_charset.graphics`, `notifications.progress_format.graphics` | The eight frame slots; the progress bar's five. | |
 | Program status inbox | `program_status.images`, `divider_charset.graphics`, `progress_bar_graphics`, `marker_graphics`, and the same under `program_status.focus` | See [Program status inbox](#program-status-inbox). | entries: `top`, `bottom`, `sides` |
-| Status bars | `{{ .Image }}` in `editor.status_bar.layout`, its `focus` block and the agent's `status_bar.layout` | An image of any size, placed in the layout. | |
-| Agent composer | `extensions.rune-agent.config.input_box_frame_charset.graphics` | The eight frame slots. | |
+| Status bars | `{{ .Image }}` in `editor.status_bar.layout` and the agent's `status_bar.layout`, and in their `focus` blocks | An image of any size, placed in the layout. | |
+| Agent composer | `extensions.rune-agent.config.input_box_frame_charset.graphics`, and the same under `focus` | The eight frame slots. | |
 | Quick menu | `gui.quick_menu[].sprite` | `idle`, `hover` and `pressed`. | |
 | Wallpaper, app icon | `workspace.wallpaper_image`, `gui.app_icon` | One image each. | |
 
@@ -1282,9 +1282,9 @@ config["browser"]["window_manager"]["window_bar"] = False
 ## Focus styles
 
 The window in focus can stand out by more than its frame. It can have its own
-background color, a background image, and its own scroll bar, status bars and
-program status inbox. With those, a frame can be blank or turned off, and the
-background marks the focused window instead.
+background color, a background image, and its own scroll bar, status bars,
+program status inbox and agent chat. With those, a frame can be blank or
+turned off, and the background marks the focused window instead.
 
 As with `focus_frame_attr`, the focus style applies only when there is more
 than one window, and only the window focus counts: switching to another app
@@ -1389,16 +1389,17 @@ wm["focus_background_graphics"] = {
 - The tab bar's joins to the window frames cut the image where they are
   drawn. Set `browser.union_frames: false` to keep it whole.
 
-### Status bars and inbox
+### Status bars, inbox and chat
 
-The editor status bar and the program status inbox take a `focus` block, which
-is laid over their section key by key. It changes any style key the section
-has, without repeating the others:
+The editor status bar, the program status inbox and Rune Agent's chats take
+a `focus` block, which is laid over their section key by key. It changes any
+style key the section has, without repeating the others:
 
 | Block | Keys it changes |
 | --- | --- |
 | `editor.status_bar.focus` | `layout`, `background_attr` and `foreground_error_attr`. |
 | `program_status.focus` | Any style key, such as `divider_charset`, `divider_attr`, `images`, `marker_graphics` and `progress_bar_graphics`. |
+| `extensions.rune-agent.config.focus` | `status_bar`, `input_box_frame_charset`, `input_box_frame_attr`, `input_box_attr`, `input_background_color` and `background_attr`. ACP chats share it. |
 
 ```yaml tab
 editor:
@@ -1412,6 +1413,10 @@ editor:
 config["editor"]["status_bar"]["background_attr"] = {"bg": "#20232b"}
 config["editor"]["status_bar"]["focus"] = {"background_attr": {"bg": "#262b38"}}
 ```
+
+A chat whose `background_attr` sets a color keeps it over the window's
+background. Its `focus` block's `background_attr` replaces that color in
+every cell the chat draws with it.
 
 ## Tab bar
 

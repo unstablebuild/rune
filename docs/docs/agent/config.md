@@ -330,6 +330,7 @@ an optional `fg` (foreground color), `bg` (background color), and `flags`
 | `input_box_frame_attr` | The composer's border. |
 | `input_box_frame_charset` | The character set used to draw the composer's border. Slots it leaves out keep the default border's. Its `graphics` table names images the GUI draws over the border, as window frame charsets do, and `themereload` or `runectl screenshot` applies it to open chats. |
 | `input_background_color` | The composer's background color. |
+| `focus` | The chat's style while its window is in focus and more than one window is open. It takes `status_bar`, `input_box_frame_charset`, `input_box_frame_attr`, `input_box_attr`, `input_background_color` and `background_attr`, laid over the keys above. See [Focus styles](../appearance/styling.md#focus-styles). |
 | `completion_matched_text_attr` | The matched substring in `#` context completion results. |
 | `completion_focus_element_attr` | The selected row in the `#` context completion list. |
 | `completion_element_attr` | Unselected rows in the `#` context completion list. |

@@ -339,8 +339,8 @@ func (v *chatView) upsertAttachment(a dialoguetui.Attachment) {
 	_ = v.s.h.p.Interrupt(v.ctx)
 }
 
-// restyle draws the view with the status bar, compose box frame and
-// compose box colours of style, whose frame images by URI are
+// restyle draws the view with the status bar, compose box frame, compose
+// box colours and focus style of style, whose frame images by URI are
 // frameImages.
 func (v *chatView) restyle(style dialoguetui.ComponentConfig, frameImages map[string]stdimage.Image) {
 	v.mu.Lock()
@@ -348,6 +348,7 @@ func (v *chatView) restyle(style dialoguetui.ComponentConfig, frameImages map[st
 	v.comp.SetStatusBarConfig(style.StatusBar)
 	v.comp.SetInputBoxFrameCharSet(style.InputBox.FrameCharSet, frameImages)
 	v.comp.SetInputBoxColors(style.InputBox.FrameAttr, style.InputBox.ContentAttr, style.InputBackgroundColor)
+	v.comp.SetFocusStyle(style.Focus)
 }
 
 // end tells the view its session ended.

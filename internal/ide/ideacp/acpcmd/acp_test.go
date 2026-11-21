@@ -752,12 +752,15 @@ func TestHandlerRestyle(t *testing.T) {
 		shown.Resize(width, height)
 		return shown
 	}
-	screen := func(tb *tab) string {
+	screenIn := func(tb *tab, ctx context.Context) string {
 		w := term.NewStringWriter(width, height)
+		w.SetContext = ctx
 		tb.Draw(w)
 		_ = w.Flush()
 		return w.String()
 	}
+	screen := func(tb *tab) string { return screenIn(tb, nil) }
+	focused := term.ContextWithWindowFocus(context.Background(), true)
 	inputBg := func(tb *tab, bg term.Color) bool {
 		w := term.NewStringWriter(width, height)
 		tb.Draw(w)
@@ -772,6 +775,9 @@ func TestHandlerRestyle(t *testing.T) {
 		return config.MapConfig(map[string]any{
 			"status_bar":             map[string]any{"layout": "{{ .Conversation }} " + marker},
 			"input_background_color": bg,
+			"focus": map[string]any{
+				"status_bar": map[string]any{"layout": "{{ .Conversation }} focus " + marker},
+			},
 		})
 	}
 	open := newChat("open", window(1))
@@ -783,9 +789,11 @@ func TestHandlerRestyle(t *testing.T) {
 	require.Eventually(t, func() bool { return strings.Contains(screen(open), "open ##") },
 		10*time.Second, 10*time.Millisecond, "the open chat takes the last style:\n%s", screen(open))
 	assert.True(t, inputBg(open, term.ColorBlue), "the open chat's compose box")
+	assert.Contains(t, screenIn(open, focused), "open focus ##", "the open chat in focus")
 	next := newChat("next", window(3))
 	assert.Contains(t, screen(next), "next ##", "a chat opened next")
 	assert.True(t, inputBg(next, term.ColorBlue), "a chat opened next: compose box")
+	assert.Contains(t, screenIn(next, focused), "next focus ##", "a chat opened next in focus")
 }
 
 func TestHandlerClose(t *testing.T) {

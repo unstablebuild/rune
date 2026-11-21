@@ -86,6 +86,26 @@ extensions:
         horizontalbottom: "─"
         verticalleft: "│"
         verticalright: "│"
+      # The chat's style while its window is in focus and more than one
+      # window is open, to match browser.window_manager's
+      # focus_background_attr in rune.star. Its keys are laid over the
+      # ones above; the status bar changes only when it has a status_bar.
+      #focus:
+      #  background_attr:
+      #    bg: "#1b1f2a"
+      #  input_background_color: "#1b1f2a"
+      #  input_box_attr:
+      #    fg: default
+      #    bg: "#1b1f2a"
+      #  input_box_frame_attr:
+      #    fg: silver
+      #    bg: "#1b1f2a"
+      #  input_box_frame_charset:
+      #    graphics:
+      #      topleft: file:///path/to/focused-topleft.png
+      #  status_bar:
+      #    background_attr:
+      #      bg: "#1b1f2a"
       # Styling for the '#' context completion overlay. Defaults mirror
       # the command prompt (see "command.*_attr" in rune.star) so both
       # search overlays look consistent.

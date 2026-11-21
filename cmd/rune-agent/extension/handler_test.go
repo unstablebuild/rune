@@ -4258,6 +4258,49 @@ func TestReloadStyleInputBoxColors(t *testing.T) {
 	}
 }
 
+func TestReloadStyleFocus(t *testing.T) {
+	const width, height = 32, 6
+	host := config.MapConfig(map[string]any{"extensions": map[string]any{
+		extensionID: map[string]any{"config": map[string]any{
+			"status_bar": map[string]any{"enabled": false},
+			"focus":      map[string]any{"input_background_color": "blue"},
+		}},
+	}})
+	// input draws h, in a window holding the focus or not, with "h" typed
+	// in its compose box and returns the background of its input.
+	input := func(t *testing.T, h tui.Handler, focused bool) term.Color {
+		t.Helper()
+		h.Resize(width, height)
+		w := term.NewStringWriter(width, height)
+		w.SetContext = term.ContextWithWindowFocus(context.Background(), focused)
+		h.Draw(w)
+		for _, c := range w.Cells() {
+			if c.Ch == 'h' {
+				return c.Bg
+			}
+		}
+		t.Fatal("the compose box is drawn")
+		return 0
+	}
+	h := &aiEditorHandler{n: stubNotifications{}, p: term.NopInterrupter()}
+	h.cfg = dialoguetui.DefaultComponentConfig()
+	_, c := openBareChat(t, h, "open")
+	c.content.Handle(term.Event{Type: term.EventKey, Ch: 'h'})
+	require.Equal(t, term.ColorDefault, input(t, c.content, true), "opened")
+
+	require.NoError(t, h.reloadStyle(context.Background(), host))
+	assert.Equal(t, term.ColorBlue, input(t, c.content, true), "the open chat in focus")
+	assert.Equal(t, term.ColorDefault, input(t, c.content, false), "the open chat out of focus")
+
+	nextMu := new(sync.Mutex)
+	next := dialoguetui.NewComponent(h.dialogueConfig(nextMu))
+	t.Cleanup(func() { assert.NoError(t, next.Close()) })
+	nextH, nextTx, _ := dialoguetui.Handler(context.Background(), nextMu, next, h.p)
+	defer close(nextTx)
+	nextH.Handle(term.Event{Type: term.EventKey, Ch: 'h'})
+	assert.Equal(t, term.ColorBlue, input(t, nextH, true), "a chat opened next in focus")
+}
+
 // awaitChat redraws h on every interrupt until it draws expected with
 // the asciiart writer; the frame images load in the background.
 func awaitChat(

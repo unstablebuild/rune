@@ -172,6 +172,7 @@ func (h *Handler) Restyle(own, host config.Config) {
 		h.cfg.Chat.InputBox.FrameAttr = cfg.InputBox.FrameAttr
 		h.cfg.Chat.InputBox.ContentAttr = cfg.InputBox.ContentAttr
 		h.cfg.Chat.InputBackgroundColor = cfg.InputBackgroundColor
+		h.cfg.Chat.Focus = cfg.Focus
 		chats := make([]*chat, 0, len(h.tabs))
 		for _, t := range h.tabs {
 			chats = append(chats, t.chat)
