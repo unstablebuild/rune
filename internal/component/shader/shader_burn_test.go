@@ -645,6 +645,14 @@ func TestBurn_DesaturatesTheSnapshotsPictures(t *testing.T) {
 	assert.Equal(t, red, old.Src.(*image.RGBA).RGBAAt(0, 0), "the picture drawn is left as is")
 }
 
+func TestBurn_DesaturatesASnapshotWithAFill(t *testing.T) {
+	assertDesaturatesSnapshotWithFill(t, func(from shader.Snapshot, defaultAttr term.Attributes) shader.ImageShader {
+		params := shader.DefaultBurnParams()
+		params.From = from
+		return shader.Burn(params, defaultAttr)
+	})
+}
+
 func TestBurn_PaintForegroundLeavesThePicturesAsDrawn(t *testing.T) {
 	params := shader.DefaultBurnParams()
 	params.PaintForeground = true

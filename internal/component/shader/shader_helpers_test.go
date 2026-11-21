@@ -1013,6 +1013,10 @@ func testReveal(
 		assert.Equal(t, red, old.Images[0].Src.(*image.RGBA).RGBAAt(0, 0), "the snapshot given is left as is")
 	})
 
+	t.Run("desaturates a snapshot with a fill", func(t *testing.T) {
+		assertDesaturatesSnapshotWithFill(t, newShader)
+	})
+
 	t.Run("pure", func(t *testing.T) {
 		build := func() shader.Shader { return newShader(old, revealAttr) }
 		shadertest.AssertOrderIndependent(t, build, live, 12)
@@ -1037,6 +1041,58 @@ func testReveal(
 		edgeRow("x"),
 	}}
 	testShaderEdgeCases(t, func(defaultAttr term.Attributes) shader.Shader { return newShader(edge, defaultAttr) })
+}
+
+// assertDesaturatesSnapshotWithFill checks the shaders newShader makes
+// reveal a desaturated snapshot that shows a fill without a mask, as the
+// frames of windows draw, beside a picture: every frame shows the fill
+// in its colour, as it has no pixels to fade, and the picture
+// desaturated, and the first frame shows both.
+func assertDesaturatesSnapshotWithFill(
+	t *testing.T, newShader func(from shader.Snapshot, defaultAttr term.Attributes) shader.ImageShader,
+) {
+	t.Helper()
+	const cols, rows, total = 24, 10, 60
+	old, live, _ := revealScreens(cols, rows)
+	fill := term.Image{
+		Fill: true, FillColor: term.NewRGBColor(0, 90, 200),
+		Pos:   term.Coordinates{X: cols - 2, Y: 1},
+		Width: 2, Height: rows - 2,
+		Layer: term.ImageLayerBelowText,
+	}
+	tests := []struct {
+		desaturation float64
+		picture      color.RGBA
+	}{
+		{desaturation: 0.5, picture: color.RGBA{R: 166, G: 38, B: 38, A: 255}},
+		{desaturation: 1, picture: color.RGBA{R: 76, G: 76, B: 76, A: 255}},
+	}
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("by %v", tc.desaturation), func(t *testing.T) {
+			sh := newShader(shader.Snapshot{
+				Cells:        old.Cells,
+				Images:       append(slices.Clone(old.Images), fill),
+				Desaturation: tc.desaturation,
+			}, revealAttr)
+			for frame := range total {
+				fills, pictures := 0, 0
+				for _, img := range sh.ShadeImages(frame, total, cloneCells(live), nil) {
+					if img.Src == nil {
+						require.True(t, img.Fill, "frame %d", frame)
+						require.Equal(t, fill.FillColor, img.FillColor, "frame %d", frame)
+						fills++
+						continue
+					}
+					require.Equal(t, tc.picture, img.Src.(*image.RGBA).RGBAAt(0, 0), "frame %d", frame)
+					pictures++
+				}
+				if frame == 0 {
+					require.Positive(t, fills, "the first frame shows the fill")
+					require.Positive(t, pictures, "the first frame shows the picture")
+				}
+			}
+		})
+	}
 }
 
 // assertRevealPictures checks the pictures images place over cells, a

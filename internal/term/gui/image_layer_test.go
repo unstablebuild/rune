@@ -245,7 +245,7 @@ func drawFrame(
 	l *imageLayer, dst *ebiten.Image, m *font.Manager, images ...term.Image,
 ) {
 	for _, img := range images {
-		l.drawOne(dst, img, m, 0)
+		l.drawOne(dst, img, m, 0, color.RGBA{})
 	}
 	l.evictUnused()
 }
@@ -517,6 +517,114 @@ func TestImageLayerDeallocateReleasesTextures(t *testing.T) {
 	l.deallocate()
 	assert.Empty(t, l.textures)
 	assert.Nil(t, l.scratch)
+}
+
+func TestDrawImageLayerFills(t *testing.T) {
+	mask := solidRGBA(4, 4, color.RGBA{A: 128})
+	fill := func(img term.Image) term.Image {
+		img.Fill = true
+		img.FillColor = term.NewColor(10, 20, 30)
+		img.Pos = term.Coordinates{X: 2, Y: 3}
+		img.Width, img.Height = 4, 1
+		img.Layer = term.ImageLayerBelowBackground
+		return img
+	}
+	tests := []struct {
+		name string
+		img  term.Image
+		// want are the cells painted, moved down by down pixels.
+		want    image.Rectangle
+		down    bool
+		uploads int
+	}{
+		{name: "a colour over its cells", img: fill(term.Image{}), want: image.Rect(2, 3, 6, 4)},
+		{
+			name: "the default background",
+			img:  fill(term.Image{FillColor: term.ColorDefault}),
+			want: image.Rect(2, 3, 6, 4),
+		},
+		{
+			name: "moved down with the cells of a shifted row",
+			img:  fill(term.Image{VerticalRenderOffset: true}),
+			want: image.Rect(2, 3, 6, 4), down: true,
+		},
+		{
+			name: "clipped to the cells it still covers",
+			img:  fill(term.Image{Clip: image.Rect(0, 0, 4, 10)}),
+			want: image.Rect(2, 3, 4, 4),
+		},
+		{
+			name: "through a mask",
+			img:  fill(term.Image{Src: mask, ID: term.NewImageID()}),
+			want: image.Rect(2, 3, 6, 4), uploads: 1,
+		},
+		{
+			name: "through a tiled mask",
+			img:  fill(term.Image{Src: mask, ID: term.NewImageID(), Fit: term.ImageFitTile}),
+			want: image.Rect(2, 3, 6, 4), uploads: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, _, _ := newTestRenderer(t, 16, 10)
+			screen := ebiten.NewImage(r.frame.Bounds().Dx(), r.frame.Bounds().Dy())
+			t.Cleanup(screen.Deallocate)
+			want := cellRectToPixels(tt.want, r.fontManager)
+			if tt.down {
+				want = want.Add(image.Pt(0, int(r.halfCell())))
+			}
+
+			benchdraw.BeginFrame(t)
+			defer benchdraw.EndFrame(t)
+			assert.Equal(t, []image.Rectangle{want},
+				r.drawImageLayer(screen, []term.Image{tt.img}, term.ImageLayerBelowBackground))
+			assert.Len(t, r.images.textures, tt.uploads)
+		})
+	}
+}
+
+func TestFillColorM(t *testing.T) {
+	tests := []struct {
+		name  string
+		fill  color.RGBA
+		pixel color.Color
+		want  color.RGBA
+	}{
+		{
+			name:  "an opaque pixel takes the colour",
+			fill:  color.RGBA{R: 10, G: 20, B: 30, A: 255},
+			pixel: color.RGBA{R: 200, G: 100, B: 50, A: 255},
+			want:  color.RGBA{R: 10, G: 20, B: 30, A: 255},
+		},
+		{
+			name:  "a transparent pixel stays transparent",
+			fill:  color.RGBA{R: 10, G: 20, B: 30, A: 255},
+			pixel: color.RGBA{},
+			want:  color.RGBA{},
+		},
+		{
+			name:  "a translucent pixel keeps its coverage",
+			fill:  color.RGBA{R: 200, G: 100, B: 50, A: 255},
+			pixel: color.NRGBA{R: 255, A: 128},
+			want:  color.RGBA{R: 100, G: 50, B: 25, A: 128},
+		},
+		{
+			name:  "the colour's opacity scales the coverage",
+			fill:  color.RGBA{R: 100, G: 50, B: 25, A: 128},
+			pixel: color.RGBA{A: 255},
+			want:  color.RGBA{R: 100, G: 50, B: 25, A: 128},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cm := fillColorM(tt.fill)
+			got := color.RGBAModel.Convert(cm.Apply(tt.pixel)).(color.RGBA)
+			assert.InDelta(t, tt.want.R, got.R, 1)
+			assert.InDelta(t, tt.want.G, got.G, 1)
+			assert.InDelta(t, tt.want.B, got.B, 1)
+			assert.InDelta(t, tt.want.A, got.A, 1)
+		})
+	}
 }
 
 func TestDrawImageLayerPartitions(t *testing.T) {

@@ -394,6 +394,12 @@ func (st *imageStore) drop(id uint64) {
 
 func (st *imageStore) draw(w term.Writer, placements []*handlerrpc.ImagePlacement) {
 	for _, p := range placements {
+		if p.GetFill() && p.GetId() == 0 {
+			if !w.DrawImage(p.ToModel()) {
+				return
+			}
+			continue
+		}
 		img := st.images[p.GetId()]
 		if img == nil || img.pixels == nil || img.version != p.GetVersion() {
 			continue
