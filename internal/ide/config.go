@@ -4410,6 +4410,7 @@ func (c ideConfig) statusBarConfig(
 		ErrorColor:       style.ErrorColor,
 		GitService:       svc,
 		Layout:           style.Layout,
+		Focus:            style.Focus,
 	}
 	if c.storage != nil {
 		ret.Storage = storageapi.WithPartition(c.storage, statusBarImagesPartition)
@@ -4418,12 +4419,30 @@ func (c ideConfig) statusBarConfig(
 }
 
 // statusBarStyle reads the keys of editor.status_bar that a HUD reload
-// restyles open status bars with.
+// restyles open status bars with, and its focus block over them.
 func (c ideConfig) statusBarStyle() text.StatusBarStyle {
+	cfg, ok := c.statusBar()
+	if !ok {
+		return text.StatusBarStyle{}
+	}
+	const path = "editor.status_bar"
+	style := c.statusBarStyleOf(cfg, path)
+	switch focus, err := tconfig.FocusOverlay(cfg, "focus"); {
+	case err == nil:
+		focused := c.statusBarStyleOf(focus, path+".focus")
+		style.Focus = &focused
+	case !errors.Is(err, config.ErrNotFound):
+		c.errors[path+".focus"] = err
+	}
+	return style
+}
+
+// statusBarStyleOf reads the style of the status bar section cfg at path.
+func (c ideConfig) statusBarStyleOf(cfg config.Config, path string) text.StatusBarStyle {
 	return text.StatusBarStyle{
-		Layout:          c.statusBarLayout(),
-		BackgroundColor: c.statusBarAttr("background_attr", term.Attributes{}).Bg,
-		ErrorColor:      c.statusBarAttr("foreground_error_attr", term.Attributes{}).Fg,
+		Layout:          c.statusBarLayout(cfg, path),
+		BackgroundColor: c.statusBarAttr(cfg, path, "background_attr").Bg,
+		ErrorColor:      c.statusBarAttr(cfg, path, "foreground_error_attr").Fg,
 	}
 }
 
@@ -4465,16 +4484,11 @@ func (c ideConfig) auxiliaryBarAttr(key string) term.Attributes {
 	return attrs
 }
 
-func (c ideConfig) statusBarAttr(key string, def term.Attributes) (ret term.Attributes) {
-	ret = def
-	cfg, ok := c.statusBar()
-	if !ok {
-		return
-	}
+func (c ideConfig) statusBarAttr(cfg config.Config, path, key string) (ret term.Attributes) {
 	attrs, err := config.GetAttributes(cfg, key)
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors[fmt.Sprintf("editor.status_bar.%s", key)] = err
+			c.errors[path+"."+key] = err
 		}
 	} else {
 		ret = attrs
@@ -4482,23 +4496,19 @@ func (c ideConfig) statusBarAttr(key string, def term.Attributes) (ret term.Attr
 	return
 }
 
-func (c ideConfig) statusBarLayout() (ret []text.StatusBarComponent) {
+func (c ideConfig) statusBarLayout(cfg config.Config, path string) (ret []text.StatusBarComponent) {
 	ret = nil // nil delegates default config to StatusBar
-	cfg, ok := c.statusBar()
-	if !ok {
-		return
-	}
 	val, err := cfg.GetString("layout")
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["editor.status_bar.layout"] = err
+			c.errors[path+".layout"] = err
 		}
 		return
 	}
 	ret, err = text.ParseStatusBarLayout(val)
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["editor.status_bar.layout"] = err
+			c.errors[path+".layout"] = err
 		}
 		return
 	}
@@ -5971,20 +5981,39 @@ func (c ideConfig) terminalStatus() (config.Config, bool) {
 // Its marker takes what program_status.marker_attr leaves unset of the
 // marker of the focused tab, browser.focus_tab_highlight_attr, but its
 // background, which is the selection's, and its divider the window
-// frame's left edge.
+// frame's left edge. Its focus block, over it, styles the inbox while
+// its window holds the focus.
 func (c ideConfig) statusInboxStyle() idestatus.InboxStyle {
+	const name = "program_status"
+	var cfg config.Config
+	if c.cfg != nil {
+		cfg, _ = c.getConfig(config.MapConfig(c.cfg), name)
+	}
+	ret := c.statusInboxStyleOf(cfg, name)
+	if cfg == nil {
+		return ret
+	}
+	switch focus, err := tconfig.FocusOverlay(cfg, "focus"); {
+	case err == nil:
+		focused := c.statusInboxStyleOf(focus, name+".focus")
+		ret.Focus = &focused
+	case !errors.Is(err, config.ErrNotFound):
+		c.errors[name+".focus"] = err
+	}
+	return ret
+}
+
+// statusInboxStyleOf reads the inbox style of cfg, a program_status
+// section, which is nil when there is none, reporting errors under name.
+func (c ideConfig) statusInboxStyleOf(cfg config.Config, name string) idestatus.InboxStyle {
 	ret := idestatus.DefaultInboxStyle()
 	ret.MarkerAttr = c.highlightTabAttr()
 	ret.MarkerAttr.Bg = term.ColorDefault
-	ret.Divider = c.statusDividerCharset(ret.Divider)
-	if c.cfg == nil {
+	ret.Divider = c.statusDividerCharset(cfg, name, ret.Divider)
+	if cfg == nil {
 		return ret
 	}
-	cfg, ok := c.getConfig(config.MapConfig(c.cfg), "program_status")
-	if !ok {
-		return ret
-	}
-	const prefix = "program_status."
+	prefix := name + "."
 	if marker, err := cfg.GetRune("marker"); err == nil {
 		ret.Marker = marker
 	} else if err != config.ErrNotFound {
@@ -6033,14 +6062,14 @@ func (c ideConfig) statusInboxStyle() idestatus.InboxStyle {
 		c.errors[prefix+"progress_bar"] = err
 	}
 	var images browser.PromptImages
-	if c.buttonImages(cfg, "images", "program_status", &images.Outset,
+	if c.buttonImages(cfg, "images", name, &images.Outset,
 		buttonImageSlot{&images.Idle, "idle"},
 		buttonImageSlot{&images.Selected, "selected"},
 		buttonImageSlot{&images.Hover, "hover"},
 	) {
 		ret.Images = images
 	}
-	ret.MarkerGraphics = c.lineGraphics(cfg, "marker_graphics", "program_status", "top", "vertical", "bottom")
+	ret.MarkerGraphics = c.lineGraphics(cfg, "marker_graphics", name, "top", "vertical", "bottom")
 	var bar idestatus.ProgressBarGraphics
 	if err := tconfig.GetGraphics(cfg, "progress_bar_graphics", &bar.Overlay,
 		tconfig.GraphicsSlot{Key: "left", URI: &bar.Left},
@@ -6055,12 +6084,15 @@ func (c ideConfig) statusInboxStyle() idestatus.InboxStyle {
 	return ret
 }
 
-// statusDividerCharset reads program_status.divider_charset over def.
-// Its vertical rune and image, and the image's mode, default to those
-// of the window frame's left edge, and its vertical_top and
-// vertical_bottom to its vertical rune.
-func (c ideConfig) statusDividerCharset(def tcomponent.DividerCharSet) (out tcomponent.DividerCharSet) {
-	const name = "program_status.divider_charset"
+// statusDividerCharset reads the divider_charset of status, the
+// program_status section at statusName or nil, over def. Its vertical
+// rune and image, and the image's mode, default to those of the window
+// frame's left edge, and its vertical_top and vertical_bottom to its
+// vertical rune.
+func (c ideConfig) statusDividerCharset(
+	status config.Config, statusName string, def tcomponent.DividerCharSet,
+) (out tcomponent.DividerCharSet) {
+	name := statusName + ".divider_charset"
 	frame := c.windowFrameCharset()
 	out = def
 	out.VerticalTop, out.Vertical, out.VerticalBottom = 0, frame.VerticalLeft, 0
@@ -6074,11 +6106,7 @@ func (c ideConfig) statusDividerCharset(def tcomponent.DividerCharSet) (out tcom
 			out.VerticalBottom = out.Vertical
 		}
 	}()
-	if c.cfg == nil {
-		return out
-	}
-	status, ok := c.getConfig(config.MapConfig(c.cfg), "program_status")
-	if !ok {
+	if status == nil {
 		return out
 	}
 	cfg, err := status.GetConfig("divider_charset")

@@ -131,24 +131,36 @@ func (s hudStyle) imageURIs() []string {
 		buttons(tabs.PromptImages)
 		uris = append(uris, tabs.FocusWindow.Left, tabs.FocusWindow.Middle, tabs.FocusWindow.Right)
 	}
-	buttons(s.statusInbox.Images)
 	uris = append(uris, s.browser.Tabs.HighlightGraphics.URIs()...)
 	uris = append(uris, s.workspaceBar.highlight.URIs()...)
-	uris = append(uris, s.statusInbox.MarkerGraphics.URIs()...)
-	uris = append(uris, s.statusInbox.Divider.Graphics.URIs()...)
-	uris = append(uris, s.statusInbox.ProgressBarGraphics.URIs()...)
+	inboxes := []idestatus.InboxStyle{s.statusInbox}
+	if s.statusInbox.Focus != nil {
+		inboxes = append(inboxes, *s.statusInbox.Focus)
+	}
+	for _, inbox := range inboxes {
+		buttons(inbox.Images)
+		uris = append(uris, inbox.MarkerGraphics.URIs()...)
+		uris = append(uris, inbox.Divider.Graphics.URIs()...)
+		uris = append(uris, inbox.ProgressBarGraphics.URIs()...)
+	}
 	slices.Sort(uris)
 	uris = slices.Compact(uris)
 	return slices.DeleteFunc(uris, func(uri string) bool { return uri == "" })
 }
 
 // statusBarImages returns the images of the editor status bar layout of
-// s, in layout order.
+// s, in layout order, then those of its focus layout.
 func (s hudStyle) statusBarImages() []template.Image {
 	var ret []template.Image
-	for _, comp := range s.statusBar.Layout {
-		if comp.Type == text.StatusBarImage {
-			ret = append(ret, comp.Image)
+	layouts := [][]text.StatusBarComponent{s.statusBar.Layout}
+	if s.statusBar.Focus != nil {
+		layouts = append(layouts, s.statusBar.Focus.Layout)
+	}
+	for _, layout := range layouts {
+		for _, comp := range layout {
+			if comp.Type == text.StatusBarImage {
+				ret = append(ret, comp.Image)
+			}
 		}
 	}
 	return ret

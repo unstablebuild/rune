@@ -231,6 +231,61 @@ func TestStatusBarRestyleIntegration(t *testing.T) {
 	assert.False(t, strings.Contains(frame, " NORMAL "), "no bar keeps the old layout")
 }
 
+func TestStatusBarFocusIntegration(t *testing.T) {
+	const width, height = 60, 16
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	for name, contents := range map[string]string{
+		"main.go":  "package main\n",
+		"other.go": "package other\n",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o644))
+	}
+	cfg := defaultConfigWithWrap(false)
+	cfg.cfg["editor"].(map[string]any)["status_bar"] = map[string]any{
+		"layout": `({{ .Status }}) {{ .Filepath }}`,
+		"focus":  map[string]any{"layout": `<{{ .Status }}> {{ .Filepath }}`},
+	}
+	m := newTestWorkspaceManagerHandlerWithDir(t, cfg, dir, nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+	uri, err := workspaceapi.ParseURI("file://" + dir)
+	require.NoError(t, err)
+	require.NoError(t, m.addOrCreateWorkspace(uri))
+	m.quiesce()
+
+	h := newSafeHandler(m)
+	h.Resize(width, height)
+	w := term.NewStringWriter(width, height)
+	typeKeys := func(keys string) {
+		parsed, err := term.ParseKeys(keys)
+		require.NoError(t, err)
+		for _, key := range parsed {
+			h.Handle(term.Event{Ch: key.Ch, Mod: key.Mod, Key: key.Key, Type: term.EventKey})
+		}
+	}
+	// bar returns the status bar row of the editor of name.
+	bar := func(name string) string {
+		t.Helper()
+		require.NoError(t, w.Clear(term.Attributes{}))
+		h.Draw(w)
+		require.NoError(t, w.Flush())
+		for row := range strings.SplitSeq(w.String(), "\n") {
+			if strings.Contains(row, "NORMAL") && strings.Contains(row, name) {
+				return row
+			}
+		}
+		t.Fatalf("no status bar of %s in frame:\n%s", name, w.String())
+		return ""
+	}
+
+	typeKeys(`<c-\\>edit<space>main.go<enter>`)
+	assert.Contains(t, bar("main.go"), "( NORMAL) main.go", "a single window has no focus style")
+
+	typeKeys(`<c-\\>windowsplit<space>down<enter><c-\\>edit<space>other.go<enter>`)
+	assert.Contains(t, bar("other.go"), "< NORMAL> other.go")
+	assert.Contains(t, bar("main.go"), "( NORMAL) main.go")
+}
+
 // imageRecorder records the images drawn through it.
 type imageRecorder struct {
 	handlertest.Writer

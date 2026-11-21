@@ -279,3 +279,70 @@ func TestGetGraphics(t *testing.T) {
 		})
 	}
 }
+
+func TestFocusOverlay(t *testing.T) {
+	section := func() map[string]any {
+		return map[string]any{
+			"layout":          "a b",
+			"background_attr": map[string]any{"fg": "red", "bg": "blue"},
+			"graphics":        map[string]any{"topleft": "file:///tl.png", "topright": "file:///tr.png"},
+			"images":          []any{"one", "two"},
+		}
+	}
+	tests := []struct {
+		name    string
+		focus   any
+		want    map[string]any
+		wantErr error
+	}{
+		{name: "without a focus table", wantErr: config.ErrNotFound},
+		{name: "with a focus value that isn't a table", focus: "x", wantErr: config.ErrInvalidType},
+		{
+			name:  "inheriting what the table leaves out",
+			focus: map[string]any{},
+			want: map[string]any{
+				"layout":          "a b",
+				"background_attr": map[string]any{"fg": "red", "bg": "blue"},
+				"graphics":        map[string]any{"topleft": "file:///tl.png", "topright": "file:///tr.png"},
+				"images":          []any{"one", "two"},
+			},
+		},
+		{
+			name: "merging tables key by key and replacing other values",
+			focus: map[string]any{
+				"layout":          "c",
+				"background_attr": map[string]any{"bg": "navy"},
+				"graphics":        map[string]any{"topleft": ""},
+				"images":          []any{"three"},
+				"divider_attr":    map[string]any{"fg": "white"},
+			},
+			want: map[string]any{
+				"layout":          "c",
+				"background_attr": map[string]any{"fg": "red", "bg": "navy"},
+				"graphics":        map[string]any{"topleft": "", "topright": "file:///tr.png"},
+				"images":          []any{"three"},
+				"divider_attr":    map[string]any{"fg": "white"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := section()
+			if tt.focus != nil {
+				m["focus"] = tt.focus
+			}
+			got, err := tconfig.FocusOverlay(config.MapConfig(m), "focus")
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			gotMap := make(map[string]any)
+			got.Iterate(func(k string, v any) { gotMap[k] = v })
+			assert.Equal(t, tt.want, gotMap)
+			want := section()
+			want["focus"] = tt.focus
+			assert.Equal(t, want, m, "the section must be left unchanged")
+		})
+	}
+}

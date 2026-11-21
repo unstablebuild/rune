@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"maps"
 
 	"github.com/ernestrc/go-multierror"
 	log "github.com/sirupsen/logrus"
@@ -107,8 +108,12 @@ type StatusBarConfig struct {
 	// what it draws. It is required when Layout has a StatusBarImage
 	// component.
 	Interrupter term.Interrupter
-	// Styles, when set, overrides Layout, BackgroundColor and ErrorColor
-	// with its current style, and restyles the bar whenever it is
+	// Focus is the style the bar is drawn with while the writer's context
+	// tells it its window holds the focus, as term.WindowFocusFromContext
+	// reads it. Nil keeps Layout, BackgroundColor and ErrorColor.
+	Focus *StatusBarStyle
+	// Styles, when set, overrides Layout, BackgroundColor, ErrorColor and
+	// Focus with its current style, and restyles the bar whenever it is
 	// restyled, until the bar is closed.
 	Styles *StatusBarStyles
 }
@@ -120,6 +125,18 @@ type StatusBarStyle struct {
 	Layout          []StatusBarComponent
 	BackgroundColor term.Color
 	ErrorColor      term.Color
+	// Focus is the style of a bar whose window holds the focus. Nil keeps
+	// this style, and its own Focus is ignored.
+	Focus *StatusBarStyle
+}
+
+// focused returns the style of a bar whose window holds the focus when
+// focused is true, and s otherwise.
+func (s StatusBarStyle) focused(focused bool) StatusBarStyle {
+	if focused && s.Focus != nil {
+		return *s.Focus
+	}
+	return s
 }
 
 // StatusBarStyles is the style of the status bars created with it as
@@ -143,10 +160,10 @@ func (s *StatusBarStyles) Current() StatusBarStyle {
 
 // Restyle draws the open bars with style from their next Draw on, and
 // creates the later ones with it. images holds, by URI, the images of
-// style's StatusBarImage components that are drawn from the first frame
-// as given, without being fetched; the others load as they do in a new
-// bar. The open bars keep their status message, and what they last
-// learned about their file.
+// the StatusBarImage components of style and its Focus that are drawn
+// from the first frame as given, without being fetched; the others load
+// as they do in a new bar. The open bars keep their status message, and
+// what they last learned about their file.
 func (s *StatusBarStyles) Restyle(style StatusBarStyle, images map[string]image.Image) {
 	s.style, s.images = style, images
 	for bar := range s.bars {
@@ -166,8 +183,8 @@ func WithStatusBar(
 	var images map[string]image.Image
 	if cfg.Styles != nil {
 		style := cfg.Styles.style
-		cfg.Layout, cfg.BackgroundColor, cfg.ErrorColor = style.Layout,
-			style.BackgroundColor, style.ErrorColor
+		cfg.Layout, cfg.BackgroundColor, cfg.ErrorColor, cfg.Focus = style.Layout,
+			style.BackgroundColor, style.ErrorColor, style.Focus
 		images = cfg.Styles.images
 	}
 	ret := new(StatusBar)
@@ -183,6 +200,11 @@ func WithStatusBar(
 	ret.ctx, ret.cancelAll = context.WithCancel(context.Background())
 	ret.readOnly = readOnly
 	ret.recovered = recovered
+	ret.style = StatusBarStyle{
+		Layout: cfg.Layout, BackgroundColor: cfg.BackgroundColor,
+		ErrorColor: cfg.ErrorColor, Focus: cfg.Focus,
+	}
+	ret.styleImages = images
 
 	b := new(cell.Buffer)
 	b.InitPerformance(1, 200, ' ')
@@ -235,6 +257,16 @@ type StatusBar struct {
 	pub              EventPublisher
 	readOnly         bool
 	recovered        bool
+	// style is the bar's style and Focus its style while its window holds
+	// the focus, which config holds the fields of when focused is set.
+	style   StatusBarStyle
+	focused bool
+	// styleImages are the images style was given with, and loaded those
+	// the bar loaded itself since, both by URI, which it shows again
+	// without a fetch when it switches between its focused and normal
+	// style.
+	styleImages map[string]image.Image
+	loaded      map[string]image.Image
 
 	file        workspaceapi.URI
 	buf         *cell.Buffer
@@ -395,6 +427,10 @@ func (b *StatusBar) Cursor() (term.Coordinates, term.CursorStyle, bool) {
 
 // Draw satisfies tui.Component.
 func (b *StatusBar) Draw(w term.Writer) {
+	focused, _ := term.WindowFocusFromContext(w.Context())
+	if focused = focused && b.style.Focus != nil; focused != b.focused {
+		b.setFocused(focused)
+	}
 	b.vhandler.Draw(w)
 	shifted := b.barRight.Height() != 0
 	if b.config.BackgroundColor != term.ColorDefault && shifted {
@@ -457,6 +493,37 @@ func (b *StatusBar) rebuildBarAll() {
 // restyle rebuilds the bar with style, keeping its subscriptions and
 // what it last learned.
 func (b *StatusBar) restyle(style StatusBarStyle, images map[string]image.Image) {
+	b.style, b.styleImages, b.loaded = style, images, nil
+	b.focused = b.focused && style.Focus != nil
+	b.relayout()
+	b.rebuildBarAll()
+}
+
+// setFocused rebuilds the bar with its focused style, or its normal one,
+// from what it last learned.
+func (b *StatusBar) setFocused(focused bool) {
+	for _, img := range b.images {
+		if uri, loaded := img.Loaded(); loaded != nil {
+			if b.loaded == nil {
+				b.loaded = make(map[string]image.Image)
+			}
+			b.loaded[uri] = loaded
+		}
+	}
+	b.focused = focused
+	b.relayout()
+	b.rebuildBarEdit()
+	b.rebuildBarCursor()
+	b.rebuildBarSyntax(b.lastSyntax)
+	if b.gitEnabled() && !b.lastGit.known {
+		b.rebuildBarFlush(b.ctx)
+	}
+	b.doRebuildBar()
+}
+
+// relayout lays out the style that focused selects, and builds again its
+// status message and git state.
+func (b *StatusBar) relayout() {
 	for _, img := range b.images {
 		if err := img.Close(); err != nil {
 			b.log(log.WarnLevel, "close status bar image: %v", err)
@@ -465,9 +532,15 @@ func (b *StatusBar) restyle(style StatusBarStyle, images map[string]image.Image)
 	b.images = nil
 	b.statusBarTemplates = statusBarTemplates{}
 	b.statusBarBuilt = statusBarBuilt{}
+	style := b.style.focused(b.focused)
 	b.config.Layout = style.Layout
 	b.config.BackgroundColor = style.BackgroundColor
 	b.config.ErrorColor = style.ErrorColor
+	images := b.styleImages
+	if len(b.loaded) > 0 {
+		images = maps.Clone(b.loaded)
+		maps.Copy(images, b.styleImages)
+	}
 	b.initLayout(b.config, images)
 	b.SetStatus(b.statusMessage, b.statusAttrs)
 	if b.lastGit.known {
@@ -477,7 +550,6 @@ func (b *StatusBar) restyle(style StatusBarStyle, images map[string]image.Image)
 			b.buildGit(b.lastGit.shortRef, b.lastGit.added, b.lastGit.deleted)
 		}
 	}
-	b.rebuildBarAll()
 }
 
 func (b *StatusBar) isCursorEnabled() bool {
@@ -564,6 +636,9 @@ func (b *StatusBar) gitEnabled() bool {
 
 func (b *StatusBar) rebuildBarFlush(ctx context.Context) {
 	if !b.gitEnabled() {
+		// A flush outdates what the bar learned from git, which a style
+		// with git components has to learn again.
+		b.lastGit.known = false
 		b.rebuildBarEdit()
 		return
 	}

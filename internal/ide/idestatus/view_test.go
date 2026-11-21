@@ -2311,6 +2311,71 @@ func TestViewStitchFrame(t *testing.T) {
 	}
 }
 
+func TestViewFocusStyle(t *testing.T) {
+	const width, height = statusSidebarMin + 8, 6
+	uris, pictures, _ := statusTestPictures(t)
+	selected := browser.PromptButtonImage{Middle: uris['6']}
+	focus := statusTestStyle()
+	focus.Divider.Vertical, focus.Divider.Top = 'F', 'G'
+	focus.Images = browser.PromptImages{Selected: selected}
+	tests := []struct {
+		name  string
+		focus *InboxStyle
+		ctx   context.Context
+		// wantDivider is the divider's character in the view, and
+		// wantJoin where it joins the frame's top row.
+		wantDivider, wantJoin rune
+		wantImages            bool
+	}{
+		{
+			name: "the focus style while its window holds the focus", focus: &focus,
+			ctx:         term.ContextWithWindowFocus(context.Background(), true),
+			wantDivider: 'F', wantJoin: 'G', wantImages: true,
+		},
+		{
+			name: "the normal style while it doesn't", focus: &focus,
+			ctx:         term.ContextWithWindowFocus(context.Background(), false),
+			wantDivider: '|', wantJoin: 'T',
+		},
+		{
+			name: "the normal style when the host doesn't tell", focus: &focus,
+			ctx: context.Background(), wantDivider: '|', wantJoin: 'T',
+		},
+		{
+			name:        "the normal style without a focus style",
+			ctx:         term.ContextWithWindowFocus(context.Background(), true),
+			wantDivider: '|', wantJoin: 'T',
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, store, ws := newStatusStoreTestWith(t, statusViewTestConfig(), nil)
+			store.updateDetached(ws, statusStoreTestURI(t, "file:///a"),
+				func(r *programstatus.Store) { r.Apply(detachedTestReport(programstatus.Done, "")) })
+			g := tcomponent.NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			g.Reload(pictures)
+			store.graphics = g
+			style := statusTestStyle()
+			style.Divider.Vertical, style.Divider.Top = '|', 'T'
+			style.Focus = tt.focus
+			store.SetStyle(style)
+			v := store.View(nil)
+			t.Cleanup(func() { require.NoError(t, v.Close()) })
+			f := component.NewFrame(v)
+			f.Resize(width+2, height+2)
+
+			w := cell.NewBufferWriter(tt.ctx, width+2, height+2)
+			f.Draw(w)
+			v.StitchFrame(w, f, g, width+2, height+2, false)
+			cells := w.RawCells()
+			assert.Equal(t, tt.wantDivider, cells[3][1+statusSidebarMin].Ch)
+			assert.Equal(t, tt.wantJoin, cells[0][1+statusSidebarMin].Ch)
+			assert.Equal(t, tt.wantImages, len(w.Images()) > 0)
+		})
+	}
+}
+
 func TestStatusViewSpinnerTurns(t *testing.T) {
 	interrupts := &statusTestInterrupter{}
 	cfg := browser.TabStatusConfig{Spinner: []rune("ab"), SpinnerFPS: 100}

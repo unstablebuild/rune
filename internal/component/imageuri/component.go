@@ -286,6 +286,14 @@ func (c *Component) Size() (size image.Point, settled bool) {
 	return image.Point{}, false
 }
 
+// Loaded returns the image the component shows: nil until it has loaded,
+// and forever when loading fails or Close cancels it first.
+func (c *Component) Loaded() image.Image {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.img
+}
+
 // Close cancels an in-flight fetch and stops the loading animation
 // without waiting for either. A cancelled fetch leaves the displayed
 // state unchanged and does not signal the interrupter.

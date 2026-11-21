@@ -840,6 +840,58 @@ func TestStatusInboxStyle(t *testing.T) {
 				"program_status.divider_charset.graphics.outset.left",
 			},
 		},
+		{
+			name: "a focus block over the style",
+			cfg: map[string]any{"program_status": map[string]any{
+				"selected_attr": map[string]any{"bg": "navy"},
+				"divider_attr":  map[string]any{"fg": "olive"},
+				"images": map[string]any{
+					"idle":     map[string]any{"middle": "file:///inbox/idle.png"},
+					"selected": map[string]any{"middle": "file:///inbox/selected.png"},
+				},
+				"focus": map[string]any{
+					"selected_attr":   map[string]any{"bg": "blue"},
+					"divider_charset": map[string]any{"vertical": "┃"},
+					"images": map[string]any{
+						"selected": map[string]any{"middle": "file:///inbox/focus.png"},
+					},
+				},
+			}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.SelectedAttr = term.Attributes{Bg: term.ColorNavy}
+				s.DividerAttr = term.Attributes{Fg: term.ColorOlive}
+				s.Images = browser.PromptImages{
+					Idle:     browser.PromptButtonImage{Middle: "file:///inbox/idle.png"},
+					Selected: browser.PromptButtonImage{Middle: "file:///inbox/selected.png"},
+				}
+				focus := s
+				focus.SelectedAttr = term.Attributes{Bg: term.ColorBlue}
+				focus.Divider.VerticalTop, focus.Divider.Vertical, focus.Divider.VerticalBottom = '┃', '┃', '┃'
+				focus.Images.Selected = browser.PromptButtonImage{Middle: "file:///inbox/focus.png"}
+				s.Focus = &focus
+				return s
+			}(),
+		},
+		{
+			name: "an invalid focus block entry",
+			cfg: map[string]any{"program_status": map[string]any{
+				"focus": map[string]any{"marker": true},
+			}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				focus := def
+				s.Focus = &focus
+				return s
+			}(),
+			wantErr: []string{"program_status.focus.marker"},
+		},
+		{
+			name:    "a focus block that isn't a table",
+			cfg:     map[string]any{"program_status": map[string]any{"focus": "blue"}},
+			want:    def,
+			wantErr: []string{"program_status.focus"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := ideConfig{cfg: tc.cfg, errors: map[string]error{}}
@@ -3973,7 +4025,45 @@ func TestConfigHUDStyle(t *testing.T) {
 				assert.Equal(t, time.Hour, images[0].TTL)
 				assert.Equal(t, "file:///bar/b.png", images[1].URI)
 				assert.Equal(t, template.DefaultImageTTL, images[1].TTL)
+				assert.Nil(t, s.statusBar.Focus)
 			},
+		},
+		{
+			name: "a status bar focus block",
+			cfg: map[string]any{"editor": map[string]any{"status_bar": map[string]any{
+				"layout":                `{{ .Status }}{{ .Image | src "file:///bar/a.png" }}`,
+				"background_attr":       map[string]any{"bg": "navy"},
+				"foreground_error_attr": map[string]any{"fg": "red"},
+				"focus": map[string]any{
+					"layout":          `<{{ .Status }}>{{ .Image | src "file:///bar/focus.png" }}`,
+					"background_attr": map[string]any{"bg": "blue"},
+				},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, term.ColorNavy, s.statusBar.BackgroundColor)
+				require.NotNil(t, s.statusBar.Focus)
+				focus := s.statusBar.Focus
+				assert.Equal(t, term.ColorBlue, focus.BackgroundColor)
+				assert.Equal(t, term.ColorRed, focus.ErrorColor, "the focus style inherits what it leaves out")
+				require.Len(t, focus.Layout, 2)
+				assert.Equal(t, "<%s>", focus.Layout[0].Template)
+				assert.Nil(t, focus.Focus)
+				images := s.statusBarImages()
+				require.Len(t, images, 2)
+				assert.Equal(t, "file:///bar/a.png", images[0].URI)
+				assert.Equal(t, "file:///bar/focus.png", images[1].URI)
+			},
+		},
+		{
+			name: "a status bar focus layout that does not parse",
+			cfg: map[string]any{"editor": map[string]any{"status_bar": map[string]any{
+				"focus": map[string]any{"layout": `{{ .Nope }}`},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				require.NotNil(t, s.statusBar.Focus)
+				assert.Nil(t, s.statusBar.Focus.Layout)
+			},
+			wantErr: "editor.status_bar.focus.layout",
 		},
 		{
 			name: "a status bar layout that does not parse",
@@ -4050,6 +4140,26 @@ func TestConfigHUDStyle(t *testing.T) {
 				}, n.ProgressRunes.Graphics)
 			},
 			wantURIs: []string{"file:///noti/br.png", "file:///noti/start.png", "file:///noti/tl.png"},
+		},
+		{
+			name: "the program status inbox and its focus style",
+			cfg: map[string]any{"program_status": map[string]any{
+				"images":          map[string]any{"idle": map[string]any{"middle": "file:///inbox/idle.png"}},
+				"marker_graphics": map[string]any{"vertical": "file:///inbox/marker.png"},
+				"focus": map[string]any{
+					"images":                map[string]any{"selected": map[string]any{"middle": "file:///inbox/focus.png"}},
+					"divider_charset":       map[string]any{"graphics": map[string]any{"vertical": "file:///inbox/divider.png"}},
+					"progress_bar_graphics": map[string]any{"filled": "file:///inbox/filled.png"},
+				},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				require.NotNil(t, s.statusInbox.Focus)
+				assert.Equal(t, "file:///inbox/marker.png", s.statusInbox.Focus.MarkerGraphics.Middle)
+			},
+			wantURIs: []string{
+				"file:///inbox/divider.png", "file:///inbox/filled.png", "file:///inbox/focus.png",
+				"file:///inbox/idle.png", "file:///inbox/marker.png",
+			},
 		},
 		{
 			name: "an invalid notification progress image keeps the default progress",

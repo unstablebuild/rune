@@ -13565,6 +13565,7 @@ func TestApplyHUD(t *testing.T) {
 	base.browser.WindowManager.FocusBackground = &tcomponent.WindowBackground{
 		Attr: term.Attributes{Bg: term.ColorNavy},
 	}
+	base.statusBar.Focus = &text.StatusBarStyle{BackgroundColor: term.ColorBlue}
 	hud := &HUD{
 		load:       2,
 		base:       base,
@@ -13588,6 +13589,8 @@ func TestApplyHUD(t *testing.T) {
 	assert.Equal(t, base.browser.WindowManager.FocusBackground, m.empty.config.FocusBackground,
 		"the home workspace's focused window takes the focus background")
 	assert.Nil(t, focused.ex.config.FocusBackground, "an overlay without one draws none")
+	assert.Equal(t, base.statusBar, m.empty.statusBars.Current(),
+		"editor status bars take the focus style")
 
 	chat, err := workspaceapi.ParseURI("rune-agent://model/hud")
 	require.NoError(t, err)

@@ -173,6 +173,13 @@ func (i *ImageElement) Close() error {
 	return i.view.Close()
 }
 
+// Loaded returns the URI of the element's Image and the image it loaded
+// from it, which is nil until it has loaded and when loading fails, so
+// that NewLoadedImageElement can show it again without a fetch.
+func (i *ImageElement) Loaded() (uri string, img image.Image) {
+	return i.spec.URI, i.view.Loaded()
+}
+
 // PlaceImages places the ImageElements among items, the elements of a
 // bar laid out from cell x in width cells as component.Inline lays them
 // out: left to right, each cut to the width left. The bar is the last

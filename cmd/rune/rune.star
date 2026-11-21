@@ -753,6 +753,13 @@ config = {
             "background_attr":         attr(bg = "gray"),
             # Error color used for status-bar messages.
             "foreground_error_attr":   attr(fg = "yellow"),
+            # The focused editor's bar while more than one window is open:
+            # "layout", "background_attr" and "foreground_error_attr" laid
+            # over the keys above, to match browser.window_manager's
+            # focus_background_attr.
+            # "focus": {
+            #     "background_attr": attr(bg = "#262b38"),
+            # },
         },
         # aux_bar configures the vertical bar shown to the left of file tabs.
         "aux_bar": {
@@ -1531,6 +1538,15 @@ config = {
         #         "filled": "file:///path/to/progress-filled.png",
         #         "empty":  "file:///path/to/progress-empty.png",
         #         "right":  "file:///path/to/progress-right.png",
+        #     },
+        #
+        # "focus" lays any of the style keys above over them while the
+        # inbox window is in focus and more than one window is open, to
+        # match browser.window_manager's focus_background_attr:
+        #
+        #     "focus": {
+        #         "divider_attr": attr(fg = "silver"),
+        #         "images":       {"selected": {"middle": "file:///path/to/focused-entry.png"}},
         #     },
     },
 }
