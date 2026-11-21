@@ -19,6 +19,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
@@ -44,8 +45,25 @@ type goplsDebugOptions struct {
 	Trace semanticapi.TraceValue
 }
 
+// goplsReservedKeys are Rune routing fields. Rune strips them from the
+// options before the request reaches gopls, so a user map must not clobber
+// them. A user who wants another gopls binary sets lsp_path instead of
+// command.
+var goplsReservedKeys = map[string]bool{
+	"langID":  true,
+	"command": true,
+}
+
+// goplsMergeableKeys name the settings whose Rune defaults are maps, so a
+// user can flip one entry without replacing the rest. A default map added
+// here is enough for it to merge rather than be replaced.
+var goplsMergeableKeys = map[string]bool{
+	"codelenses": true,
+	"hints":      true,
+}
+
 func goplsInitializeParams(
-	rootURI string, dbg goplsDebugOptions, binPath string,
+	rootURI string, dbg goplsDebugOptions, binPath string, userSettings map[string]any,
 ) (semanticapi.InitializeParams, error) {
 	command := goplsCommand(dbg, binPath)
 	initOptions := map[string]any{
@@ -71,6 +89,37 @@ func goplsInitializeParams(
 			"parameterNames":         true,
 			"rangeVariableTypes":     true,
 		},
+	}
+
+	// User keys win over the defaults, except the reserved ones.
+	for k, v := range userSettings {
+		if goplsReservedKeys[k] {
+			continue
+		}
+		if goplsMergeableKeys[k] {
+			defaultMap, hasDefault := initOptions[k].(map[string]any)
+			userMap, isMap := v.(map[string]any)
+			if hasDefault && isMap {
+				merged := make(map[string]any, len(defaultMap)+len(userMap))
+				for dk, dv := range defaultMap {
+					merged[dk] = dv
+				}
+				for uk, uv := range userMap {
+					merged[uk] = uv
+				}
+				initOptions[k] = merged
+				continue
+			}
+			if hasDefault {
+				// A scalar where Rune's default is a map would replace the
+				// whole map with something gopls cannot read, silently
+				// dropping every default. Keep the defaults and say so.
+				slog.Warn("gopls setting ignored: expected a map",
+					"setting", k)
+				continue
+			}
+		}
+		initOptions[k] = v
 	}
 
 	initOptionsData, err := json.Marshal(initOptions)
