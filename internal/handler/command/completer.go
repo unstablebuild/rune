@@ -75,13 +75,24 @@ func MarkPartialCandidate(candidate string) string {
 }
 
 // TrimPartialCandidateSuffix returns the argument value s denotes. A
-// path of only separators is the root and is returned as is.
+// path of only separators is the root and is returned as is, as is the
+// root of a URI such as "docs:///" or "ssh://host/".
 func TrimPartialCandidateSuffix(s string) string {
-	trimmed := strings.TrimRight(s, separatorCutset)
+	path := s
+	if _, rest, ok := strings.Cut(s, "://"); ok {
+		// The authority never ends with a separator, so the path
+		// starts at the first one.
+		if i := strings.IndexAny(rest, separatorCutset); i >= 0 {
+			path = rest[i:]
+		} else {
+			path = ""
+		}
+	}
+	trimmed := strings.TrimRight(path, separatorCutset)
 	if trimmed == "" {
 		return s
 	}
-	return trimmed
+	return s[:len(s)-len(path)] + trimmed
 }
 
 // PartialCompleter returns a Completer that marks every candidate from c

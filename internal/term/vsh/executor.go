@@ -46,7 +46,8 @@ var (
 type Config struct {
 	// Scheme names the workspace's URI scheme, for prompts.
 	Scheme string
-	// Root is HOME and the directory commands without one run in.
+	// Root is HOME and the directory commands without one run in. A
+	// relative Root is taken from the filesystem's root.
 	Root string
 	// Bin is the directory the programs are installed in, the default
 	// PATH and the home of SHELL; empty is /bin. A relative Bin is
@@ -101,9 +102,9 @@ func NewExecutor(cfg Config) (*Executor, error) {
 	if cfg.FS == nil {
 		return nil, errors.New("vsh: Config.FS is required")
 	}
-	if cfg.Root == "" {
-		cfg.Root = "/"
-	}
+	// Every path the shell derives from Root must be absolute: a
+	// scheme reads a relative path's first element as a host.
+	cfg.Root = absPath("/", cfg.Root)
 	if cfg.Bin == "" {
 		cfg.Bin = defaultBin
 	}

@@ -136,6 +136,20 @@ func TestMemorySchemeRunsTheRuneShell(t *testing.T) {
 		assert.Equal(t, "/var/log\n/var/log\nbin\n/var/log\n", out)
 	})
 
+	t.Run("a relative workspace path is the root", func(t *testing.T) {
+		t.Parallel()
+		mem := newMemoryScheme(t, "memory://")
+		f, err := mem.Create("/notes.md")
+		require.NoError(t, err)
+		_, err = f.Write([]byte("# notes\n"))
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+
+		out, exit := runCommand(t, mem, workspaceapi.Cmd{Path: "sh", Args: []string{"-c", "cat notes.md && pwd && ls ./notes.md"}})
+		require.NoError(t, exit)
+		assert.Equal(t, "# notes\n/\n./notes.md\n", out)
+	})
+
 	t.Run("LookPath answers for the shell's programs", func(t *testing.T) {
 		t.Parallel()
 		mem := newMemoryScheme(t, "memory:///")

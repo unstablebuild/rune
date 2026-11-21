@@ -34,6 +34,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/term/vsh"
+	"unstable.build/rune/internal/term/vsh/coreutils"
 	"unstable.build/rune/internal/term/vsh/vshtest"
 )
 
@@ -112,6 +113,10 @@ func TestNewExecutor(t *testing.T) {
 	}{
 		{name: "defaults", home: "/", shell: "/bin/sh"},
 		{name: "an absolute root", root: "/sub", home: "/sub", shell: "/bin/sh"},
+		{name: "a dot root", root: ".", home: "/", shell: "/bin/sh"},
+		{name: "a dot-slash root", root: "./", home: "/", shell: "/bin/sh"},
+		{name: "a relative root", root: "sub", home: "/sub", shell: "/bin/sh"},
+		{name: "an unclean relative root", root: "sub/./", home: "/sub", shell: "/bin/sh"},
 		{name: "an absolute bin", bin: "/tools", home: "/", shell: "/tools/sh"},
 		{name: "a relative bin", bin: "tools", home: "/", shell: "/tools/sh"},
 		{name: "an unclean bin", bin: "./x/../tools/", home: "/", shell: "/tools/sh"},
@@ -150,6 +155,40 @@ func TestNewExecutor(t *testing.T) {
 			info, err := f.Scheme.Stat(tc.shell)
 			require.NoError(t, err, "the programs are installed in the bin directory")
 			assert.Equal(t, fs.FileMode(0o755), info.Mode().Perm())
+		})
+	}
+}
+
+func TestExecutorRootIsAbsolute(t *testing.T) {
+	t.Parallel()
+	f := vshtest.New(t, vshtest.Options{Files: map[string]string{
+		"notes.md":     "hello\n",
+		"sub/notes.md": "sub\n",
+	}})
+	// A workspace URI parsed from "memory://" has the path ".". The
+	// shell must not pass the relative paths it would derive from it
+	// to the filesystem, which reads "memory://notes.md" as a host.
+	for _, tc := range []struct{ root, want, content string }{
+		{root: ".", want: "/", content: "hello\n"},
+		{root: "./", want: "/", content: "hello\n"},
+		{root: "sub", want: "/sub", content: "sub\n"},
+		{root: "sub/./", want: "/sub", content: "sub\n"},
+	} {
+		t.Run(tc.root, func(t *testing.T) {
+			exec := newExecutor(t, vsh.Config{FS: f.Scheme, Root: tc.root, Commands: coreutils.Commands()})
+			var out, errb bytes.Buffer
+			ch := make(chan error, 1)
+			_, err := exec.StartCommand(context.Background(), workspaceapi.Cmd{
+				Path: "sh", Args: []string{"-c", "cat notes.md && pwd && echo ~"},
+				Stdout: &out, Stderr: &errb, Watcher: workspaceapi.ChanProcessWatcher(ch),
+			})
+			require.NoError(t, err)
+			require.NoError(t, <-ch, errb.String())
+			assert.Equal(t, tc.content+tc.want+"\n"+tc.want+"\n", out.String())
+
+			got, err := exec.LookPath(context.Background(), "./notes.md", "")
+			require.NoError(t, err)
+			assert.Equal(t, path.Join(tc.want, "notes.md"), got)
 		})
 	}
 }

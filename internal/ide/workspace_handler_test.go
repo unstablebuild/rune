@@ -12030,6 +12030,37 @@ func TestWorkspaceNewResolvesRelativeAgainstHome(t *testing.T) {
 	m.quiesce()
 }
 
+func TestWorkspaceOpenKeepsTheRootOfASchemeURI(t *testing.T) {
+	dir := t.TempDir()
+	m := newTestWorkspaceManagerHandlerWithDir(t,
+		defaultConfigWithWrap(false), dir, nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+	m.quiesce()
+
+	// Directory completion marks candidates with a trailing "/", which
+	// workspaceopen strips; the root of a scheme has nothing but it.
+	m.mu.Lock()
+	require.NoError(t, m.commandAddWorkspace("memory:///"))
+	require.NotNil(t, m.lastReservedPending)
+	pending := m.lastReservedPending
+	got := pending.uri
+	m.mu.Unlock()
+
+	assert.Equal(t, "memory:///", got.String())
+	assert.Equal(t, "/", got.Path(),
+		"a relative workspace path makes every relative path the shell "+
+			"resolves against it parse as a host")
+
+	m.mu.Lock()
+	pending.canceled.Store(true)
+	pending.cancelCtx()
+	delete(m.pending, got.String())
+	m.lastReservedPending = nil
+	m.mu.Unlock()
+
+	m.quiesce()
+}
+
 func TestRegisterREPLCommand(t *testing.T) {
 	if ci := os.Getenv("CI"); ci == "true" {
 		t.SkipNow()
