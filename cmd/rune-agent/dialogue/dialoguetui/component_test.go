@@ -5021,6 +5021,60 @@ func TestComponentSetStatusBarConfig(t *testing.T) {
 	}
 }
 
+// fillRecorder is a string writer that records the fills drawn into it.
+type fillRecorder struct {
+	*term.StringWriter
+	fills []recordedFill
+}
+
+type recordedFill struct {
+	cells image.Rectangle
+	color term.Color
+	layer term.ImageLayer
+}
+
+func (w *fillRecorder) DrawImage(img term.Image) bool {
+	if img.Fill {
+		w.fills = append(w.fills, recordedFill{img.Visible(), img.FillColor, img.Layer})
+	}
+	return true
+}
+
+func TestComponentFillsTheGapAboveItsBar(t *testing.T) {
+	const width, height = 30, 10
+	layout, err := ParseStatusBarLayout(`{{ .Model }}`)
+	require.NoError(t, err)
+	bar := StatusBarConfig{Enabled: true, Layout: layout}
+	gap := func(c term.Color) []recordedFill {
+		return []recordedFill{
+			{image.Rect(0, height-1, width, height), c, term.ImageLayerBelowBackground},
+		}
+	}
+	tests := []struct {
+		name string
+		cfg  ComponentConfig
+		want []recordedFill
+	}{
+		{
+			name: "in the chat's background",
+			cfg:  ComponentConfig{StatusBar: bar, BackgroundColor: term.ColorNavy},
+			want: gap(term.ColorNavy),
+		},
+		{name: "not without a background of its own", cfg: ComponentConfig{StatusBar: bar}},
+		{name: "not without a bar", cfg: ComponentConfig{BackgroundColor: term.ColorNavy}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := NewComponent(tt.cfg)
+			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
+			comp.Resize(width, height)
+			w := &fillRecorder{StringWriter: term.NewStringWriter(width, height)}
+			comp.Draw(w)
+			assert.Equal(t, tt.want, w.fills)
+		})
+	}
+}
+
 func TestComponentInputBoxFrameGraphics(t *testing.T) {
 	const width, height = 24, 4
 	// Nothing is on disk at uri, so only a reloaded image can draw.

@@ -509,6 +509,17 @@ func (c *Component) Draw(w term.Writer) {
 	c.boxArea.Draw(&vw)
 	if c.statusBar != nil {
 		c.barArea.Draw(&vw)
+		if bg := c.cfg.BackgroundColor; bg != term.ColorDefault && c.barHeight() > 0 {
+			// The renderer moves the bar half a cell down, which leaves
+			// the top of its row showing the writer's default background
+			// rather than the chat's.
+			vw.DrawImage(term.Image{
+				Fill: true, FillColor: bg,
+				Pos:   term.Coordinates{Y: c.height - c.barHeight()},
+				Width: c.width, Height: 1,
+				Layer: term.ImageLayerBelowBackground,
+			})
+		}
 	}
 }
 
