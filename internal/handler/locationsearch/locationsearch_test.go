@@ -52,6 +52,7 @@ import (
 func TestParseLocationLine(t *testing.T) {
 	fs := testFS(fileContent{
 		"/main.go":      "x",
+		"/data.csv":     "x",
 		"/C:\\foo\\bar": "x",
 	})
 	tests := []struct {
@@ -80,6 +81,23 @@ func TestParseLocationLine(t *testing.T) {
 			name:     "grep -n line only with content",
 			in:       "main.go:42:matched line content",
 			wantPath: "/main.go", wantY: 41, wantOK: true,
+		},
+		{
+			// The matched text starts with a digit, so the column is
+			// not a column: grep -n prints the line and then the match.
+			name:     "grep -n line only with a numeric match",
+			in:       "data.csv:3:100,200",
+			wantPath: "/data.csv", wantY: 2, wantOK: true,
+		},
+		{
+			name:     "grep -n line only before a space",
+			in:       "main.go:42:5 apples",
+			wantPath: "/main.go", wantY: 41, wantOK: true,
+		},
+		{
+			name:     "grep -n line only before a hex literal",
+			in:       "main.go:7:0x10 := 1",
+			wantPath: "/main.go", wantY: 6, wantOK: true,
 		},
 		{name: "empty", in: "", wantOK: false},
 	}
