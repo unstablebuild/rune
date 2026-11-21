@@ -425,6 +425,42 @@ func TestWindowManagerFocusBackground(t *testing.T) {
 	}
 }
 
+func TestWindowManagerSetFocusStyle(t *testing.T) {
+	focus := component.WindowBackground{Attr: term.Attributes{Bg: term.ColorTeal}}
+	cfg := DefaultWindowManagerConfig()
+	cfg.FrameAttr, cfg.FocusFrameAttr = term.Attributes{Fg: term.ColorBlue}, term.Attributes{Fg: term.ColorYellow}
+	cfg.FocusBackground = &focus
+	left := newFocusRecorder()
+	wm := NewWindowManager(left, cfg)
+	wm.Resize(20, 8)
+	right := newFocusRecorder()
+	rightWin, ok := wm.SplitVertical(wm.Focus(), right)
+	require.True(t, ok)
+	wm.SetFocus(rightWin)
+	check := func(focused bool) {
+		t.Helper()
+		right.last = ""
+		wm.Draw(term.NewStringWriter(20, 8))
+		want, wantAttr, wantCtx := component.WindowBackground{}, cfg.FrameAttr, "unfocused"
+		if focused {
+			want, wantAttr, wantCtx = focus, cfg.FocusFrameAttr, "focused"
+		}
+		assert.Equal(t, want, rightWin.Background())
+		attr, _ := rightWin.FrameAttr()
+		assert.Equal(t, wantAttr, attr)
+		assert.Equal(t, wantCtx, right.last)
+		assert.Equal(t, focused, wm.FocusStyle())
+	}
+	check(true)
+
+	assert.True(t, wm.SetFocusStyle(false))
+	check(false)
+	wm.SetFocus(wm.Focus())
+	check(false)
+	assert.False(t, wm.SetFocusStyle(true))
+	check(true)
+}
+
 func TestWindowManagerFocusBackgroundMarksTheFocusedWindow(t *testing.T) {
 	blank := compapi.FrameCharSet{
 		TopLeft: ' ', TopRight: ' ', BottomLeft: ' ', BottomRight: ' ',

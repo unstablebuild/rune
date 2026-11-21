@@ -336,6 +336,37 @@ func TestWindowDraw(t *testing.T) {
 	}
 }
 
+func TestComponentSetFocusStyle(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Dim = false
+	cfg.Frame = true
+	cfg.FrameUnion = true
+	normal := term.Attributes{Fg: term.ColorBlue}
+	focus := term.Attributes{Fg: term.ColorYellow}
+	cfg.FrameAttr, cfg.FocusFrameAttr = normal, focus
+	b := NewComponent(cfg)
+	b.Split(browserapi.OrientationRight, b.Focus(), newTestHandler())
+	const width, height = 20, 8
+	b.Resize(width, height)
+	corner := func() term.Color {
+		t.Helper()
+		w := term.NewStringWriter(width, height)
+		b.Draw(w)
+		require.NoError(t, w.Flush())
+		pos := b.union.MainPosition()
+		if b.focusWindow.Position().X != 0 {
+			pos.X += b.union.MainWidth() - 1
+		}
+		return w.Cells()[pos.Y*width+pos.X].Fg
+	}
+	require.Equal(t, focus.Fg, corner(), "the focus window's union corner")
+
+	assert.True(t, b.SetFocusStyle(false))
+	assert.Equal(t, normal.Fg, corner(), "the corner without the focus style")
+	assert.False(t, b.SetFocusStyle(true))
+	assert.Equal(t, focus.Fg, corner())
+}
+
 func TestWindowFocusTabIconCueFollowsFocus(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Frame = false

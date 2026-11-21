@@ -1290,6 +1290,11 @@ As with `focus_frame_attr`, the focus style applies only when there is more
 than one window, and only the window focus counts: switching to another app
 restyles nothing.
 
+While the command prompt is open, it takes the colors of
+`focus_background_attr`, without the image, and every window under it draws
+the normal style. Without `focus_background_attr`, the prompt draws no window
+background.
+
 Every `focus_` key follows the same rules:
 
 - Without the key, the focused window draws the normal style.
@@ -1323,7 +1328,7 @@ paints each side in its own color instead:
 - Inside the line, toward the content, the transparent pixels show the
   content's color.
 - Outside the line, they show what is under the frame: the theme's
-  background, or the window under a floating window.
+  background, or the window under a floating window or the command prompt.
 
 For this, draw each frame image as a line with transparent pixels on both
 sides, unbroken from one edge of the cell to the other. Rune finds the inside
@@ -1331,11 +1336,18 @@ from the line itself, so a gap in it, or an image with no line across the
 cell, takes one color on both sides. So does an opaque image, which keeps the
 colors painted into it.
 
+Only images one cell in size get the inside color. An image that reaches
+into the next cell through an outset, such as a command separator junction
+with `inward: 1`, shows what is under the frame on both sides of its line.
+Draw junctions one cell wide, with no outset, for their inside to take the
+prompt's color.
+
 The same goes for every framed surface:
 
 | Surface | Inside the line |
 | --- | --- |
 | Window frames | The window's `background_attr` or `focus_background_attr` color. |
+| Command prompt | The `bg` of `command.element_attr`, or else of `focus_background_attr`. |
 | Agent compose box | `input_background_color`. |
 | Notifications | The `bg` of `notifications.background_attr`, or else of `notifications.attr`. |
 

@@ -4887,6 +4887,66 @@ func TestExRestyle(t *testing.T) {
 	assert.True(t, w.images[corner[0]], "the notification draws the reloaded image over its corner")
 }
 
+func TestCommandPromptTakesTheFocusBackground(t *testing.T) {
+	const width, height = 40, 20
+	teal := tcomponent.WindowBackground{Attr: term.Attributes{Bg: term.ColorTeal}}
+	tests := []struct {
+		name  string
+		focus *tcomponent.WindowBackground
+		// wantPrompt reports whether the prompt takes the focus
+		// background, and the window under it loses it.
+		wantPrompt bool
+	}{
+		{name: "with a focus background", focus: &teal, wantPrompt: true},
+		{name: "without one"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wmCfg := thandler.DefaultWindowManagerConfig()
+			wmCfg.FocusBackground = tt.focus
+			b := newExForTesting(t, texttest.NopEditor(),
+				text.WithCommandKey(testCommandKey), text.WithWindowManagerConfig(wmCfg))
+			defer b.Close()
+			b.Resize(width, height)
+			browser := b.ex.comp.Browser()
+			browser.Split(browserapi.OrientationRight, browser.Focus(), browsertest.NewTestHandler())
+
+			// tealCells returns how many cells are teal inside the prompt
+			// and outside it.
+			tealCells := func() (inside, outside int) {
+				t.Helper()
+				w := term.NewStringWriter(width, height)
+				b.Draw(w)
+				require.NoError(t, w.Flush())
+				for i, c := range w.Cells() {
+					if c.Bg != term.ColorTeal {
+						continue
+					}
+					ev := term.Event{MouseX: i % width, MouseY: i / width}
+					if b.ex.cmd != nil && !b.ex.promptClickOutside(ev) {
+						inside++
+					} else {
+						outside++
+					}
+				}
+				return inside, outside
+			}
+			_, before := tealCells()
+			assert.Equal(t, tt.wantPrompt, before > 0, "the focus window's background")
+
+			b.ex.openCommandPrompt()
+			require.NotNil(t, b.ex.cmd)
+			inside, outside := tealCells()
+			assert.Equal(t, tt.wantPrompt, inside > 0, "the prompt's background")
+			assert.Zero(t, outside, "no window under the prompt keeps the focus background")
+
+			require.NoError(t, b.ex.cmdWin.Close())
+			_, after := tealCells()
+			assert.Equal(t, before, after, "closing the prompt gives the focus window its background back")
+		})
+	}
+}
+
 func TestCommandPromptHasNoWindowBar(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
 	defer b.Close()

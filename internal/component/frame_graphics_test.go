@@ -687,6 +687,7 @@ func TestFrameGraphicsDrawOver(t *testing.T) {
 	tests := []struct {
 		name     string
 		noImages bool
+		keep     []term.Coordinates
 		// bg is the background of each cell: t for teal, under the
 		// frame, and n for navy, the frame's.
 		bg string
@@ -706,6 +707,14 @@ nnnn
 n..n
 nnnn`,
 		},
+		{
+			name: "kept cells keep the background under the frame without an image",
+			keep: []term.Coordinates{{X: 0, Y: 1}, {X: 3, Y: 2}},
+			bg: `
+tttn
+t..n
+nnnt`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -724,7 +733,7 @@ nnnn`,
 			f.Attributes = navy
 			f.Graphics = gr
 			f.Resize(4, 3)
-			f.Draw(&FrameUnderWriter{Writer: s, Graphics: gr, Width: 4, Height: 3})
+			f.Draw(&FrameUnderWriter{Writer: s, Graphics: gr, Width: 4, Height: 3, Keep: tt.keep})
 			g.DrawOver(s, f, 4, 3)
 			require.NoError(t, s.Flush())
 

@@ -17,7 +17,11 @@
 package ide
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -296,6 +300,202 @@ func TestPromptStitcherDrawsSeparatorGraphics(t *testing.T) {
 						ch = ' '
 					}
 					assert.Equal(t, ch, w.Cells()[sepY*width+x].Ch, "GUI cell %d", x)
+				}
+			}
+		})
+	}
+}
+
+// fillImageWriter is a coveringImageWriter that also records the fills
+// drawn into it, which a later cell covers too.
+type fillImageWriter struct {
+	*coveringImageWriter
+	fills map[term.Coordinates]term.Image
+}
+
+func (w *fillImageWriter) SetCell(pos term.Coordinates, c term.Cell) {
+	delete(w.fills, pos)
+	w.coveringImageWriter.SetCell(pos, c)
+}
+
+func (w *fillImageWriter) DrawImage(img term.Image) bool {
+	if img.Fill {
+		if w.fills == nil {
+			w.fills = map[term.Coordinates]term.Image{}
+		}
+		w.fills[img.Pos] = img
+	}
+	return w.coveringImageWriter.DrawImage(img)
+}
+
+func TestPromptStitcherDrawsItsFrameOverWhatIsUnderIt(t *testing.T) {
+	line := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	for x := range 4 {
+		line.Set(x, 1, color.NRGBA{R: 0x80, A: 0xff})
+	}
+	var data bytes.Buffer
+	require.NoError(t, png.Encode(&data, line))
+	path := filepath.Join(t.TempDir(), "line.png")
+	require.NoError(t, os.WriteFile(path, data.Bytes(), 0o600))
+	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	const width, height = 30, 6
+
+	b := newExForTesting(t, texttest.NopEditor(),
+		text.WithCommandKey(testCommandKey),
+		text.WithCommandOverlayConfig(text.CommandOverlayConfig{
+			ElementAttr: term.Attributes{Bg: term.ColorNavy},
+		}))
+	t.Cleanup(func() { _ = b.Close() })
+	unlock := b.lock()
+	defer unlock()
+	b.ex.openCommandPrompt()
+	require.NotNil(t, b.ex.cmd)
+	b.ex.config.WindowManagerConfig.Frame = true
+	b.ex.config.FrameCharSet.Graphics = component.FrameCharSetGraphics{
+		HorizontalTop: uri, HorizontalBottom: uri,
+	}
+	h := newCommandPromptHandler(b.ex.cmd, b.ex, func() error { return nil })
+	h.Resize(width, height)
+	img := b.ex.graphics.Image(uri)
+	img.Resize(1, 1)
+	require.Eventually(t, func() bool {
+		w := newCoveringImageWriter(1, 1)
+		img.Draw(w)
+		return len(w.images) == 1
+	}, 5*time.Second, 10*time.Millisecond)
+
+	w := &fillImageWriter{coveringImageWriter: newCoveringImageWriter(width, height)}
+	for y := range height {
+		for x := range width {
+			w.SetCell(term.Coordinates{X: x, Y: y},
+				term.NewCell('u', 1, term.Attributes{Bg: term.ColorTeal}))
+		}
+	}
+	h.Draw(w)
+	require.NoError(t, w.Flush())
+
+	var fills []term.Coordinates
+	for pos, f := range w.fills {
+		assert.Equal(t, term.ColorNavy, f.FillColor, "the inside takes the prompt's colour")
+		fills = append(fills, pos)
+	}
+	var want []term.Coordinates
+	for _, y := range []int{0, height - 1} {
+		for x := 1; x < width-1; x++ {
+			pos := term.Coordinates{X: x, Y: y}
+			want = append(want, pos)
+			assert.Equal(t, term.ColorTeal, w.Cells()[y*width+x].Bg,
+				"the cell under the image at %v keeps what is under the prompt", pos)
+		}
+	}
+	assert.ElementsMatch(t, want, fills)
+	assert.NotEqual(t, term.ColorTeal, w.Cells()[width].Bg, "the side without an image takes the frame's")
+}
+
+func TestPromptStitcherFillsInsideItsSeparatorJunctions(t *testing.T) {
+	dir := t.TempDir()
+	sprite := func(name string, line func(x, y int) bool) string {
+		img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+		for y := range 4 {
+			for x := range 4 {
+				if line(x, y) {
+					img.Set(x, y, color.NRGBA{R: 0x80, A: 0xff})
+				}
+			}
+		}
+		var data bytes.Buffer
+		require.NoError(t, png.Encode(&data, img))
+		path := filepath.Join(dir, name+".png")
+		require.NoError(t, os.WriteFile(path, data.Bytes(), 0o600))
+		return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	}
+	left := sprite("left", func(x, y int) bool { return x == 1 || y == 2 && x > 1 })
+	right := sprite("right", func(x, y int) bool { return x == 2 || y == 2 && x < 2 })
+	vleft := sprite("vleft", func(x, _ int) bool { return x == 1 })
+	vright := sprite("vright", func(x, _ int) bool { return x == 2 })
+	const width, height = 30, 12
+
+	for _, tt := range []struct {
+		name, config string
+		filled       bool
+	}{
+		{
+			name: "single-cell junctions next to the frame's side images",
+			config: fmt.Sprintf(`{"command": {
+				"frame_charset": {"graphics": {"verticalleft": %q, "verticalright": %q}},
+				"separator_charset": {"graphics": {"left": %q, "right": %q}},
+			}}`, vleft, vright, left, right),
+			filled: true,
+		},
+		{
+			name: "single-cell junctions without side images",
+			config: fmt.Sprintf(`{"command": {"separator_charset": {"graphics": {
+				"left": %q, "right": %q,
+			}}}}`, left, right),
+			filled: true,
+		},
+		{
+			name: "two-cell junctions keep the cell's background on both sides",
+			config: fmt.Sprintf(`{"command": {
+				"frame_charset": {"graphics": {"verticalleft": %q, "verticalright": %q}},
+				"separator_charset": {"graphics": {"left": %q, "right": %q, "outset": {"inward": 1}}},
+			}}`, vleft, vright, left, right),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := newAnimConfig(t, "config = "+tt.config)
+			b := newExForTesting(t, texttest.NopEditor(),
+				text.WithCommandKey(testCommandKey),
+				text.WithCommandOverlayConfig(text.CommandOverlayConfig{
+					ShowManual:  true,
+					ElementAttr: term.Attributes{Bg: term.ColorNavy},
+				}))
+			t.Cleanup(func() { _ = b.Close() })
+			unlock := b.lock()
+			defer unlock()
+			b.ex.config.WindowManagerConfig.Frame = true
+			b.ex.config.FrameCharSet = cfg.windowFrameCharset()
+			b.ex.commandPromptCfg = cfg.commandPromptCfg()
+			require.Empty(t, cfg.errors)
+			b.ex.openCommandPrompt()
+			require.NotNil(t, b.ex.cmd)
+			h := newCommandPromptHandler(b.ex.cmd, b.ex, func() error { return nil })
+			h.Resize(width, height)
+			for _, ch := range "edit" {
+				h.Handle(term.Event{Type: term.EventKey, Ch: ch})
+			}
+			sepY, ok := b.ex.cmd.SeparatorY()
+			require.True(t, ok)
+			sepY++
+			require.NotNil(t, b.ex.graphics)
+			for _, uri := range []string{left, right, vleft, vright} {
+				img := b.ex.graphics.Image(uri)
+				img.Resize(1, 1)
+				require.Eventually(t, func() bool {
+					w := newCoveringImageWriter(1, 1)
+					img.Draw(w)
+					return len(w.images) == 1
+				}, 5*time.Second, 10*time.Millisecond)
+			}
+
+			w := &fillImageWriter{coveringImageWriter: newCoveringImageWriter(width, height)}
+			for y := range height {
+				for x := range width {
+					w.SetCell(term.Coordinates{X: x, Y: y},
+						term.NewCell('u', 1, term.Attributes{Bg: term.ColorTeal}))
+				}
+			}
+			h.Draw(w)
+			require.NoError(t, w.Flush())
+
+			for _, x := range []int{0, width - 1} {
+				pos := term.Coordinates{X: x, Y: sepY}
+				if tt.filled {
+					assert.Equal(t, term.ColorNavy, w.fills[pos].FillColor, "the inside of the junction at %v", pos)
+					assert.Equal(t, term.ColorTeal, w.Cells()[sepY*width+x].Bg,
+						"the junction at %v keeps what is under the prompt outside its line", pos)
+				} else {
+					assert.NotContains(t, w.fills, pos, "the junction at %v", pos)
 				}
 			}
 		})

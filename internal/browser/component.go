@@ -1259,6 +1259,13 @@ func (c *Component) SetDim(to bool) bool {
 	return c.wm.SetDim(to)
 }
 
+// SetFocusStyle turns the focus window's focus style on or off, as
+// handler.WindowManager.SetFocusStyle does, and returns whether it was
+// on. The tab of the focus window keeps its own style.
+func (c *Component) SetFocusStyle(on bool) bool {
+	return c.wm.SetFocusStyle(on)
+}
+
 // SetDefaultAttr forwards the live theme default attributes to the window
 // manager so grayscale dimming resolves a ColorDefault foreground.
 func (c *Component) SetDefaultAttr(attr term.Attributes) {
@@ -2127,7 +2134,8 @@ func (c *Component) findWindow(winID uint64) (*browserWindow, bool) {
 func (c *Component) overwriteFocusWindowUnion(w term.Writer) {
 	// Without union junctions, the window manager drew these corners
 	// already, along with any frame images that rewriting them would hide.
-	if !c.union.Frame || c.focusWindow == (thandler.Window{}) || c.wm.SizeTiles() == 1 {
+	if !c.union.Frame || c.focusWindow == (thandler.Window{}) || c.wm.SizeTiles() == 1 ||
+		!c.wm.FocusStyle() {
 		return
 	}
 	topleft := c.focusWindow.Position()

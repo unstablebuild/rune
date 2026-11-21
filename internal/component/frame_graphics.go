@@ -21,6 +21,7 @@ import (
 	"errors"
 	"image"
 	"log/slog"
+	"slices"
 
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -323,16 +324,19 @@ func (g *FrameGraphics) draw(
 // FrameUnderWriter forwards everything to Writer, and writes the cells
 // of the border of a frame Width by Height at 0,0 whose slot Graphics
 // names an image keeping the background of the cell under them, for
-// FrameGraphics.DrawOver to draw the images over it.
+// FrameGraphics.DrawOver to draw the images over it. The cells in Keep
+// keep it too, whatever their slot names, for images drawn over the
+// border other than the frame's, such as a separator's junctions.
 type FrameUnderWriter struct {
 	term.Writer
 	Graphics      component.FrameCharSetGraphics
 	Width, Height int
+	Keep          []term.Coordinates
 }
 
 // SetCell satisfies term.Writer.
 func (w *FrameUnderWriter) SetCell(pos term.Coordinates, c term.Cell) {
-	if frameSlotURI(w.Graphics, pos.X, pos.Y, w.Width, w.Height) != "" {
+	if frameSlotURI(w.Graphics, pos.X, pos.Y, w.Width, w.Height) != "" || slices.Contains(w.Keep, pos) {
 		c.Attrs |= term.AttrKeepBackground
 	}
 	w.Writer.SetCell(pos, c)
@@ -789,6 +793,8 @@ func (g *FrameGraphics) drawArea(
 // or over the cell as it is when keep is set, and fallback back when
 // Writer cannot draw the image. The image is drawn in layer on at's row
 // and above the text of any other row it reaches, whose text is not at's.
+// When deferred is set, the part on at's row under the text goes to it
+// instead, counted as drawn, for the caller to draw later.
 type cellImageWriter struct {
 	term.Writer
 	under, fallback term.Cell
@@ -797,6 +803,16 @@ type cellImageWriter struct {
 	layer           term.ImageLayer
 	at              term.Coordinates
 	area            component.VirtualWriter
+	deferred        *[]deferredImage
+}
+
+// deferredImage is the part of an image a cellImageWriter left to draw
+// in place of the cell at at, which takes fallback where the writer
+// draws no image.
+type deferredImage struct {
+	img      term.Image
+	at       term.Coordinates
+	fallback term.Cell
 }
 
 // DrawImage satisfies term.Writer. The cell is written before the image
@@ -837,6 +853,11 @@ func (w *cellImageWriter) drawImage(img term.Image) bool {
 			continue
 		}
 		p.Layer = part.layer
+		if w.deferred != nil && part.layer != term.ImageLayerAboveText {
+			*w.deferred = append(*w.deferred, deferredImage{img: p, at: w.at, fallback: w.fallback})
+			drawn = true
+			continue
+		}
 		drawn = w.Writer.DrawImage(p) || drawn
 	}
 	return drawn

@@ -615,13 +615,15 @@ func (e *ex) doInit(
 
 	e.cleanPartialReissueState()
 	cmdBrowserCfg := e.config.Config
-	cmdBrowserCfg.WindowManagerConfig = withoutBackgrounds(cmdBrowserCfg.WindowManagerConfig)
+	cmdBrowserCfg.WindowManagerConfig = promptBackground(cmdBrowserCfg.WindowManagerConfig)
 	if cmdBrowserCfg.WindowManagerConfig.Frame {
 		wmOriginY := 2
 		if cmdBrowserCfg.TabBarHeight != 0 {
 			wmOriginY = cmdBrowserCfg.TabBarHeight - 1
 		}
 		cmdBrowserCfg.WindowManagerConfig.Frame = false
+		// The prompt draws its frame itself, over what is under it.
+		cmdBrowserCfg.WindowManagerConfig.FloatingOwnBorder = true
 		cmdBrowserCfg.TabBarHeight = wmOriginY
 	}
 	e.cmdV.C = browser.NewComponent(cmdBrowserCfg)
@@ -3495,6 +3497,12 @@ func (e *ex) drawCmdPrompt(w term.Writer) {
 	// can pass a DimWriter below and dim everything.
 	prev := e.comp.SetDim(false)
 	defer e.comp.SetDim(prev)
+	// The prompt takes the focus background, so no window under it
+	// keeps the look of the focus.
+	if e.promptTakesFocusBackground() {
+		prev := e.comp.SetFocusStyle(false)
+		defer e.comp.SetFocusStyle(prev)
+	}
 
 	if e.config.Config.Dim {
 		if e.config.Config.BW {
@@ -3702,7 +3710,7 @@ func (e *ex) restyle(s hudStyle, images, statusBarImages map[string]image.Image)
 	}
 	e.comp.Browser().Restyle(s.browser)
 	cmdStyle := s.browser
-	cmdStyle.WindowManager = withoutBackgrounds(cmdStyle.WindowManager)
+	cmdStyle.WindowManager = promptBackground(cmdStyle.WindowManager)
 	e.cmdV.C.Restyle(cmdStyle)
 	e.container.Restyle(s.notifications)
 	if e.statusBars != nil {
@@ -3710,12 +3718,36 @@ func (e *ex) restyle(s hudStyle, images, statusBarImages map[string]image.Image)
 	}
 }
 
-// withoutBackgrounds returns cfg for the browser of the command prompt,
-// whose window draws no window background.
-func withoutBackgrounds(cfg thandler.WindowManagerConfig) thandler.WindowManagerConfig {
-	cfg.Background = tcomponent.WindowBackground{}
+// promptBackground returns cfg for the browser of the command prompt,
+// whose window takes the colours of the focus background, without its
+// images, and no background without one.
+func promptBackground(cfg thandler.WindowManagerConfig) thandler.WindowManagerConfig {
+	var bg tcomponent.WindowBackground
+	if cfg.FocusBackground != nil {
+		bg.Attr = cfg.FocusBackground.Attr
+	}
+	cfg.Background = bg
 	cfg.FocusBackground = nil
 	return cfg
+}
+
+// promptTakesFocusBackground reports whether the command prompt takes
+// the colours of the focus background, as promptBackground gives them.
+func (e *ex) promptTakesFocusBackground() bool {
+	fb := e.config.Config.WindowManagerConfig.FocusBackground
+	return fb != nil && fb.Attr != (term.Attributes{})
+}
+
+// promptInside returns the colour inside the command prompt's frame:
+// that of its elements, or else the focus background's it takes.
+func (e *ex) promptInside() term.Color {
+	if bg := e.config.CommandOverlay.ElementAttr.Bg; bg != term.ColorDefault {
+		return bg
+	}
+	if e.promptTakesFocusBackground() {
+		return e.config.Config.WindowManagerConfig.FocusBackground.Attr.Bg
+	}
+	return term.ColorDefault
 }
 
 // restyleChats gives e's acp chats, open and later, the status bar and

@@ -134,8 +134,11 @@ type WindowManager struct {
 	prevFocus Window
 	focus     Window
 	// styled is the window holding the focus style, which is the focus
-	// window while there are several, and the zero Window otherwise.
+	// window while there are several and the focus style is on, and the
+	// zero Window otherwise.
 	styled component.Window
+	// noFocusStyle turns the focus style off, as SetFocusStyle does.
+	noFocusStyle             bool
 	subs                     []WindowSubscriber
 	prevMouseScrollBarDrag   bool
 	prevMouseLeftChild       component.Window
@@ -228,10 +231,11 @@ func (wm *WindowManager) SetFrameCharSet(def, focus compapi.FrameCharSet) {
 }
 
 // applyFocusStyle gives the focus window the focus style while there is
-// more than one window, and the normal style otherwise, and gives the
-// window that held the focus style before the normal one.
+// more than one window and the focus style is on, and the normal style
+// otherwise, and gives the window that held the focus style before the
+// normal one.
 func (wm *WindowManager) applyFocusStyle() {
-	focused := wm.SizeTiles()+wm.SizeFloating() > 1
+	focused := !wm.noFocusStyle && wm.SizeTiles()+wm.SizeFloating() > 1
 	prev := wm.styled
 	wm.styled = component.Window{}
 	if prev != (component.Window{}) && prev != wm.focus.Window && !prev.Closed() {
@@ -241,6 +245,24 @@ func (wm *WindowManager) applyFocusStyle() {
 	if focused {
 		wm.styled = wm.focus.Window
 	}
+}
+
+// SetFocusStyle turns the focus style on or off, for every window to be
+// drawn with the normal style while it is off, and returns whether it
+// was on. The focus window stays focused either way.
+func (wm *WindowManager) SetFocusStyle(on bool) (prev bool) {
+	prev = !wm.noFocusStyle
+	if prev != on {
+		wm.noFocusStyle = !on
+		wm.applyFocusStyle()
+	}
+	return prev
+}
+
+// FocusStyle reports whether the focus style is on, as SetFocusStyle
+// turns it.
+func (wm *WindowManager) FocusStyle() bool {
+	return !wm.noFocusStyle
 }
 
 // setWindowStyle gives win the focus style or the normal one: its frame
