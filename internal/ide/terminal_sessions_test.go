@@ -920,53 +920,34 @@ func TestTerminalSessionsPreviewOf(t *testing.T) {
 		desc string
 		run  func(t *testing.T, f *sessionsFixture, a, b *asyncVTE, pa *workspacetest.Process)
 	}{{
-		desc: "the view of a terminal is kept for every draw",
+		desc: "every view is one of its own that leaves the terminal detached",
 		run: func(t *testing.T, f *sessionsFixture, a, _ *asyncVTE, _ *workspacetest.Process) {
 			first, err := f.s.previewOf(a.ID())
 			require.NoError(t, err)
 			again, err := f.s.previewOf(a.ID())
 			require.NoError(t, err)
-			assert.Same(t, first, again)
+			assert.NotSame(t, first, again)
 			assert.Equal(t, 0, f.attachments(a.ID()), "it leaves the terminal detached")
-		},
-	}, {
-		desc: "previewing another terminal replaces the view",
-		run: func(t *testing.T, f *sessionsFixture, a, b *asyncVTE, _ *workspacetest.Process) {
-			first, err := f.s.previewOf(a.ID())
-			require.NoError(t, err)
-			second, err := f.s.previewOf(b.ID())
-			require.NoError(t, err)
-			assert.NotSame(t, first, second)
-			assert.Equal(t, b.ID(), second.ID())
-			assert.Same(t, second, f.s.preview)
+			require.NoError(t, first.Close())
+			assert.False(t, again.IsComplete(), "closing one view leaves the other")
+			require.NoError(t, again.Close())
+			assert.Equal(t, 0, f.attachments(a.ID()), "closing them leaves the terminal")
 		},
 	}, {
 		desc: "a terminal that is gone has no view",
 		run: func(t *testing.T, f *sessionsFixture, a, _ *asyncVTE, pa *workspacetest.Process) {
-			_, err := f.s.previewOf(a.ID())
+			v, err := f.s.previewOf(a.ID())
 			require.NoError(t, err)
 			f.end(t, a.ID(), pa)
 			_, err = f.s.previewOf(a.ID())
 			require.ErrorIs(t, err, vte.ErrNotFound)
-			assert.Nil(t, f.s.preview, "the view of the ended terminal is dropped")
-		},
-	}, {
-		desc: "closing the preview drops the view",
-		run: func(t *testing.T, f *sessionsFixture, a, _ *asyncVTE, _ *workspacetest.Process) {
-			first, err := f.s.previewOf(a.ID())
-			require.NoError(t, err)
-			f.s.closePreview()
-			assert.Nil(t, f.s.preview)
-			again, err := f.s.previewOf(a.ID())
-			require.NoError(t, err)
-			assert.NotSame(t, first, again)
+			assert.True(t, v.IsComplete(), "the view of the ended terminal is done")
 		},
 	}, {
 		desc: "no such terminal",
 		run: func(t *testing.T, f *sessionsFixture, _, _ *asyncVTE, _ *workspacetest.Process) {
 			_, err := f.s.previewOf("nope")
 			require.ErrorIs(t, err, vte.ErrNotFound)
-			assert.Nil(t, f.s.preview)
 		},
 	}}
 	for _, tc := range cases {
@@ -1276,7 +1257,6 @@ func TestTerminalSessionsClose(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, f.s.close())
-	assert.Nil(t, f.s.preview)
 	assert.Equal(t, -1, f.attachments(shown.ID()))
 	assert.Equal(t, -1, f.attachments(detached.ID()))
 	assert.True(t, shown.IsComplete())

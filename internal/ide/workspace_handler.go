@@ -4379,6 +4379,11 @@ func (s statusWorkspaces) TabName(ws, uri workspaceapi.URI) (string, bool) {
 	return name, ok
 }
 
+// Preview previews in a view of its own a terminal, attached or not, an
+// ACP chat, or a chat of an extension in statusPreviewSchemes, tab or
+// not. What is shown nowhere else, a minimized task's program or the
+// hidden companion terminal, is lent to the inbox. Anything else is
+// borrowed from the tab or the window that shows it.
 func (s statusWorkspaces) Preview(ws, uri workspaceapi.URI) (idestatus.Preview, bool) {
 	e := s.h.exForWorkspace(ws)
 	if e == nil {
@@ -4386,29 +4391,172 @@ func (s statusWorkspaces) Preview(ws, uri workspaceapi.URI) (idestatus.Preview, 
 	}
 	b := e.comp.Browser()
 	if tab, ok := b.Tab(uri); ok {
+		if p, ok := statusOwnPreview(e, uri, tab.Handler()); ok {
+			return p, true
+		}
 		w, h := tab.ContentSize()
-		return idestatus.Preview{Content: tab, Width: w, Height: h, Fit: tab.Resize}, true
+		return idestatus.Preview{Content: tab, Width: w, Height: h}, true
 	}
 	if t, ok := statusTaskOf(e, uri); ok {
 		if win, ok := t.Shown(); ok {
-			return statusWindowPreview(b, win)
+			return statusWindowPreview(e, win)
 		}
 		// Minimized, the task draws its bar alone: preview its program.
-		p := t.Program()
-		return idestatus.Preview{Content: p, Fit: p.Resize, Hidden: true}, true
+		return statusLentPreview(t.Program()), true
 	}
 	if win, ok := statusWindowOf(e, uri); ok {
-		return statusWindowPreview(b, win)
+		return statusWindowPreview(e, win)
 	}
 	if v, ok := hiddenCompanionTerminal(e, uri); ok {
-		return idestatus.Preview{Content: v, Fit: v.Resize, Hidden: true}, true
+		return statusLentPreview(v), true
 	}
 	if info, ok := e.terminals.detached(uri); ok {
-		if v, err := e.terminals.previewOf(info.ID); err == nil {
-			return idestatus.Preview{Content: v, Fit: v.Resize, Hidden: true}, true
+		return statusTerminalPreview(e, info), true
+	}
+	return statusOwnPreview(e, uri, nil)
+}
+
+// statusPreviewSchemes are the schemes of the extension resources whose
+// opener honors text.PreviewQuery.
+var statusPreviewSchemes = map[string]bool{"rune-agent": true}
+
+// statusOwnPreview previews in a view of its own what reports at uri in
+// e, shown in content unless it is nil, when it is a terminal, an ACP
+// chat or a resource of statusPreviewSchemes.
+func statusOwnPreview(e *ex, uri workspaceapi.URI, content browserapi.Handler) (idestatus.Preview, bool) {
+	if v, ok := content.(vte.View); ok {
+		if info, ok := e.terminals.info(v.ID()); ok {
+			return statusTerminalPreview(e, info), true
 		}
 	}
-	return idestatus.Preview{}, false
+	if e.acpChats != nil {
+		if open, ok := e.acpChats.Preview(uri); ok {
+			return idestatus.Preview{Open: open}, true
+		}
+	}
+	opener, ok := e.comp.ResourceOpener(uri.Scheme())
+	// A tab still waiting for its extension shows what it waits for.
+	if !ok || !statusPreviewSchemes[uri.Scheme()] || e.comp.PendingTabs().Contains(uri) {
+		return idestatus.Preview{}, false
+	}
+	u, err := url.Parse(uri.String())
+	if err != nil {
+		return idestatus.Preview{}, false
+	}
+	q := u.Query()
+	q.Set(text.PreviewQuery, "")
+	u.RawQuery = q.Encode()
+	preview, err := workspaceapi.ParseURI(u.String())
+	if err != nil {
+		return idestatus.Preview{}, false
+	}
+	return idestatus.Preview{Open: func(width, height int) (tui.Component, func()) {
+		p := openStatusResourcePreview(e, opener, preview, width, height)
+		return p, p.close
+	}}, true
+}
+
+// statusTerminalPreview previews the terminal info describes in a view
+// of its own. The sole view of a detached terminal sizes it; any other
+// view asks for room for the grid, and shows its bottom-left corner when
+// given less.
+func statusTerminalPreview(e *ex, info vte.Info) idestatus.Preview {
+	p := idestatus.Preview{Open: func(width, height int) (tui.Component, func()) {
+		v, err := e.terminals.previewOf(info.ID)
+		if err != nil {
+			return nil, nil
+		}
+		v.Resize(width, height)
+		return v, func() { _ = v.Close() }
+	}}
+	if info.Attachments > 0 {
+		p.Width, p.Height = info.Width, info.Height
+	}
+	return p
+}
+
+// statusLentPreview previews content, shown nowhere, by lending it to
+// the inbox, which sizes it until it shows somewhere again.
+func statusLentPreview(content tui.Component) idestatus.Preview {
+	return idestatus.Preview{Open: func(width, height int) (tui.Component, func()) {
+		content.Resize(width, height)
+		return content, nil
+	}}
+}
+
+// statusResourcePreview is the preview an extension opens of a resource
+// for the status inbox. It shows nothing until the extension answers,
+// and why the extension failed if it does.
+type statusResourcePreview struct {
+	width, height int
+	cancel        context.CancelFunc
+	h             browserapi.Handler
+	failed        *component.String
+	closed        bool
+}
+
+// openStatusResourcePreview asks opener for uri off the event loop.
+func openStatusResourcePreview(
+	e *ex, opener textapi.ResourceOpenHandler, uri workspaceapi.URI, width, height int,
+) *statusResourcePreview {
+	ctx, cancel := context.WithTimeout(e.bgCtx, extensionHandleWait)
+	p := &statusResourcePreview{width: width, height: height, cancel: cancel}
+	go debug.CapturePanicReport(func() {
+		defer cancel()
+		h, err := opener.OpenResource(ctx, uri)
+		if err == nil && h == nil {
+			err = errors.New("the extension returned no content")
+		}
+		if !e.sched(func() { p.opened(h, err) }) && h != nil {
+			_ = h.Close()
+		}
+	})
+	return p
+}
+
+func (p *statusResourcePreview) opened(h browserapi.Handler, err error) {
+	switch {
+	case p.closed:
+		if h != nil {
+			_ = h.Close()
+		}
+	case err != nil:
+		failed := component.NewStringWithConfig(fmt.Sprintf("preview unavailable: %v", err),
+			component.StringConfig{Alignment: component.AlignmentCentered})
+		failed.Resize(p.width, p.height)
+		p.failed = &failed
+	default:
+		h.Resize(p.width, p.height)
+		p.h = h
+	}
+}
+
+func (p *statusResourcePreview) Resize(width, height int) {
+	p.width, p.height = width, height
+	switch {
+	case p.h != nil:
+		p.h.Resize(width, height)
+	case p.failed != nil:
+		p.failed.Resize(width, height)
+	}
+}
+
+func (p *statusResourcePreview) Draw(w term.Writer) {
+	switch {
+	case p.h != nil:
+		p.h.Draw(w)
+	case p.failed != nil:
+		p.failed.Draw(w)
+	}
+}
+
+func (p *statusResourcePreview) close() {
+	p.closed = true
+	p.cancel()
+	if p.h != nil {
+		_ = p.h.Close()
+		p.h = nil
+	}
 }
 
 // focusStatusSource brings in sight what reported a status at uri in
@@ -4431,7 +4579,6 @@ func focusStatusSource(e *ex, uri workspaceapi.URI) error {
 		return e.toggleCompanionTerminal()
 	}
 	if info, ok := e.terminals.detached(uri); ok {
-		e.terminals.closePreview()
 		return e.attachTerminalTab(info, e.invokeWindow())
 	}
 	if e.acpChats != nil {
@@ -4467,8 +4614,9 @@ func hiddenCompanionTerminal(e *ex, uri workspaceapi.URI) (vte.View, bool) {
 	return v, true
 }
 
-// statusWindowPreview previews the content of win.
-func statusWindowPreview(b *browser.Component, win browser.Window) (idestatus.Preview, bool) {
+// statusWindowPreview previews the content of win, in a view of its own
+// when it is a terminal.
+func statusWindowPreview(e *ex, win browser.Window) (idestatus.Preview, bool) {
 	if win == nil || win.Closed() {
 		return idestatus.Preview{}, false
 	}
@@ -4476,7 +4624,12 @@ func statusWindowPreview(b *browser.Component, win browser.Window) (idestatus.Pr
 	if err != nil {
 		return idestatus.Preview{}, false
 	}
-	w, h := b.ContentSize(win)
+	if v, ok := content.(vte.View); ok {
+		if info, ok := e.terminals.info(v.ID()); ok {
+			return statusTerminalPreview(e, info), true
+		}
+	}
+	w, h := e.comp.Browser().ContentSize(win)
 	return idestatus.Preview{Content: content, Width: w, Height: h}, true
 }
 

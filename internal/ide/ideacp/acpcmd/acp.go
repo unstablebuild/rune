@@ -38,6 +38,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/text"
@@ -233,6 +234,44 @@ func (h *Handler) CloseStatus(uri workspaceapi.URI) (bool, error) {
 		return false, nil
 	}
 	return true, h.closeSession(context.Background(), name)
+}
+
+// Preview returns what opens a chat, width by height, on the session at
+// uri: the URI of one of its tabs, or the one it reports at since its
+// last chat closed. It is for a viewer of its own, such as the status
+// inbox: the chat is none of the session's chats, so it neither keeps
+// the session from ending nor ends it, and it must be given no input.
+// Closing it closes nothing else. Preview reports false when no session
+// is at uri.
+func (h *Handler) Preview(uri workspaceapi.URI) (func(width, height int) (tui.Component, func()), bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var (
+		name string
+		open func(context.Context) (acpapi.Session, error)
+	)
+	for v, t := range h.tabs {
+		if t.uri.Equal(uri) {
+			// The session of a tab may still be starting.
+			name, open = v.session, t.chat.waitSession
+			break
+		}
+	}
+	for n, a := range h.away {
+		if name == "" && a.uri.Equal(uri) {
+			name = n
+			open = func(ctx context.Context) (acpapi.Session, error) { return h.m.OpenSession(ctx, n) }
+		}
+	}
+	if name == "" {
+		return nil, false
+	}
+	return func(width, height int) (tui.Component, func()) {
+		c := h.newChat(name, open)
+		content := c.content(nil)
+		content.Resize(width, height)
+		return content, func() { _ = content.Close() }
+	}, true
 }
 
 // Complete satisfies text.CommandHandler.

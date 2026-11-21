@@ -40,6 +40,14 @@ var ErrCommandNotRegistered = errors.New("command not registered")
 // when no resource opener is registered for the scheme.
 var ErrResourceOpenerNotRegistered = errors.New("resource opener not registered")
 
+// PreviewQuery is the query parameter Rune adds to the URI of a resource
+// it opens for a viewer of its own, such as the status inbox, rather than
+// for a tab. An opener that honors it returns a view of the program the
+// URI without it names that takes no input, does not count as one of
+// the program's views, and leaves the program as it is once closed. It
+// fails rather than start a program that does not run.
+const PreviewQuery = "preview"
+
 // Handler just wraps a tui.Handler to indicate that this API's handlers might
 // not be compatible with other APIs.
 type Handler interface {

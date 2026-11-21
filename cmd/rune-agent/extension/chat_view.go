@@ -37,10 +37,13 @@ const chatClosedText = "Chat closed."
 // chatView shows a chat session in a tab. It has a dialoguetui component
 // and handler of its own, so its size, scroll, selection, compose input,
 // history, collapse mode and hovers are its own, and shows the rest as
-// the session's log tells it.
+// the session's log tells it. A preview shows it to a viewer of its own
+// instead, such as the host's status inbox: it takes no input and
+// answers no prompt.
 type chatView struct {
-	s   *chatSession
-	uri workspaceapi.URI
+	s       *chatSession
+	uri     workspaceapi.URI
+	preview bool
 	// ctx ends when the view closes. The view outlives its session,
 	// which may end before.
 	ctx    context.Context
@@ -77,12 +80,13 @@ type chatSender interface {
 	send(ev dialoguetui.MessageEvent) bool
 }
 
-func newChatView(s *chatSession, uri workspaceapi.URI) *chatView {
+func newChatView(s *chatSession, uri workspaceapi.URI, preview bool) *chatView {
 	h := s.h
 	ctx, cancel := context.WithCancel(h.ctx)
 	v := &chatView{
 		s:        s,
 		uri:      uri,
+		preview:  preview,
 		ctx:      ctx,
 		cancel:   cancel,
 		asking:   -1,
@@ -99,7 +103,9 @@ func newChatView(s *chatSession, uri workspaceapi.URI) *chatView {
 		dialoguetui.WithCommandEcho(),
 		dialoguetui.WithSubmitQueue(s),
 	)
-	go debug.CapturePanicReport(v.submits)
+	if !preview {
+		go debug.CapturePanicReport(v.submits)
+	}
 	return v
 }
 
@@ -122,6 +128,12 @@ func (v *chatView) send(ev dialoguetui.MessageEvent) bool {
 // the view.
 func (v *chatView) content() browserapi.Handler {
 	return browserapi.FuncHandler(chatViewHandler{Handler: handler.Wrap(v.handler, v.handle), v: v}, v.close)
+}
+
+// previewContent returns the view as a preview, which drops its input.
+// Closing it closes the view.
+func (v *chatView) previewContent() browserapi.Handler {
+	return browserapi.FuncHandler(handler.Wrap(v.handler, func(term.Event) (bool, bool) { return false, false }), v.close)
 }
 
 // chatViewHandler is a view as the content of its tab, which the host
@@ -273,7 +285,9 @@ func (v *chatView) askNextLocked() {
 	ch := make(chan []string, 1)
 	v.asking, v.askingEvent = p.ID, p.Event
 	v.addPromptLocked(p.Event, ch)
-	go debug.CapturePanicReport(func() { v.answer(p.ID, ch) })
+	if !v.preview {
+		go debug.CapturePanicReport(func() { v.answer(p.ID, ch) })
+	}
 }
 
 func (v *chatView) addPromptLocked(ev *dialoguetui.MessageEvent, ch chan<- []string) {

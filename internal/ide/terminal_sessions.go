@@ -82,9 +82,6 @@ type terminalSessions struct {
 	// the tabs of its views, and keeps the tabs of failed terminals
 	// open.
 	tabs failedTerminalKeeper
-	// preview is the view the status inbox shows a detached terminal
-	// with.
-	preview vte.View
 	// reported holds, by terminal, the title the record of a detached
 	// terminal that ran a program was posted with, until a view
 	// attaches it again.
@@ -509,29 +506,10 @@ func (s *terminalSessions) forgetView(uri workspaceapi.URI) {
 	s.tabs.removeAlias(uri)
 }
 
-// previewOf returns the view the status inbox previews the detached
-// terminal id with. The inbox asks for it on every draw, so the view is
-// kept until another terminal is previewed or closePreview drops it.
+// previewOf returns a view of the terminal id that leaves it detached.
+// The caller closes it.
 func (s *terminalSessions) previewOf(id vte.ID) (vte.View, error) {
-	if s.preview != nil {
-		if s.preview.ID() == id && !s.preview.IsComplete() {
-			return s.preview, nil
-		}
-		s.closePreview()
-	}
-	v, err := s.vtes.PreviewVTE(s.cfg.Ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	s.preview = v
-	return v, nil
-}
-
-func (s *terminalSessions) closePreview() {
-	if s.preview != nil {
-		_ = s.preview.Close()
-		s.preview = nil
-	}
+	return s.vtes.PreviewVTE(s.cfg.Ctx, id)
 }
 
 // detachedSnapshots snapshots the listed terminals no view attaches,
@@ -590,7 +568,6 @@ func (s *terminalSessions) wait() {
 
 // close terminates every terminal.
 func (s *terminalSessions) close() error {
-	s.closePreview()
 	var err error
 	if s.reservoir != nil {
 		err = s.reservoir.Close()

@@ -1180,13 +1180,21 @@ func dialogueIDFromURI(uri workspaceapi.URI) (string, bool) {
 // OpenResource satisfies textapi.ResourceOpenHandler. It returns the chat
 // uri identifies, resumed with the model the dialogue was stored with when
 // that model is still available and the default model otherwise. A chat
-// that is running gets a new view, shown at uri.
+// that is running gets a new view, shown at uri, or a preview when uri
+// carries text.PreviewQuery, which a chat that does not run cannot have.
 func (h *aiEditorHandler) OpenResource(
 	ctx context.Context, uri workspaceapi.URI,
 ) (browserapi.Handler, error) {
 	id, ok := dialogueIDFromURI(uri)
 	if !ok {
 		return nil, fmt.Errorf("%s is not an agent chat", uri)
+	}
+	if previewRequested(uri) {
+		s, ok := h.runningChat(id)
+		if !ok {
+			return nil, fmt.Errorf("agent chat %q is not running", id)
+		}
+		return s.preview()
 	}
 	args := []string{id}
 	// The URI host is a lossy encoding of the model (see getModelUri), so
@@ -1201,6 +1209,13 @@ func (h *aiEditorHandler) OpenResource(
 		return nil, err
 	}
 	return c.content, nil
+}
+
+// previewRequested reports whether uri asks for a preview of what it
+// names.
+func previewRequested(uri workspaceapi.URI) bool {
+	u, err := url.Parse(uri.String())
+	return err == nil && u.Query().Has(text.PreviewQuery)
 }
 
 // CompleteResource satisfies textapi.ResourceOpenHandler. It yields the URIs
