@@ -777,15 +777,16 @@ func (i *IDE) init(
 	if op.commandDispatchHook != nil {
 		commandObserver.subscribe(funcCommandObserver(op.commandDispatchHook))
 	}
+	// The boot workspace build launched by workspaceHandler.init above
+	// reaches the event loop and the shader runner from its own goroutine
+	// under the locker (subscribeAllEvents, abortPendingBuild ->
+	// stopLoading). Subscribe to events and seed the root under the same
+	// locker so this init does not race those accesses.
+	i.locker.Lock()
 	_ = i.workspaceHandler.SubscribeEvents(
 		textapi.AllEvents(),
 		tutorialEventObserver(i.options.scheduleFn, i.tutorial.observeEvent),
 	)
-	// The boot workspace build launched by workspaceHandler.init above
-	// reaches the shader runner from its own goroutine (e.g.
-	// abortPendingBuild -> stopLoading) under the locker; take it here
-	// too so this init does not race that access.
-	i.locker.Lock()
 	i.root.init(&i.tutorial, i, i.ideConfig.defaultAttr(), shutdownShaderCfg,
 		loadingShaderCfg, openShaderCfg, i.ideConfig.windowFrameCharset())
 	// The screen Rune starts on is the home workspace's, whose wallpaper
