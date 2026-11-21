@@ -5301,6 +5301,86 @@ func TestComponentInputBoxFrameGraphics(t *testing.T) {
 	}
 }
 
+func TestComponentInputBoxFrameInside(t *testing.T) {
+	const width, height = 24, 6
+	line := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	for x := range 4 {
+		line.Set(x, 1, color.NRGBA{R: 0x80, A: 0xff})
+	}
+	const uri = "file:///nonexistent/line.png"
+	graphics := component.FrameCharSetDefault()
+	graphics.Graphics = component.FrameCharSetGraphics{HorizontalTop: uri}
+	tests := []struct {
+		name    string
+		cs      component.FrameCharSet
+		frame   term.Attributes
+		inputBg term.Color
+		// wantFrame is the background of the frame's top edge, and fills
+		// whether a fill paints the inside of its images.
+		wantFrame term.Color
+		fills     bool
+	}{
+		{
+			name: "images keep the chat's background and fill their inside", cs: graphics,
+			inputBg: term.ColorRed, wantFrame: term.ColorNavy, fills: true,
+		},
+		{
+			name: "images take the frame's own background", cs: graphics,
+			frame:   term.Attributes{Bg: term.ColorTeal},
+			inputBg: term.ColorRed, wantFrame: term.ColorTeal, fills: true,
+		},
+		{
+			name: "images without an input background fill nothing", cs: graphics,
+			wantFrame: term.ColorNavy,
+		},
+		{
+			name: "runes take the input's background", cs: component.FrameCharSetDefault(),
+			inputBg: term.ColorRed, wantFrame: term.ColorRed,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := NewComponent(ComponentConfig{
+				BackgroundColor:      term.ColorNavy,
+				InputBackgroundColor: tt.inputBg,
+				InputBox: InputBoxConfig{
+					FrameAttr:       tt.frame,
+					GraphicsStorage: storagestub.NewInMemoryService(),
+				},
+			})
+			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
+			h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp, term.NopInterrupter())
+			defer close(tx)
+			h.Resize(width, height)
+			comp.SetInputBoxFrameCharSet(tt.cs, nil)
+			h.Draw(term.NewStringWriter(width, height))
+			comp.SetInputBoxFrameCharSet(tt.cs, map[string]image.Image{uri: line})
+
+			w := &fillRecorder{StringWriter: term.NewStringWriter(width, height)}
+			h.Draw(w)
+			require.NoError(t, w.Flush())
+			pos := comp.InputPosition()
+			assert.Equal(t, tt.wantFrame, w.Cells()[pos.Y*width+pos.X+1].Bg)
+			var masks []recordedFill
+			for _, f := range w.fills {
+				if f.layer == term.ImageLayerBelowText {
+					masks = append(masks, f)
+				}
+			}
+			if !tt.fills {
+				assert.Empty(t, masks)
+				return
+			}
+			boxW := comp.boxWidth(width)
+			require.Len(t, masks, boxW-2, "a fill under each image of the top edge")
+			for i, f := range masks {
+				assert.Equal(t, term.ColorRed, f.color)
+				assert.Equal(t, image.Rect(pos.X+1+i, pos.Y, pos.X+2+i, pos.Y+1), f.cells)
+			}
+		})
+	}
+}
+
 func TestComponentSetInputBoxColors(t *testing.T) {
 	const width, height = 24, 6
 	tests := []struct {

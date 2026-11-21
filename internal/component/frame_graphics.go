@@ -264,6 +264,24 @@ func NewFrameGraphics(
 func (g *FrameGraphics) Draw(
 	w term.Writer, f *component.Frame, width, height int,
 ) {
+	g.draw(w, f, width, height, false)
+}
+
+// DrawOver draws the images of f's graphics as Draw does, but over a
+// blank cell that keeps the background of the cell under it rather than
+// taking f's, so that each image's transparent pixels show what is under
+// the frame. The cells whose image does not draw take f's rune and
+// colours. Drawing the frame through a FrameUnderWriter first keeps that
+// background in the cells under the images.
+func (g *FrameGraphics) DrawOver(
+	w term.Writer, f *component.Frame, width, height int,
+) {
+	g.draw(w, f, width, height, true)
+}
+
+func (g *FrameGraphics) draw(
+	w term.Writer, f *component.Frame, width, height int, over bool,
+) {
 	gr := f.Graphics
 	if width < 3 || height < 3 || gr.Empty() {
 		return
@@ -275,6 +293,9 @@ func (g *FrameGraphics) Draw(
 		Writer: w,
 		under:  term.NewCell(' ', 1, f.Attributes),
 		keep:   gr.Overlay,
+	}
+	if over {
+		cw.under.Attrs |= term.AttrKeepBackground
 	}
 	draw := func(uri string, ch rune, x, y int) {
 		if uri == "" ||
@@ -297,6 +318,53 @@ func (g *FrameGraphics) Draw(
 	draw(gr.TopRight, f.TopRight, limitX, 0)
 	draw(gr.BottomLeft, f.BottomLeft, 0, limitY)
 	draw(gr.BottomRight, f.BottomRight, limitX, limitY)
+}
+
+// FrameUnderWriter forwards everything to Writer, and writes the cells
+// of the border of a frame Width by Height at 0,0 whose slot Graphics
+// names an image keeping the background of the cell under them, for
+// FrameGraphics.DrawOver to draw the images over it.
+type FrameUnderWriter struct {
+	term.Writer
+	Graphics      component.FrameCharSetGraphics
+	Width, Height int
+}
+
+// SetCell satisfies term.Writer.
+func (w *FrameUnderWriter) SetCell(pos term.Coordinates, c term.Cell) {
+	if frameSlotURI(w.Graphics, pos.X, pos.Y, w.Width, w.Height) != "" {
+		c.Attrs |= term.AttrKeepBackground
+	}
+	w.Writer.SetCell(pos, c)
+}
+
+// frameSlotURI returns the image gr names for the cell at x, y of the
+// border of a frame width by height, or "" for none or a cell off it.
+func frameSlotURI(gr component.FrameCharSetGraphics, x, y, width, height int) string {
+	if width < 3 || height < 3 || x < 0 || y < 0 || x >= width || y >= height {
+		return ""
+	}
+	top, bottom := y == 0, y == height-1
+	left, right := x == 0, x == width-1
+	switch {
+	case top && left:
+		return gr.TopLeft
+	case top && right:
+		return gr.TopRight
+	case bottom && left:
+		return gr.BottomLeft
+	case bottom && right:
+		return gr.BottomRight
+	case top:
+		return gr.HorizontalTop
+	case bottom:
+		return gr.HorizontalBottom
+	case left:
+		return gr.VerticalLeft
+	case right:
+		return gr.VerticalRight
+	}
+	return ""
 }
 
 // drawBorder draws the border that f draws when it is width x height at

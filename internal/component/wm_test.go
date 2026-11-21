@@ -17,9 +17,14 @@
 package component
 
 import (
+	"bytes"
 	"cmp"
 	"fmt"
 	"image"
+	"image/png"
+	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -3871,6 +3876,246 @@ func TestWindowManagerWithoutBackgroundRecordsNothing(t *testing.T) {
 	wm.Draw(term.NewStringWriter(8, 5))
 	assert.Nil(t, wm.bgWriter.Writer)
 	assert.Nil(t, wm.bgWriter.cells)
+}
+
+// lineSprites writes the sprites of a frame drawn with lines through
+// the middle of its cells, transparent either side, and returns its
+// graphics: a cross in the corners, so that each corner's bend is a
+// quarter of it.
+func lineSprites(t *testing.T) component.FrameCharSetGraphics {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(name, art string) string {
+		var b bytes.Buffer
+		require.NoError(t, png.Encode(&b, spritePixels(art)))
+		path := filepath.Join(dir, name+".png")
+		require.NoError(t, os.WriteFile(path, b.Bytes(), 0o600))
+		return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	}
+	h := write("h", "....\n####\n....\n....")
+	v := write("v", ".#..\n.#..\n.#..\n.#..")
+	cross := write("cross", ".#..\n####\n.#..\n.#..")
+	return component.FrameCharSetGraphics{
+		TopLeft: cross, TopRight: cross, BottomLeft: cross, BottomRight: cross,
+		HorizontalTop: h, HorizontalBottom: h, VerticalLeft: v, VerticalRight: v,
+	}
+}
+
+// fillMap returns where s holds a fill, f for one in navy and ? for one
+// in another colour, and checks that each is a mask under the text.
+func fillMap(t *testing.T, s *imageScreen) string {
+	t.Helper()
+	grid := make([][]byte, s.height)
+	for y := range grid {
+		grid[y] = []byte(strings.Repeat(".", s.width))
+	}
+	for _, img := range s.images {
+		if !img.Fill {
+			continue
+		}
+		assert.NotNil(t, img.Src, "the fill of %v has a mask", img.Pos)
+		assert.Equal(t, term.ImageLayerBelowText, img.Layer)
+		ch := byte('f')
+		if img.FillColor != term.ColorNavy {
+			ch = '?'
+		}
+		grid[img.Pos.Y][img.Pos.X] = ch
+	}
+	var b strings.Builder
+	for _, row := range grid {
+		b.WriteByte('\n')
+		b.Write(row)
+	}
+	return b.String()
+}
+
+func TestWindowManagerBorderInsides(t *testing.T) {
+	lines := lineSprites(t)
+	pics := newFramePictures(t)
+	navy := term.Attributes{Bg: term.ColorNavy}
+	ring := `
+ffffffff
+f......f
+f......f
+f......f
+ffffffff`
+	none := `
+........
+........
+........
+........
+........`
+	tests := []struct {
+		name       string
+		background WindowBackground
+		graphics   component.FrameCharSetGraphics
+		noImages   bool
+		loads      int
+		fills      string
+		bg         string
+	}{
+		{
+			name:       "the colour fills inside the lines and leaves the cells under them",
+			background: WindowBackground{Attr: navy},
+			graphics:   lines,
+			loads:      3,
+			fills:      ring,
+			bg: `
+........
+.tttttt.
+.nnnnnn.
+.nnnnnn.
+........`,
+		},
+		{
+			name:       "opaque images take the colour under them",
+			background: WindowBackground{Attr: navy},
+			graphics: component.FrameCharSetGraphics{
+				TopLeft: pics.uris["i"], TopRight: pics.uris["i"],
+				BottomLeft: pics.uris["i"], BottomRight: pics.uris["i"],
+				HorizontalTop: pics.uris["i"], HorizontalBottom: pics.uris["i"],
+				VerticalLeft: pics.uris["i"], VerticalRight: pics.uris["i"],
+			},
+			loads: 1,
+			fills: none,
+			bg: `
+nnnnnnnn
+nttttttn
+nnnnnnnn
+nnnnnnnn
+nnnnnnnn`,
+		},
+		{
+			name:       "a panel draws the cells it covers",
+			background: WindowBackground{Attr: navy, Graphics: BackgroundGraphics{TopLeft: pics.uris["i"]}},
+			graphics:   lines,
+			loads:      4,
+			fills: `
+.fffffff
+f......f
+f......f
+f......f
+ffffffff`,
+			bg: `
+........
+.tttttt.
+.nnnnnn.
+.nnnnnn.
+........`,
+		},
+		{
+			name:       "no colour, no fill",
+			background: WindowBackground{Attr: term.Attributes{Fg: term.ColorWhite}},
+			graphics:   lines,
+			loads:      3,
+			fills:      none,
+			bg: `
+........
+.tttttt.
+........
+........
+........`,
+		},
+		{
+			name:       "a writer that cannot draw images gets the colour",
+			background: WindowBackground{Attr: navy},
+			graphics:   lines,
+			loads:      3,
+			noImages:   true,
+			fills:      none,
+			bg: `
+nnnnnnnn
+nttttttn
+nnnnnnnn
+nnnnnnnn
+nnnnnnnn`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testWindowManagerConfig()
+			cfg.Background = tt.background
+			cfg.FrameCharSet.Graphics = tt.graphics
+			cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			irq := make(interruptCounter, 16)
+			cfg.Interrupter = irq
+			wm, _ := NewWindowManager(&stripedContent{}, cfg)
+			t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+			wm.Resize(8, 5)
+			wm.Draw(term.NewStringWriter(8, 5))
+			irq.wait(t, tt.loads)
+
+			s := newImageScreen(8, 5)
+			s.noImages = tt.noImages
+			wm.Draw(s)
+			require.NoError(t, s.Flush())
+			assert.Equal(t, tt.fills, fillMap(t, s))
+			assert.Equal(t, tt.bg, colorMap(s, func(c term.Cell) term.Color { return c.Bg }))
+		})
+	}
+}
+
+func TestWindowManagerFloatingBorderInsides(t *testing.T) {
+	cfg := testWindowManagerConfig()
+	cfg.FrameCharSet.Graphics = lineSprites(t)
+	cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	irq := make(interruptCounter, 16)
+	cfg.Interrupter = irq
+	wm, _ := NewWindowManager(&component.TestComponent{
+		Ch: 'T', Attributes: term.Attributes{Bg: term.ColorTeal},
+	}, cfg)
+	t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+	wm.Resize(10, 6)
+	float := wm.FloatingWindow(
+		component.StaticFloating(&component.TestComponent{Ch: 'B'}, 3, 2),
+		FloatingConfig{Offset: term.Coordinates{X: 2, Y: 1}},
+	)
+	float.SetBackground(&WindowBackground{Attr: term.Attributes{Bg: term.ColorNavy}})
+	wm.Draw(term.NewStringWriter(10, 6))
+	irq.wait(t, 3)
+
+	s := newImageScreen(10, 6)
+	wm.Draw(s)
+	require.NoError(t, s.Flush())
+	assert.Equal(t, `
+..........
+..fffff...
+..f...f...
+..f...f...
+..fffff...
+..........`, fillMap(t, s))
+	assert.Equal(t, `
+..........
+.tttttttt.
+.ttnnnttt.
+.ttnnnttt.
+.tttttttt.
+..........`, colorMap(s, func(c term.Cell) term.Color { return c.Bg }),
+		"the cells under the border show the window under it")
+
+	float.SetBackground(&WindowBackground{})
+	s = newImageScreen(10, 6)
+	wm.Draw(s)
+	require.NoError(t, s.Flush())
+	assert.Equal(t, `
+..........
+..?????...
+..?...?...
+..?...?...
+..?????...
+..........`, fillMap(t, s), "without a colour the inside takes the default background")
+	for _, img := range s.images {
+		if img.Fill {
+			assert.Equal(t, term.ColorDefault, img.FillColor)
+		}
+	}
+	assert.Equal(t, `
+..........
+.tttttttt.
+.tt...ttt.
+.tt...ttt.
+.tttttttt.
+..........`, colorMap(s, func(c term.Cell) term.Color { return c.Bg }))
 }
 
 func TestWindowManagerToggleMaximize(t *testing.T) {

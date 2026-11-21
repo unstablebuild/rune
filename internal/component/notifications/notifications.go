@@ -17,6 +17,7 @@
 package notifications
 
 import (
+	"image"
 	"math"
 	"time"
 
@@ -45,6 +46,8 @@ type notificationComp struct {
 	progressCellCurrent    term.Cell
 	progressCellCurrentTip term.Cell
 	progressCellRemain     term.Cell
+	// masks paints the inside of the lines of the frame's images.
+	masks tcomponent.FrameMasks
 }
 
 func newString(cfg Config, msg string) component.Responsive {
@@ -131,9 +134,15 @@ func (n *notificationComp) Resize(width, height int) {
 	n.Responsive.Resize(width, height)
 }
 
-func (n *notificationComp) Draw(w term.Writer) {
-	n.Responsive.Draw(w)
+// inside returns the colour inside the notification's frame.
+func (n *notificationComp) inside() term.Color {
+	if bg := n.cfg.BackgroundAttributes.Bg; bg != term.ColorDefault {
+		return bg
+	}
+	return n.cfg.Attributes.Bg
+}
 
+func (n *notificationComp) Draw(w term.Writer) {
 	var g *tcomponent.FrameGraphics
 	if n.cfg.Graphics != nil && n.cfg.hasGraphics() {
 		g = n.cfg.Graphics()
@@ -151,12 +160,25 @@ func (n *notificationComp) Draw(w term.Writer) {
 		frame.Graphics.BottomLeft = ""
 		frame.Graphics.HorizontalBottom = ""
 		frame.Graphics.BottomRight = ""
-		if n.width >= 3 && n.height >= 3 {
-			component.DrawFrame(w, n.cfg.FrameCharSet, frame.Attributes, n.width-1, n.height-1)
+	}
+	// The images of the frame go over what is under the notification,
+	// which their transparent pixels show outside their lines, and the
+	// notification's colour inside them.
+	cells := w
+	if g != nil {
+		cells = &tcomponent.FrameUnderWriter{
+			Writer: w, Graphics: frame.Graphics, Width: n.width, Height: n.height,
 		}
 	}
+	n.Responsive.Draw(cells)
+	if n.cfg.ProgressBar && n.width >= 3 && n.height >= 3 {
+		component.DrawFrame(cells, n.cfg.FrameCharSet, frame.Attributes, n.width-1, n.height-1)
+	}
 	if g != nil {
-		g.Draw(w, &frame, n.width, n.height)
+		g.DrawOver(&tcomponent.FrameInsideWriter{
+			Writer: w, Area: image.Rect(0, 0, n.width, n.height),
+			Inside: n.inside(), Masks: &n.masks,
+		}, &frame, n.width, n.height)
 	}
 	if !n.cfg.ProgressBar {
 		return

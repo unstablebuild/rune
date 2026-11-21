@@ -1314,6 +1314,35 @@ line, status bars and `terminal.default_attr`. A frame whose `bg` is unset
 takes the window's background, so leave `focus_frame_attr.bg` unset for the
 frame to blend in.
 
+### Frame images over a background
+
+A frame image draws its line through the middle of a cell, and a cell has a
+single background, so one color would show on both sides of the line. Rune
+paints each side in its own color instead:
+
+- Inside the line, toward the content, the transparent pixels show the
+  content's color.
+- Outside the line, they show what is under the frame: the theme's
+  background, or the window under a floating window.
+
+For this, draw each frame image as a line with transparent pixels on both
+sides, unbroken from one edge of the cell to the other. Rune finds the inside
+from the line itself, so a gap in it, or an image with no line across the
+cell, takes one color on both sides. So does an opaque image, which keeps the
+colors painted into it.
+
+The same goes for every framed surface:
+
+| Surface | Inside the line |
+| --- | --- |
+| Window frames | The window's `background_attr` or `focus_background_attr` color. |
+| Agent compose box | `input_background_color`. |
+| Notifications | The `bg` of `notifications.background_attr`, or else of `notifications.attr`. |
+
+The compose box frame keeps the chat's background under its images, unless
+`input_box_frame_attr` sets a `bg` of its own. A frame of characters still
+takes `input_background_color`.
+
 This marks the focused window with a background alone. Frames of spaces stay
 as a cell of padding around each window, in its background, and keep the
 scroll bar and edge dragging:

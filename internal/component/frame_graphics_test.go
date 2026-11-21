@@ -679,6 +679,74 @@ func TestFrameGraphicsDrawCell(t *testing.T) {
 	}
 }
 
+func TestFrameGraphicsDrawOver(t *testing.T) {
+	pics := newFramePictures(t)
+	navy := term.Attributes{Fg: term.ColorWhite, Bg: term.ColorNavy}
+	teal := term.Attributes{Bg: term.ColorTeal}
+	gr := component.FrameCharSetGraphics{TopLeft: pics.uris["L"], HorizontalTop: pics.uris["L"]}
+	tests := []struct {
+		name     string
+		noImages bool
+		// bg is the background of each cell: t for teal, under the
+		// frame, and n for navy, the frame's.
+		bg string
+	}{
+		{
+			name: "the cells under images keep the background under the frame",
+			bg: `
+tttn
+n..n
+nnnn`,
+		},
+		{
+			name:     "the cells whose images do not draw take the frame's",
+			noImages: true,
+			bg: `
+nnnn
+n..n
+nnnn`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			g.Reload(map[string]image.Image{pics.uris["L"]: pics.imgs['L']})
+
+			s := newImageScreen(4, 3)
+			s.noImages = tt.noImages
+			for y := range 3 {
+				for x := range 4 {
+					s.SetCell(term.Coordinates{X: x, Y: y}, term.NewCell('u', 1, teal))
+				}
+			}
+			f := component.NewFrame(&component.TestComponent{Ch: '.'})
+			f.Attributes = navy
+			f.Graphics = gr
+			f.Resize(4, 3)
+			f.Draw(&FrameUnderWriter{Writer: s, Graphics: gr, Width: 4, Height: 3})
+			g.DrawOver(s, f, 4, 3)
+			require.NoError(t, s.Flush())
+
+			var b strings.Builder
+			for i, c := range s.Cells() {
+				if i%4 == 0 {
+					b.WriteByte('\n')
+				}
+				switch c.Bg {
+				case term.ColorTeal:
+					b.WriteByte('t')
+				case term.ColorNavy:
+					b.WriteByte('n')
+				default:
+					b.WriteByte('.')
+				}
+			}
+			assert.Equal(t, tt.bg, b.String())
+		})
+	}
+}
+
 func TestFrameGraphicsDrawLine(t *testing.T) {
 	pics := newFramePictures(t)
 	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}

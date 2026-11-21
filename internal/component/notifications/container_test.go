@@ -717,6 +717,69 @@ XXXXXXXXXXXXXXXXXXXX`,
 	}
 }
 
+func TestComponentDrawGraphicsOverWhatIsUnder(t *testing.T) {
+	const width, height = 20, 4
+	line := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	for x := range 4 {
+		line.Set(x, 1, color.NRGBA{R: 0x80, A: 0xff})
+	}
+	const uri = "file:///line.png"
+	g := tcomponent.NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+	t.Cleanup(func() { assert.NoError(t, g.Close()) })
+	g.Reload(map[string]image.Image{uri: line})
+	frame := component.FrameCharSetDefault()
+	frame.Graphics = component.FrameCharSetGraphics{HorizontalTop: uri}
+	c := New(&component.TestComponent{Ch: 'X', Attributes: term.Attributes{Bg: term.ColorTeal}}, Config{
+		AutoClose: time.Hour,
+		Width:     10,
+		Graphics:  func() *tcomponent.FrameGraphics { return g },
+		Style: Style{
+			FrameCharSet:         frame,
+			Attributes:           term.Attributes{Bg: term.ColorNavy},
+			BackgroundAttributes: term.Attributes{Bg: term.ColorNavy},
+		},
+	})
+	t.Cleanup(func() { _ = c.Close() })
+	c.Resize(width, height)
+	c.Notify(LevelInfo, "hi")
+
+	s := newImageScreen(width, height)
+	c.Draw(s)
+	require.NoError(t, s.Flush())
+	var b strings.Builder
+	for i, cell := range s.Cells() {
+		if i%width == 0 {
+			b.WriteByte('\n')
+		}
+		switch cell.Bg {
+		case term.ColorTeal:
+			b.WriteByte('t')
+		case term.ColorNavy:
+			b.WriteByte('n')
+		default:
+			b.WriteByte('.')
+		}
+	}
+	assert.Equal(t, `
+ttttttttttnttttttttn
+ttttttttttnnnnnnnnnn
+ttttttttttnnnnnnnnnn
+tttttttttttttttttttt`, b.String(), "the cells under the images keep what is under the notification")
+
+	var fills []term.Coordinates
+	for _, img := range s.images {
+		if img.Fill {
+			assert.Equal(t, term.ColorNavy, img.FillColor)
+			fills = append(fills, img.Pos)
+		}
+	}
+	var want []term.Coordinates
+	for x := 11; x < width-1; x++ {
+		want = append(want, term.Coordinates{X: x})
+	}
+	assert.Equal(t, want, fills, "the inside of each line takes the notification's colour")
+}
+
 func TestContainerRestyle(t *testing.T) {
 	const width, height = 20, 9
 	runes := ProgressRunes{Start: '{', Current: '-', CurrentTip: '>', Remain: ' ', End: '}'}

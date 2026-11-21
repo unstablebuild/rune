@@ -157,6 +157,8 @@ type Component struct {
 	// boxGraphics draws the images of the compose box frame. It is nil
 	// until the frame names one.
 	boxGraphics *tcomponent.FrameGraphics
+	// boxMasks paints the inside of the lines of boxGraphics' images.
+	boxMasks   tcomponent.FrameMasks
 	loadingBox loadingFrame
 	input      Input
 	height     int
@@ -515,11 +517,26 @@ func (c *Component) applyBoxStyle() {
 		cs = component.FrameCharSetDefault()
 	}
 	c.box.FrameCharSet = cs
-	c.box.SetAttr(s.FrameAttr)
-	if s.InputBackgroundColor != term.ColorDefault {
-		c.box.Bg = s.InputBackgroundColor
-	}
+	c.box.SetAttr(boxFrameAttr(s, !cs.Graphics.Empty()))
 	c.input.SetDefaultAttributes(term.Attributes{Bg: s.InputBackgroundColor})
+}
+
+// boxFrameAttr returns the attributes of the cells of the compose box
+// frame in style s. A frame of runes takes the input's background, which
+// fills the box with it. A frame of images keeps the background under it
+// unless its own attributes name one: a cell has a single background,
+// which shows on both sides of a line drawn through it, so the side
+// outside the box shows the chat around it and framedBox paints the side
+// inside in the input's background.
+func boxFrameAttr(s ChatStyle, images bool) term.Attributes {
+	attr := s.FrameAttr
+	switch {
+	case images && attr.Bg == term.ColorDefault:
+		attr.Attrs |= term.AttrKeepBackground
+	case !images && s.InputBackgroundColor != term.ColorDefault:
+		attr.Bg = s.InputBackgroundColor
+	}
+	return attr
 }
 
 // setFocused draws the chat with ComponentConfig.Focus, or without it,
@@ -565,9 +582,17 @@ func (b *framedBox) Resize(width, height int) {
 
 func (b *framedBox) Draw(w term.Writer) {
 	b.c.box.Draw(w)
-	if g := b.c.frameGraphics(); g != nil {
-		g.Draw(w, &b.c.box.Frame, b.width, b.height)
+	g := b.c.frameGraphics()
+	if g == nil {
+		return
 	}
+	if bg := b.c.style().InputBackgroundColor; bg != term.ColorDefault {
+		w = &tcomponent.FrameInsideWriter{
+			Writer: w, Area: image.Rect(0, 0, b.width, b.height),
+			Inside: bg, Masks: &b.c.boxMasks,
+		}
+	}
+	g.Draw(w, &b.c.box.Frame, b.width, b.height)
 }
 
 // backgroundSwapWriter writes the cells written to it with the background
