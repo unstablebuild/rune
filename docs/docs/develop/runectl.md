@@ -79,8 +79,10 @@ keys to every open workspace, as `themereload` does:
 - `browser.window_manager`: `frame_attr`, `focus_frame_attr`,
   `frame_charset`, `focus_frame_charset`, `floating_frame_charset`,
   `focus_floating_frame_charset`, `focus_window_bar_charset`, `scroll_bar_attr`,
-  `scroll_bar_charset`, `scroll_bar_char`, `scroll_bar_hover_char`,
-  `window_bar`, `window_bar_charset`, `close_icon` and `close_icon_attr`;
+  `scroll_bar_charset`, `focus_scroll_bar_charset`, `scroll_bar_char`,
+  `scroll_bar_hover_char`, `background_attr`, `focus_background_attr`,
+  `background_graphics`, `focus_background_graphics`, `window_bar`,
+  `window_bar_charset`, `close_icon` and `close_icon_attr`;
 - `browser.frameunion_charset`;
 - `browser`: `focus_tab_attr`, `non_focus_tab_attr`, `focus_tab_icon_attr`,
   `non_focus_tab_icon_attr`, `focus_tab_highlight_attr`, `hover_tab_attr`,

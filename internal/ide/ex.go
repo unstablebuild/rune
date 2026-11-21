@@ -615,6 +615,7 @@ func (e *ex) doInit(
 
 	e.cleanPartialReissueState()
 	cmdBrowserCfg := e.config.Config
+	cmdBrowserCfg.WindowManagerConfig = withoutBackgrounds(cmdBrowserCfg.WindowManagerConfig)
 	if cmdBrowserCfg.WindowManagerConfig.Frame {
 		wmOriginY := 2
 		if cmdBrowserCfg.TabBarHeight != 0 {
@@ -3700,11 +3701,21 @@ func (e *ex) restyle(s hudStyle, images, statusBarImages map[string]image.Image)
 		}
 	}
 	e.comp.Browser().Restyle(s.browser)
-	e.cmdV.C.Restyle(s.browser)
+	cmdStyle := s.browser
+	cmdStyle.WindowManager = withoutBackgrounds(cmdStyle.WindowManager)
+	e.cmdV.C.Restyle(cmdStyle)
 	e.container.Restyle(s.notifications)
 	if e.statusBars != nil {
 		e.statusBars.Restyle(s.statusBar, statusBarImages)
 	}
+}
+
+// withoutBackgrounds returns cfg for the browser of the command prompt,
+// whose window draws no window background.
+func withoutBackgrounds(cfg thandler.WindowManagerConfig) thandler.WindowManagerConfig {
+	cfg.Background = tcomponent.WindowBackground{}
+	cfg.FocusBackground = nil
+	return cfg
 }
 
 // restyleChats gives e's acp chats, open and later, the status bar and

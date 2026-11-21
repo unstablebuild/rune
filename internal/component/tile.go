@@ -51,6 +51,9 @@ type TileNode struct {
 	// this node, 0 for an even share. It moves with fixedSize.
 	defaultSize int
 	dirty       bool
+	// background is the window's own background, nil for the
+	// manager's.
+	background *WindowBackground
 }
 
 // TileLayout is a serializable representation of a TileTree's structure.

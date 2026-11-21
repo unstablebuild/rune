@@ -67,11 +67,10 @@ func (w Window) setContentResize(h tui.Handler, resize bool) (
 		prev = comp.(tui.Handler)
 	}
 	w.Window.SetContentResize(h, resize)
-	// SetContent creates a new frame if necessary
-	// make sure that the frame created is set with
-	// the focus attr if this Window is in focus
+	// SetContent creates a new frame if necessary, which must take the
+	// focus style if this Window is in focus.
 	if w.wm.focus.ID() == w.ID() {
-		w.wm.setFocusAttr(w)
+		w.wm.applyFocusStyle()
 	}
 	return prev
 }
@@ -226,8 +225,8 @@ func (w Window) Close() error {
 		w.wm.prevFocus = Window{}
 	}
 
-	// make sure that focus attrs are "reset" if wm size is 1
-	w.wm.setFocusAttr(w.wm.Focus())
+	// a single window left takes the normal style
+	w.wm.applyFocusStyle()
 
 	return nil
 }

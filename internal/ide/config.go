@@ -3098,6 +3098,42 @@ func (c ideConfig) windowScrollBarCharsets() (
 		}
 		return
 	}
+	if !c.scrollBarCharsets(sub, "window_manager.scroll_bar_charset", &cs, &hover) {
+		return
+	}
+	c.graphicsOutset(sub, "graphics", "window_manager.scroll_bar_charset",
+		outsetSide{&outset, "left"},
+	)
+	return
+}
+
+// focusScrollBarCharsets reads window_manager.focus_scroll_bar_charset
+// as windowScrollBarCharsets reads scroll_bar_charset, over cs and hover,
+// which keep what it leaves out. ok reports whether it is set.
+func (c ideConfig) focusScrollBarCharsets(cs, hover component.ScrollBarCharSet) (
+	focus, focusHover component.ScrollBarCharSet, ok bool,
+) {
+	cfg, ok := c.windowManager()
+	if !ok {
+		return cs, hover, false
+	}
+	sub, err := cfg.GetConfig("focus_scroll_bar_charset")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors["window_manager.focus_scroll_bar_charset"] = err
+		}
+		return cs, hover, false
+	}
+	c.scrollBarCharsets(sub, "window_manager.focus_scroll_bar_charset", &cs, &hover)
+	return cs, hover, true
+}
+
+// scrollBarCharsets reads the runes and graphics of the scroll bar
+// charset sub into cs and hover, reporting errors under name. It reports
+// whether the graphics were valid.
+func (c ideConfig) scrollBarCharsets(
+	sub config.Config, name string, cs, hover *component.ScrollBarCharSet,
+) bool {
 	for _, f := range []struct {
 		key string
 		dst *rune
@@ -3112,7 +3148,7 @@ func (c ideConfig) windowScrollBarCharsets() (
 		r, err := sub.GetRune(f.key)
 		if err != nil {
 			if err != config.ErrNotFound {
-				c.errors["window_manager.scroll_bar_charset."+f.key] = err
+				c.errors[name+"."+f.key] = err
 			}
 			continue
 		}
@@ -3128,15 +3164,86 @@ func (c ideConfig) windowScrollBarCharsets() (
 		tconfig.GraphicsSlot{Key: "hover_middle_char", URI: &hg.Middle},
 		tconfig.GraphicsSlot{Key: "hover_bottom_char", URI: &hg.Bottom},
 	); err != nil {
-		c.errors["window_manager.scroll_bar_charset"] = err
-		return
+		c.errors[name] = err
+		return false
 	}
 	hg.Overlay = g.Overlay
 	cs.Graphics, hover.Graphics = g, hg
-	c.graphicsOutset(sub, "graphics", "window_manager.scroll_bar_charset",
-		outsetSide{&outset, "left"},
-	)
-	return
+	return true
+}
+
+// backgroundFits are the fits of window_manager.background_graphics.
+var backgroundFits = map[string]term.ImageFit{
+	"fill": term.ImageFitFill,
+	"tile": term.ImageFitTile,
+}
+
+// windowBackground reads window_manager's prefix+"background_attr" and
+// prefix+"background_graphics" over def, which keeps what they leave
+// out: an attribute's default colour, a graphics slot or fit. An empty
+// URI clears a slot. Attributes other than fg and bg are ignored. ok
+// reports whether either key is set.
+func (c ideConfig) windowBackground(prefix string, def tcomponent.WindowBackground) (
+	bg tcomponent.WindowBackground, ok bool,
+) {
+	bg = def
+	cfg, found := c.windowManager()
+	if !found {
+		return bg, false
+	}
+	attrKey, graphicsKey := prefix+"background_attr", prefix+"background_graphics"
+	switch attr, err := config.GetAttributes(cfg, attrKey); {
+	case errors.Is(err, config.ErrNotFound):
+	case err != nil:
+		c.errors["window_manager."+attrKey] = err
+	default:
+		ok = true
+		if attr.Fg != term.ColorDefault {
+			bg.Attr.Fg = attr.Fg
+		}
+		if attr.Bg != term.ColorDefault {
+			bg.Attr.Bg = attr.Bg
+		}
+	}
+	bg.Attr = term.Attributes{Fg: bg.Attr.Fg, Bg: bg.Attr.Bg}
+
+	sub, err := cfg.GetConfig(graphicsKey)
+	if err != nil {
+		if !errors.Is(err, config.ErrNotFound) {
+			c.errors["window_manager."+graphicsKey] = err
+		}
+		return bg, ok
+	}
+	ok = true
+	g := &bg.Graphics
+	if err := tconfig.GetGraphics(cfg, graphicsKey, nil,
+		tconfig.GraphicsSlot{Key: "topleft", URI: &g.TopLeft},
+		tconfig.GraphicsSlot{Key: "topright", URI: &g.TopRight},
+		tconfig.GraphicsSlot{Key: "bottomleft", URI: &g.BottomLeft},
+		tconfig.GraphicsSlot{Key: "bottomright", URI: &g.BottomRight},
+		tconfig.GraphicsSlot{Key: "horizontaltop", URI: &g.HorizontalTop},
+		tconfig.GraphicsSlot{Key: "horizontalbottom", URI: &g.HorizontalBottom},
+		tconfig.GraphicsSlot{Key: "verticalleft", URI: &g.VerticalLeft},
+		tconfig.GraphicsSlot{Key: "verticalright", URI: &g.VerticalRight},
+		tconfig.GraphicsSlot{Key: "center", URI: &g.Center},
+	); err != nil {
+		c.errors["window_manager."+graphicsKey] = err
+	}
+	name, err := sub.GetString("fit")
+	switch {
+	case errors.Is(err, config.ErrNotFound):
+	case err != nil:
+		c.errors["window_manager."+graphicsKey+".fit"] = err
+	default:
+		fit, known := backgroundFits[name]
+		if !known {
+			c.errors["window_manager."+graphicsKey+".fit"] = fmt.Errorf(
+				`expected "fill" or "tile", got %q`, name)
+			break
+		}
+		g.Fit = fit
+	}
+	return bg, ok
 }
 
 func (c ideConfig) windowNoMaxSize() (ret bool) {
@@ -3470,6 +3577,13 @@ func (c ideConfig) windowManagerConfig() handler.WindowManagerConfig {
 	ret.FocusFloatingFrameCharSet = c.optionalWindowCharset("focus_floating_frame_charset", ret.FocusFrameCharSet)
 	if cs, ok := c.windowBarCharsetWithDefault("focus_window_bar_charset", ret.WindowBarCharSet); ok {
 		ret.FocusWindowBarCharSet = &cs
+	}
+	ret.Background, _ = c.windowBackground("", tcomponent.WindowBackground{})
+	if bg, ok := c.windowBackground("focus_", ret.Background); ok {
+		ret.FocusBackground = &bg
+	}
+	if cs, hover, ok := c.focusScrollBarCharsets(scrollBar, scrollBarHover); ok {
+		ret.FocusScrollBarCharSet, ret.FocusScrollBarHoverCharSet = &cs, &hover
 	}
 	if c.storage != nil {
 		ret.FrameGraphicsStorage = storageapi.WithPartition(c.storage, frameImagesPartition)

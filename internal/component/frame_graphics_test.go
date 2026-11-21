@@ -500,6 +500,144 @@ func TestFrameGraphicsSharesOneImagePerURI(t *testing.T) {
 	}
 }
 
+func TestFrameGraphicsDrawBackground(t *testing.T) {
+	pics := newFramePictures(t)
+	type placement struct {
+		name  rune
+		area  image.Rectangle
+		fit   term.ImageFit
+		layer term.ImageLayer
+	}
+	below := term.ImageLayerBelowBackground
+	tests := []struct {
+		name     string
+		graphics BackgroundGraphics
+		area     image.Rectangle
+		noImages bool
+		loads    int
+		images   []placement
+		bare     []image.Rectangle
+	}{
+		{
+			name: "each slice covers its cells",
+			graphics: BackgroundGraphics{
+				TopLeft: "L", HorizontalTop: "R", VerticalRight: "i", Center: "s",
+			},
+			area:  image.Rect(1, 1, 5, 4),
+			loads: 4,
+			images: []placement{
+				{'L', image.Rect(1, 1, 2, 2), term.ImageFitFill, below},
+				{'R', image.Rect(2, 1, 4, 2), term.ImageFitFill, below},
+				{'i', image.Rect(4, 2, 5, 3), term.ImageFitFill, below},
+				{'s', image.Rect(2, 2, 4, 3), term.ImageFitFill, below},
+			},
+			bare: []image.Rectangle{
+				image.Rect(4, 1, 5, 2), image.Rect(1, 3, 2, 4), image.Rect(4, 3, 5, 4),
+				image.Rect(2, 3, 4, 4), image.Rect(1, 2, 2, 3),
+			},
+		},
+		{
+			name:     "tiles keep their fit",
+			graphics: BackgroundGraphics{Center: "s", Fit: term.ImageFitTile},
+			area:     image.Rect(0, 0, 4, 4),
+			loads:    1,
+			images:   []placement{{'s', image.Rect(1, 1, 3, 3), term.ImageFitTile, below}},
+			bare: []image.Rectangle{
+				image.Rect(0, 0, 1, 1), image.Rect(3, 0, 4, 1), image.Rect(0, 3, 1, 4),
+				image.Rect(3, 3, 4, 4), image.Rect(1, 0, 3, 1), image.Rect(1, 3, 3, 4),
+				image.Rect(0, 1, 1, 3), image.Rect(3, 1, 4, 3),
+			},
+		},
+		{
+			name:     "an area one cell high takes the center alone",
+			graphics: BackgroundGraphics{TopLeft: "L", Center: "s"},
+			area:     image.Rect(0, 2, 5, 3),
+			loads:    1,
+			images:   []placement{{'s', image.Rect(0, 2, 5, 3), term.ImageFitFill, below}},
+		},
+		{
+			name:     "a missing image leaves its slice bare",
+			graphics: BackgroundGraphics{Center: "missing"},
+			area:     image.Rect(0, 0, 3, 1),
+			loads:    1,
+			bare:     []image.Rectangle{image.Rect(0, 0, 3, 1)},
+		},
+		{
+			name:     "a writer that cannot draw images leaves every slice bare",
+			graphics: BackgroundGraphics{Center: "s"},
+			area:     image.Rect(0, 0, 3, 1),
+			noImages: true,
+			loads:    1,
+			bare:     []image.Rectangle{image.Rect(0, 0, 3, 1)},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gr := tt.graphics
+			for _, slot := range []*string{
+				&gr.TopLeft, &gr.TopRight, &gr.BottomLeft, &gr.BottomRight,
+				&gr.HorizontalTop, &gr.HorizontalBottom, &gr.VerticalLeft,
+				&gr.VerticalRight, &gr.Center,
+			} {
+				*slot = pics.uris[*slot]
+			}
+			irq := make(interruptCounter, 16)
+			g := NewFrameGraphics(storagestub.NewInMemoryService(), irq)
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			g.DrawBackground(term.NewStringWriter(6, 5), gr, tt.area, nil)
+			irq.wait(t, tt.loads)
+
+			s := newImageScreen(6, 5)
+			s.noImages = tt.noImages
+			bare := g.DrawBackground(s, gr, tt.area, nil)
+			var images []placement
+			for _, img := range s.images {
+				images = append(images, placement{pics.name(img), img.Bounds(), img.Fit, img.Layer})
+			}
+			assert.ElementsMatch(t, tt.images, images)
+			assert.ElementsMatch(t, tt.bare, bare)
+			for _, c := range s.Cells() {
+				assert.Zero(t, c.Ch, "no cell may be written")
+			}
+		})
+	}
+}
+
+func TestFrameGraphicsBackgroundImages(t *testing.T) {
+	pics := newFramePictures(t)
+	irq := make(interruptCounter, 16)
+	g := NewFrameGraphics(storagestub.NewInMemoryService(), irq)
+	t.Cleanup(func() { assert.NoError(t, g.Close()) })
+	area := image.Rect(0, 0, 1, 1)
+	filled := BackgroundGraphics{Center: pics.uris["s"]}
+	tiled := BackgroundGraphics{Center: pics.uris["s"], Fit: term.ImageFitTile}
+	draw := func(gr BackgroundGraphics) term.Image {
+		t.Helper()
+		s := newImageScreen(1, 1)
+		g.DrawBackground(s, gr, area, nil)
+		require.Len(t, s.images, 1)
+		return s.images[0]
+	}
+	g.DrawBackground(term.NewStringWriter(1, 1), filled, area, nil)
+	g.DrawBackground(term.NewStringWriter(1, 1), tiled, area, nil)
+	irq.wait(t, 2)
+
+	before := draw(filled)
+	assert.Equal(t, before.ID, draw(filled).ID, "a URI and fit share one ImageID")
+	assert.NotEqual(t, before.ID, draw(tiled).ID, "another fit gets its own")
+
+	g.Reload(map[string]image.Image{pics.uris["s"]: pics.imgs['p']})
+	after := draw(filled)
+	assert.NotEqual(t, before.ID, after.ID, "a reload replaces the image")
+	assert.Equal(t, 'p', pics.name(after), "the reloaded picture draws at once")
+	assert.Equal(t, 'p', pics.name(draw(tiled)))
+	select {
+	case <-irq:
+		assert.Fail(t, "a reloaded background was fetched")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestFrameGraphicsDrawCell(t *testing.T) {
 	pics := newFramePictures(t)
 	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}

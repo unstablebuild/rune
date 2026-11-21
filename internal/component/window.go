@@ -276,6 +276,44 @@ func (w Window) HasWindowBar() bool {
 	return ok && w.wm.hasWindowBar(fn)
 }
 
+// SetBackground gives this window a background of its own, drawn as
+// WindowManager.DrawWindow describes, with or without frames. Nil
+// restores the manager's WindowManagerConfig.Background.
+func (w Window) SetBackground(bg *WindowBackground) {
+	if w.wm == nil {
+		panic(errCalledZeroValuedWin)
+	}
+	var own *WindowBackground
+	if bg != nil {
+		copy := *bg
+		own = &copy
+	}
+	switch n := w.node.(type) {
+	case *floatingNode:
+		n.background = own
+	case *TileNode:
+		n.background = own
+	}
+}
+
+// Background returns the background this window draws.
+func (w Window) Background() WindowBackground {
+	if w.wm == nil {
+		panic(errCalledZeroValuedWin)
+	}
+	var own *WindowBackground
+	switch n := w.node.(type) {
+	case *floatingNode:
+		own = n.background
+	case *TileNode:
+		own = n.background
+	}
+	if own != nil {
+		return *own
+	}
+	return w.wm.config.Background
+}
+
 // Title returns the title rendered on a floating window's bar, or an
 // empty string for tiles and untitled windows.
 func (w Window) Title() string {

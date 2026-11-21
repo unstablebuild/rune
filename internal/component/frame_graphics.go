@@ -150,14 +150,89 @@ func linePos(from term.Coordinates, i int, vertical bool) term.Coordinates {
 	return from
 }
 
+// BackgroundGraphics names the images of a window's background panel, a
+// nine-slice: each corner image covers its corner cell, each edge image
+// the cells of its edge between the corners, one cell thick, and Center
+// every cell inside them. In an area narrower or shorter than two cells,
+// Center covers every cell alone. A slice whose URI is empty shows no
+// image.
+type BackgroundGraphics struct {
+	TopLeft, TopRight, BottomLeft, BottomRight string
+	HorizontalTop, HorizontalBottom            string
+	VerticalLeft, VerticalRight                string
+	Center                                     string
+	// Fit is how every image covers its slice. ImageFitTile repeats it
+	// unscaled from the slice's top-left corner.
+	Fit term.ImageFit
+}
+
+// Empty reports whether g names no image, whatever its Fit.
+func (g BackgroundGraphics) Empty() bool {
+	for _, uri := range g.URIs() {
+		if uri != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// URIs returns the URIs g names, empty ones included.
+func (g BackgroundGraphics) URIs() []string {
+	return []string{
+		g.TopLeft, g.TopRight, g.BottomLeft, g.BottomRight,
+		g.HorizontalTop, g.HorizontalBottom, g.VerticalLeft, g.VerticalRight,
+		g.Center,
+	}
+}
+
+// backgroundSlice is the image of a BackgroundGraphics slot and the
+// cells it covers.
+type backgroundSlice struct {
+	uri  string
+	area image.Rectangle
+}
+
+// slices returns the slices of g over area, empty ones included.
+func (g BackgroundGraphics) slices(area image.Rectangle) [9]backgroundSlice {
+	var ret [9]backgroundSlice
+	if area.Dx() < 2 || area.Dy() < 2 {
+		ret[8] = backgroundSlice{g.Center, area}
+		return ret
+	}
+	x0, y0 := area.Min.X, area.Min.Y
+	x1, y1 := area.Max.X-1, area.Max.Y-1
+	ret = [9]backgroundSlice{
+		{g.TopLeft, image.Rect(x0, y0, x0+1, y0+1)},
+		{g.TopRight, image.Rect(x1, y0, x1+1, y0+1)},
+		{g.BottomLeft, image.Rect(x0, y1, x0+1, y1+1)},
+		{g.BottomRight, image.Rect(x1, y1, x1+1, y1+1)},
+		{g.HorizontalTop, image.Rect(x0+1, y0, x1, y0+1)},
+		{g.HorizontalBottom, image.Rect(x0+1, y1, x1, y1+1)},
+		{g.VerticalLeft, image.Rect(x0, y0+1, x0+1, y1)},
+		{g.VerticalRight, image.Rect(x1, y0+1, x1+1, y1)},
+		{g.Center, image.Rect(x0+1, y0+1, x1, y1)},
+	}
+	return ret
+}
+
 // FrameGraphics draws the images that FrameCharSet.Graphics names over
 // the border of a component.Frame. It keeps one image per URI, so a URI
 // is fetched and decoded once and shares one ImageID across every frame
-// and slot it is drawn in.
+// and slot it is drawn in. The images of window backgrounds are kept per
+// URI and fit, apart from those of frames.
 type FrameGraphics struct {
 	storage     storageapi.Service
 	interrupter term.Interrupter
 	images      map[string]*imageuri.Component
+	backgrounds map[backgroundKey]*imageuri.Component
+	// reloaded holds the images of the last Reload, which backgrounds
+	// first drawn since are made from instead of fetched.
+	reloaded map[string]image.Image
+}
+
+type backgroundKey struct {
+	uri string
+	fit term.ImageFit
 }
 
 var frameImageStyle = imageuri.Style{
@@ -175,6 +250,7 @@ func NewFrameGraphics(
 		storage:     storage,
 		interrupter: interrupter,
 		images:      make(map[string]*imageuri.Component),
+		backgrounds: make(map[backgroundKey]*imageuri.Component),
 	}
 }
 
@@ -468,10 +544,86 @@ func (g *FrameGraphics) DrawLine(
 	}
 }
 
+// DrawBackground draws the images of gr over area of w, under the
+// background of its cells, so that they show only through the cells
+// whose background is the default. It appends to bare the slices of area
+// that show no image, which name none, whose image is not loaded yet or
+// failed to load, or that w cannot draw, and returns it.
+func (g *FrameGraphics) DrawBackground(
+	w term.Writer, gr BackgroundGraphics, area image.Rectangle, bare []image.Rectangle,
+) []image.Rectangle {
+	dw := drawnWriter{Writer: w}
+	for _, s := range gr.slices(area) {
+		if s.area.Empty() {
+			continue
+		}
+		img := g.background(s.uri, gr.Fit)
+		if img == nil {
+			bare = append(bare, s.area)
+			continue
+		}
+		dw.drawn = false
+		img.Resize(s.area.Dx(), s.area.Dy())
+		img.Draw(&component.VirtualWriter{
+			Writer: &dw,
+			Offset: term.Coordinates{X: s.area.Min.X, Y: s.area.Min.Y},
+			Width:  s.area.Dx(),
+			Height: s.area.Dy(),
+		})
+		if !dw.drawn {
+			bare = append(bare, s.area)
+		}
+	}
+	return bare
+}
+
+// background returns the image of a background slice, or nil if uri is
+// empty or cannot be displayed.
+func (g *FrameGraphics) background(uri string, fit term.ImageFit) *imageuri.Component {
+	if uri == "" {
+		return nil
+	}
+	key := backgroundKey{uri: uri, fit: fit}
+	img, ok := g.backgrounds[key]
+	if ok {
+		return img
+	}
+	style := imageuri.Style{Fit: fit, Layer: term.ImageLayerBelowBackground, HideLoading: true}
+	var err error
+	if src, ok := g.reloaded[uri]; ok {
+		img, err = imageuri.NewLoaded(uri, src, style)
+	} else {
+		img, err = imageuri.New(uri, template.DefaultImageTTL, g.storage, g.interrupter, style)
+	}
+	if err != nil {
+		slog.Warn("frame graphics: new background image", "error", err)
+	}
+	g.backgrounds[key] = img
+	return img
+}
+
+// drawnWriter records whether Writer drew any image.
+type drawnWriter struct {
+	term.Writer
+	drawn bool
+}
+
+// DrawImage satisfies term.Writer.
+func (w *drawnWriter) DrawImage(img term.Image) bool {
+	ok := w.Writer.DrawImage(img)
+	w.drawn = w.drawn || ok
+	return ok
+}
+
 // Close closes every image.
 func (g *FrameGraphics) Close() error {
 	var errs []error
 	for _, img := range g.images {
+		if img != nil {
+			errs = append(errs, img.Close())
+		}
+	}
+	for _, img := range g.backgrounds {
 		if img != nil {
 			errs = append(errs, img.Close())
 		}
@@ -481,7 +633,8 @@ func (g *FrameGraphics) Close() error {
 
 // Reload replaces every image g holds with images: g draws each without
 // fetching it, and fetches any other URI again, through storage, the
-// next time it draws it. The images it held are closed.
+// next time it draws it, in frames and backgrounds alike. The images it
+// held are closed.
 func (g *FrameGraphics) Reload(images map[string]image.Image) {
 	old := g.images
 	g.images = make(map[string]*imageuri.Component, len(images))
@@ -497,6 +650,13 @@ func (g *FrameGraphics) Reload(images map[string]image.Image) {
 			_ = img.Close()
 		}
 	}
+	for _, img := range g.backgrounds {
+		if img != nil {
+			_ = img.Close()
+		}
+	}
+	clear(g.backgrounds)
+	g.reloaded = images
 }
 
 // Image returns the image of uri, the one that g draws wherever uri is

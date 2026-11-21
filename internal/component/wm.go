@@ -52,10 +52,15 @@ type WindowManagerConfig struct {
 	CloseIcon        rune
 	CloseIconAttr    term.Attributes
 
+	// Background is the background of every window that
+	// Window.SetBackground gives none of its own.
+	Background WindowBackground
+
 	// FrameGraphicsStorage caches the images of FrameCharSet.Graphics,
-	// ScrollBarCharSet.Graphics and WindowBarCharSet.Graphics. Without
-	// it, or without Interrupter, frames and window bars draw their
-	// runes only.
+	// ScrollBarCharSet.Graphics, WindowBarCharSet.Graphics and the
+	// windows' background graphics. Without it, or without Interrupter,
+	// frames and window bars draw their runes only, and backgrounds their
+	// colour only.
 	FrameGraphicsStorage storageapi.Service
 	// Interrupter is signalled each time an image of the frames'
 	// graphics loads, so the host repaints with it.
@@ -106,6 +111,23 @@ type WindowBarOutset struct {
 	Top, Bottom, Sides, Inward, HorizontalTop int
 }
 
+// WindowBackground is what a window shows wherever its content, frame,
+// scroll bar and window bar leave the default background. Graphics'
+// images show through those cells, and the cells of the slices that
+// show no image take Attr.Bg. Attr.Fg replaces the default foreground of
+// those cells, image or not. A cell with AttrReverse keeps its colours.
+// Attr's other attributes are ignored.
+type WindowBackground struct {
+	Attr     term.Attributes
+	Graphics BackgroundGraphics
+}
+
+// Empty reports whether b leaves its window as the window draws itself.
+func (b WindowBackground) Empty() bool {
+	return b.Attr.Fg == term.ColorDefault && b.Attr.Bg == term.ColorDefault &&
+		b.Graphics.Empty()
+}
+
 // WindowBarCloseIconX is the bar-local X offset at which the close
 // icon is rendered on a floating window's bar.
 const WindowBarCloseIconX = 1
@@ -126,6 +148,11 @@ type WindowManager struct {
 	minimizedPos    map[uint64]windowPos
 
 	graphics *FrameGraphics
+
+	// bgWriter and bgBare are kept to draw backgrounds without
+	// allocating.
+	bgWriter backgroundWriter
+	bgBare   []image.Rectangle
 }
 
 // Draw satisfies tui.Component
@@ -265,11 +292,232 @@ func closeTileLayoutContent(c tui.Component) {
 
 // DrawWindow can be used to arbitrarily draw floating windows returned
 // by FloatingWindows. If win is not a floating window, this method will panic.
+// A window with a background is cleared first and draws it last.
 func (wm *WindowManager) DrawWindow(win Window, w term.Writer) {
 	if wm.minimizedDirty {
 		wm.Resize(wm.width, wm.height)
 	}
 
+	t, ok := wm.backgroundTarget(win)
+	if !ok {
+		wm.drawWindow(win, w)
+		return
+	}
+	wm.bgWriter.begin(w, t.area)
+	wm.drawWindow(win, &wm.bgWriter)
+	wm.drawBackground(t)
+}
+
+// backgroundTarget is where a window draws its background, in cells of
+// the window manager's writer.
+type backgroundTarget struct {
+	bg WindowBackground
+	// area is the cells the window covers.
+	area image.Rectangle
+}
+
+// backgroundTarget returns where win draws its background, or false if
+// it has none to draw.
+func (wm *WindowManager) backgroundTarget(win Window) (backgroundTarget, bool) {
+	t := backgroundTarget{bg: win.Background()}
+	if t.bg.Empty() {
+		return backgroundTarget{}, false
+	}
+	switch n := win.node.(type) {
+	case *floatingNode:
+		if n.minimized != 0 {
+			return backgroundTarget{}, false
+		}
+		t.area = image.Rect(0, 0, n.realWidth, n.realHeight).Add(
+			image.Pt(n.realOffset.X, n.realOffset.Y))
+	case *TileNode:
+		pos := n.Position()
+		t.area = image.Rect(pos.X, pos.Y, pos.X+n.width, pos.Y+n.height)
+	}
+	screen := image.Rect(0, 0, wm.minimizedWidth, wm.minimizedHeight)
+	offset := image.Pt(wm.minimizedOffset.X, wm.minimizedOffset.Y)
+	t.area = t.area.Intersect(screen).Add(offset)
+	return t, !t.area.Empty()
+}
+
+// drawBackground draws t.bg over t.area of the writer wm.bgWriter
+// recorded a window on: its images under every cell's background, and
+// its colours over the cells left with the default ones and under the
+// gaps shifted cells leave.
+func (wm *WindowManager) drawBackground(t backgroundTarget) {
+	bg, area := t.bg, t.area
+	w := wm.bgWriter.Writer
+	bare := wm.bgBare[:0]
+	if wm.graphics != nil && !bg.Graphics.Empty() {
+		bare = wm.graphics.DrawBackground(w, bg.Graphics, area, bare)
+	} else {
+		bare = append(bare, area)
+	}
+	wm.bgBare = bare
+	if bg.Attr.Fg == term.ColorDefault && bg.Attr.Bg == term.ColorDefault {
+		return
+	}
+	if bg.Attr.Bg != term.ColorDefault {
+		wm.fillShiftedGaps(bg.Attr.Bg, area, bare)
+	}
+	for y := area.Min.Y; y < area.Max.Y; y++ {
+		for x := area.Min.X; x < area.Max.X; x++ {
+			d := wm.bgWriter.cells[(y-area.Min.Y)*area.Dx()+x-area.Min.X]
+			if d&cellDefaultBg == 0 {
+				continue
+			}
+			var attr term.Attributes
+			if d&cellDefaultFg != 0 {
+				attr.Fg = bg.Attr.Fg
+			}
+			p := image.Pt(x, y)
+			if slices.ContainsFunc(bare, p.In) {
+				attr.Bg = bg.Attr.Bg
+			}
+			if attr != (term.Attributes{}) {
+				w.UnionAttributes(term.Coordinates{X: x, Y: y}, attr)
+			}
+		}
+	}
+}
+
+// fillShiftedGaps paints c under the runs of cells of area in bare that
+// the renderer moves half a cell up or down. Moving a cell moves its
+// background with it, and the part of its row it leaves would show the
+// writer's default background rather than the window's. The fill goes
+// under every background, so it only shows in that gap.
+func (wm *WindowManager) fillShiftedGaps(c term.Color, area image.Rectangle, bare []image.Rectangle) {
+	w := wm.bgWriter.Writer
+	for y := area.Min.Y; y < area.Max.Y; y++ {
+		start := -1
+		for x := area.Min.X; x <= area.Max.X; x++ {
+			var d cellDefaults
+			if x < area.Max.X {
+				d = wm.bgWriter.cells[(y-area.Min.Y)*area.Dx()+x-area.Min.X]
+			}
+			shifted := d&(cellShifted|cellFilled) == cellShifted &&
+				slices.ContainsFunc(bare, image.Pt(x, y).In)
+			switch {
+			case shifted && start < 0:
+				start = x
+			case !shifted && start >= 0:
+				w.DrawImage(term.Image{
+					Fill: true, FillColor: c,
+					Pos:   term.Coordinates{X: start, Y: y},
+					Width: x - start, Height: 1,
+					Layer: term.ImageLayerBelowBackground,
+				})
+				start = -1
+			}
+		}
+	}
+}
+
+// cellDefaults records which of a cell's colours are the default, and
+// whether the renderer moves the cell or its content fills under it.
+type cellDefaults uint8
+
+const (
+	cellDefaultBg cellDefaults = 1 << iota
+	cellDefaultFg
+	cellShifted
+	cellFilled
+)
+
+// shiftAttrs are the attributes that move a cell half a cell.
+const shiftAttrs = term.AttrVerticalRenderOffset | term.AttrNegativeVerticalRenderOffset
+
+// backgroundWriter forwards everything to Writer, and records, for each
+// cell of area, which of its colours were last left the default.
+type backgroundWriter struct {
+	term.Writer
+	area  image.Rectangle
+	cells []cellDefaults
+}
+
+// begin records area of dst from now on, after clearing it to blank
+// cells with the default colours.
+func (w *backgroundWriter) begin(dst term.Writer, area image.Rectangle) {
+	w.Writer, w.area = dst, area
+	n := area.Dx() * area.Dy()
+	w.cells = slices.Grow(w.cells[:0], n)[:n]
+	for y := area.Min.Y; y < area.Max.Y; y++ {
+		for x := area.Min.X; x < area.Max.X; x++ {
+			w.SetCell(term.Coordinates{X: x, Y: y}, term.Cell{})
+		}
+	}
+}
+
+func (w *backgroundWriter) index(pos term.Coordinates) (int, bool) {
+	if !image.Pt(pos.X, pos.Y).In(w.area) {
+		return 0, false
+	}
+	return (pos.Y-w.area.Min.Y)*w.area.Dx() + pos.X - w.area.Min.X, true
+}
+
+// SetCell satisfies term.Writer. A cell with AttrKeepBackground keeps
+// what was recorded of the background it keeps.
+func (w *backgroundWriter) SetCell(pos term.Coordinates, c term.Cell) {
+	if i, ok := w.index(pos); ok {
+		d := w.cells[i] & cellDefaultBg
+		if c.Attrs&term.AttrKeepBackground == 0 {
+			d = 0
+			if c.Bg == term.ColorDefault {
+				d = cellDefaultBg
+			}
+		}
+		if c.Fg == term.ColorDefault {
+			d |= cellDefaultFg
+		}
+		if c.Attrs&term.AttrReverse != 0 {
+			d = 0
+		}
+		if c.Attrs&shiftAttrs != 0 {
+			d |= cellShifted
+		}
+		w.cells[i] = d
+	}
+	w.Writer.SetCell(pos, c)
+}
+
+// UnionAttributes satisfies term.Writer.
+func (w *backgroundWriter) UnionAttributes(pos term.Coordinates, attr term.Attributes) {
+	if i, ok := w.index(pos); ok {
+		if attr.Bg != term.ColorDefault {
+			w.cells[i] &^= cellDefaultBg
+		}
+		if attr.Fg != term.ColorDefault {
+			w.cells[i] &^= cellDefaultFg
+		}
+		if attr.Attrs&term.AttrReverse != 0 {
+			w.cells[i] &= cellShifted
+		}
+		if attr.Attrs&shiftAttrs != 0 {
+			w.cells[i] |= cellShifted
+		}
+	}
+	w.Writer.UnionAttributes(pos, attr)
+}
+
+// DrawImage satisfies term.Writer. It records the cells a fill under
+// every background covers, which already paints the gap a shifted cell
+// leaves.
+func (w *backgroundWriter) DrawImage(img term.Image) bool {
+	ok := w.Writer.DrawImage(img)
+	if !ok || !img.Fill || img.Layer != term.ImageLayerBelowBackground {
+		return ok
+	}
+	covered := img.Visible().Intersect(w.area)
+	for y := covered.Min.Y; y < covered.Max.Y; y++ {
+		for x := covered.Min.X; x < covered.Max.X; x++ {
+			i, _ := w.index(term.Coordinates{X: x, Y: y})
+			w.cells[i] |= cellFilled
+		}
+	}
+	return ok
+}
+
+func (wm *WindowManager) drawWindow(win Window, w term.Writer) {
 	nonMinimizedW := component.VirtualWriter{
 		Writer: w,
 		Offset: wm.minimizedOffset,
@@ -786,10 +1034,11 @@ func (wm *WindowManager) FloatingWindow(
 }
 
 // Restyled returns c with the style of s: its frame, scroll bar and
-// window bar attributes and charsets, ScrollBarOutset, close icon and
-// whether floating windows draw the window bar, which takes their top
-// frame row either way. What changes the layout or how images load,
-// Frame, NoMaxSize, FrameGraphicsStorage and Interrupter, stays c's.
+// window bar attributes and charsets, ScrollBarOutset, close icon,
+// Background and whether floating windows draw the window bar, which
+// takes their top frame row either way. What changes the layout or how
+// images load, Frame, NoMaxSize, FrameGraphicsStorage and Interrupter,
+// stays c's.
 func (c WindowManagerConfig) Restyled(s WindowManagerConfig) WindowManagerConfig {
 	c.FrameAttr = s.FrameAttr
 	c.FrameCharSet = s.FrameCharSet
@@ -801,6 +1050,7 @@ func (c WindowManagerConfig) Restyled(s WindowManagerConfig) WindowManagerConfig
 	c.WindowBarCharSet = s.WindowBarCharSet
 	c.CloseIcon = s.CloseIcon
 	c.CloseIconAttr = s.CloseIconAttr
+	c.Background = s.Background
 	return c
 }
 

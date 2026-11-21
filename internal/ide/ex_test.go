@@ -4790,6 +4790,7 @@ func TestExRestyle(t *testing.T) {
 				"frame_charset": map[string]any{
 					"topleft": "╭", "graphics": map[string]any{"topleft": uri},
 				},
+				"background_attr": map[string]any{"bg": "navy"},
 			},
 			"focus_tab_highlight_char": "=",
 			"tab_images": map[string]any{"focus": map[string]any{
@@ -4844,6 +4845,21 @@ func TestExRestyle(t *testing.T) {
 
 	const width, height = 40, 10
 	b.Resize(width, height)
+	navyCells := func(c *browser.Component) int {
+		w := term.NewStringWriter(width, height)
+		c.Resize(width, height)
+		c.Draw(w)
+		require.NoError(t, w.Flush())
+		n := 0
+		for _, cell := range w.Cells() {
+			if cell.Bg == term.ColorNavy {
+				n++
+			}
+		}
+		return n
+	}
+	assert.NotZero(t, navyCells(b.ex.comp.Browser()), "the windows draw their background")
+	assert.Zero(t, navyCells(b.ex.cmdV.C), "the command prompt draws no window background")
 
 	tab := b.ex.comp.Browser().NewTab(workspaceapi.URI{}, 'x', "tab", browsertest.NewTestHandler(), nil)
 	require.NoError(t, b.ex.comp.Browser().Focus().SetContent(tab))

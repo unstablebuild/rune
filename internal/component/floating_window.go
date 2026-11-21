@@ -35,6 +35,7 @@ type floatingNode struct {
 	noBar                       bool
 	title                       string
 	barCharSet                  *WindowBarCharSet
+	background                  *WindowBackground
 	moved                       bool
 	maximized                   bool
 	restoreAlignment            component.Alignment

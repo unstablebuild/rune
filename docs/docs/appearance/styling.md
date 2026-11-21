@@ -322,6 +322,11 @@ The scroll bar works the same way, with `top_char`, `middle_char`,
 `bottom_char` and their `hover_` versions under
 `scroll_bar_charset.graphics`, and an `outset` with `left`, in cells.
 
+A theme can mark the focused window with a background image instead of a
+brighter frame: `focus_background_graphics` draws a panel behind it, and
+`focus_scroll_bar_charset` takes images painted for that panel. See
+[Focus styles](#focus-styles).
+
 ### Tabs
 
 `browser.tab_images` draws every tab with a `left`, `middle` and `right`
@@ -772,8 +777,9 @@ theme's surroundings.
 | Surface | Key | Images | `outset` |
 | --- | --- | --- | --- |
 | Window frames | `browser.window_manager.frame_charset.graphics`, `focus_frame_charset.graphics` | The eight frame slots. | |
+| Window backgrounds | `browser.window_manager.background_graphics`, `focus_background_graphics` | The eight frame slots and `center`, with `fit`. | |
 | Floating-only frames | `browser.window_manager.floating_frame_charset.graphics`, `focus_floating_frame_charset.graphics` | The eight frame slots; tiled frames stay unchanged. | |
-| Scroll bar | `browser.window_manager.scroll_bar_charset.graphics` | `top_char`, `middle_char`, `bottom_char` and their `hover_` versions. | `left` |
+| Scroll bar | `browser.window_manager.scroll_bar_charset.graphics`, `focus_scroll_bar_charset.graphics` | `top_char`, `middle_char`, `bottom_char` and their `hover_` versions. | `left` |
 | Floating window bar | `browser.window_manager.window_bar_charset.graphics`, `focus_window_bar_charset.graphics` | `left`, `horizontal` and `right`. | `top`, `bottom`, `sides`, `inward`, `horizontal_top` |
 | Tabs | `browser.tab_images`, `workspace.tab_images` | `left`, `middle` and `right` for `focus`, `focus_window`, `non_focus`, `hover` and `pressed`. | `top`, `bottom`, `sides` |
 | Tab highlight | `browser.focus_tab_highlight_graphics`, `workspace.focus_tab_highlight_graphics` | `left`, `horizontal` and `right`. | |
@@ -1167,6 +1173,8 @@ config["browser"]["window_manager"]["frame"] = False
 `browser.window_manager.dim` fades the windows that are not in focus, so your
 eye lands on the one that is. It has no effect with a single window, and the
 images of a [graphical theme](#graphical-themes) are never dimmed.
+To mark the focused window with a background of its own instead, see
+[Focus styles](#focus-styles).
 
 <Shot name="dim-true" alt="The left window dimmed next to the focused right window">`dim: true`, the default.</Shot>
 
@@ -1270,6 +1278,116 @@ config["browser"]["window_manager"]["window_bar"] = False
 ```
 
 <Shot name="wbar-off" alt="The same floating window with a plain frame and no bar" />
+
+## Focus styles
+
+The window in focus can stand out by more than its frame. It can have its own
+background color, a background image and its own scroll bar. With those, a
+frame can be blank or turned off, and the background marks the focused window
+instead.
+
+As with `focus_frame_attr`, the focus style applies only when there is more
+than one window, and only the window focus counts: switching to another app
+restyles nothing.
+
+Every `focus_` key follows the same rules:
+
+- Without the key, the focused window draws the normal style.
+- A key that is there takes what it leaves out from the normal key, slot by
+  slot.
+- `""` clears an image slot.
+
+### Background
+
+These keys live under `browser.window_manager`:
+
+| Key | Styles |
+| --- | --- |
+| `background_attr` | Every window: `bg` fills the cells drawn in the default background, and `fg` replaces the default foreground, for light backgrounds. |
+| `focus_background_attr` | The window in focus. |
+| `background_graphics` | An image behind every window, in nine slices. |
+| `focus_background_graphics` | The image behind the window in focus. |
+| `focus_scroll_bar_charset` | The focused window's scroll bar, with the keys of `scroll_bar_charset`, `hover_` ones included. |
+
+A cell with a background of its own keeps it: the selection, the cursor
+line, status bars and `terminal.default_attr`. A frame whose `bg` is unset
+takes the window's background, so leave `focus_frame_attr.bg` unset for the
+frame to blend in.
+
+This marks the focused window with a background alone. Frames of spaces stay
+as a cell of padding around each window, in its background, and keep the
+scroll bar and edge dragging:
+
+```yaml tab
+browser:
+  union_frames: false
+  window_manager:
+    frame_charset: &blank
+      topleft: " "
+      topright: " "
+      bottomleft: " "
+      bottomright: " "
+      horizontaltop: " "
+      horizontalbottom: " "
+      verticalleft: " "
+      verticalright: " "
+    focus_frame_charset: *blank
+    focus_background_attr: {bg: "#1b1f2a"}
+```
+
+```python tab
+blank = {s: " " for s in [
+    "topleft", "topright", "bottomleft", "bottomright",
+    "horizontaltop", "horizontalbottom", "verticalleft", "verticalright",
+]}
+config["browser"]["union_frames"] = False
+wm = config["browser"]["window_manager"]
+wm["frame_charset"] = blank
+wm["focus_frame_charset"] = blank
+wm["focus_background_attr"] = {"bg": "#1b1f2a"}
+```
+
+`union_frames: false` keeps the tab bar's junctions from drawing lines where
+it meets the blank frames. A frame `bg` of its own paints a ring around the
+window instead. With `frame: false` the background still marks the focused
+window, but without the padding, scroll bar or edge dragging.
+
+### Background image
+
+`background_graphics` and `focus_background_graphics` draw an image behind a
+window in the GUI, cut in nine slices: the eight frame slots, `topleft`
+through `verticalright`, and `center`. Each corner takes one cell, each edge
+is one cell thick, and `center` covers the rest. `fit: fill`, the default,
+stretches each slice over its cells, and `fit: tile` repeats it one cell at a
+time.
+
+```yaml tab
+browser:
+  window_manager:
+    focus_background_attr: {bg: "#1b1f2a"}
+    focus_background_graphics:
+      center: file://$RUNE_DATADIR/hud/x/panel/focused/center.png
+      topleft: file://$RUNE_DATADIR/hud/x/panel/focused/topleft.png
+      # ...the other corners and edges
+```
+
+```python tab
+wm = config["browser"]["window_manager"]
+wm["focus_background_attr"] = {"bg": "#1b1f2a"}
+wm["focus_background_graphics"] = {
+    "center": "file://$RUNE_DATADIR/hud/x/panel/focused/center.png",
+    "topleft": "file://$RUNE_DATADIR/hud/x/panel/focused/topleft.png",
+}
+```
+
+- The image goes under every cell background and character. Text,
+  selections and frame images draw over it, and the transparent pixels of
+  frame images show it.
+- Where a slice doesn't draw, the color of `focus_background_attr` shows:
+  in a terminal, while the image loads, and when it fails to.
+- A floating window covers the image of the tile under it.
+- The tab bar's joins to the window frames cut the image where they are
+  drawn. Set `browser.union_frames: false` to keep it whole.
 
 ## Tab bar
 

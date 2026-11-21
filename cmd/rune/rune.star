@@ -998,6 +998,37 @@ config = {
             # "focus_floating_frame_charset": {"graphics": {
             #     "verticalright": "file:///path/to/float-shadow-right.png",
             # }},
+            # Fill each window's cells left at the default background, its
+            # frame's included while frame_attr and focus_frame_attr keep bg
+            # "default": "background_attr" every window's, and
+            # "focus_background_attr" the focused window's while more than
+            # one is open. With frame charsets of spaces, the frame is
+            # padding and the focused background alone marks focus. fg
+            # replaces the default foreground, for light backgrounds. What a
+            # focus key leaves out inherits the normal key.
+            # "background_attr":       attr(bg = "default"),
+            # "focus_background_attr": attr(bg = "#1b1f2a"),
+            # GUI images drawn under each window's text and cell backgrounds:
+            # a 9-slice with the frame slot names and "center". Corners take
+            # one cell, edges are one cell thick, and "center" covers the
+            # interior. "fit" is "fill" (the default) or "tile". Missing focus
+            # slots inherit background_graphics, and an empty URI clears one.
+            # Where a slice isn't drawn, the background_attr colour shows.
+            # "background_graphics": {
+            #     "center": "file:///path/to/panel-center.png",
+            #     "fit":    "fill",
+            # },
+            # "focus_background_graphics": {
+            #     "topleft":          "file:///path/to/focused-topleft.png",
+            #     "topright":         "file:///path/to/focused-topright.png",
+            #     "bottomleft":       "file:///path/to/focused-bottomleft.png",
+            #     "bottomright":      "file:///path/to/focused-bottomright.png",
+            #     "horizontaltop":    "file:///path/to/focused-top.png",
+            #     "horizontalbottom": "file:///path/to/focused-bottom.png",
+            #     "verticalleft":     "file:///path/to/focused-left.png",
+            #     "verticalright":    "file:///path/to/focused-right.png",
+            #     "center":           "file:///path/to/focused-center.png",
+            # },
             "scroll_bar_attr":       attr(fg = "blue", bg = "default"),
             # The scroll bar's "top_char" draws its first cell and
             # "bottom_char" its last, when it spans two cells or more,
@@ -1028,6 +1059,13 @@ config = {
                 "middle_char":       "▐",
                 "hover_middle_char": "█",
             },
+            # The focused window's scroll bar while more than one window is
+            # open. Keys and graphics slots it leaves out inherit
+            # scroll_bar_charset.
+            # "focus_scroll_bar_charset": {
+            #     "middle_char": "▐",
+            #     "graphics":    {"middle_char": "file:///path/to/focused-middle.png"},
+            # },
             # Solid bar drawn over floating windows' top frame line.
             # Dragging the bar moves the window, dragging edges resizes
             # it, double-clicking it maximizes the window, and the close

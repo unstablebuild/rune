@@ -3140,6 +3140,195 @@ func TestConfigWindowScrollBarCharset(t *testing.T) {
 	}
 }
 
+func TestConfigFocusScrollBarCharset(t *testing.T) {
+	cases := []struct {
+		name      string
+		wm        map[string]any
+		want      *component.ScrollBarCharSet
+		wantHover *component.ScrollBarCharSet
+		wantError string
+	}{
+		{
+			name: "unset keeps the normal one",
+			wm: map[string]any{"scroll_bar_charset": map[string]any{
+				"middle_char": "▐",
+			}},
+		},
+		{
+			name: "slots left out are the normal one's",
+			wm: map[string]any{
+				"scroll_bar_charset": map[string]any{
+					"top_char": "▗", "middle_char": "▐", "hover_middle_char": "█",
+					"graphics": map[string]any{
+						"mode": "overlay", "middle_char": "file:///bar/middle.png",
+					},
+				},
+				"focus_scroll_bar_charset": map[string]any{
+					"middle_char": "┃",
+					"graphics": map[string]any{
+						"middle_char":       "file:///bar/focused-middle.png",
+						"hover_middle_char": "file:///bar/focused-hover.png",
+					},
+				},
+			},
+			want: &component.ScrollBarCharSet{
+				Top: '▗', Middle: '┃',
+				Graphics: component.ScrollBarCharSetGraphics{
+					Middle: "file:///bar/focused-middle.png", Overlay: true,
+				},
+			},
+			wantHover: &component.ScrollBarCharSet{
+				Middle: '█',
+				Graphics: component.ScrollBarCharSetGraphics{
+					Middle: "file:///bar/focused-hover.png", Overlay: true,
+				},
+			},
+		},
+		{
+			name: "an empty URI clears a slot",
+			wm: map[string]any{
+				"scroll_bar_charset": map[string]any{"graphics": map[string]any{
+					"middle_char": "file:///bar/middle.png",
+				}},
+				"focus_scroll_bar_charset": map[string]any{"graphics": map[string]any{
+					"middle_char": "",
+				}},
+			},
+			want:      &component.ScrollBarCharSet{},
+			wantHover: &component.ScrollBarCharSet{},
+		},
+		{
+			name: "invalid graphics are reported",
+			wm: map[string]any{"focus_scroll_bar_charset": map[string]any{
+				"middle_char": "┃",
+				"graphics":    map[string]any{"middle_char": "ftp://example.com/x.png"},
+			}},
+			want:      &component.ScrollBarCharSet{Middle: '┃'},
+			wantHover: &component.ScrollBarCharSet{},
+			wantError: "window_manager.focus_scroll_bar_charset",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ideConfig{cfg: map[string]any{
+				"browser": map[string]any{"window_manager": tc.wm},
+			}, errors: map[string]error{}}
+
+			wmCfg := cfg.windowManagerConfig()
+			assert.Equal(t, tc.want, wmCfg.FocusScrollBarCharSet)
+			assert.Equal(t, tc.wantHover, wmCfg.FocusScrollBarHoverCharSet)
+			if tc.wantError == "" {
+				assert.Empty(t, cfg.errors)
+			} else {
+				assert.Len(t, cfg.errors, 1)
+				assert.Contains(t, cfg.errors, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestConfigWindowBackground(t *testing.T) {
+	navy, teal := term.ColorNavy, term.ColorTeal
+	cases := []struct {
+		name      string
+		wm        map[string]any
+		want      tcomponent.WindowBackground
+		wantFocus *tcomponent.WindowBackground
+		wantError string
+	}{
+		{
+			name: "unset draws no background",
+			wm:   map[string]any{},
+		},
+		{
+			name: "the colour and panel",
+			wm: map[string]any{
+				"background_attr": map[string]any{"bg": "navy", "fg": "teal", "attrs": "bold"},
+				"background_graphics": map[string]any{
+					"center": "file:///panel/center.png", "topleft": "file:///panel/tl.png",
+					"fit": "tile",
+				},
+			},
+			want: tcomponent.WindowBackground{
+				Attr: term.Attributes{Fg: teal, Bg: navy},
+				Graphics: tcomponent.BackgroundGraphics{
+					Center: "file:///panel/center.png", TopLeft: "file:///panel/tl.png",
+					Fit: term.ImageFitTile,
+				},
+			},
+		},
+		{
+			name: "the focus keys inherit what they leave out",
+			wm: map[string]any{
+				"background_attr": map[string]any{"bg": "navy", "fg": "teal"},
+				"background_graphics": map[string]any{
+					"center": "file:///panel/center.png", "topleft": "file:///panel/tl.png",
+					"fit": "tile",
+				},
+				"focus_background_attr": map[string]any{"bg": "teal"},
+				"focus_background_graphics": map[string]any{
+					"center": "file:///focused/center.png", "topleft": "",
+				},
+			},
+			want: tcomponent.WindowBackground{
+				Attr: term.Attributes{Fg: teal, Bg: navy},
+				Graphics: tcomponent.BackgroundGraphics{
+					Center: "file:///panel/center.png", TopLeft: "file:///panel/tl.png",
+					Fit: term.ImageFitTile,
+				},
+			},
+			wantFocus: &tcomponent.WindowBackground{
+				Attr: term.Attributes{Fg: teal, Bg: teal},
+				Graphics: tcomponent.BackgroundGraphics{
+					Center: "file:///focused/center.png", Fit: term.ImageFitTile,
+				},
+			},
+		},
+		{
+			name: "a focus key alone styles only the focused window",
+			wm: map[string]any{
+				"focus_background_attr": map[string]any{"bg": "navy"},
+			},
+			wantFocus: &tcomponent.WindowBackground{Attr: term.Attributes{Bg: navy}},
+		},
+		{
+			name: "an unknown fit is reported",
+			wm: map[string]any{"background_graphics": map[string]any{
+				"center": "file:///panel/center.png", "fit": "contain",
+			}},
+			want: tcomponent.WindowBackground{
+				Graphics: tcomponent.BackgroundGraphics{Center: "file:///panel/center.png"},
+			},
+			wantError: "window_manager.background_graphics.fit",
+		},
+		{
+			name: "an invalid URI is reported",
+			wm: map[string]any{"focus_background_graphics": map[string]any{
+				"center": "ftp://example.com/x.png",
+			}},
+			wantFocus: &tcomponent.WindowBackground{},
+			wantError: "window_manager.focus_background_graphics",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ideConfig{cfg: map[string]any{
+				"browser": map[string]any{"window_manager": tc.wm},
+			}, errors: map[string]error{}}
+
+			wmCfg := cfg.windowManagerConfig()
+			assert.Equal(t, tc.want, wmCfg.Background)
+			assert.Equal(t, tc.wantFocus, wmCfg.FocusBackground)
+			if tc.wantError == "" {
+				assert.Empty(t, cfg.errors)
+			} else {
+				assert.Len(t, cfg.errors, 1)
+				assert.Contains(t, cfg.errors, tc.wantError)
+			}
+		})
+	}
+}
+
 func TestConfigWindowBarGraphics(t *testing.T) {
 	def := handler.DefaultWindowManagerConfig().WindowBarCharSet
 	cases := []struct {
@@ -3431,6 +3620,28 @@ func TestConfigHUDStyle(t *testing.T) {
 				assert.Equal(t, 2, wm.ScrollBarOutset)
 			},
 			wantURIs: []string{"file:///bar/hover.png", "file:///bar/middle.png"},
+		},
+		{
+			name: "window backgrounds and the focus scroll bar",
+			cfg: map[string]any{"browser": map[string]any{"window_manager": map[string]any{
+				"background_graphics": map[string]any{"center": "file:///panel/normal.png"},
+				"focus_background_graphics": map[string]any{
+					"topleft": "file:///panel/focused-tl.png",
+				},
+				"focus_scroll_bar_charset": map[string]any{"graphics": map[string]any{
+					"middle_char":       "file:///bar/focused.png",
+					"hover_middle_char": "file:///bar/focused-hover.png",
+				}},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				wm := s.browser.WindowManager
+				require.NotNil(t, wm.FocusBackground)
+				assert.Equal(t, "file:///panel/normal.png", wm.FocusBackground.Graphics.Center)
+			},
+			wantURIs: []string{
+				"file:///bar/focused-hover.png", "file:///bar/focused.png",
+				"file:///panel/focused-tl.png", "file:///panel/normal.png",
+			},
 		},
 		{
 			name: "window bar",

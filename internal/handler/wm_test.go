@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -262,6 +263,206 @@ aAAAAa6BBBB6
 aAAAAa6BBBB6
 aaaaaa666666`},
 		})
+}
+
+func TestWindowManagerFocusBackground(t *testing.T) {
+	normal := component.WindowBackground{Attr: term.Attributes{Bg: term.ColorNavy}}
+	focus := component.WindowBackground{
+		Attr:     term.Attributes{Bg: term.ColorTeal},
+		Graphics: component.BackgroundGraphics{Center: "file:///focus.png"},
+	}
+	normalAttr, focusAttr := term.Attributes{Fg: term.ColorBlue}, term.Attributes{Fg: term.ColorYellow}
+	for _, tt := range []struct {
+		name    string
+		frame   bool
+		noFocus bool
+	}{
+		{name: "with frames", frame: true},
+		{name: "without frames"},
+		{name: "without a focus background", frame: true, noFocus: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultWindowManagerConfig()
+			cfg.Frame = tt.frame
+			cfg.Background = normal
+			cfg.FrameAttr, cfg.FocusFrameAttr = normalAttr, focusAttr
+			wantFocus := focus
+			if tt.noFocus {
+				wantFocus = normal
+			} else {
+				cfg.FocusBackground = &focus
+			}
+			wm := NewWindowManager(handler.NewTestHandler(), cfg)
+			wm.Resize(20, 8)
+			check := func(win Window, focused bool) {
+				t.Helper()
+				want, wantAttr := normal, normalAttr
+				if focused {
+					want, wantAttr = wantFocus, focusAttr
+				}
+				assert.Equal(t, want, win.Background())
+				if attr, ok := win.FrameAttr(); ok {
+					assert.Equal(t, wantAttr, attr, "the frame switches with the background")
+				}
+			}
+			left := wm.Focus()
+			check(left, false)
+
+			right, ok := wm.SplitVertical(left, handler.NewTestHandler())
+			require.True(t, ok)
+			check(left, true)
+			check(right, false)
+
+			wm.SetFocus(right)
+			check(left, false)
+			check(right, true)
+
+			right.SetContent(handler.NewTestHandler())
+			check(right, true)
+
+			float := wm.FloatingWindow(handler.StaticFloating(handler.NewTestHandler(), 4, 2), component.FloatingConfig{})
+			check(float, false)
+			wm.SetFocus(float)
+			check(right, false)
+			check(float, true)
+
+			require.NoError(t, float.Close())
+			check(wm.Focus(), true)
+			require.NoError(t, right.Close())
+			check(left, false)
+
+			restored := wm.RestoreTileLayout(component.TileLayout{
+				Split:    component.SplitOrientationVertical,
+				Children: []component.TileLayout{{WindowID: 1}, {WindowID: 2}},
+			}, func(uint64) tui.Handler { return handler.NewTestHandler() })
+			check(wm.Focus(), true)
+			for _, win := range restored {
+				if win != wm.Focus() {
+					check(win, false)
+				}
+			}
+
+			restyled := normal
+			restyled.Attr.Bg = term.ColorWhite
+			cfg.FocusBackground = &restyled
+			wm.Restyle(cfg)
+			assert.Equal(t, restyled, wm.Focus().Background())
+		})
+	}
+}
+
+func TestWindowManagerFocusBackgroundMarksTheFocusedWindow(t *testing.T) {
+	blank := compapi.FrameCharSet{
+		TopLeft: ' ', TopRight: ' ', BottomLeft: ' ', BottomRight: ' ',
+		HorizontalTop: ' ', HorizontalBottom: ' ', VerticalLeft: ' ', VerticalRight: ' ',
+	}
+	for _, tt := range []struct {
+		name    string
+		frame   bool
+		frameBg term.Color
+		// single is the background of the window alone, and left and right
+		// those of two tiles with the focus on the left and on the right.
+		single, left, right string
+	}{
+		{
+			name:  "blank frames pad the window in its background",
+			frame: true,
+			single: `
+..........
+..........
+..........
+..........`,
+			left: `
+ttttt.....
+ttttt.....
+ttttt.....
+ttttt.....`,
+			right: `
+.....ttttt
+.....ttttt
+.....ttttt
+.....ttttt`,
+		},
+		{
+			name: "without frames",
+			single: `
+..........
+..........
+..........
+..........`,
+			left: `
+ttttt.....
+ttttt.....
+ttttt.....
+ttttt.....`,
+			right: `
+.....ttttt
+.....ttttt
+.....ttttt
+.....ttttt`,
+		},
+		{
+			name:    "a frame background of its own rings the window",
+			frame:   true,
+			frameBg: term.ColorNavy,
+			single: `
+nnnnnnnnnn
+n........n
+n........n
+nnnnnnnnnn`,
+			left: `
+nnnnnnnnnn
+ntttnn...n
+ntttnn...n
+nnnnnnnnnn`,
+			right: `
+nnnnnnnnnn
+n...nntttn
+n...nntttn
+nnnnnnnnnn`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultWindowManagerConfig()
+			cfg.Frame = tt.frame
+			cfg.FrameCharSet, cfg.FocusFrameCharSet = blank, blank
+			cfg.FrameAttr = term.Attributes{Fg: term.ColorGray, Bg: tt.frameBg}
+			cfg.FocusFrameAttr = term.Attributes{Fg: term.ColorSilver, Bg: tt.frameBg}
+			cfg.FocusBackground = &component.WindowBackground{Attr: term.Attributes{Bg: term.ColorTeal}}
+			wm := NewWindowManager(handler.NewTestHandler(), cfg)
+			wm.Resize(10, 4)
+			bgs := func() string {
+				w := term.NewStringWriter(10, 4)
+				wm.Draw(w)
+				var b strings.Builder
+				for i, c := range w.Cells() {
+					if i%10 == 0 {
+						b.WriteByte('\n')
+					}
+					switch c.Bg {
+					case term.ColorTeal:
+						b.WriteByte('t')
+					case term.ColorNavy:
+						b.WriteByte('n')
+					case term.ColorDefault:
+						b.WriteByte('.')
+					default:
+						b.WriteByte('?')
+					}
+				}
+				return b.String()
+			}
+			assert.Equal(t, tt.single, bgs(), "a single window keeps the normal style")
+
+			left := wm.Focus()
+			right, ok := wm.SplitVertical(left, handler.NewTestHandler())
+			require.True(t, ok)
+			assert.Equal(t, tt.left, bgs())
+
+			wm.SetFocus(right)
+			assert.Equal(t, tt.right, bgs())
+		})
+	}
 }
 
 func TestWindowManagerScrollBarHoverGraphics(t *testing.T) {
@@ -2545,17 +2746,39 @@ func TestWindowManagerRestyle(t *testing.T) {
 	}
 	style.ScrollBarCharSet = compapi.ScrollBarCharSet{Middle: 's'}
 	style.ScrollBarHoverCharSet = compapi.ScrollBarCharSet{Middle: 'H'}
+	style.FocusScrollBarCharSet = &compapi.ScrollBarCharSet{Middle: 'f'}
+	style.FocusScrollBarHoverCharSet = &compapi.ScrollBarCharSet{Middle: 'F'}
 	style.Dim = !wm.config.Dim
 
 	comptest.TestComponent(t, wm, writer, []comptest.TestCase{
 		{Action: func() { wm.Restyle(style) }, Expected: `
 #====#+----+
-!A   s|a   s
+!A   f|a   s
 !B   !|b   |
 #====#+----+`},
 		{Action: func() { wm.Handle(mouseEv(term.MouseRelease, 11, 1)) }, Expected: `
 #====#+----+
-!A   s|a   H
+!A   f|a   H
+!B   !|b   |
+#====#+----+`},
+		{Action: func() { wm.Handle(mouseEv(term.MouseRelease, 5, 1)) }, Expected: `
+#====#+----+
+!A   F|a   s
+!B   !|b   |
+#====#+----+`},
+		{Action: func() { wm.SetFocus(right) }, Expected: `
++----+#====#
+|A   s!a   f
+|B   |!b   !
++----+#====#`},
+		{Action: func() { wm.Handle(mouseEv(term.MouseRelease, 11, 1)) }, Expected: `
++----+#====#
+|A   s!a   F
+|B   |!b   !
++----+#====#`},
+		{Action: func() { wm.SetFocus(left) }, Expected: `
+#====#+----+
+!A   f|a   s
 !B   !|b   |
 #====#+----+`},
 	})

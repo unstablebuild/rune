@@ -72,8 +72,8 @@ type workspaceBarStyle struct {
 }
 
 // imageURIs returns, sorted and once each, the URI of every image the
-// frames, scroll bars, window bar, command prompt, prompt buttons, tab
-// bars, notifications and status inbox of s name.
+// frames, scroll bars, window bar, window backgrounds, command prompt,
+// prompt buttons, tab bars, notifications and status inbox of s name.
 func (s hudStyle) imageURIs() []string {
 	wm := s.browser.WindowManager
 	var uris []string
@@ -103,6 +103,16 @@ func (s hudStyle) imageURIs() []string {
 		progress.Remain, progress.End)
 	scrollBar(wm.ScrollBarCharSet)
 	scrollBar(wm.ScrollBarHoverCharSet)
+	if wm.FocusScrollBarCharSet != nil {
+		scrollBar(*wm.FocusScrollBarCharSet)
+	}
+	if wm.FocusScrollBarHoverCharSet != nil {
+		scrollBar(*wm.FocusScrollBarHoverCharSet)
+	}
+	uris = append(uris, wm.Background.Graphics.URIs()...)
+	if wm.FocusBackground != nil {
+		uris = append(uris, wm.FocusBackground.Graphics.URIs()...)
+	}
 	bar, sep := wm.WindowBarCharSet.Graphics, s.commandPromptSeparator.Graphics
 	uris = append(uris, bar.Left, bar.Horizontal, bar.Right, sep.Left, sep.Horizontal, sep.Right)
 	if wm.FocusWindowBarCharSet != nil {

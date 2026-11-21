@@ -44,11 +44,20 @@ type WindowManagerConfig struct {
 	// FocusWindowBarCharSet overrides a focused floating window's title bar.
 	// Nil keeps WindowBarCharSet; empty slots in an override remain empty.
 	FocusWindowBarCharSet *component.WindowBarCharSet
+	// FocusBackground replaces Background in the window holding the
+	// focus style. Nil keeps Background. Unlike the frame's focus style,
+	// it is drawn with or without frames.
+	FocusBackground *component.WindowBackground
 	// ScrollBarHoverCharSet draws the scroll bar under the pointer, and
 	// the one it drags. Each rune or image it leaves empty is
 	// ScrollBarCharSet's, and its graphics are Overlay when
 	// ScrollBarCharSet's are.
 	ScrollBarHoverCharSet compapi.ScrollBarCharSet
+	// FocusScrollBarCharSet and FocusScrollBarHoverCharSet replace
+	// ScrollBarCharSet and ScrollBarHoverCharSet in the window holding
+	// the focus style. Nil keeps the normal one.
+	FocusScrollBarCharSet      *compapi.ScrollBarCharSet
+	FocusScrollBarHoverCharSet *compapi.ScrollBarCharSet
 	// FloatingBar receives the interactions produced by floating
 	// window bars. It may be nil.
 	FloatingBar FloatingBarHandler
@@ -121,8 +130,11 @@ type WindowManager struct {
 	comp   component.WindowManager
 	config WindowManagerConfig
 	// best effort to set focus to prev win upon ShiftFocus
-	prevFocus                Window
-	focus                    Window
+	prevFocus Window
+	focus     Window
+	// styled is the window holding the focus style, which is the focus
+	// window while there are several, and the zero Window otherwise.
+	styled component.Window
 	subs                     []WindowSubscriber
 	prevMouseScrollBarDrag   bool
 	prevMouseLeftChild       component.Window
@@ -211,31 +223,63 @@ func (wm *WindowManager) SetFrameCharSet(def, focus compapi.FrameCharSet) {
 	wm.config.FocusFrameCharSet = focus
 	wm.config.FrameCharSet = def
 	wm.comp.SetFrameCharSet(def)
-	wm.setFocusAttr(wm.focus)
+	wm.applyFocusStyle()
 }
 
-func (wm *WindowManager) setFocusAttr(win Window) {
-	// only set focus attr+charset if there's more than one window
-	wm.setFrameStyle(win, wm.SizeTiles()+wm.SizeFloating() > 1)
-}
-
-func (wm *WindowManager) setFrameStyle(win Window, focused bool) {
-	attr, charset := wm.config.FrameAttr, wm.config.FrameCharSet
-	var bar *component.WindowBarCharSet
-	if focused {
-		attr, charset = wm.config.FocusFrameAttr, wm.config.FocusFrameCharSet
-		bar = wm.config.FocusWindowBarCharSet
+// applyFocusStyle gives the focus window the focus style while there is
+// more than one window, and the normal style otherwise, and gives the
+// window that held the focus style before the normal one.
+func (wm *WindowManager) applyFocusStyle() {
+	focused := wm.SizeTiles()+wm.SizeFloating() > 1
+	prev := wm.styled
+	wm.styled = component.Window{}
+	if prev != (component.Window{}) && prev != wm.focus.Window && !prev.Closed() {
+		wm.setWindowStyle(prev, false)
 	}
-	if win.IsFloating() {
-		if focused && wm.config.FocusFloatingFrameCharSet != nil {
-			charset = *wm.config.FocusFloatingFrameCharSet
-		} else if !focused && wm.config.FloatingFrameCharSet != nil {
-			charset = *wm.config.FloatingFrameCharSet
+	wm.setWindowStyle(wm.focus.Window, focused)
+	if focused {
+		wm.styled = wm.focus.Window
+	}
+}
+
+// setWindowStyle gives win the focus style or the normal one: its frame
+// attribute and charset, window bar, scroll bar charset and background.
+func (wm *WindowManager) setWindowStyle(win component.Window, focused bool) {
+	if wm.config.Frame {
+		attr, charset := wm.config.FrameAttr, wm.config.FrameCharSet
+		var bar *component.WindowBarCharSet
+		if focused {
+			attr, charset = wm.config.FocusFrameAttr, wm.config.FocusFrameCharSet
+			bar = wm.config.FocusWindowBarCharSet
+		}
+		if win.IsFloating() {
+			if focused && wm.config.FocusFloatingFrameCharSet != nil {
+				charset = *wm.config.FocusFloatingFrameCharSet
+			} else if !focused && wm.config.FloatingFrameCharSet != nil {
+				charset = *wm.config.FloatingFrameCharSet
+			}
+		}
+		win.SetFrameAttr(attr)
+		win.SetWindowBarCharSet(bar)
+		win.SetFrameCharSet(charset)
+		if f, ok := win.Frame(); ok {
+			f.ScrollBarCharSet = wm.scrollBarCharSet(focused)
 		}
 	}
-	win.SetFrameAttr(attr)
-	win.SetWindowBarCharSet(bar)
-	win.SetFrameCharSet(charset)
+	var bg *component.WindowBackground
+	if focused {
+		bg = wm.config.FocusBackground
+	}
+	win.SetBackground(bg)
+}
+
+// scrollBarCharSet returns the scroll bar charset of a window with the
+// focus style or the normal one.
+func (wm *WindowManager) scrollBarCharSet(focused bool) compapi.ScrollBarCharSet {
+	if focused && wm.config.FocusScrollBarCharSet != nil {
+		return *wm.config.FocusScrollBarCharSet
+	}
+	return wm.config.ScrollBarCharSet
 }
 
 // SetAttr sets the default and focus window border attributes. Note that
@@ -247,19 +291,24 @@ func (wm *WindowManager) SetAttr(def, focus term.Attributes) {
 	wm.config.FocusFrameAttr = focus
 	wm.config.FrameAttr = def
 	wm.comp.SetFrameAttr(def)
-	wm.setFocusAttr(wm.focus)
+	wm.applyFocusStyle()
 }
 
 // Restyled returns c with the style of s, as
 // component.WindowManagerConfig.Restyled takes it, and its
-// FocusFrameAttr, FocusFrameCharSet and ScrollBarHoverCharSet.
+// FocusFrameAttr, FocusFrameCharSet, FocusFloatingFrameCharSet,
+// FocusWindowBarCharSet, FocusBackground, ScrollBarHoverCharSet,
+// FocusScrollBarCharSet and FocusScrollBarHoverCharSet.
 func (c WindowManagerConfig) Restyled(s WindowManagerConfig) WindowManagerConfig {
 	c.WindowManagerConfig = c.WindowManagerConfig.Restyled(s.WindowManagerConfig)
 	c.FocusFrameAttr = s.FocusFrameAttr
 	c.FocusFrameCharSet = s.FocusFrameCharSet
 	c.FocusFloatingFrameCharSet = s.FocusFloatingFrameCharSet
 	c.FocusWindowBarCharSet = s.FocusWindowBarCharSet
+	c.FocusBackground = s.FocusBackground
 	c.ScrollBarHoverCharSet = s.ScrollBarHoverCharSet
+	c.FocusScrollBarCharSet = s.FocusScrollBarCharSet
+	c.FocusScrollBarHoverCharSet = s.FocusScrollBarHoverCharSet
 	return c
 }
 
@@ -269,9 +318,7 @@ func (c WindowManagerConfig) Restyled(s WindowManagerConfig) WindowManagerConfig
 func (wm *WindowManager) Restyle(cfg WindowManagerConfig) {
 	wm.config = wm.config.Restyled(cfg)
 	wm.comp.Restyle(cfg.WindowManagerConfig)
-	if wm.config.Frame {
-		wm.setFocusAttr(wm.focus)
-	}
+	wm.applyFocusStyle()
 }
 
 // Handle satisfies tui.Handler.
@@ -337,7 +384,7 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		wm.comp.Iterate(func(win component.Window) {
 			f, ok := win.Frame()
 			if ok {
-				f.ScrollBarCharSet = wm.config.ScrollBarCharSet
+				f.ScrollBarCharSet = wm.scrollBarCharSet(win == wm.styled)
 			}
 		})
 
@@ -517,7 +564,7 @@ func (wm *WindowManager) SplitVertical(win Window, h tui.Handler) (Window, bool)
 		return Window{}, false
 	}
 	ret := wm.newNode(w)
-	wm.setFocusAttr(wm.focus)
+	wm.applyFocusStyle()
 	return ret, true
 }
 
@@ -528,7 +575,7 @@ func (wm *WindowManager) SplitHorizontal(win Window, h tui.Handler) (Window, boo
 		return Window{}, false
 	}
 	ret := wm.newNode(w)
-	wm.setFocusAttr(wm.focus)
+	wm.applyFocusStyle()
 	return ret, true
 }
 
@@ -539,7 +586,7 @@ func (wm *WindowManager) SplitRoot(alignment compapi.Alignment, h tui.Handler) (
 		return Window{}, false
 	}
 	ret := wm.newNode(w)
-	wm.setFocusAttr(wm.focus)
+	wm.applyFocusStyle()
 	return ret, true
 }
 
@@ -548,7 +595,7 @@ func (wm *WindowManager) FloatingWindow(
 	content handler.Floating, cfg component.FloatingConfig,
 ) Window {
 	ret := wm.newNode(wm.comp.FloatingWindow(content, cfg))
-	wm.setFocusAttr(wm.focus)
+	wm.applyFocusStyle()
 	return ret
 }
 
@@ -781,12 +828,9 @@ func (wm *WindowManager) SetFocus(tile Window) (
 		panic(fmt.Sprintf("Tile does not belong to"+
 			"this window manager: %p vs %p", wm, tile.wm))
 	}
-	if wm.config.Frame {
-		wm.setFrameStyle(wm.focus, false)
-		wm.setFocusAttr(tile)
-	}
 	prev = wm.focus
 	wm.focus = tile
+	wm.applyFocusStyle()
 	wm.comp.ForegroundFloating(tile.Window)
 	if prev != tile {
 		wm.dispatchOnFocus(prev, wm.focus)
@@ -834,6 +878,7 @@ func (wm *WindowManager) RestoreTileLayout(
 	})
 	wm.prevMouseScrollBarDrag = false
 	wm.prevMouseLeftChild = component.Window{}
+	wm.styled = component.Window{}
 	wm.resetWindowDrag()
 	ret := make(map[uint64]Window, len(components))
 	for id, win := range components {
@@ -1162,7 +1207,7 @@ func (wm *WindowManager) handleScrollBarMouse(
 	win component.Window, barPos, barHeight int,
 	frame *compapi.Frame, ev term.Event,
 ) (bool, bool) {
-	frame.ScrollBarCharSet = wm.scrollBarHoverCharSet()
+	frame.ScrollBarCharSet = wm.scrollBarHoverCharSet(win)
 	if ev.Key != term.MouseLeft {
 		wm.resetScrollBarMouse()
 		return false, false
@@ -1205,8 +1250,14 @@ func (wm *WindowManager) onScrollBar(
 		y >= position.Y && y < position.Y+height
 }
 
-func (wm *WindowManager) scrollBarHoverCharSet() compapi.ScrollBarCharSet {
-	cs, hover := wm.config.ScrollBarCharSet, wm.config.ScrollBarHoverCharSet
+// scrollBarHoverCharSet returns the scroll bar charset of win under the
+// pointer: its hover charset over its own.
+func (wm *WindowManager) scrollBarHoverCharSet(win component.Window) compapi.ScrollBarCharSet {
+	focused := win == wm.styled
+	cs, hover := wm.scrollBarCharSet(focused), wm.config.ScrollBarHoverCharSet
+	if focused && wm.config.FocusScrollBarHoverCharSet != nil {
+		hover = *wm.config.FocusScrollBarHoverCharSet
+	}
 	for _, slot := range []struct {
 		dst *rune
 		src rune

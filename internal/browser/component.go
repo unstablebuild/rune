@@ -2136,6 +2136,11 @@ func (c *Component) overwriteFocusWindowUnion(w term.Writer) {
 	mainHeight := c.union.MainHeight()
 	attr := c.config.WindowManagerConfig.FocusFrameAttr
 	cs := c.config.WindowManagerConfig.FocusFrameCharSet
+	// The corners keep the background the window manager gave them,
+	// such as the focused window's.
+	if attr.Bg == term.ColorDefault {
+		attr.Attrs |= term.AttrKeepBackground
+	}
 
 	if topleft == (term.Coordinates{}) {
 		cell := term.NewCell(cs.TopLeft, 1, attr)

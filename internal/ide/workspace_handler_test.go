@@ -13562,6 +13562,9 @@ func TestApplyHUD(t *testing.T) {
 	base.notifyStatus = idestatus.NotifyConfig{
 		Sounds: map[programstatus.State]string{programstatus.Working: "tick"},
 	}
+	base.browser.WindowManager.FocusBackground = &tcomponent.WindowBackground{
+		Attr: term.Attributes{Bg: term.ColorNavy},
+	}
 	hud := &HUD{
 		load:       2,
 		base:       base,
@@ -13582,6 +13585,9 @@ func TestApplyHUD(t *testing.T) {
 	assert.True(t, m.empty.config.CommandOverlay.ShowManual)
 	assert.True(t, focused.ex.config.CommandOverlay.ShowManual)
 	assert.False(t, skipped.ex.config.CommandOverlay.ShowManual)
+	assert.Equal(t, base.browser.WindowManager.FocusBackground, m.empty.config.FocusBackground,
+		"the home workspace's focused window takes the focus background")
+	assert.Nil(t, focused.ex.config.FocusBackground, "an overlay without one draws none")
 
 	chat, err := workspaceapi.ParseURI("rune-agent://model/hud")
 	require.NoError(t, err)
