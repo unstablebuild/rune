@@ -512,6 +512,46 @@ func TestClientStreamRequestsAgain(t *testing.T) {
 		client.Draw(frameAt(self, 10.5, 21))
 		ext.assertNoDrawRequest()
 	})
+
+	t.Run("when the window focus changes", func(t *testing.T) {
+		ext, client := newFakeExtension(t)
+		_, draw := ext.start(client, frame(term.ContextWithWindowFocus(context.Background(), true)))
+		assert.Equal(t, handlerrpc.WindowFocus_WindowFocusFocused, draw.GetWindowFocus())
+		self := ext.respond(&handlerrpc.DrawStreamResponse{Packed: cells(4, 2)})
+		client.Draw(frame(term.ContextWithWindowFocus(self, true)))
+		ext.assertNoDrawRequest()
+
+		client.Draw(frame(term.ContextWithWindowFocus(self, false)))
+		draw = ext.next(handlerrpc.MessageType_Draw).GetDraw()
+		assert.Equal(t, handlerrpc.WindowFocus_WindowFocusUnfocused, draw.GetWindowFocus())
+	})
+}
+
+func TestClientStreamSendsTheWindowFocus(t *testing.T) {
+	tests := []struct {
+		name string
+		ctx  context.Context
+		want handlerrpc.WindowFocus
+	}{
+		{name: "unspecified when the host doesn't tell it", ctx: context.Background()},
+		{
+			name: "focused",
+			ctx:  term.ContextWithWindowFocus(context.Background(), true),
+			want: handlerrpc.WindowFocus_WindowFocusFocused,
+		},
+		{
+			name: "unfocused",
+			ctx:  term.ContextWithWindowFocus(context.Background(), false),
+			want: handlerrpc.WindowFocus_WindowFocusUnfocused,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ext, client := newFakeExtension(t)
+			_, draw := ext.start(client, frame(tt.ctx))
+			assert.Equal(t, tt.want, draw.GetWindowFocus())
+		})
+	}
 }
 
 func TestClientStreamSurvivesABadUpload(t *testing.T) {

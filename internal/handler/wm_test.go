@@ -265,6 +265,80 @@ aaaaaa666666`},
 		})
 }
 
+// focusRecorder records what the context of its last Draw told of its
+// window's focus style: "focused", "unfocused" or "none".
+type focusRecorder struct {
+	*handler.TestHandler
+	last string
+}
+
+func newFocusRecorder() *focusRecorder {
+	return &focusRecorder{TestHandler: handler.NewTestHandler()}
+}
+
+func (h *focusRecorder) Draw(w term.Writer) {
+	h.TestHandler.Draw(w)
+	switch focused, ok := term.WindowFocusFromContext(w.Context()); {
+	case !ok:
+		h.last = "none"
+	case focused:
+		h.last = "focused"
+	default:
+		h.last = "unfocused"
+	}
+}
+
+func (h *focusRecorder) Dimensions() (int, int) { return 4, 2 }
+
+func (h *focusRecorder) Content() tui.Handler { return h }
+
+func TestWindowManagerFocusContext(t *testing.T) {
+	for _, frame := range []bool{true, false} {
+		t.Run(fmt.Sprintf("frame=%v", frame), func(t *testing.T) {
+			cfg := DefaultWindowManagerConfig()
+			cfg.Frame = frame
+			left := newFocusRecorder()
+			wm := NewWindowManager(left, cfg)
+			wm.Resize(20, 8)
+			draw := func() {
+				t.Helper()
+				left.last = ""
+				wm.Draw(term.NewStringWriter(20, 8))
+			}
+			draw()
+			assert.Equal(t, "unfocused", left.last, "a single window has no focus style")
+
+			right := newFocusRecorder()
+			rightWin, ok := wm.SplitVertical(wm.Focus(), right)
+			require.True(t, ok)
+			draw()
+			assert.Equal(t, "focused", left.last)
+			assert.Equal(t, "unfocused", right.last)
+
+			wm.SetFocus(rightWin)
+			draw()
+			assert.Equal(t, "unfocused", left.last)
+			assert.Equal(t, "focused", right.last)
+
+			float := newFocusRecorder()
+			floatWin := wm.FloatingWindow(float, component.FloatingConfig{})
+			wm.SetFocus(floatWin)
+			draw()
+			assert.Equal(t, "unfocused", right.last)
+			assert.Equal(t, "focused", float.last)
+
+			right.last = ""
+			wm.DrawWindow(rightWin, term.NewStringWriter(20, 8))
+			assert.Equal(t, "unfocused", right.last, "DrawWindow draws with the same context")
+
+			require.NoError(t, floatWin.Close())
+			require.NoError(t, rightWin.Close())
+			draw()
+			assert.Equal(t, "unfocused", left.last, "the last window loses the focus style")
+		})
+	}
+}
+
 func TestWindowManagerFocusBackground(t *testing.T) {
 	normal := component.WindowBackground{Attr: term.Attributes{Bg: term.ColorNavy}}
 	focus := component.WindowBackground{

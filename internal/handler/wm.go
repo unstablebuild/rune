@@ -17,6 +17,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -728,20 +729,48 @@ func (wm *WindowManager) Selection() (string, bool) {
 	return content.Selection()
 }
 
-// Draw : tui.Component
+// Draw satisfies tui.Component. Each window's content is drawn with a
+// writer whose context tells, through term.WindowFocusFromContext,
+// whether the window holds the focus style.
 func (wm *WindowManager) Draw(w term.Writer) {
-	if wm.comp.SizeTiles()+wm.comp.SizeFloating() == 1 || !wm.config.Dim {
-		wm.comp.Draw(w)
-		return
-	}
-
-	focusWin := wm.focus.Window
+	dim := wm.config.Dim && wm.comp.SizeTiles()+wm.comp.SizeFloating() > 1
+	focusWin, styled := wm.focus.Window, wm.styled
+	ctxs := wm.focusContexts(w)
 	wm.comp.DrawWindows(w, func(win component.Window, w term.Writer) term.Writer {
-		if win == focusWin {
-			return w
+		w = focusWriter{Writer: w, ctx: ctxs[b2i(win == styled)]}
+		if dim && win != focusWin {
+			return wm.dimmedWriter(w)
 		}
-		return wm.dimmedWriter(w)
+		return w
 	})
+}
+
+// focusContexts returns w's context telling content drawn with it that
+// its window does not hold the focus style, and one telling that it does.
+func (wm *WindowManager) focusContexts(w term.Writer) [2]context.Context {
+	ctx := w.Context()
+	return [2]context.Context{
+		term.ContextWithWindowFocus(ctx, false),
+		term.ContextWithWindowFocus(ctx, true),
+	}
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// focusWriter is Writer with ctx as its context.
+type focusWriter struct {
+	term.Writer
+	ctx context.Context
+}
+
+// Context satisfies term.Writer.
+func (w focusWriter) Context() context.Context {
+	return w.ctx
 }
 
 // dimmedWriter returns the writer used to de-emphasize unfocused
@@ -754,11 +783,13 @@ func (wm *WindowManager) dimmedWriter(w term.Writer) term.Writer {
 	return tterm.DimWriter(w)
 }
 
-// DrawWindow draws target with the given term.Writer.
+// DrawWindow draws target with the given term.Writer, with the focus
+// context Draw draws it with.
 func (wm *WindowManager) DrawWindow(target Window, w term.Writer) {
+	ctxs := wm.focusContexts(w)
 	wm.comp.Iterate(func(win component.Window) {
 		if win == target.Window {
-			wm.comp.DrawWindow(win, w)
+			wm.comp.DrawWindow(win, focusWriter{Writer: w, ctx: ctxs[b2i(win == wm.styled)]})
 		}
 	})
 }
