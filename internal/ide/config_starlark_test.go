@@ -39,6 +39,7 @@ import (
 	"unstable.build/rune/internal/handler"
 	"unstable.build/rune/internal/ide/idepreset"
 	"unstable.build/rune/internal/ide/idestatus"
+	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/llm/llmsearch"
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/workspace"
@@ -376,6 +377,16 @@ func TestRuneStarFixture(t *testing.T) {
 
 			var ide ideConfig
 			initConfig(&ide, cfg, nil, sounds.Silent, term.ScheduleNextTick, "")
+			highlights := ide.syntaxConfig().CaptureNamesAttributes
+			for name, want := range map[string]term.Attributes{
+				"tag":           {Fg: term.ColorAqua},
+				"tag.attribute": {Fg: term.ColorAqua},
+				"attribute":     {Fg: term.ColorAqua},
+				"tag.delimiter": {},
+				"property":      {},
+			} {
+				assert.Equal(t, want, syntax.CaptureNameAttributes(highlights, name), name)
+			}
 			status := ide.tabStatusConfig()
 			assert.False(t, status.ContentTab.Progress)
 			ct := status.ContentTab

@@ -155,6 +155,9 @@ defaults.
 | `number` | red | |
 | `constant.builtin` | default | |
 | `comment` | blue | |
+| `tag` | cyan | |
+| `tag.delimiter` | default | |
+| `attribute` | cyan | |
 
 ### Markup
 

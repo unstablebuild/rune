@@ -496,6 +496,22 @@ func TestSvelteCompositeHighlightsIntegration(t *testing.T) {
 			{Language: "comment", Range: term.Range{Start: xy(0, 0), End: xy(27, 0)}},
 		}, s.tree.Sections())
 	})
+
+	t.Run("tags are colored by the stock highlights", func(t *testing.T) {
+		tag := term.Attributes{Fg: term.ColorAqua}
+		s := newCompositeTree(t, newFixturePackages(t, "svelte", "css"), ".svelte",
+			"<h1>Plain markup</h1>\n\n<style>\n  h1 {\n    font-weight: bold;\n  }\n</style>\n",
+			serializedSyntaxConfig)
+		s.waitLocation(highlight(xy(2, 3), xy(4, 3), tag))
+		s.locked(func() {
+			assert.True(t, s.hasLocation(highlight(xy(1, 0), xy(3, 0), tag)),
+				"the host colors the markup's tag names")
+			assert.True(t, s.hasLocation(highlight(xy(1, 2), xy(6, 2), tag)),
+				"the host colors the style tag")
+			assert.False(t, s.hasLocation(highlight(xy(0, 0), xy(1, 0), tag)),
+				"the angle brackets stay quiet")
+		})
+	})
 }
 
 func TestSvelteCompositeEditsIntegration(t *testing.T) {
