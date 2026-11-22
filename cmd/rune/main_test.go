@@ -355,6 +355,53 @@ func TestGUIPublisherHoldsScheduledFunctionsUntilAttach(t *testing.T) {
 		"functions scheduled before attach run ahead of those scheduled after")
 }
 
+type recordingCloser struct {
+	name   string
+	closed *[]string
+}
+
+func (c recordingCloser) Close() error {
+	*c.closed = append(*c.closed, c.name)
+	return nil
+}
+
+func TestRunThenClose(t *testing.T) {
+	tests := []struct {
+		name       string
+		loop       func() int
+		wantCode   int
+		wantPanic  any
+		wantClosed []string
+	}{
+		{
+			name:       "the loop returns",
+			loop:       func() int { return 3 },
+			wantCode:   3,
+			wantClosed: []string{"gui", "ide"},
+		},
+		{
+			name:      "the loop panics",
+			loop:      func() int { panic("boom") },
+			wantPanic: "boom",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var closed []string
+			run := func() int {
+				return runThenClose(tc.loop,
+					recordingCloser{"gui", &closed}, recordingCloser{"ide", &closed})
+			}
+			if tc.wantPanic != nil {
+				require.PanicsWithValue(t, tc.wantPanic, func() { run() })
+			} else {
+				assert.Equal(t, tc.wantCode, run())
+			}
+			assert.Equal(t, tc.wantClosed, closed)
+		})
+	}
+}
+
 func TestRunGUIOffersToReopenTheLastSessionWithoutAnIntro(t *testing.T) {
 	wallpaper := filepath.Join(t.TempDir(), "wallpaper.png")
 	f, err := os.Create(wallpaper)

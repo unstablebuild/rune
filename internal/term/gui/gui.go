@@ -294,10 +294,11 @@ func New(handler tui.Handler, options ...Option) (*GUI, error) {
 	return ret, nil
 }
 
-// Run starts the main loop and runs the graphical TUI with the specified options.
+// Run starts the main loop and runs the graphical TUI with the specified
+// options. It closes g once the loop returns. A panic on the loop
+// propagates with g left open, as Close would run the ticks still queued
+// over state the panic interrupted.
 func (g *GUI) Run(title string) error {
-	defer func() { _ = g.Close() }()
-
 	ebiten.SetScreenClearedEveryFrame(false)
 	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
 	ebiten.SetRunnableOnUnfocused(true)
@@ -331,7 +332,9 @@ func (g *GUI) Run(title string) error {
 	}
 
 	gameOpts := g.buildRunGameOptions()
-	return ebiten.RunGameWithOptions(g, &gameOpts)
+	err := ebiten.RunGameWithOptions(g, &gameOpts)
+	_ = g.Close()
+	return err
 }
 
 // Close runs the UserFuncs of accepted events and rejects new ones. It is

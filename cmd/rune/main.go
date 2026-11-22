@@ -841,43 +841,55 @@ func runGUI(
 		log.Errorf("gui: %v", err)
 		return 1
 	}
-	defer func() { _ = root.Close() }()
-	defer func() { _ = g.Close() }()
-	guiRef.Store(g)
-	publisher.attach(g)
-	root.attachGUI(g, transparentWindow)
-	g.SetAppIcon(getGUIAppIcon(browser, guiCfg))
-	defer watchGUISignals(root, quitEvent(appMenuKeyBindings(root.config())))()
+	return runThenClose(func() int {
+		guiRef.Store(g)
+		publisher.attach(g)
+		root.attachGUI(g, transparentWindow)
+		g.SetAppIcon(getGUIAppIcon(browser, guiCfg))
+		defer watchGUISignals(root, quitEvent(appMenuKeyBindings(root.config())))()
 
-	if fg, bg := getGUIWindowOpacity(browser, guiCfg); transparentWindow && (fg != 1 || bg != 1) {
-		g.SetOpacity(bg, fg)
-	}
-	if root.alreadyBootstrapped() {
-		if err := root.setupConfiguredIDE(root.realIDE, root.client); err != nil {
-			fmt.Printf("setup ide: %s", err)
-			log.Errorf("setup ide: %v", err)
+		if fg, bg := getGUIWindowOpacity(browser, guiCfg); transparentWindow && (fg != 1 || bg != 1) {
+			g.SetOpacity(bg, fg)
+		}
+		if root.alreadyBootstrapped() {
+			if err := root.setupConfiguredIDE(root.realIDE, root.client); err != nil {
+				fmt.Printf("setup ide: %s", err)
+				log.Errorf("setup ide: %v", err)
+				return 1
+			}
+		} else {
+			if err := root.setupPreIDE(); err != nil {
+				fmt.Printf("setup pre-config ide: %s", err)
+				log.Errorf("setup pre-config ide: %v", err)
+				return 1
+			}
+		}
+		root.publishAppMenuInstall()
+		err = g.Run("Rune")
+		if err != nil && !errors.Is(err, gui.ErrHandlerExited) {
+			fmt.Printf("%s", err)
+			log.Errorf("run: %v", err)
+			saveLastSize(storage, g)
+			saveLastPosition(storage, g)
 			return 1
 		}
-	} else {
-		if err := root.setupPreIDE(); err != nil {
-			fmt.Printf("setup pre-config ide: %s", err)
-			log.Errorf("setup pre-config ide: %v", err)
-			return 1
-		}
-	}
-	root.publishAppMenuInstall()
-	err = g.Run("Rune")
-	if err != nil && !errors.Is(err, gui.ErrHandlerExited) {
-		fmt.Printf("%s", err)
-		log.Errorf("run: %v", err)
+
 		saveLastSize(storage, g)
 		saveLastPosition(storage, g)
-		return 1
-	}
+		return 0
+	}, g, root)
+}
 
-	saveLastSize(storage, g)
-	saveLastPosition(storage, g)
-	return 0
+// runThenClose returns the exit code of loop after closing closers in
+// order. A panic in loop leaves them open: closing waits on locks and
+// ticks that the interrupted event loop may never release or run, and
+// a close that blocks would keep the panic from the crash report.
+func runThenClose(loop func() int, closers ...io.Closer) int {
+	code := loop()
+	for _, c := range closers {
+		_ = c.Close()
+	}
+	return code
 }
 
 // eventPublisher is the part of *gui.GUI that guiPublisher publishes to.
