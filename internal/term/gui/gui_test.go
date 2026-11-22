@@ -416,6 +416,25 @@ func TestPublishEventSchedulesUserFunc(t *testing.T) {
 		assert.Equal(t, 1, handled, "Close must not redeliver the exiting event")
 	})
 
+	t.Run("a tick that panics does not run again on Close", func(t *testing.T) {
+		gui, _ := newTestGUI(t, &mockHandler{assertDraw: func(term.Writer) {}})
+		var before, panicked, behind int
+		tick := func(fn func()) term.Event {
+			return term.Event{Type: term.EventInterrupt, UserFunc: fn}
+		}
+		require.True(t, gui.PublishEvent(tick(func() { before++ })))
+		require.True(t, gui.PublishEvent(tick(func() {
+			panicked++
+			panic("boom")
+		})))
+		require.True(t, gui.PublishEvent(tick(func() { behind++ })))
+		require.PanicsWithValue(t, "boom", func() { _ = gui.Update() })
+		require.NotPanics(t, func() { _ = gui.Close() })
+		assert.Equal(t, 1, before, "a tick that ran before the panic")
+		assert.Equal(t, 1, panicked, "the tick that panicked")
+		assert.Equal(t, 1, behind, "a tick queued behind the panic")
+	})
+
 	t.Run("Close rejects events", func(t *testing.T) {
 		var runs int
 		tests := []struct {

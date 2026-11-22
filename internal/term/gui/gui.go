@@ -616,6 +616,9 @@ func (g *GUI) Update() error {
 		case term.EventInterrupt:
 			sawInterrupt = true
 			if ev.UserFunc != nil {
+				// Off the queue before it runs: Close runs the ticks left on
+				// it, and one that panicked must not run again.
+				g.pendingEvents[i].UserFunc = nil
 				ev.UserFunc()
 				needsDraw = true
 				continue
