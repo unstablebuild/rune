@@ -36,6 +36,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/ide/idelsp/symbolresolve"
 	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/ide/syntax/grammarfixture"
 	"unstable.build/rune/internal/ide/syntax/treesitter"
@@ -513,6 +514,77 @@ func TestParserGrammarFingerprintOnDisk(t *testing.T) {
 			} else {
 				assert.NotEqual(t, want, got)
 			}
+		})
+	}
+}
+
+func TestParserLoadsTheReleaseInUse(t *testing.T) {
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+	tsx := grammarfixture.PackageFiles(t, filepath.Join(wd, "tsx"))
+	typescript := grammarfixture.PackageFiles(t, filepath.Join(wd, "typescript"))
+	withoutLocals := maps.Clone(tsx)
+	delete(withoutLocals, treesitter.LocalsFilename)
+	// tsx cannot load the typescript parser, so failing to parse with it
+	// shows the parser read the new release instead of reusing the
+	// grammar it had loaded.
+	typescriptParser := maps.Clone(tsx)
+	typescriptParser[treesitter.ParserFilename] = typescript[treesitter.ParserFilename]
+
+	tests := []struct {
+		name    string
+		v1, v2  map[string][]byte
+		want    []string
+		wantErr string
+	}{
+		{
+			name: "release adds the locals query",
+			v1:   withoutLocals,
+			v2:   tsx,
+			want: []string{"greet"},
+		},
+		{
+			name:    "grammar upgraded while the old one is loaded",
+			v1:      tsx,
+			v2:      typescriptParser,
+			wantErr: "tree_sitter_tsx",
+		},
+	}
+	root, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme, err := workspace.NewMemoryScheme(ctx, config.NopConfig(), root)
+			require.NoError(t, err)
+			file := createFile(t, scheme, "a.tsx", "function greet() {}\n")
+			pkgs := grammarfixture.NewPackages(t, map[string][]string{"tsx": {"1", "2"}})
+			pkgs.Install(t, "tsx", "1", tt.v1)
+			parser := treesitter.NewParser(scheme, pkgs, root)
+
+			// The session keeps release 1 loaded until the test ends, as
+			// an editor buffer open in the language does.
+			session := parser.NewQuerySession()
+			defer func() { _ = session.Close() }()
+			_, err = session.QueryMulti(ctx, file, []symbolresolve.MultiQuery{
+				{Query: "(identifier) @name", Captures: []string{"name"}},
+			})
+			require.NoError(t, err)
+
+			pkgs.Install(t, "tsx", "2", tt.v2)
+			it, err := parser.QueryNode(file, syntaxapi.NodeCaptureDefinitionFunc)
+			require.NoError(t, err)
+			got, err := iterator.ToSlice(ctx, it)
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			var names []string
+			for _, r := range got {
+				names = append(names, r.Text)
+			}
+			assert.Equal(t, tt.want, names)
 		})
 	}
 }

@@ -589,9 +589,9 @@ func (t *Tree) initParser(
 		return false, nil
 	}
 
-	lib, err := purego.Dlopen(langfile, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	lib, err := dlopenGrammar(langfile)
 	if err != nil {
-		return false, fmt.Errorf("dlopen %q: %w", langfile, err)
+		return false, err
 	}
 	t.lib = lib
 
