@@ -61,21 +61,44 @@ the file and jump to the one you pick:
 
 ### Fuzzy search across the workspace
 
-To search every file, use the `searchast` aliases. You can type each alias in
-the command prompt and bind it yourself when the selected preset leaves it
-unbound:
+To search the definitions of every file, use these built-in commands. Type
+them in the command prompt, and bind them yourself when the selected preset
+leaves them unbound:
 
-| Key | Alias | Searches for |
+| Key | Command | Searches for |
 | --- | --- | --- |
 | <KeyBinding command="searchfunc" /> | `searchfunc` | functions and methods |
 | <KeyBinding command="searchvar" /> | `searchvar` | variables |
 | <KeyBinding command="searchtype" /> | `searchtype` | types |
 
 They open a fuzzy picker over every matching definition in the
-workspace; selecting a result jumps you straight to it. All of these
-query `locals.scm` filtered by the
+workspace; selecting a result jumps you straight to it. The preview
+above the list shows the focused definition in its file. The status bar
+counts the definitions and their files and says how long the search
+took; on its right it says what the focused definition is, its language,
+and which of its file's definitions it is.
+
+The definitions are what each language's `locals.scm` captures as
 `local.definition.function`/`.method`, `local.definition.var`, and
-`local.definition.type` captures.
+`local.definition.type`, in every file whose language package is installed.
+They are kept in the workspace's
+[symbol index](../languages/symbol-index.md), so the picker fills at once
+even in large repositories. Rune builds the index in the background when
+you open the workspace and updates it as files change. Until it is built,
+the status bar says `still indexing` and how many files are left. With
+`search.symbols_enabled` off, the commands parse every file instead. The
+index covers the same files as [`searchregex`](#regular-expressions).
+
+Flags narrow the search:
+
+| Flag | Does |
+| --- | --- |
+| `-l <lang>`, `--lang <lang>` | searches only files of this language, such as `go`; repeat it for several |
+| `-r <dir>`, `--root <dir>` | searches only in this folder; repeat it for several |
+| `-n <limit>`, `--limit <limit>` | lists at most this many definitions |
+
+To see what the index holds or rebuild it, see
+[Manage the search indexes](#manage-the-search-indexes).
 
 A language package supplies the query files these commands read, so
 structural search lights up for any installed language. See
@@ -233,6 +256,32 @@ currently guarantee BF16/FP32-only inference across backends. See the
 
 See [Workspace search](../agent/local-models.md#workspace-search) for what
 is indexed and how to configure it.
+
+## Manage the search indexes
+
+The command prompt searches; the [console](./console.md) manages the
+indexes those searches read. The `search` console command works on the
+indexes of the workspace the console runs in:
+
+| Index | Searched by |
+| --- | --- |
+| `semantic` | `searchsemantic` |
+| `symbols` | `searchfunc`, `searchvar`, `searchtype`, and lookups of a symbol by name |
+| `regex` | `searchregex` |
+
+```
+search symbols status    # what the index holds and what it left out
+search regex reindex     # rebuild the index from scratch
+search semantic remove   # delete the index
+```
+
+`remove` deletes the index from disk. Until the workspace opens again,
+`searchregex` reads every file, the symbol commands parse the files they
+search, lookups by name scan the workspace, and `searchsemantic` has no
+index to search. The index is built
+again the next time the workspace opens; to keep it off, turn off its
+`search.regex_enabled`, `search.symbols_enabled` or
+`search.semantic_enabled` setting.
 
 ## Search Indexed Symbols
 

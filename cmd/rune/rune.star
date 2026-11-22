@@ -226,9 +226,13 @@ config = {
     },
     "search": {
         # Off, `searchregex` reads every file instead of using its index.
-        # Independent of semantic indexing and workspace.symboldb.
+        # Independent of semantic and symbol indexing.
         "regex_enabled":       True,
-        # Build the semantic index for `search` and `searchsemantic`.
+        # Index the workspace symbols: the definitions `searchfunc`,
+        # `searchvar` and `searchtype` list, and the qualified names `lsp`
+        # commands and the agent look up. Off, those parse every file.
+        "symbols_enabled":     True,
+        # Build the semantic index `searchsemantic` searches.
         # Off by default; independent of regexp indexing. Meaning search
         # needs llama-server and the model below, which `searchsemantic`
         # offers to install on first use. Restart Rune after changing.
@@ -1238,8 +1242,6 @@ config = {
         # Automatically restore the previous session's files, terminals, and
         # window layout.
         "auto_restore": True,
-        # Index workspace symbols for faster lookups.
-        "symboldb":     True,
         # Precedence: wallpaper_image, then wallpaper_image_ascii, then
         # wallpaper_ascii. The first non-empty one is shown; when all three
         # are "" the built-in Rune logo is.

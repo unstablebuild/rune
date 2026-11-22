@@ -5196,6 +5196,7 @@ func TestSearchConfig(t *testing.T) {
 	defaults := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
 	assert.False(t, defaults.workspaceSearch(), "semantic indexing is off by default")
 	assert.True(t, defaults.workspaceRegexSearch(), "regexp indexing remains on by default")
+	assert.True(t, defaults.workspaceSymbolsSearch(), "symbols indexing is on by default")
 	assert.Equal(t, llmsearch.DefaultConfig(), defaults.searchConfig())
 
 	c := ideConfig{cfg: map[string]any{
@@ -5236,24 +5237,24 @@ func TestWorkspaceSearchIndexingConfig(t *testing.T) {
 		search   map[string]any
 		semantic bool
 		regexp   bool
+		symbols  bool
 	}{
-		{"defaults", nil, false, true},
-		{"regexp enabled", map[string]any{"regex_enabled": true}, false, true},
-		{"semantic disabled", map[string]any{"regex_enabled": true, "semantic_enabled": false}, false, true},
-		{"semantic enabled", map[string]any{"semantic_enabled": true}, true, true},
-		{"semantic only", map[string]any{"regex_enabled": false, "semantic_enabled": true}, true, false},
-		{"all disabled", map[string]any{"regex_enabled": false, "semantic_enabled": false}, false, false},
+		{"defaults", nil, false, true, true},
+		{"regexp enabled", map[string]any{"regex_enabled": true}, false, true, true},
+		{"semantic disabled", map[string]any{"regex_enabled": true, "semantic_enabled": false}, false, true, true},
+		{"semantic enabled", map[string]any{"semantic_enabled": true}, true, true, true},
+		{"semantic only", map[string]any{"regex_enabled": false, "semantic_enabled": true}, true, false, true},
+		{"symbols disabled", map[string]any{"symbols_enabled": false}, false, true, false},
+		{"all disabled", map[string]any{"regex_enabled": false, "semantic_enabled": false, "symbols_enabled": false}, false, false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			c := ideConfig{cfg: map[string]any{
-				"workspace": map[string]any{"symboldb": true},
-			}, errors: map[string]error{}}
+			c := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
 			if tt.search != nil {
 				c.cfg["search"] = tt.search
 			}
 			assert.Equal(t, tt.semantic, c.workspaceSearch())
 			assert.Equal(t, tt.regexp, c.workspaceRegexSearch())
-			assert.True(t, c.workspaceSymbolDB(), "search settings do not disable symbol indexing")
+			assert.Equal(t, tt.symbols, c.workspaceSymbolsSearch())
 			assert.Empty(t, c.errors)
 		})
 	}

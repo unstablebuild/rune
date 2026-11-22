@@ -67,11 +67,60 @@ type FileSymbol struct {
 	Kind SymbolKind
 }
 
+// DefinitionNodes are the locals captures of the definitions a file
+// lists: its functions, methods, types and variables.
+const DefinitionNodes = syntaxapi.NodeCaptureDefinitionFunc |
+	syntaxapi.NodeCaptureDefinitionMethod | syntaxapi.NodeCaptureDefinitionType |
+	syntaxapi.NodeCaptureDefinitionVar
+
+// qualifiedCaptures are the definition captures ExtractFile qualifies:
+// methods are qualified by the spec's method query instead.
+var qualifiedCaptures = map[string]bool{
+	"local.definition.function": true,
+	"local.definition.type":     true,
+}
+
+// Definition is one definition the locals query of a file's language
+// captures, under its own name rather than a qualified one.
+type Definition struct {
+	Name string
+	Pos  term.Coordinates
+	// Capture is the capture that matched, such as
+	// local.definition.function.
+	Capture string
+}
+
 // FileExtraction is one file's contribution to a symbol index.
 type FileExtraction struct {
 	Symbols []FileSymbol
 	// Imports maps package aliases in scope to their import paths.
 	Imports map[string]string
+	// Definitions are every definition DefinitionNodes captures, in any
+	// scope and whatever the spec qualifies.
+	Definitions []Definition
+}
+
+// ExtractDefinitions lists the definitions of file, of any language with
+// a locals query, in one parse.
+func ExtractDefinitions(
+	ctx context.Context, parser FileQueryer, file workspaceapi.URI,
+) ([]Definition, error) {
+	results, err := parser.QueryMulti(ctx, file, []MultiQuery{{Nodes: DefinitionNodes}})
+	if err != nil {
+		return nil, err
+	}
+	var defs []Definition
+	for _, r := range results {
+		defs = appendDefinitions(defs, r)
+	}
+	return defs, nil
+}
+
+func appendDefinitions(defs []Definition, r MultiResult) []Definition {
+	for _, m := range r.Match {
+		defs = append(defs, Definition{Name: m.Text, Pos: m.From, Capture: m.CaptureName})
+	}
+	return defs
 }
 
 // queryRole identifies what a query in an extraction batch captures.
@@ -110,7 +159,8 @@ type queryTag struct {
 // files are emitted as definitions under the same qualifiers. For a
 // host spec the batch carries each injected spec's queries bound to
 // the regions of its language, and the host's qualifier names the
-// symbols they extract.
+// symbols they extract. The same parse also lists the file's
+// Definitions, those of injected regions included.
 func ExtractFile(
 	ctx context.Context, parser FileQueryer, spec *Spec, qc QualifierContext,
 	file workspaceapi.URI,
@@ -142,9 +192,7 @@ func ExtractFile(
 				Query: s.ImportAliasQuery, Captures: s.ImportAliasCaptures,
 			})
 		}
-		add(src, roleDefs, 0, MultiQuery{
-			Nodes: syntaxapi.NodeCaptureDefinitionFunc | syntaxapi.NodeCaptureDefinitionType,
-		})
+		add(src, roleDefs, 0, MultiQuery{Nodes: DefinitionNodes})
 		if s.hasMethods() {
 			add(src, roleMethod, 0, MultiQuery{
 				Query: s.MethodDefQuery, Captures: s.MethodDefCaptures,
@@ -210,7 +258,8 @@ func ExtractFile(
 				Name: p0.Text + "." + p1.Text, Pos: p1.From, Kind: SymbolRef,
 			})
 		case roleDefs:
-			if pkg == "" {
+			ext.Definitions = appendDefinitions(ext.Definitions, r)
+			if pkg == "" || !qualifiedCaptures[r.Match[0].CaptureName] {
 				continue
 			}
 			for _, q := range pkgs {

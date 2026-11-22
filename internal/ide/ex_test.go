@@ -9116,40 +9116,6 @@ func TestExEchoMultipleArgs(t *testing.T) {
 	assert.Equal(t, term.KeyEnter, published[1].Key)
 }
 
-func TestSearchAstAliasesFromRuneStar(t *testing.T) {
-	// Source of truth: cmd/rune/rune.star. Keep these in sync with
-	// the strings declared there.
-	const (
-		searchfuncBody = `echo {prompt}searchast<space>locals.scm<space>local.definition.method|local.definition.function<enter>`
-		searchvarBody  = `echo {prompt}searchast<space>locals.scm<space>local.definition.var<enter>`
-		searchtypeBody = `echo {prompt}searchast<space>locals.scm<space>local.definition.type<enter>`
-	)
-	cases := []struct {
-		alias string
-		body  string
-	}{
-		{"searchfunc", searchfuncBody},
-		{"searchvar", searchvarBody},
-		{"searchtype", searchtypeBody},
-	}
-	for _, tc := range cases {
-		t.Run(tc.alias, func(t *testing.T) {
-			publishEvent := func(ev term.Event) bool { return true }
-			e := newExForTestingWithWorkspace(t, &testLoader{},
-				texttest.NopEditor(), vte.DefaultConfig(),
-				publishEvent, clipboard.NewInMemory(),
-				text.WithCommandKey(testCommandKey),
-				text.WithCommandAliases(map[string]text.CommandAlias{
-					tc.alias: {Commands: []string{tc.body}},
-				}),
-			)
-			defer e.Close()
-
-			require.NoError(t, e.dispatchCommand(tc.alias))
-		})
-	}
-}
-
 func TestCommandListAliasShadowsCommand(t *testing.T) {
 	b := newExForTesting(t, texttest.NopEditor(),
 		text.WithCommandKey(testCommandKey),

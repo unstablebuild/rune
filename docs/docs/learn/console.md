@@ -70,7 +70,7 @@ installed in the workspace, but the core commands are:
 | `logout` | Log out from the current session so you can login with a different account. |
 | `pkg <command> [<args>]` | Install and manage packages from Rune's official distribution. |
 | `models <command> [<args>]` | Inspect and manage LLM providers and local models. |
-| `search (<query...>\|status\|reindex)` | [Search the workspace's code](./search.md#search-with-natural-language) by meaning and by words, and inspect its search index. |
+| `search (semantic\|symbols\|regex) (reindex\|status\|remove)` | [Manage the workspace's search indexes](./search.md#manage-the-search-indexes): see what one holds, rebuild it, or delete it. |
 | `agent <command> [<args>]` | Inspect and manage [Rune Agent](../agent/intro.md) models, chats, tools, skills, and configuration (available once the `rune-agent` package is installed). |
 | `debugger <subcommand> [...]` | Control a [debug session](./debugger.md) via the Debug Adapter Protocol. Start with `debugger initialize <langID>`, then `launch` or `attach`, then `configured`. |
 | `extensions (status\|info\|start\|stop\|restart\|logs) ...` | Manage workspace extensions. |

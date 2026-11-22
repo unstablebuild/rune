@@ -184,6 +184,9 @@ command:
     "<ctrl-space>": "lsp complete"
     "<alt-x>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
     "<alt-f>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>"
+    "<alt-shift-f>": searchfunc
+    "<alt-shift-v>": searchvar
+    "<alt-shift-s>": searchtype
     "<alt-s>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
     "<shift-meta-r>": history
     # Bindings shared with the other presets.

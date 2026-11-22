@@ -15,7 +15,7 @@
 #                             neither an alias nor "exo" ever reaches here.
 #
 # The script writes the merged settings into the user's rune config so that
-# fuzzy_search options and search* aliases/key bindings are only registered
+# fuzzy_search options and search* key bindings are only registered
 # when the extension is actually installed.
 
 mode = RUNE_EDITOR_MODE
@@ -66,11 +66,6 @@ config = {
         "fuzzy_search": "$RUNE_DATADIR/pkg/$RUNE_PKG_ID/$RUNE_PKG_VERSION/fuzzy_search.star",
     },
     "command": {
-        "aliases": {
-            "searchfunc":      "echo {prompt}searchast<space>locals.scm<space>local.definition.method|local.definition.function<enter>",
-            "searchvar":       "echo {prompt}searchast<space>locals.scm<space>local.definition.var<enter>",
-            "searchtype":      "echo {prompt}searchast<space>locals.scm<space>local.definition.type<enter>",
-        },
         "key_bindings": {},
     },
 }
@@ -84,9 +79,6 @@ else:
     config["command"]["key_bindings"] = {
         "<m-p>":    "searchfile",
         "<m-\\\\>": "searchtext",
-        "<a-s-f>":  "searchfunc",
-        "<a-s-v>":  "searchvar",
-        "<a-s-s>":  "searchtype",
     }
 
 if mode == "standard":

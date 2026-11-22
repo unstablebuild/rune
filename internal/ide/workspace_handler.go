@@ -79,6 +79,7 @@ import (
 	"unstable.build/rune/internal/ide/console/lspconsole"
 	"unstable.build/rune/internal/ide/console/pkgconsole"
 	"unstable.build/rune/internal/ide/console/searchconsole"
+	"unstable.build/rune/internal/ide/defsearch"
 	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/ideacp"
 	"unstable.build/rune/internal/ide/ideacp/acpcmd"
@@ -860,7 +861,7 @@ func (h *workspaceManagerHandler) init(
 	h.homeInstallDir = installDataDir(trackedCwd, homeDirUri, h.sixDir)
 	runner, lspManager, dapManager, acpManager, _, _, err := h.buildExtensions(
 		cfg, homeDirUri, trackedCwd, h.empty, extExec, homeParser, false,
-		h.homeInstallDir, noRegexpSearch{}, extension.NewLiveConfig(cfg.cfg))
+		h.homeInstallDir, noRegexpSearch{}, searchconsole.Config{}, extension.NewLiveConfig(cfg.cfg))
 	if err != nil {
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building channel for extensions and plugins: %v", err)
@@ -1575,6 +1576,19 @@ type configChangeState struct {
 	lastApplied map[string]any
 }
 
+// packageInstalled has the symbol index of every open workspace scan
+// again, so the files of a language whose grammar the package installed
+// or changed are parsed with it. It may run on any goroutine.
+func (h *workspaceManagerHandler) packageInstalled() {
+	h.scheduleNextTick(func() {
+		for _, wh := range h.workspaces {
+			if wh != nil && wh.symbolIndex != nil {
+				wh.symbolIndex.Rescan()
+			}
+		}
+	})
+}
+
 // configChanged reads the user config again and puts what differs from
 // the one in effect into effect, as far as the running process can,
 // then tells the user what did and did not take. source says what
@@ -2159,22 +2173,11 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 
 	parser := treesitter.NewParser(cwd, h.pkgmanager, uri).
 		WithCaptureNamesAttributes(cfg.syntaxConfig().CaptureNamesAttributes)
+	symbolIndex, indexedSymbols := h.openSymbolIndex(cfg, uri, cwd, parser)
+	symbolDBCloser := io.Closer(symbolIndex)
 	var wsParser syntaxapi.Parser = parser
-	var symbolDB *symboldb.Parser
-	var symbolDBCloser io.Closer
-	if cfg.workspaceSymbolDB() {
-		sdb, sdbErr := symboldb.New(parser, cwd, uri, storageapi.WithPartition(
-			storageapi.WithPartition(h.ideStorage, symboldb.PartitionName),
-			uri.String()),
-			h.notifications.current(), h.scheduleNextTick)
-		if sdbErr != nil {
-			h.empty.log(log.ErrorLevel, "symbol database for workspace %q: %v",
-				uri.Path(), sdbErr)
-		} else {
-			symbolDB = sdb
-			wsParser = sdb
-			symbolDBCloser = sdb
-		}
+	if indexedSymbols {
+		wsParser = symbolIndex
 	}
 	textOpts := h.textOpts(cfg, wsParser, uri, cwd)
 	vctrlService, err := gogit.NewService(uri, cwd)
@@ -2214,18 +2217,16 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		cfg.metaOpenURL(),
 		textOpts...)
 	if err != nil {
-		if symbolDBCloser != nil {
-			_ = symbolDBCloser.Close()
-		}
+		_ = symbolDBCloser.Close()
 		return nil, fmt.Errorf("new ex: %w", err)
 	}
 	ex.sponsorsURL = h.sponsorsURL
 	ex.statusBars = statusBars
-	if symbolDB != nil {
+	if indexedSymbols {
 		if serr := ex.comp.SubscribeEvents(
-			symboldb.EditorEvents(), symbolDB,
+			symboldb.EditorEvents(), symbolIndex,
 		); serr != nil {
-			log.Errorf("subscribe symbol database events for %s: %v",
+			log.Errorf("subscribe symbol index events for %s: %v",
 				uri.String(), serr)
 		}
 	}
@@ -2237,20 +2238,20 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		h.scheduleNextTick, fexURI, gitshowBaseURI(),
 	)
 	if err != nil {
-		if symbolDBCloser != nil {
-			_ = symbolDBCloser.Close()
-		}
+		_ = symbolDBCloser.Close()
 		return nil, fmt.Errorf("install cursor history: %w", err)
 	}
 	tm.tm = ex.Browser()
 	searchIndexCloser := h.openSearchIndex(cfg, ex, uri, cwd)
 	regexIndex := h.openRegexIndex(cfg, ex, uri, cwd)
 	h.subscribeSearchRegex(ex, uri, regexIndex, wsParser, apibrowser)
+	h.subscribeSearchDefs(ex, uri, symbolIndex, wsParser, apibrowser)
 
 	wh := &workspaceHandler{
 		vctrlService:        vctrlService,
 		cursorHistoryCloser: cursorHistoryCloser,
 		symbolDBCloser:      symbolDBCloser,
+		symbolIndex:         symbolIndex,
 		searchIndexCloser:   searchIndexCloser,
 		regexIndex:          regexIndex,
 		cancelCtx:           pending.cancelCtx,
@@ -2268,9 +2269,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 	extExec, err := newExtensionsExecutor()
 	if err != nil {
 		_ = cursorHistoryCloser.Close()
-		if symbolDBCloser != nil {
-			_ = symbolDBCloser.Close()
-		}
+		_ = symbolDBCloser.Close()
 		if searchIndexCloser != nil {
 			_ = searchIndexCloser.Close()
 		}
@@ -2282,8 +2281,8 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		return nil, fmt.Errorf("new extensions executor: %w", err)
 	}
 	runner, lspManager, dapManager, acpManager, hostPkgs, promptStorage, err := h.buildExtensions(
-		cfg, uri, trackedCwd, ex, extExec, wsParser, symbolDB != nil, wh.installDir, regexIndex,
-		wh.extensionConfig)
+		cfg, uri, trackedCwd, ex, extExec, wsParser, indexedSymbols, wh.installDir, regexIndex,
+		consoleIndexes(cfg, regexIndex, symbolIndex, indexedSymbols), wh.extensionConfig)
 	if err != nil {
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building channel for extensions and plugins: %v", err)
@@ -2405,6 +2404,65 @@ func (h *workspaceManagerHandler) subscribeSearchRegex(
 	})
 	if err := ex.editorObserver.SubscribeCommand(regexsearch.Manual(), handler); err != nil {
 		log.Errorf("subscribe %s command: %v", regexsearch.Name, err)
+	}
+}
+
+// openSymbolIndex opens the symbol index of the workspace uri over
+// backing, and reports whether it keeps one: with search.symbols_enabled
+// off, or when its database cannot open, it keeps none, lookups go to
+// backing and searchfunc, searchvar and searchtype parse the files they
+// cover.
+func (h *workspaceManagerHandler) openSymbolIndex(
+	cfg ideConfig, uri workspaceapi.URI, cwd workspace.Workspace, backing treesitter.Parser,
+) (*symboldb.Parser, bool) {
+	scfg := symboldb.Config{
+		Root: uri, FS: cwd, Backing: backing,
+		// A scan of the workspace must not offer to install the package
+		// of every language it meets.
+		Indexer:         treesitter.NewParser(cwd, installedPackages{h.pkgmanager.pkg}, uri),
+		ExcludedFolders: cfg.searchConfig().Options.ExcludedFolders,
+	}
+	if cfg.workspaceSymbolsSearch() {
+		scfg.DB = storageapi.WithPartition(
+			storageapi.WithPartition(h.ideStorage, symboldb.PartitionName), uri.String())
+		notify, schedule := h.notifications.current(), h.scheduleNextTick
+		scfg.Progress = func() symboldb.Progress { return symboldb.NotifyProgress(notify, schedule) }
+		idx, err := symboldb.New(scfg)
+		if err == nil {
+			return idx, true
+		}
+		h.empty.log(log.ErrorLevel, "symbol index for workspace %q: %v", uri.Path(), err)
+		scfg.DB, scfg.Progress = nil, nil
+	}
+	// Without a database New does not fail.
+	idx, _ := symboldb.New(scfg)
+	return idx, false
+}
+
+// subscribeSearchDefs registers the searchfunc, searchvar and searchtype
+// commands of the workspace uri, which search idx.
+func (h *workspaceManagerHandler) subscribeSearchDefs(
+	ex *ex, uri workspaceapi.URI, idx *symboldb.Parser, parser syntaxapi.Parser,
+	apibrowser browserapi.Browser,
+) {
+	cfg := defsearch.Config{
+		Root:     uri,
+		Searcher: idx,
+		Clients: finder.Clients{
+			ResourceOpener: apibrowser,
+			WindowManager:  apibrowser,
+			Interrupter:    apibrowser,
+			Notifications:  h.notifications.new(uri, ex.container),
+			Editor:         newEditorAdapter(ex.Editor()),
+			FileSystem:     ex.workspace,
+		},
+		Parser:           parser,
+		ScheduleNextTick: h.scheduleNextTick,
+	}
+	for _, man := range defsearch.Manuals() {
+		if err := ex.editorObserver.SubscribeCommand(man, defsearch.New(man.Name, cfg)); err != nil {
+			log.Errorf("subscribe %s command: %v", man.Name, err)
+		}
 	}
 }
 
@@ -2698,7 +2756,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 	cfg ideConfig, uri workspaceapi.URI,
 	cwd workspace.Workspace, ex *ex, extExecutor *extensionsExecutor,
 	parser syntaxapi.Parser, indexedSymbols bool, installDir string,
-	regexp regexpSearcher, extensionConfig *extension.LiveConfig,
+	regexp regexpSearcher, indexes searchconsole.Config, extensionConfig *extension.LiveConfig,
 ) (
 	_ extension.Runner, _ *idelsp.Manager, _ *idedebug.Manager,
 	_ *ideacp.Manager, _ *pkgManager, _ storageapi.Service, retErr error,
@@ -2907,9 +2965,10 @@ func (h *workspaceManagerHandler) buildExtensions(
 		log.Errorf("register llm repl command: %v", err)
 	}
 	if err := ex.editorObserver.RegisterREPLCommand(searchconsole.Manual(), searchconsole.New(searchconsole.Config{
-		Searcher: searcher,
-		Search:   h.llmRouter.SearchService(),
-		Root:     uri,
+		Search:  h.llmRouter.SearchService(),
+		Root:    uri,
+		Regex:   indexes.Regex,
+		Symbols: indexes.Symbols,
 	})); err != nil {
 		log.Errorf("register search repl command: %v", err)
 	}
@@ -4019,6 +4078,7 @@ type workspaceHandler struct {
 	vctrlService        vctrl.Service
 	cursorHistoryCloser io.Closer
 	symbolDBCloser      io.Closer
+	symbolIndex         *symboldb.Parser
 	searchIndexCloser   io.Closer
 	regexIndex          *codesearch.Index
 	cancelCtx           func()
@@ -5714,4 +5774,19 @@ func lspCommandsConfig(
 		handlermarkdown.WithOnLinkClick(onLinkClick),
 	}
 	return cmdcfg
+}
+
+// consoleIndexes returns the indexes of a workspace that the search
+// console manages: those the workspace keeps.
+func consoleIndexes(
+	cfg ideConfig, regex *codesearch.Index, symbols *symboldb.Parser, indexedSymbols bool,
+) searchconsole.Config {
+	var out searchconsole.Config
+	if cfg.workspaceRegexSearch() {
+		out.Regex = regex
+	}
+	if indexedSymbols {
+		out.Symbols = symbols
+	}
+	return out
 }

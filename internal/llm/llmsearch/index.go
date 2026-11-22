@@ -581,11 +581,18 @@ func (i *Index) Status() Status {
 // Close stops the indexer and closes the index; the storage is left open.
 // It is safe to call more than once.
 func (i *Index) Close() error {
+	i.shutdown()
+	return nil
+}
+
+// shutdown stops the indexer and closes the index, reporting whether
+// this call closed it.
+func (i *Index) shutdown() bool {
 	i.mu.Lock()
 	if i.closed {
 		i.mu.Unlock()
 		<-i.done
-		return nil
+		return false
 	}
 	i.closed = true
 	if i.idle != nil {
@@ -595,7 +602,17 @@ func (i *Index) Close() error {
 	i.cancel()
 	<-i.done
 	i.svc.unregister(i)
-	return nil
+	return true
+}
+
+// Remove closes the index and deletes what it persisted: Service.Search
+// answers ErrNoIndex for its workspace from then on. Once the index is
+// closed, Remove leaves the storage alone and fails.
+func (i *Index) Remove(ctx context.Context) error {
+	if !i.shutdown() {
+		return errClosed
+	}
+	return dropIndex(ctx, i.cfg.DB)
 }
 
 // search answers req: by meaning too when req.Meaning, the index has the

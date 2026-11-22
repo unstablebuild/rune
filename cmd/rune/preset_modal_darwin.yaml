@@ -147,6 +147,9 @@ command:
     "<alt-f>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>"
     "<alt-v>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
     "<alt-s>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
+    "<alt-shift-f>": searchfunc
+    "<alt-shift-v>": searchvar
+    "<alt-shift-s>": searchtype
     "<alt-j>": "lspnextdiagnostic"
     "<alt-k>": "lspprevdiagnostic"
     "<alt-t>": "lsp hover"

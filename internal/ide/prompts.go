@@ -29,6 +29,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/browser"
+	"unstable.build/rune/internal/ide/defsearch"
 	"unstable.build/rune/internal/ide/idehistory"
 	"unstable.build/rune/internal/ide/idetask"
 	"unstable.build/rune/internal/ide/regexsearch"
@@ -545,6 +546,7 @@ func (e *ex) markHome() {
 		"chateffort", "chatspeed", "chatmaxtokens", "chatskill", "chatmodel",
 		"chatclear", "chatcompact", "chatfork", "chatexport", "chatlog",
 		semanticsearch.Name, regexsearch.Name,
+		defsearch.FuncName, defsearch.VarName, defsearch.TypeName,
 	} {
 		e.config.CommandFallbacks[cmd] = e
 	}

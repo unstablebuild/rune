@@ -147,6 +147,9 @@ command:
     "<space>s": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>"
     "<space>t": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
     "<space>v": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
+    "<alt-shift-f>": searchfunc
+    "<alt-shift-v>": searchvar
+    "<alt-shift-s>": searchtype
     # Helix's <ctrl-w> window menu. <space>w reaches the same commands in
     # Helix, but a Rune sequence is exactly two keys, so only the <ctrl-w>
     # spelling survives the translation. Helix also takes each key with

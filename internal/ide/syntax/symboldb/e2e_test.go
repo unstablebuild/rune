@@ -53,13 +53,19 @@ type e2eEnv struct {
 	p       *Parser
 }
 
-// stubPkgManager serves fixed tree-sitter artifact paths, matching the
-// symbolresolve test harness.
-type stubPkgManager struct{ files []string }
+// stubPkgManager serves fixed tree-sitter artifact paths for one
+// language, matching the symbolresolve test harness.
+type stubPkgManager struct {
+	lang  string
+	files []string
+}
 
 func (s *stubPkgManager) LibDir(
-	context.Context, string,
+	_ context.Context, lang string,
 ) (iterator.Iterator[string], error) {
+	if lang != s.lang {
+		return nil, fmt.Errorf("language %q not installed", lang)
+	}
 	return iterator.FromSlice(s.files), nil
 }
 
@@ -79,10 +85,12 @@ func fixtureDir(t testing.TB, rel string) string {
 	return dir
 }
 
+// pkgManagerFor installs the language whose fixtures are in the folder
+// fixtures, named after it.
 func pkgManagerFor(t testing.TB, fixtures string) syntax.PkgManager {
 	t.Helper()
 	dir := fixtureDir(t, fixtures)
-	return &stubPkgManager{files: []string{
+	return &stubPkgManager{lang: filepath.Base(fixtures), files: []string{
 		grammarfixture.ParserPath(t, dir),
 		filepath.Join(dir, "locals.scm"),
 		filepath.Join(dir, "highlights.scm"),
@@ -152,8 +160,10 @@ func setupE2EWith(t *testing.T, testdata string, pkg syntax.PkgManager) *e2eEnv 
 	t.Cleanup(func() { _ = scheme.Close() })
 
 	backing := treesitter.NewParser(scheme, pkg, rootURI)
-	p, err := New(backing, scheme, rootURI, storagestub.NewInMemoryService(),
-		&recordingNotifications{}, syncTick)
+	p, err := New(Config{
+		Root: rootURI, FS: scheme, Backing: backing, Indexer: backing,
+		DB: storagestub.NewInMemoryService(),
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = p.Close() })
 	require.NoError(t, p.Wait(context.Background()))
@@ -580,6 +590,8 @@ func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 		// install sets up the packages the first scan runs under; change
 		// alters them before the workspace is reopened.
 		install, change func(t *testing.T, pkgs *grammarfixture.Packages)
+		// firstExtracted are the files the first scan reads; nil for all.
+		firstExtracted  []string
 		wantReextracted []string
 		wantListed      []string
 	}{
@@ -657,8 +669,9 @@ func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 			wantListed:      []string{"Home.Hero", "geometry.Area"},
 		},
 		{
-			name:    "grammar installed after the first scan",
-			install: func(*testing.T, *grammarfixture.Packages) {},
+			name:           "grammar installed after the first scan",
+			install:        func(*testing.T, *grammarfixture.Packages) {},
+			firstExtracted: []string{goFile},
 			change: func(t *testing.T, pkgs *grammarfixture.Packages) {
 				pkgs.Install(t, "tsx", "1", tsx)
 			},
@@ -666,10 +679,11 @@ func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 			wantListed:      []string{"Home.Agent", "Home.Hero", "geometry.Area"},
 		},
 		{
-			name:       "grammar still not installed",
-			install:    func(*testing.T, *grammarfixture.Packages) {},
-			change:     func(*testing.T, *grammarfixture.Packages) {},
-			wantListed: []string{"geometry.Area"},
+			name:           "grammar still not installed",
+			install:        func(*testing.T, *grammarfixture.Packages) {},
+			change:         func(*testing.T, *grammarfixture.Packages) {},
+			firstExtracted: []string{goFile},
+			wantListed:     []string{"geometry.Area"},
 		},
 		{
 			name: "grammar uninstalled",
@@ -679,8 +693,7 @@ func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 			change: func(t *testing.T, pkgs *grammarfixture.Packages) {
 				pkgs.Uninstall(t, "tsx", "1")
 			},
-			wantReextracted: []string{tsxFile},
-			wantListed:      []string{"geometry.Area"},
+			wantListed: []string{"geometry.Area"},
 		},
 	}
 	for _, tt := range tests {
@@ -713,13 +726,14 @@ func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 				require.NoError(t, err)
 				defer func() { require.NoError(t, db.Close()) }()
 				backing := &extractionCounter{
-					Backing: treesitter.NewParser(scheme, pkgs, rootURI),
-					root:    rootURI,
+					Parser: treesitter.NewParser(scheme, pkgs, rootURI),
+					root:   rootURI,
 				}
-				p, err := New(backing, scheme, rootURI,
-					storageapi.WithPartition(
+				p, err := New(Config{
+					Root: rootURI, FS: scheme, Backing: backing, Indexer: backing,
+					DB: storageapi.WithPartition(
 						storageapi.WithPartition(db, PartitionName), rootURI.String()),
-					&recordingNotifications{}, syncTick)
+				})
 				require.NoError(t, err)
 				defer func() { require.NoError(t, p.Close()) }()
 				require.NoError(t, p.Wait(context.Background()))
@@ -734,7 +748,11 @@ func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 			}
 
 			first, _ := open(t)
-			assertReextracted(t, first, slices.Collect(maps.Keys(sources)))
+			firstExtracted := tt.firstExtracted
+			if firstExtracted == nil {
+				firstExtracted = slices.Collect(maps.Keys(sources))
+			}
+			assertReextracted(t, first, firstExtracted)
 
 			tt.change(t, pkgs)
 			second, listed := open(t)
@@ -751,7 +769,7 @@ func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 // extractionCounter counts the files a real backing parser extracts,
 // keyed by workspace-relative path.
 type extractionCounter struct {
-	Backing
+	treesitter.Parser
 	root workspaceapi.URI
 
 	mu    sync.Mutex
@@ -759,7 +777,7 @@ type extractionCounter struct {
 }
 
 func (c *extractionCounter) NewQuerySession() symbolresolve.QuerySession {
-	return &countingQuerySession{QuerySession: c.Backing.NewQuerySession(), c: c}
+	return &countingQuerySession{QuerySession: c.Parser.NewQuerySession(), c: c}
 }
 
 func (c *extractionCounter) extractions() map[string]int {
@@ -872,9 +890,10 @@ func BenchmarkInitialScan(b *testing.B) {
 			b.Run("db=stub", func(b *testing.B) {
 				b.ResetTimer()
 				for range b.N {
-					p, err := New(backing, scheme, rootURI,
-						storagestub.NewInMemoryService(),
-						&recordingNotifications{}, syncTick)
+					p, err := New(Config{
+						Root: rootURI, FS: scheme, Backing: backing, Indexer: backing,
+						DB: storagestub.NewInMemoryService(),
+					})
 					require.NoError(b, err)
 					require.NoError(b, p.Wait(context.Background()))
 					require.NoError(b, p.Close())
@@ -890,8 +909,9 @@ func BenchmarkInitialScan(b *testing.B) {
 				for i := range b.N {
 					iter, err := db.Partition(fmt.Sprintf("iter%d", i))
 					require.NoError(b, err)
-					p, err := New(backing, scheme, rootURI, iter,
-						&recordingNotifications{}, syncTick)
+					p, err := New(Config{
+						Root: rootURI, FS: scheme, Backing: backing, Indexer: backing, DB: iter,
+					})
 					require.NoError(b, err)
 					require.NoError(b, p.Wait(context.Background()))
 					require.NoError(b, p.Close())

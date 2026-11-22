@@ -192,8 +192,8 @@ command:
     "<ctrl-o>": "cursorhistory prev"
     "<ctrl-i>": "cursorhistory next"
     "<ctrl-space>": "lsp complete"
-    # The fuzzy_search package binds its symbol pickers on <alt-shift>;
-    # free that layer for the editor and the terminal. Package installs
+    # Older fuzzy_search packages bound their symbol pickers on <alt-shift>;
+    # keep that layer free for the editor and the terminal. Package installs
     # match keys by spelling, so these repeat the package's own spelling.
     "<a-s-f>": ""
     "<a-s-v>": ""

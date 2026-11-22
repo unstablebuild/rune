@@ -8426,7 +8426,7 @@ func defaultCfg() ideConfig {
 		},
 		// keep goldens deterministic: indexing runs in the background and
 		// posts its progress whenever it gets to it.
-		"search": map[string]any{"regex_enabled": false, "semantic_enabled": false},
+		"search": map[string]any{"regex_enabled": false, "semantic_enabled": false, "symbols_enabled": false},
 	},
 		configPath: "not-empty",
 		sounds:     sounds.Silent,
@@ -13088,7 +13088,7 @@ func TestWorkspaceNotificationsTakeItsConfig(t *testing.T) {
 		"workspace:\n  home: "+home+"\n  wallpaper_ascii: wallpaper\n"+
 		"notifications:\n  progress_bar: false\n"+
 		// Indexing would post notifications of its own.
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"), 0o644))
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"), 0o644))
 	i, mu := newHUDTestIDE(t, ws, configPath, WithTrustedWorkspaceConfig(overlay))
 	mu.Lock()
 	defer mu.Unlock()
@@ -13161,7 +13161,7 @@ func TestTabBarGraphicsIntegration(t *testing.T) {
 		"  focus_tab_highlight_char: \"\"\n"+
 		"  tab_images:\n    focus:\n"+slices(wsFocus)+"    non_focus:\n"+slices(wsIdle)+
 		"  focus_tab_highlight_graphics:\n    horizontal: "+wsHighlight+"\n"+
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"+
 		"browser:\n"+
 		"  tab_images:\n    focus:\n"+slices(focus)+
 		"  focus_tab_highlight_graphics:\n    horizontal: "+highlight+"\n"), 0o644))
@@ -13256,7 +13256,7 @@ func TestTabBarHoverIntegration(t *testing.T) {
 		"workspace:\n  home: "+home+"\n  wallpaper_ascii: wallpaper\n"+
 		"  focus_tab_highlight_char: \"\"\n"+images+
 		"  tab_sounds:\n    hover: ws-hover\n    click: ws-click\n"+
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"+
 		"browser:\n  focus_tab_highlight_char: \"\"\n"+images+
 		"  tab_sounds:\n    hover: tab-hover\n    click: tab-click\n"), 0o644))
 	var soundsMu sync.Mutex
@@ -13362,7 +13362,7 @@ func TestStatusInboxGraphicsIntegration(t *testing.T) {
 	configPath := filepath.Join(home, "rune.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
 		"workspace:\n  home: "+home+"\n"+
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"+
 		"program_status:\n  images:\n    selected:\n      middle: file://"+selected+"\n"), 0o644))
 	i, mu := newHUDTestIDE(t, ws, configPath)
 	agent := mustURI(t, "rune-agent://model/agent")
@@ -13425,7 +13425,7 @@ func TestStatusInboxDividerIntegration(t *testing.T) {
 	configPath := filepath.Join(home, "rune.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
 		"workspace:\n  home: "+home+"\n"+
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"+
 		"program_status:\n  divider_charset:\n"+
 		"    top: T\n    vertical_top: t\n    vertical: v\n    vertical_bottom: b\n    bottom: B\n"+
 		"    graphics:\n      bottom: file://"+bottom+"\n"), 0o644))

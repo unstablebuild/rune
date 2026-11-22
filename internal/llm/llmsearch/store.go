@@ -457,26 +457,30 @@ func CleanupWorkspaceHook(
 			return fmt.Errorf("llmsearch: partition %q: %w", root.String(), err)
 		}
 		defer func() { _ = db.Close() }()
-
-		// Drop is not recursive, so the partitions go first.
-		for _, name := range []string{filesPartition, segmentsPartition, vectorsPartition} {
-			part, err := db.Partition(name)
-			if err != nil {
-				return fmt.Errorf("llmsearch: partition %q: %w", name, err)
-			}
-			err = drop(ctx, part)
-			if cerr := part.Close(); err == nil {
-				err = cerr
-			}
-			if err != nil {
-				return fmt.Errorf("llmsearch: drop %q: %w", name, err)
-			}
-		}
-		if err := drop(ctx, db); err != nil {
-			return fmt.Errorf("llmsearch: drop %q: %w", root.String(), err)
-		}
-		return nil
+		return dropIndex(ctx, db)
 	}
+}
+
+// dropIndex deletes the index persisted in db.
+func dropIndex(ctx context.Context, db storageapi.Service) error {
+	// Drop is not recursive, so the partitions go first.
+	for _, name := range []string{filesPartition, segmentsPartition, vectorsPartition} {
+		part, err := db.Partition(name)
+		if err != nil {
+			return fmt.Errorf("llmsearch: partition %q: %w", name, err)
+		}
+		err = drop(ctx, part)
+		if cerr := part.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			return fmt.Errorf("llmsearch: drop %q: %w", name, err)
+		}
+	}
+	if err := drop(ctx, db); err != nil {
+		return fmt.Errorf("llmsearch: drop the index: %w", err)
+	}
+	return nil
 }
 
 func drop(ctx context.Context, svc storageapi.Service) error {

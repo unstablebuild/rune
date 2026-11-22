@@ -51,10 +51,6 @@ var docsGuidePresets = map[string]string{
 	"learn/emacs-editor.md":    "emacs",
 }
 
-// docsPackageCommands are bound by bundled packages rather than by the
-// presets, so the docs data cannot resolve them.
-var docsPackageCommands = []string{"searchfunc", "searchvar", "searchtype"}
-
 // docsLiteralChord is a preset key an editor guide writes as a literal
 // chord on purpose, because the text around it is not about the command
 // the preset binds to it. context is part of the line the chord is on,
@@ -399,9 +395,6 @@ func TestDocsKeyBindingsResolve(t *testing.T) {
 	data := shippedDocsKeybindings(t)
 	for _, page := range loadDocsPages(t) {
 		for _, ref := range page.refs {
-			if slices.Contains(docsPackageCommands, ref.command) {
-				continue
-			}
 			var missing []string
 			for _, preset := range ref.scope.presets {
 				for _, platform := range ref.scope.platforms {

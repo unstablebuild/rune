@@ -90,8 +90,8 @@ func TestDefaultSearchIndexing(t *testing.T) {
 		want         bool
 	}{
 		{"search", "regex_enabled", true},
+		{"search", "symbols_enabled", true},
 		{"search", "semantic_enabled", false},
-		{"workspace", "symboldb", true},
 	} {
 		t.Run(tt.section+"."+tt.key, func(t *testing.T) {
 			section, err := cfg.GetConfig(tt.section)

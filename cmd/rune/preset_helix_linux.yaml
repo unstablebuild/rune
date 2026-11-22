@@ -272,8 +272,8 @@ command:
     "<ctrl-meta-s>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
     "<ctrl-meta-v>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
     "<ctrl-space>": "lsp complete"
-    # The fuzzy_search package binds its symbol pickers on <alt-shift>;
-    # free that layer for the editor and the terminal. Package installs
+    # Older fuzzy_search packages bound their symbol pickers on <alt-shift>;
+    # keep that layer free for the editor and the terminal. Package installs
     # match keys by spelling, so these repeat the package's own spelling.
     "<a-s-f>": ""
     "<a-s-v>": ""

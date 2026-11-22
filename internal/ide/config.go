@@ -5581,20 +5581,6 @@ func (c ideConfig) workspaceHome() string {
 	return home
 }
 
-// workspaceSymbolDB reports whether the persistent per-workspace
-// symbol database is enabled. Defaults to false when unset.
-func (c ideConfig) workspaceSymbolDB() bool {
-	ws := c.workspace()
-	enabled, err := ws.GetBool("symboldb")
-	if err != nil {
-		if err != config.ErrNotFound {
-			c.errors["workspace.symboldb"] = err
-		}
-		return false
-	}
-	return enabled
-}
-
 // workspaceSearch reports whether workspaces get a semantic search index.
 // Regexp indexing is controlled independently by search.regex_enabled.
 func (c ideConfig) workspaceSearch() bool {
@@ -5610,6 +5596,20 @@ func (c ideConfig) workspaceRegexSearch() bool {
 	}
 	if search, ok := c.getConfig(config.MapConfig(c.cfg), "search"); ok {
 		overrideBool(search, "regex_enabled", &enabled)
+	}
+	return enabled
+}
+
+// workspaceSymbolsSearch defaults to true; disabling it keeps no symbol
+// index: lookups by name scan the workspace, and searchfunc, searchvar
+// and searchtype parse files directly.
+func (c ideConfig) workspaceSymbolsSearch() bool {
+	enabled := true
+	if c.cfg == nil {
+		return enabled
+	}
+	if search, ok := c.getConfig(config.MapConfig(c.cfg), "search"); ok {
+		overrideBool(search, "symbols_enabled", &enabled)
 	}
 	return enabled
 }

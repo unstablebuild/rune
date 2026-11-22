@@ -227,6 +227,9 @@ type Manager struct {
 	// afterConfigWrite, when set, is called after the config a package
 	// contributes changed. See WithAfterConfigWrite.
 	afterConfigWrite func(pkgID string)
+	// afterInstall, when set, is called after a version of a package is
+	// installed or put in use. See WithAfterInstall.
+	afterInstall func(pkgID string)
 
 	// iterators gates the installs of each package. m holds the install
 	// in flight of each package, and waiting holds, for each install
@@ -705,6 +708,9 @@ func (m *Manager) UsePackageVersion(
 		return fmt.Errorf("install configuration for %s version %s: %w",
 			pkgID, version, err)
 	}
+	if m.afterInstall != nil {
+		m.afterInstall(pkgID)
+	}
 	return nil
 }
 
@@ -891,6 +897,9 @@ func (m *Manager) runDownload(
 			pkgID, version, err)
 	}
 
+	if m.afterInstall != nil {
+		m.afterInstall(pkgID)
+	}
 	pw.Progress(1, 1, "done")
 	return nil
 }
