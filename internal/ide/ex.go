@@ -3279,17 +3279,32 @@ func (e *ex) handleEvent(ev term.Event) (
 }
 
 func (e *ex) resetCommandList(cmd *command.Prompt) {
+	cmd.Reset(e.commandList())
+}
+
+// commandList returns what the command prompt lists, sorted by name. An
+// alias named like a command takes its place, as it does on dispatch.
+func (e *ex) commandList() []command.Manual {
 	// commands can be registered dynamicall via Editor.Register:
 	// compile a new list every time we switch to command mode
-	commands := e.comp.Commands()
-	for i, c := range commands {
-		commands[i].RawArgs = e.rawArgsCommands[c.Name]
+	aliases := e.aliasExpander.Aliases()
+	shadowed := make(map[string]bool, len(aliases))
+	for _, a := range aliases {
+		shadowed[a.Name] = true
 	}
-	commands = append(commands, e.aliasExpander.Aliases()...)
+	var commands []command.Manual
+	for _, c := range e.comp.Commands() {
+		if shadowed[c.Name] {
+			continue
+		}
+		c.RawArgs = e.rawArgsCommands[c.Name]
+		commands = append(commands, c)
+	}
+	commands = append(commands, aliases...)
 	sort.Slice(commands, func(i, j int) bool {
 		return commands[i].Name < commands[j].Name
 	})
-	cmd.Reset(commands)
+	return commands
 }
 
 func (e *ex) openCommandPrompt() {

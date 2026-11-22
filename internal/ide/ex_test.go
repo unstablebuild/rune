@@ -9150,6 +9150,28 @@ func TestSearchAstAliasesFromRuneStar(t *testing.T) {
 	}
 }
 
+func TestCommandListAliasShadowsCommand(t *testing.T) {
+	b := newExForTesting(t, texttest.NopEditor(),
+		text.WithCommandKey(testCommandKey),
+		text.WithCommandAliases(map[string]text.CommandAlias{
+			"edit":  {Commands: []string{"echo shadowed"}},
+			"hello": {Commands: []string{"echo hello"}},
+		}),
+	)
+	defer b.Close()
+
+	byName := map[string][]command.Manual{}
+	for _, man := range b.ex.commandList() {
+		byName[man.Name] = append(byName[man.Name], man)
+	}
+	require.Len(t, byName["edit"], 1, "a command an alias shadows is listed once")
+	assert.Equal(t, []string{"echo shadowed"}, byName["edit"][0].AliasOf,
+		"the listed entry is the alias, which is what runs")
+	require.Len(t, byName["hello"], 1)
+	require.Len(t, byName["quit"], 1)
+	assert.Empty(t, byName["quit"][0].AliasOf)
+}
+
 func TestDispatchAliasCycle(t *testing.T) {
 	cases := []struct {
 		name    string
