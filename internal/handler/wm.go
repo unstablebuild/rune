@@ -399,8 +399,9 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 		// Pin MouseLeft/Release to the press window for the duration
 		// of a drag so the inner mouse.Mouse sees a matched
 		// press/release pair instead of a fresh press in a sibling.
-		if wm.prevMouseLeftDrag &&
-			(ev.Key == term.MouseLeft || ev.Key == term.MouseRelease) {
+		contentDrag := wm.prevMouseLeftDrag &&
+			(ev.Key == term.MouseLeft || ev.Key == term.MouseRelease)
+		if contentDrag {
 			childAtMouse = wm.prevMouseLeftChild
 			ok = true
 			if ev.Key == term.MouseRelease {
@@ -422,19 +423,22 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 			}
 		})
 
-		// set scroll bar hover charset, if applicable
+		// The scroll bar takes precedence over the frame edge it sits on,
+		// but not over a content drag, which must reach its release. The
+		// wheel scrolls the content under it.
+		var onScrollBar bool
 		if frame, ok := childAtMouse.Frame(); ok {
 			position, height, ok := frame.ScrollBar()
-			if ok {
-				if wm.onScrollBar(frame, position, height, ev.MouseX, ev.MouseY) ||
-					wm.prevMouseScrollBarDrag {
-					return wm.handleScrollBarMouse(childAtMouse, position.Y, height, frame, ev)
-				}
-				// lost drag; reset if mouse is now outside of scroll bar
+			onScrollBar = ok && (wm.prevMouseScrollBarDrag || !contentDrag &&
+				wm.onScrollBar(frame, position, height, ev.MouseX, ev.MouseY))
+			switch {
+			case !onScrollBar:
+				// the scroll bar, or the content that had one, changed
 				wm.resetScrollBarMouse()
-			} else {
-				// lost scroll bar; content could have changed
-				wm.resetScrollBarMouse()
+			case ev.Key == term.MouseWheelUp || ev.Key == term.MouseWheelDown:
+				frame.ScrollBarCharSet = wm.scrollBarHoverCharSet(childAtMouse)
+			default:
+				return wm.handleScrollBarMouse(childAtMouse, position.Y, height, frame, ev)
 			}
 		}
 
@@ -447,21 +451,22 @@ func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 			}
 		}
 
-		// Frame motion reaches the child clamped into its content, so the
-		// frame shape is set after dispatch to override the child's, and
-		// the child gets a Pointer of its own so that a shape it sets
-		// asynchronously cannot replace it either.
-		if wm.config.Frame && !wm.prevMouseLeftDrag {
+		// Frame and scroll bar events reach the child clamped into its
+		// content, so their shape is set after dispatch to override the
+		// child's, and the child gets a Pointer of its own so that a shape
+		// it sets asynchronously cannot replace it either.
+		shape, override := term.PointerLink, onScrollBar
+		if !onScrollBar && wm.config.Frame && !wm.prevMouseLeftDrag {
 			mode, closeIcon := wm.frameDragModeAt(childAtMouse, ev.MouseX, ev.MouseY)
-			if closeIcon || mode != 0 {
-				shape := term.PointerLink
-				if !closeIcon {
-					shape = dragShape(childAtMouse, mode)
-				}
-				defer term.SetPointerShape(ev, shape)
-				if _, ok := term.PointerFromContext(ev.Context); ok {
-					ev.Context = term.ContextWithPointer(ev.Context, new(term.Pointer))
-				}
+			override = closeIcon || mode != 0
+			if mode != 0 {
+				shape = dragShape(childAtMouse, mode)
+			}
+		}
+		if override {
+			defer term.SetPointerShape(ev, shape)
+			if _, ok := term.PointerFromContext(ev.Context); ok {
+				ev.Context = term.ContextWithPointer(ev.Context, new(term.Pointer))
 			}
 		}
 
@@ -1272,6 +1277,7 @@ func (wm *WindowManager) handleScrollBarMouse(
 	frame *compapi.Frame, ev term.Event,
 ) (bool, bool) {
 	frame.ScrollBarCharSet = wm.scrollBarHoverCharSet(win)
+	term.SetPointerShape(ev, term.PointerLink)
 	if ev.Key != term.MouseLeft {
 		wm.resetScrollBarMouse()
 		return false, false

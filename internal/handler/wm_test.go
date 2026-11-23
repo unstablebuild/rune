@@ -4233,8 +4233,10 @@ func TestWindowManagerPointerShape(t *testing.T) {
 		require.Equal(t, xy(11, 1), xy(rw.Position().X+bar.X, rw.Position().Y+bar.Y))
 		return wm
 	}
+	scrollBarOnDivider := func(t *testing.T) *WindowManager { return newScrollBarOnDivider(t, nil) }
 	hover := func(x, y int) term.Event { return mouseEv(0, x, y) }
 	press := func(x, y int) term.Event { return mouseEv(term.MouseLeft, x, y) }
+	release := func(x, y int) term.Event { return mouseEv(term.MouseRelease, x, y) }
 
 	suite := []struct {
 		name  string
@@ -4288,7 +4290,36 @@ func TestWindowManagerPointerShape(t *testing.T) {
 		{"float content", float, []term.Event{hover(3, 2)}, term.PointerText, true},
 		{"minimized float", minimizedFloat, []term.Event{hover(0, 11)},
 			term.PointerText, true},
-		{"scroll bar", scrollBar, []term.Event{hover(11, 1)}, term.PointerDefault, false},
+		{"scroll bar", scrollBar, []term.Event{hover(11, 1)}, term.PointerLink, true},
+		{"scroll bar on a tile divider", scrollBarOnDivider, []term.Event{hover(9, 2)},
+			term.PointerLink, true},
+		{"scroll bar image left of a tile divider", scrollBarOnDivider,
+			[]term.Event{hover(8, 1)}, term.PointerLink, true},
+		{"tile divider below a scroll bar", scrollBarOnDivider, []term.Event{hover(9, 3)},
+			term.PointerColResize, true},
+		{"tile divider far below a scroll bar", scrollBarOnDivider, []term.Event{hover(9, 6)},
+			term.PointerColResize, true},
+		{"content left of a tile divider below a scroll bar", scrollBarOnDivider,
+			[]term.Event{hover(8, 3)}, term.PointerText, true},
+		{"tile divider corner above a scroll bar", scrollBarOnDivider,
+			[]term.Event{hover(9, 0)}, term.PointerColResize, true},
+		{"tile divider corner below a scroll bar", scrollBarOnDivider,
+			[]term.Event{hover(9, 7)}, term.PointerColResize, true},
+		{"tile divider press below a scroll bar", scrollBarOnDivider, []term.Event{press(9, 5)},
+			term.PointerColResize, true},
+		{"scroll bar press on a tile divider", scrollBarOnDivider, []term.Event{press(9, 2)},
+			term.PointerLink, true},
+		{"scroll bar drag off its column", scrollBarOnDivider,
+			[]term.Event{press(9, 1), press(3, 4)}, term.PointerLink, true},
+		{"scroll bar drag release", scrollBarOnDivider,
+			[]term.Event{press(9, 1), press(9, 4), release(9, 4)}, term.PointerLink, true},
+		{"wheel over a scroll bar", scrollBarOnDivider,
+			[]term.Event{mouseEv(term.MouseWheelDown, 9, 1)}, term.PointerLink, true},
+		{"content drag onto a scroll bar", scrollBarOnDivider,
+			[]term.Event{press(3, 4), press(9, 1)}, term.PointerText, true},
+		{"tile divider after a content drag released over a scroll bar", scrollBarOnDivider,
+			[]term.Event{press(3, 1), press(9, 1), release(9, 1), hover(9, 7)},
+			term.PointerColResize, true},
 		{"frame press", float, []term.Event{press(7, 2)}, term.PointerResizeEW, true},
 		{"resize drag past the edge", float, []term.Event{press(7, 2), press(20, 2)},
 			term.PointerResizeEW, true},
@@ -4333,33 +4364,94 @@ func TestWindowManagerFramePointerIgnoresLateChildShapes(t *testing.T) {
 	assert.Equal(t, term.PointerColResize, shape)
 }
 
-func TestWindowBarScrollBarPrecedence(t *testing.T) {
+// textScrollableHandler is scrollable content that shows the text pointer
+// and, unless keys is nil, records the key of every event it handles.
+type textScrollableHandler struct {
+	scrollableHandler
+	keys *[]term.Key
+}
+
+func (h textScrollableHandler) Handle(ev term.Event) (bool, bool) {
+	if h.keys != nil {
+		*h.keys = append(*h.keys, ev.Key)
+	}
+	return setsTextPointer(ev)
+}
+
+// newScrollBarOnDivider returns a 20x8 vertical split whose left tile
+// scrolls a textScrollableHandler recording into keys, so that its scroll
+// bar at (9, 1)-(9, 2) lies on the column divider, which runs on below it
+// down to (9, 6). The bar's images reach the cell left of it.
+func newScrollBarOnDivider(t *testing.T, keys *[]term.Key) *WindowManager {
 	buf := cell.NewBuffer()
-	buf.WriteString("a\nb\nc\nd\ne\nf\n")
-	sh := scrollableHandler{Scrollable: component.NewScroll(buf)}
+	buf.WriteString(strings.Repeat("a\n", 20))
 	cfg := DefaultWindowManagerConfig()
-	cfg.ScrollBarCharSet = compapi.ScrollBarCharSet{Middle: '|'}
-	wm := NewWindowManager(handler.NewTestHandler(), cfg)
-	wm.Resize(12, 4)
-	lw := wm.Focus()
-	rw, ok := wm.SplitVertical(lw, sh)
+	cfg.ScrollBarCharSet = compapi.ScrollBarCharSet{
+		Middle: '|', Graphics: compapi.ScrollBarCharSetGraphics{Middle: "file:///bar.png"},
+	}
+	cfg.ScrollBarOutset = 1
+	wm := NewWindowManager(textScrollableHandler{
+		scrollableHandler: scrollableHandler{Scrollable: component.NewScroll(buf)},
+		keys:              keys,
+	}, cfg)
+	wm.Resize(20, 8)
+	left := wm.Focus()
+	_, ok := wm.SplitVertical(left, textPointerHandler())
 	require.True(t, ok)
-	wm.SetFocus(rw)
-	// the writer materializes the scroll bar on the frame
-	writer := term.NewStringWriter(12, 4)
-	wm.Draw(writer)
+	wm.Draw(term.NewStringWriter(20, 8))
+	frame, ok := left.Frame()
+	require.True(t, ok)
+	bar, height, ok := frame.ScrollBar()
+	require.True(t, ok)
+	require.Equal(t, xy(9, 1), xy(left.Position().X+bar.X, left.Position().Y+bar.Y))
+	require.Equal(t, 2, height)
+	return wm
+}
 
-	frame, ok := rw.Frame()
-	require.True(t, ok)
-	barPos, _, ok := frame.ScrollBar()
-	require.True(t, ok)
-
-	// press on the thumb: window-local coordinates of the right tile
-	pos := rw.Position()
-	wm.Handle(mouseEv(term.MouseLeft, pos.X+barPos.X, pos.Y+barPos.Y))
-	assert.Equal(t, 0, int(wm.winDrag), "scroll bar press must not start a resize drag")
-	assert.True(t, wm.prevMouseScrollBarDrag)
-	wm.Handle(mouseEv(term.MouseRelease, pos.X+barPos.X, pos.Y+barPos.Y))
+func TestWindowManagerScrollBarPrecedence(t *testing.T) {
+	press := func(x, y int) term.Event { return mouseEv(term.MouseLeft, x, y) }
+	release := func(x, y int) term.Event { return mouseEv(term.MouseRelease, x, y) }
+	tests := []struct {
+		name   string
+		events []term.Event
+		// keys are those of the events the scrolling content handles.
+		keys          []term.Key
+		scrollBarDrag bool
+		contentDrag   bool
+		resize        bool
+	}{
+		{name: "a press on the thumb", events: []term.Event{press(9, 1)},
+			scrollBarDrag: true},
+		{name: "a press on the image left of the thumb", events: []term.Event{press(8, 2)},
+			scrollBarDrag: true},
+		{name: "a press on the divider right below the thumb", events: []term.Event{press(9, 3)},
+			resize: true},
+		{name: "a press on the divider far below the thumb", events: []term.Event{press(9, 5)},
+			resize: true},
+		{name: "the wheel over the thumb",
+			events: []term.Event{mouseEv(term.MouseWheelDown, 9, 1)},
+			keys:   []term.Key{term.MouseWheelDown}},
+		{name: "a content drag onto the thumb",
+			events:      []term.Event{press(3, 4), press(9, 1)},
+			keys:        []term.Key{term.MouseLeft, term.MouseLeft},
+			contentDrag: true},
+		{name: "a content drag released over the thumb",
+			events: []term.Event{press(3, 1), press(9, 1), release(9, 1)},
+			keys:   []term.Key{term.MouseLeft, term.MouseLeft, term.MouseRelease}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var keys []term.Key
+			wm := newScrollBarOnDivider(t, &keys)
+			for _, ev := range tt.events {
+				wm.Handle(ev)
+			}
+			assert.Equal(t, tt.resize, wm.winDrag != 0, "resize drag")
+			assert.Equal(t, tt.keys, keys)
+			assert.Equal(t, tt.scrollBarDrag, wm.prevMouseScrollBarDrag)
+			assert.Equal(t, tt.contentDrag, wm.prevMouseLeftDrag)
+		})
+	}
 }
 
 func TestWindowManagerPointerLeavesBattery(t *testing.T) {
