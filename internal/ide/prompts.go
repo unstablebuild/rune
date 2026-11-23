@@ -542,7 +542,7 @@ func (e *ex) ShowFallbackPrompt(_ context.Context, command string, _ ...string) 
 func (e *ex) markHome() {
 	e.home = true
 	for _, cmd := range []string{
-		"chateffort", "chatmaxtokens", "chatskill", "chatmodel",
+		"chateffort", "chatspeed", "chatmaxtokens", "chatskill", "chatmodel",
 		"chatclear", "chatcompact", "chatfork", "chatexport", "chatlog",
 		semanticsearch.Name, regexsearch.Name,
 	} {

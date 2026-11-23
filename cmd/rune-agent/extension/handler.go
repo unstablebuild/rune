@@ -88,6 +88,7 @@ const (
 	newViewFlag = "--new"
 
 	commandEffort        = "chateffort"
+	commandSpeed         = "chatspeed"
 	commandMaxTokens     = "chatmaxtokens"
 	commandSkill         = "chatskill"
 	commandModel         = "chatmodel"
@@ -1149,7 +1150,7 @@ func (h *aiEditorHandler) HandleCommand(
 		return h.handleQuery(cmd)
 	case commandChat:
 		return h.handleChat(cmd)
-	case commandModel, commandEffort, commandMaxTokens, commandSkill,
+	case commandModel, commandEffort, commandSpeed, commandMaxTokens, commandSkill,
 		commandClear, commandCompact, commandFork, commandReviewChanges,
 		commandReviewAll, commandExport, commandLog:
 		return h.routeChatCommand(cmd)
@@ -1342,6 +1343,8 @@ func (h *aiEditorHandler) routeChatCommand(cmd textapi.Command) error {
 		name = "model"
 	case commandEffort:
 		name = "effort"
+	case commandSpeed:
+		name = "speed"
 	case commandClear:
 		if err := rejectPositionalID("clear", cmd.Args); err != nil {
 			return err
@@ -1435,6 +1438,12 @@ func (h *aiEditorHandler) Complete(ctx context.Context, name string, args []stri
 			levels[i] = string(l)
 		}
 		return iterator.FromSlice(levels), nil
+	case commandSpeed:
+		speeds := make([]string, len(validSpeeds))
+		for i, s := range validSpeeds {
+			speeds[i] = string(s)
+		}
+		return iterator.FromSlice(speeds), nil
 	case commandSkill:
 		skills := h.skillRegistry.List()
 		names := make([]string, len(skills))

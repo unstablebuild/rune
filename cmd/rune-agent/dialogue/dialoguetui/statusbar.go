@@ -39,7 +39,7 @@ import (
 // no colours of their own because the status palette supplies them.
 const DefaultStatusBarLayout = ` {{ .Spinner }} ` +
 	`{{ .Status | bold }} █▓▒░` +
-	`  {{ .Model | fg "white" }}  {{ .Effort }}` +
+	`  {{ .Model | fg "white" }}  {{ .Effort }}  󱐋 {{ .Speed }}` +
 	`{{ .ShiftRight }}󰗂 {{ .Cache }}  {{ .Elapsed }}` +
 	`  {{ .Conversation | bold | fg "white" }}` +
 	`  {{ .ContextGauge }} `
@@ -311,9 +311,12 @@ type StatusBarState struct {
 	// Conversation names the open chat, matching its tab label.
 	Conversation string
 
-	Model     string
-	Provider  string
-	Effort    string
+	Model    string
+	Provider string
+	Effort   string
+	// Speed is the inference speed the chat is billed at. Empty and
+	// "standard" hide the element.
+	Speed     string
 	MaxTokens int
 
 	// Usage is the latest cumulative usage of the current turn.
@@ -681,6 +684,7 @@ func (b *StatusBar) rebuild() {
 	b.buildText(StatusBarModel, b.state.Model)
 	b.buildText(StatusBarProvider, b.state.Provider)
 	b.buildText(StatusBarEffort, b.effortText())
+	b.buildText(StatusBarSpeed, b.speedText())
 	b.buildText(StatusBarMaxTokens, b.maxTokensText())
 	b.buildText(StatusBarTokensSent, FormatTokenNumber(b.state.Usage.TokensSent))
 	b.buildText(StatusBarTokensReceived, FormatTokenNumber(b.state.Usage.TokensReceived))
@@ -715,6 +719,15 @@ func (b *StatusBar) effortText() string {
 		return "default"
 	}
 	return b.state.Effort
+}
+
+// speedText hides standard speed so the element only appears when the chat
+// pays for speed.
+func (b *StatusBar) speedText() string {
+	if b.state.Speed == "standard" {
+		return ""
+	}
+	return b.state.Speed
 }
 
 func (b *StatusBar) maxTokensText() string {
@@ -834,6 +847,7 @@ var statusBarDropOrder = [][]StatusBarComponentType{
 	{StatusBarCache, StatusBarCachePct},
 	{StatusBarProvider},
 	{StatusBarEffort},
+	{StatusBarSpeed},
 	{StatusBarTokensSent, StatusBarTokensReceived},
 	{StatusBarContextTokens, StatusBarContextWindow, StatusBarContextPct},
 	{StatusBarModel},

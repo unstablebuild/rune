@@ -17,9 +17,11 @@
 package anthropic
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 )
 
@@ -43,6 +45,33 @@ func TestAnthropicParamsMaxTokens(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			params := anthropicParamsFromRequest(tt.model, tt.request, tt.config)
 			assert.Equal(t, tt.want, params.MaxTokens)
+		})
+	}
+}
+
+func TestAnthropicParamsSpeed(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     string
+		speed     llmapi.Speed
+		wantSpeed any
+	}{
+		{"fast on opus 5.5", ClaudeOpus5Dot5, llmapi.SpeedFast, "fast"},
+		{"fast on opus 5", ClaudeOpus5, llmapi.SpeedFast, "fast"},
+		{"standard", ClaudeOpus5Dot5, llmapi.SpeedStandard, nil},
+		{"empty", ClaudeOpus5Dot5, "", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := anthropicParamsFromRequest(tt.model, llmapi.Request{
+				Messages: []llmapi.Message{{Role: llmapi.RoleUser, Content: "hi"}},
+				Speed:    tt.speed,
+			}, Config{})
+			body, err := json.Marshal(params)
+			require.NoError(t, err)
+			var got map[string]any
+			require.NoError(t, json.Unmarshal(body, &got))
+			assert.Equal(t, tt.wantSpeed, got["speed"])
 		})
 	}
 }

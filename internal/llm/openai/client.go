@@ -73,6 +73,10 @@ type Config struct {
 	// DisableMaxOutputTokens prevents Responses requests from sending an
 	// explicit output limit to providers that manage it server-side.
 	DisableMaxOutputTokens bool
+	// SupportsSpeed reports whether the endpoint can run a model at a speed.
+	// Requests for an unsupported speed run at standard speed. Nil means the
+	// endpoint takes no speed, so no request sends one.
+	SupportsSpeed func(model string, speed llmapi.Speed) bool
 
 	// A list of tools the model may call.
 	Tools []llmapi.Tool
@@ -487,6 +491,12 @@ func (a *client) CreateCompletion(
 		}
 	}
 
+	// The chat keeps its speed across model switches, so a speed this model
+	// lacks is an expected state rather than a mistake worth a warning.
+	if a.config.SupportsSpeed == nil || !a.config.SupportsSpeed(model.Name, request.Speed) {
+		request.Speed = ""
+	}
+
 	var it iterator.Iterator[llmapi.Event]
 	var err error
 	if a.config.ForceResponsesAPI {
@@ -574,6 +584,15 @@ func (a *client) createResponsesCompletion(
 		if summary != "" {
 			params.Reasoning.Summary = shared.ReasoningSummary(summary)
 		}
+	}
+
+	// Speed is already normalized by CreateCompletion. Fast maps to "priority"
+	// because that is what the Codex backend accepts; the OpenAI API takes it too.
+	switch request.Speed {
+	case llmapi.SpeedFast:
+		params.ServiceTier = responses.ResponseNewParamsServiceTier("priority")
+	case llmapi.SpeedUltrafast:
+		params.ServiceTier = responses.ResponseNewParamsServiceTier("ultrafast")
 	}
 
 	if !a.config.DisableMaxOutputTokens {

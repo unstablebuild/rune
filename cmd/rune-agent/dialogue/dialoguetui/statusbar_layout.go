@@ -49,6 +49,9 @@ const (
 	StatusBarProvider
 	// StatusBarEffort is the reasoning effort in use.
 	StatusBarEffort
+	// StatusBarSpeed is the inference speed the chat is billed at, hidden
+	// at standard speed.
+	StatusBarSpeed
 	// StatusBarMaxTokens is the max output token budget per response.
 	StatusBarMaxTokens
 	// StatusBarTokensSent is the cumulative input token count.
@@ -96,6 +99,7 @@ type StatusBarComponent struct {
 //   - Model: the model answering the conversation.
 //   - Provider: the provider serving the model.
 //   - Effort: the reasoning effort in use.
+//   - Speed: the inference speed, hidden at standard.
 //   - MaxTokens: the max output token budget per response.
 //   - TokensSent: cumulative input tokens.
 //   - TokensReceived: cumulative output tokens.
@@ -203,6 +207,9 @@ func ParseStatusBarLayout(layoutStr string) (
 				tmpl += "%s"
 			case "Effort":
 				compType = StatusBarEffort
+				tmpl += "%s"
+			case "Speed":
+				compType = StatusBarSpeed
 				tmpl += "%s"
 			case "MaxTokens":
 				compType = StatusBarMaxTokens

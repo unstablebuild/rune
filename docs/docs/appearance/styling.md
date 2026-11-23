@@ -2038,7 +2038,7 @@ Its keys live under `status_bar`:
 
 | Key | Styles |
 | --- | --- |
-| `layout` | What the bar shows, as a template like the [editor's](#editor-status-bar): `{{ .Spinner }}`, `{{ .Status }}`, `{{ .Model }}`, `{{ .Effort }}`, `{{ .Conversation }}`, `{{ .Elapsed }}`, `{{ .Cache }}`, `{{ .ContextGauge }}`, `{{ .CacheGauge }}`, `{{ .Image }}` and more. |
+| `layout` | What the bar shows, as a template like the [editor's](#editor-status-bar): `{{ .Spinner }}`, `{{ .Status }}`, `{{ .Model }}`, `{{ .Effort }}`, `{{ .Speed }}`, `{{ .Conversation }}`, `{{ .Elapsed }}`, `{{ .Cache }}`, `{{ .ContextGauge }}`, `{{ .CacheGauge }}`, `{{ .Image }}` and more. |
 | `background_attr` | The bar. Its `fg` is the color of every element that names none. |
 | `status.<PHASE>.attr` | The spinner and the status in that phase. |
 | `status.<PHASE>.animation` | The spinner in that phase: `ch` lists its frames, one character each, and `attr` colors it alone. |

@@ -1605,7 +1605,7 @@ func TestShowFallbackPromptInstallsFuzzySearch(t *testing.T) {
 func TestHomeFallbackPromptDoesNotInstall(t *testing.T) {
 	commands := []string{
 		"agent", "?",
-		"chateffort", "chatmaxtokens", "chatskill", "chatmodel",
+		"chateffort", "chatspeed", "chatmaxtokens", "chatskill", "chatmodel",
 		"chatclear", "chatcompact", "chatfork", "chatexport", "chatlog",
 		"searchfile", "searchtext", "searchast", "searchsemantic", "searchregex",
 	}
