@@ -1188,6 +1188,13 @@ func (wm *WindowManager) normalFrameCharSet(w Window) component.FrameCharSet {
 	return wm.config.FrameCharSet
 }
 
+// SetBackground draws every window without a background of its own, as
+// Window.SetBackground gives one, with bg from the next Draw on, as
+// Restyle does with a config of it.
+func (wm *WindowManager) SetBackground(bg WindowBackground) {
+	wm.config.Background = bg
+}
+
 // SetFrameAttr sets the default and focus window border attributes. Note that
 // this has no effect if WindowManager was initialized with border == false.
 func (wm *WindowManager) SetFrameAttr(attr term.Attributes) {

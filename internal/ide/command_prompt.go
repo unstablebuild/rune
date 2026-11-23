@@ -99,7 +99,7 @@ func newCommandPromptHandler(
 		padded:    padded,
 		framed:    framed,
 		separator: e.commandPromptCfg.separator,
-		inside:    e.promptInside(),
+		inside:    e.promptInside,
 	}
 	if !framed.Graphics.Empty() || !stitched.separator.Graphics.Empty() {
 		stitched.graphics = e.frameGraphics()
@@ -117,10 +117,11 @@ type promptStitcher struct {
 	// graphics is nil when neither the frame nor the separator names images.
 	graphics  *tcomponent.FrameGraphics
 	separator tcomponent.SeparatorCharSet
-	// inside is the colour inside the frame, which the side of the
+	// inside returns the colour inside the frame, which the side of the
 	// frame's lines facing it takes, while the other side shows what is
-	// under the prompt.
-	inside term.Color
+	// under the prompt. It follows the theme while the prompt is open,
+	// as a guitheme preview changes it.
+	inside func() term.Color
 	masks  tcomponent.FrameMasks
 	width  int
 	height int
@@ -144,7 +145,7 @@ func (s *promptStitcher) Draw(w term.Writer) {
 		Keep: s.junctions(),
 	}
 	images := &tcomponent.FrameInsideWriter{
-		Writer: w, Area: image.Rect(0, 0, s.width, s.height), Inside: s.inside, Masks: &s.masks,
+		Writer: w, Area: image.Rect(0, 0, s.width, s.height), Inside: s.inside(), Masks: &s.masks,
 	}
 	s.framed.Draw(cells)
 	s.graphics.DrawOver(images, s.framed, s.width, s.height)

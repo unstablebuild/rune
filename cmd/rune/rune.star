@@ -1013,6 +1013,9 @@ config = {
             # padding and the focused background alone marks focus. fg
             # replaces the default foreground, for light backgrounds. What a
             # focus key leaves out inherits the normal key.
+            # Without focus_background_attr and focus_background_graphics,
+            # the focused window takes the GUI theme's "focus_background"
+            # colour, when it has one; {} turns that off.
             # "background_attr":       attr(bg = "default"),
             # "focus_background_attr": attr(bg = "#1b1f2a"),
             # GUI images drawn under each window's text and cell backgrounds:

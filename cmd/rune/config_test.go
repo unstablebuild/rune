@@ -527,6 +527,77 @@ func TestGetGUISoundVolume(t *testing.T) {
 	}
 }
 
+func TestGetGUIColorThemesFocusBackground(t *testing.T) {
+	cases := []struct {
+		name  string
+		theme map[string]any
+		want  term.Color
+		warn  bool
+	}{
+		{name: "absent is none", theme: map[string]any{"background": "#ffffff"}, want: term.ColorDefault},
+		{
+			name:  "a colour",
+			theme: map[string]any{"focus_background": "#102030"},
+			want:  term.NewRGBColor(0x10, 0x20, 0x30),
+		},
+		{name: "default is none", theme: map[string]any{"focus_background": "default"}, want: term.ColorDefault},
+		{
+			name:  "invalid",
+			theme: map[string]any{"focus_background": map[string]any{}}, want: term.ColorDefault, warn: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			b := browsertest.NewMockBrowser(ctrl)
+			if tc.warn {
+				b.EXPECT().Notify(browserapi.LevelWarn, gomock.Any(), "test", gomock.Any()).
+					Return("", nil)
+			}
+			themes := getGUIColorThemes(b, config.MapConfig(map[string]any{
+				"themes": map[string]any{"test": tc.theme},
+			}))
+			assert.Equal(t, tc.want, themeColors(themes["test"]).FocusBackground)
+		})
+	}
+}
+
+func TestBuiltInThemesFocusBackground(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("editor:\n  mode: modal\n"), 0o644))
+	cfg, err := ide.Config(path, runeDefaultConfig())
+	require.NoError(t, err)
+	guiCfg, ok, err := getGUIConfig(cfg)
+	require.NoError(t, err)
+	require.True(t, ok)
+	ctrl := gomock.NewController(t)
+	themes := getGUIColorThemes(browsertest.NewMockBrowser(ctrl), guiCfg)
+	require.NotEmpty(t, themes)
+	light := map[string]bool{"pike": true, "ritchie": true}
+	for name, theme := range themes {
+		colors := themeColors(theme)
+		got := colors.FocusBackground
+		if !light[name] {
+			assert.Equal(t, term.ColorDefault, got,
+				"%s keeps the look it has without a focus background", name)
+			continue
+		}
+		require.NotEqual(t, term.ColorDefault, got, "%s colours the focus window", name)
+		// The focus window reads as the theme's background highlighted, not
+		// as another colour: a small step brighter. A channel already at 255
+		// has no room to move.
+		fr, fg, fb := got.RGB()
+		br, bg, bb := colors.Default.Bg.RGB()
+		brighter := false
+		for _, step := range []int32{fr - br, fg - bg, fb - bb} {
+			assert.True(t, step >= 0 && step <= 10,
+				"%s steps %d from its background, want 0 to 10 brighter", name, step)
+			brighter = brighter || step > 0
+		}
+		assert.True(t, brighter, "%s is brighter than its background", name)
+	}
+}
+
 func TestGetGUIAppIcon(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("RUNE_TEST_ICON_DIR", dir)

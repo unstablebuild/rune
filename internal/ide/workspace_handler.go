@@ -239,7 +239,7 @@ type workspaceManagerHandler struct {
 	// unfocused is set while the host terminal reports that Rune lost
 	// focus, when the user sees none of the workspaces.
 	unfocused           bool
-	defAttr             term.Attributes
+	theme               ThemeColors
 	homeURI             workspaceapi.URI
 	homeWorkspace       workspace.Workspace
 	empty               *ex
@@ -1109,16 +1109,16 @@ func (h *workspaceManagerHandler) focusBrowser() browser.Browser {
 	return h.empty.Browser()
 }
 
-func (h *workspaceManagerHandler) setDefaultAttr(attr term.Attributes) {
-	h.defAttr = attr
+func (h *workspaceManagerHandler) setThemeColors(c ThemeColors) {
+	h.theme = c
 	for _, w := range h.workspaces {
 		if w == nil || w.ex == nil {
 			continue
 		}
-		w.ex.setDefaultAttr(attr)
+		w.ex.setThemeColors(c)
 	}
 	if h.empty != nil {
-		h.empty.setDefaultAttr(attr)
+		h.empty.setThemeColors(c)
 	}
 }
 
@@ -2516,7 +2516,7 @@ func (h *workspaceManagerHandler) installPendingWorkspace(
 
 	ex := built.ex
 	wh := built.wh
-	ex.setDefaultAttr(h.defAttr)
+	ex.setThemeColors(h.theme)
 	if h.hud != nil && h.hud.load > built.hudLoads && wh.configOverlay == nil {
 		// The build read the config before the installed HUD's load did.
 		ex.restyle(h.hud.base, h.hud.images, h.hud.statusBarImages)

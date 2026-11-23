@@ -344,6 +344,17 @@ func (wm *WindowManager) Restyle(cfg WindowManagerConfig) {
 	wm.applyFocusStyle()
 }
 
+// SetBackgrounds draws every window with bg, and the window holding the
+// focus style with focus, or bg when focus is nil, from the next Draw on,
+// as Restyle does with a config of them. The rest of the style stays as
+// it is.
+func (wm *WindowManager) SetBackgrounds(bg component.WindowBackground, focus *component.WindowBackground) {
+	wm.config.Background = bg
+	wm.config.FocusBackground = focus
+	wm.comp.SetBackground(bg)
+	wm.applyFocusStyle()
+}
+
 // Handle satisfies tui.Handler.
 func (wm *WindowManager) Handle(ev term.Event) (exit bool, handled bool) {
 	// Cleared after dispatch so MouseRelease ending a drag still

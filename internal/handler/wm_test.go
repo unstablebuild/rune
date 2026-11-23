@@ -425,6 +425,32 @@ func TestWindowManagerFocusBackground(t *testing.T) {
 	}
 }
 
+func TestWindowManagerSetBackgrounds(t *testing.T) {
+	normal := component.WindowBackground{Attr: term.Attributes{Bg: term.ColorNavy}}
+	focus := component.WindowBackground{Attr: term.Attributes{Bg: term.ColorTeal}}
+	cfg := DefaultWindowManagerConfig()
+	cfg.FrameAttr, cfg.FocusFrameAttr = term.Attributes{Fg: term.ColorBlue}, term.Attributes{Fg: term.ColorYellow}
+	wm := NewWindowManager(handler.NewTestHandler(), cfg)
+	wm.Resize(20, 8)
+	left := wm.Focus()
+	right, ok := wm.SplitVertical(left, handler.NewTestHandler())
+	require.True(t, ok)
+
+	wm.SetBackgrounds(normal, &focus)
+	assert.Equal(t, focus, left.Background())
+	assert.Equal(t, normal, right.Background())
+	attr, _ := left.FrameAttr()
+	assert.Equal(t, cfg.FocusFrameAttr, attr, "the focus window keeps its frame")
+
+	wm.SetFocus(right)
+	assert.Equal(t, normal, left.Background())
+	assert.Equal(t, focus, right.Background(), "the focus background follows the focus")
+
+	wm.SetBackgrounds(component.WindowBackground{}, nil)
+	assert.Equal(t, component.WindowBackground{}, left.Background())
+	assert.Equal(t, component.WindowBackground{}, right.Background(), "nil draws the normal background")
+}
+
 func TestWindowManagerSetFocusStyle(t *testing.T) {
 	focus := component.WindowBackground{Attr: term.Attributes{Bg: term.ColorTeal}}
 	cfg := DefaultWindowManagerConfig()

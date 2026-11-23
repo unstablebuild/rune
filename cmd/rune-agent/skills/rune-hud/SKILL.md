@@ -42,8 +42,9 @@ or provide screenshots you can capture yourself.
   frame edits, when the request concerns only floating windows.
 - Marking the focused window by its background instead of its frame is a
   supported config surface: blank frame charsets for padding plus
-  `focus_background_attr`. Follow "Frameless focus" below, also when the user
-  only asks for a smoother, cleaner or more modern design.
+  `focus_background_attr`, or the theme's `focus_background`. Follow
+  "Frameless focus" below, also when the user only asks for a smoother,
+  cleaner or more modern design.
 
 ## Checking your work
 Take a baseline screenshot before editing. Run `runectl screenshot` yourself,
@@ -292,20 +293,26 @@ whatever is underneath: usually the theme background, but also status colours,
 text or other images. Use that intentionally for status-bar ornaments.
 - Read `gui.default_theme`, then its `background`: from `gui.themes.<name>` in
   the user's config when it's defined there, otherwise from the built-in list
-  below. Record it in the manifest.
+  below. Read its `focus_background` too, the focused canvas while
+  `focus_background_attr` and `focus_background_graphics` are unset. Record
+  both in the manifest.
 - Built-in backgrounds: furman `#202020`, romero `#000000`, carmack `#080808`,
   reynolds `#121212`, brevik `#080808`, thompson `#0f1114`, pike `#ffffea`,
   hopper `#000000`, kernighan `#0c0c0c`, wozniak `#120F1D`, auge `#270d06`,
   ritchie `#f8f8f8`, kelleher `#000000`, sanfilippo `#000000`, frost
   `#000000`, mullen `#0d0d1b`.
+- Built-in focus backgrounds: pike `#fffff3`, ritchie `#ffffff`. The other
+  built-in themes set none, so their focused window keeps the theme
+  background unless the config sets one.
 - The wallpaper's own background must be that colour, not a nearby one, and
   its edges must fade to it exactly. With `contain` the image's edges sit
   inside the window, so any step shows as a rectangle.
 - Leave `workspace.wallpaper_background_attr` unset, or give it the same `bg`.
 - Opaque fills in frames, bars and buttons follow the same rule.
 - The focused state has its own canvas: the `bg` of
-  `browser.window_manager.focus_background_attr`, and the panel of
-  `focus_background_graphics` drawn over it. Opaque fills in focused sprites,
+  `browser.window_manager.focus_background_attr`, or else the theme's
+  `focus_background`, and the panel of `focus_background_graphics` drawn over
+  it. Opaque fills in focused sprites,
   the focused wallpaper and the `focus` blocks' backgrounds must match it
   exactly, and the panel's own fill must be that `bg`, so a slice that hasn't
   loaded leaves no step.
@@ -534,10 +541,28 @@ To apply it, do all of the following:
    window, a single window included; left out, every window keeps the theme
    background until one takes the focus style. Both work in the terminal UI
    too.
+   - **Check the theme first.** When the active theme has a
+     `focus_background` (see Colour continuity), it already colours the
+     focused window: leave `focus_background_attr` unset, so the colour
+     follows the theme when the user switches with `guitheme`. Set
+     `focus_background_attr` only to override it; the theme's is then
+     ignored, and `{}` turns it off. When the theme has none and is defined
+     in the user's config (`gui.themes.<name>`), add `focus_background` to
+     the theme instead of `focus_background_attr`, for the same reason. Use
+     `focus_background_attr` for built-in themes without one, and when the
+     terminal UI must show the focus too: it ignores the theme's.
    - Derive the focused colour from the theme background (see Colour
-     continuity). On a dark theme, mix it about 6-8% toward white: furman
-     `#202020` becomes `#2e2e2e`. On a light theme, mix it about 5% toward
-     black: ritchie `#f8f8f8` becomes `#ececec`. Keep the hue; a tint of the
+     continuity). It must look like the theme background highlighted, not
+     a different colour: a small step brighter, on dark and light themes
+     alike. Never darker: the focused pane is the lit one. On a dark theme,
+     mix it about 6-8% toward white: furman `#202020` becomes `#2e2e2e`. On a
+     light theme, raise each channel by up to about 10 toward 255, leaving
+     channels already at 255, as the built-in light themes do: ritchie
+     `#f8f8f8` becomes `#ffffff`, pike `#ffffea` becomes `#fffff3`. Don't jump
+     a tinted background straight to white (pike to `#ffffff`): that drops
+     its tint and reads as another colour. A background already at `#ffffff`
+     has no room: give every window a slightly darker `background_attr` and
+     set `focus_background_attr` to the theme background. A tint of the
      accent is fine only when the user asks for colour.
    - The step must read at a glance in a screenshot, yet stay small: syntax
      and terminal colours are tuned for the theme background and lose
@@ -622,12 +647,14 @@ adds a second, and whatever assumed the first shows on it: dark bands around
 the compose box, a halo and square corners outside the frame line, a status
 bar that disappears, gray text that fades. Reusing the existing sprites
 unchanged causes all of these, so never report the reuse as a saving.
+A GUI theme with a `focus_background`, such as pike or ritchie, adds that
+second canvas by itself: run this audit when a HUD is used with one, too.
 
 Before the first screenshot, audit the theme and fix every finding:
 
 1. **Record both canvases** in the manifest: the normal one (the theme
    background, or `background_attr.bg`) and the focused one
-   (`focus_background_attr.bg`).
+   (`focus_background_attr.bg`, or else the theme's `focus_background`).
 2. **Find pixels painted in the normal canvas colour.** Check every sprite
    drawn inside or on the edge of a window: tiled frames, the compose box
    frame, status bar and inbox images, the scroll bar. Count each PNG's
@@ -666,10 +693,10 @@ sprites ("One colour on each side of a line").
 
 | Surface | Inside the line | Elsewhere |
 | --- | --- | --- |
-| Tiled frame | The window's colour in its state: `focus_background_attr.bg` or `background_attr.bg`. | The frame's `bg`; at `default`, the theme background. A panel slice drawn on the cell shows on both sides. |
-| Floating frame, prompts included | The window's colour in its state: `focus_background_attr.bg` or `background_attr.bg`, else the theme background. Never the content's own background, so content with one of its own shows a strip of the window's colour along the line. | Whatever is under the window. A panel slice drawn on the cell shows on both sides. |
+| Tiled frame | The window's colour in its state: the focused canvas (`focus_background_attr.bg`, else the theme's `focus_background`) or `background_attr.bg`. | The frame's `bg`; at `default`, the theme background. A panel slice drawn on the cell shows on both sides. |
+| Floating frame, prompts included | The window's colour in its state: the focused canvas or `background_attr.bg`, else the theme background. Never the content's own background, so content with one of its own shows a strip of the window's colour along the line. | Whatever is under the window. A panel slice drawn on the cell shows on both sides. |
 | Window bar | No inside. | Whatever is under the window. |
-| Command prompt frame | `command.element_attr.bg`, else `focus_background_attr.bg`, else the theme background. | Whatever is under the prompt. |
+| Command prompt frame | `command.element_attr.bg`, else the focused canvas, else the theme background. | Whatever is under the prompt. |
 | Compose box frame | `input_background_color`, when set. | `input_box_frame_attr.bg`, else the agent's `background_attr.bg`, else the pane. |
 | Notification frame | `notifications.background_attr.bg`, else `notifications.attr.bg`. | Whatever is under the notification. |
 | Status bar images | No inside. | The bar's `background_attr.bg`; at `default`, the pane. |

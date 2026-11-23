@@ -307,11 +307,11 @@ func TestIDEInitializationIntegration(t *testing.T) {
 		assert.NoError(t, i.closeResources())
 	})
 
-	t.Run("init shader factory receives attrs set via SetDefaultAttributes before Ready", func(t *testing.T) {
+	t.Run("init shader factory receives attrs set via SetThemeColors before Ready", func(t *testing.T) {
 		// Documents RUNE-203 contract: callers MUST invoke
-		// SetDefaultAttributes before Ready() so the init-shader
+		// SetThemeColors before Ready() so the init-shader
 		// factory observes the configured GUI theme background.
-		// Calling SetDefaultAttributes after Ready() leaves the
+		// Calling SetThemeColors after Ready() leaves the
 		// shader runner painting with the stale config defAttr.
 		configPath := makeConfigFile(t, logoConfig)
 
@@ -336,17 +336,17 @@ func TestIDEInitializationIntegration(t *testing.T) {
 			Fg: term.ColorWhite,
 			Bg: term.ColorBlack,
 		}
-		i.SetDefaultAttributes(wantAttr)
+		i.SetThemeColors(ThemeColors{Default: wantAttr})
 
 		_ = i.Ready()
 
 		assert.Equal(t, wantAttr, captured,
 			"init shader factory must observe attrs set via "+
-				"SetDefaultAttributes prior to Ready()")
+				"SetThemeColors prior to Ready()")
 		assert.NoError(t, i.closeResources())
 	})
 
-	t.Run("SetDefaultAttributes propagates default fg to home ex before Ready", func(t *testing.T) {
+	t.Run("SetThemeColors propagates the theme to home ex before Ready", func(t *testing.T) {
 		configFile, _ := makeTestFiles(t)
 
 		dataDir, err := os.MkdirTemp("", "")
@@ -362,17 +362,22 @@ func TestIDEInitializationIntegration(t *testing.T) {
 			WithLocker(new(sync.Mutex)))
 		require.NoError(t, err)
 
-		wantAttr := term.Attributes{
-			Fg: term.NewRGBColor(210, 180, 140),
-			Bg: term.ColorBlack,
+		want := ThemeColors{
+			Default: term.Attributes{
+				Fg: term.NewRGBColor(210, 180, 140),
+				Bg: term.ColorBlack,
+			},
+			FocusBackground: term.NewRGBColor(40, 40, 40),
 		}
-		i.SetDefaultAttributes(wantAttr)
+		i.SetThemeColors(want)
 
 		require.NotNil(t, i.workspaceHandler.empty)
-		assert.Equal(t, wantAttr, i.workspaceHandler.empty.defAttr,
-			"home ex must observe attrs set via SetDefaultAttributes")
-		assert.Equal(t, wantAttr, i.workspaceHandler.defAttr,
-			"workspace handler must cache the live default attrs for "+
+		assert.Equal(t, want.Default, i.workspaceHandler.empty.defAttr,
+			"home ex must observe attrs set via SetThemeColors")
+		assert.Equal(t, want.FocusBackground, i.workspaceHandler.empty.themeFocusBg,
+			"home ex must observe the focus background set via SetThemeColors")
+		assert.Equal(t, want, i.workspaceHandler.theme,
+			"workspace handler must cache the live theme colours for "+
 				"seeding future workspaces")
 		assert.NoError(t, i.closeResources())
 	})

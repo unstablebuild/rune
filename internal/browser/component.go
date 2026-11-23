@@ -1272,6 +1272,15 @@ func (c *Component) SetDefaultAttr(attr term.Attributes) {
 	c.wm.SetDefaultAttr(attr)
 }
 
+// SetBackgrounds sets the window backgrounds as
+// handler.WindowManager.SetBackgrounds does, as a Restyle with them
+// would. The rest of the style stays as it is.
+func (c *Component) SetBackgrounds(bg tcomponent.WindowBackground, focus *tcomponent.WindowBackground) {
+	c.config.WindowManagerConfig.Background = bg
+	c.config.WindowManagerConfig.FocusBackground = focus
+	c.wm.SetBackgrounds(bg, focus)
+}
+
 // WindowManagerPosition returns the offset from the top left corner
 // where the underlying window manager starts.
 func (c *Component) WindowManagerPosition() term.Coordinates {

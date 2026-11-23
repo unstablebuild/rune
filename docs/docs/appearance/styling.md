@@ -1290,10 +1290,9 @@ As with `focus_frame_attr`, the focus style applies only when there is more
 than one window, and only the window focus counts: switching to another app
 restyles nothing.
 
-While the command prompt is open, it takes the colors of
-`focus_background_attr`, without the image, and every window under it draws
-the normal style. Without `focus_background_attr`, the prompt draws no window
-background.
+While the command prompt is open, it takes the colors of the focus
+background, without the image, and every window under it draws the normal
+style. Without a focus background, the prompt draws no window background.
 
 Every `focus_` key follows the same rules:
 
@@ -1318,6 +1317,14 @@ A cell with a background of its own keeps it: the selection, the cursor
 line, status bars and `terminal.default_attr`. A frame whose `bg` is unset
 takes the window's background, so leave `focus_frame_attr.bg` unset for the
 frame to blend in.
+
+A theme can name a focus background color of its own, its
+[`focus_background`](./themes.md#what-a-theme-overrides), as `pike` and
+`ritchie` do. The window in focus takes it, with the image and `fg` of
+`background_graphics` and `background_attr`, while neither
+`focus_background_attr` nor `focus_background_graphics` is set. It follows
+`guitheme` as you switch themes. Set `focus_background_attr: {}` to turn it
+off.
 
 ### Frame images over a background
 
@@ -1346,8 +1353,8 @@ The same goes for every framed surface:
 
 | Surface | Inside the line |
 | --- | --- |
-| Window frames | The window's `background_attr` or `focus_background_attr` color. |
-| Command prompt | The `bg` of `command.element_attr`, or else of `focus_background_attr`. |
+| Window frames | The window's `background_attr` color, or in focus, the `focus_background_attr` color, or else the theme's `focus_background`. |
+| Command prompt | The `bg` of `command.element_attr`, or else the focus background's. |
 | Agent compose box | `input_background_color`. |
 | Notifications | The `bg` of `notifications.background_attr`, or else of `notifications.attr`. |
 

@@ -459,7 +459,7 @@ func TestApplyInitialThemeAttrHoldsEventLoopLock(t *testing.T) {
 	b.mu.Lock()
 	go func() {
 		defer close(done)
-		b.applyInitialThemeAttr(b.realIDE)
+		b.applyInitialThemeColors(b.realIDE)
 	}()
 
 	select {
@@ -861,6 +861,43 @@ func TestReloadHUDAppliesChangedVolumeAndTheme(t *testing.T) {
 				"the reload must offer the themes of the config")
 		})
 	}
+}
+
+func TestPreviewThemeHandsTheThemeColorsOver(t *testing.T) {
+	original := tcell.GetColorValues()
+	t.Cleanup(func() { tcell.SetColorValues(original) })
+	b := newConfiguredBootstrapForEnvTest(t, configFilename, "editor:\n  mode: modal\n"+
+		"gui:\n  themes:\n"+
+		"    livea: {foreground: '#112233', background: '#445566', focus_background: '#778899'}\n"+
+		"    liveb: {foreground: '#aabbcc', background: '#ddeeff'}\n",
+		t.TempDir())
+	guiCfg, ok, err := getGUIConfig(b.config())
+	require.NoError(t, err)
+	require.True(t, ok)
+	themes := getGUIColorThemes(b.browser(), guiCfg)
+	g, err := gui.New(b, gui.WithColorThemes("", themes))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Close() })
+	b.attachGUI(g, false)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	before, err := b.g.SetTheme("liveb")
+	require.NoError(t, err)
+	b.realIDE.SetThemeColors(themeColors(before))
+	_, restore, ok := b.previewTheme(cmdSetTheme, "livea")
+	require.True(t, ok)
+	assert.Equal(t, "livea", b.g.Theme())
+	assert.Equal(t, themeColors(themes["livea"]).Default, b.realIDE.DefaultAttributes(),
+		"the preview hands the theme's colours over")
+
+	restore()
+	assert.Equal(t, "liveb", b.g.Theme())
+	assert.Equal(t, themeColors(before).Default, b.realIDE.DefaultAttributes(),
+		"the end of the preview hands the colours before back")
+
+	_, _, ok = b.previewTheme(cmdSetTheme, "missing")
+	assert.False(t, ok, "a theme the GUI doesn't have previews nothing")
 }
 
 func TestReloadHUDAppliesAppIcon(t *testing.T) {

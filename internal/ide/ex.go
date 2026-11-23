@@ -272,6 +272,9 @@ type ex struct {
 	// defAttr holds the live theme default attributes so the grayscale
 	// command-prompt dim writer resolves a ColorDefault foreground.
 	defAttr term.Attributes
+	// themeFocusBg is the live theme's focus background colour, which
+	// focusBackground falls back to, or term.ColorDefault for none.
+	themeFocusBg term.Color
 }
 
 type commandObserver interface {
@@ -615,7 +618,7 @@ func (e *ex) doInit(
 
 	e.cleanPartialReissueState()
 	cmdBrowserCfg := e.config.Config
-	cmdBrowserCfg.WindowManagerConfig = promptBackground(cmdBrowserCfg.WindowManagerConfig)
+	cmdBrowserCfg.WindowManagerConfig = e.promptWindowManager(cmdBrowserCfg.WindowManagerConfig)
 	if cmdBrowserCfg.WindowManagerConfig.Frame {
 		wmOriginY := 2
 		if cmdBrowserCfg.TabBarHeight != 0 {
@@ -3483,13 +3486,21 @@ func (e *ex) Draw(w term.Writer) {
 	}
 }
 
-// setDefaultAttr stores the live theme default attributes and forwards
-// them to the browser window manager so grayscale dimming (both the
+// setThemeColors stores the live theme colours. The default attributes go
+// to the browser window manager so grayscale dimming (both the
 // unfocused-window path and the command prompt) resolves a ColorDefault
-// foreground against the current theme.
-func (e *ex) setDefaultAttr(attr term.Attributes) {
-	e.defAttr = attr
-	e.comp.Browser().SetDefaultAttr(attr)
+// foreground against the current theme. The focus background colour
+// restyles the focus window and the command prompt where the config sets
+// no focus background.
+func (e *ex) setThemeColors(c ThemeColors) {
+	e.defAttr = c.Default
+	e.comp.Browser().SetDefaultAttr(c.Default)
+	if c.FocusBackground == e.themeFocusBg {
+		return
+	}
+	e.themeFocusBg = c.FocusBackground
+	e.comp.Browser().SetBackgrounds(e.config.Config.WindowManagerConfig.Background, e.focusBackground())
+	e.cmdV.C.SetBackgrounds(e.promptBackground(), nil)
 }
 
 func (e *ex) drawCmdPrompt(w term.Writer) {
@@ -3708,9 +3719,11 @@ func (e *ex) restyle(s hudStyle, images, statusBarImages map[string]image.Image)
 			g.Reload(images)
 		}
 	}
-	e.comp.Browser().Restyle(s.browser)
-	cmdStyle := s.browser
-	cmdStyle.WindowManager = promptBackground(cmdStyle.WindowManager)
+	style := s.browser
+	style.WindowManager.FocusBackground = e.focusBackground()
+	e.comp.Browser().Restyle(style)
+	cmdStyle := style
+	cmdStyle.WindowManager = e.promptWindowManager(cmdStyle.WindowManager)
 	e.cmdV.C.Restyle(cmdStyle)
 	e.container.Restyle(s.notifications)
 	if e.statusBars != nil {
@@ -3718,24 +3731,44 @@ func (e *ex) restyle(s hudStyle, images, statusBarImages map[string]image.Image)
 	}
 }
 
-// promptBackground returns cfg for the browser of the command prompt,
-// whose window takes the colours of the focus background, without its
-// images, and no background without one.
-func promptBackground(cfg thandler.WindowManagerConfig) thandler.WindowManagerConfig {
-	var bg tcomponent.WindowBackground
-	if cfg.FocusBackground != nil {
-		bg.Attr = cfg.FocusBackground.Attr
+// focusBackground returns the background of the window holding the focus
+// style: the config's focus background, or else, while the theme has a
+// focus background colour, the normal background in that colour, or else
+// nil for the normal background. So a theme colours the focus window
+// only when the config sets none of the focus background keys.
+func (e *ex) focusBackground() *tcomponent.WindowBackground {
+	wm := e.config.Config.WindowManagerConfig
+	if wm.FocusBackground != nil || e.themeFocusBg == term.ColorDefault {
+		return wm.FocusBackground
 	}
-	cfg.Background = bg
+	bg := wm.Background
+	bg.Attr.Bg = e.themeFocusBg
+	return &bg
+}
+
+// promptWindowManager returns cfg for the browser of the command prompt,
+// whose window draws promptBackground.
+func (e *ex) promptWindowManager(cfg thandler.WindowManagerConfig) thandler.WindowManagerConfig {
+	cfg.Background = e.promptBackground()
 	cfg.FocusBackground = nil
 	return cfg
+}
+
+// promptBackground returns the background of the command prompt's window:
+// the colours of the focus background, without its images, and no
+// background without one.
+func (e *ex) promptBackground() tcomponent.WindowBackground {
+	var bg tcomponent.WindowBackground
+	if fb := e.focusBackground(); fb != nil {
+		bg.Attr = fb.Attr
+	}
+	return bg
 }
 
 // promptTakesFocusBackground reports whether the command prompt takes
 // the colours of the focus background, as promptBackground gives them.
 func (e *ex) promptTakesFocusBackground() bool {
-	fb := e.config.Config.WindowManagerConfig.FocusBackground
-	return fb != nil && fb.Attr != (term.Attributes{})
+	return e.promptBackground().Attr != (term.Attributes{})
 }
 
 // promptInside returns the colour inside the command prompt's frame:
@@ -3744,10 +3777,7 @@ func (e *ex) promptInside() term.Color {
 	if bg := e.config.CommandOverlay.ElementAttr.Bg; bg != term.ColorDefault {
 		return bg
 	}
-	if e.promptTakesFocusBackground() {
-		return e.config.Config.WindowManagerConfig.FocusBackground.Attr.Bg
-	}
-	return term.ColorDefault
+	return e.promptBackground().Attr.Bg
 }
 
 // restyleChats gives e's acp chats, open and later, the status bar and
