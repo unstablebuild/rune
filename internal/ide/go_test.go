@@ -24,7 +24,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -38,6 +37,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/internal/ide/idelsp"
+	"unstable.build/rune/internal/ide/idelsp/goplstest"
 	"unstable.build/rune/internal/ide/plugin"
 	"unstable.build/rune/internal/ide/vctrl"
 	"unstable.build/rune/internal/term/vte"
@@ -47,7 +47,7 @@ import (
 )
 
 func TestIDECheckFileErrorsWaitsForOpenFileResync(t *testing.T) {
-	goplsBin := findGoplsForIDE(t)
+	goplsBin := goplstest.Find(t)
 
 	cleanContent := "package main\n\n" +
 		"import \"fmt\"\n\n" +
@@ -233,24 +233,6 @@ func schemeForLSP(t *testing.T, dir string) schemeapi.Scheme {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = scheme.Close() })
 	return scheme
-}
-
-func findGoplsForIDE(t *testing.T) string {
-	t.Helper()
-	bin, err := exec.LookPath("gopls")
-	if err == nil {
-		return bin
-	}
-	for _, p := range []string{
-		filepath.Join(os.Getenv("HOME"), ".rune", "bin", "gopls"),
-		filepath.Join(os.Getenv("HOME"), "go", "bin", "gopls"),
-	} {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	t.Skip("gopls not found, skipping e2e test")
-	return ""
 }
 
 type goplsPkgManager struct{ bin string }

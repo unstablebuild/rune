@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -34,6 +33,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"unstable.build/rune/internal/ide/idelsp/goplstest"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
@@ -45,7 +45,7 @@ const realLSPCloseTimeout = 15 * time.Second
 
 func TestE2E(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "testdata")
 
 	uri := makeURI(t, "file://"+tmpDir)
@@ -1504,7 +1504,7 @@ func Broken() {
 
 func TestE2ECallback(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "")
 
 	mainPath := filepath.Join(tmpDir, "main.go")
@@ -1591,7 +1591,7 @@ func broken() {
 
 func TestE2ECallbackProgress(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "testdata")
 
 	mainPath := filepath.Join(tmpDir, "main.go")
@@ -1685,7 +1685,7 @@ func TestE2ECallbackProgress(t *testing.T) {
 
 func TestE2EWorkDoneProgress(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "testdata")
 
 	mainPath := filepath.Join(tmpDir, "main.go")
@@ -1822,7 +1822,7 @@ func TestE2EWorkDoneProgress(t *testing.T) {
 
 func TestE2ECallbackApplyEdit(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "testdata")
 
 	mainPath := filepath.Join(tmpDir, "main.go")
@@ -1996,7 +1996,7 @@ func TestE2ECallbackApplyEdit(t *testing.T) {
 
 func TestE2ECallbackShowDocument(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "testdata")
 
 	mainPath := filepath.Join(tmpDir, "main.go")
@@ -2152,7 +2152,7 @@ func TestE2ECallbackShowDocument(t *testing.T) {
 
 func TestE2EGoModChangeNotifiesGopls(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "")
 
 	uri := makeURI(t, "file://"+tmpDir)
@@ -2272,7 +2272,7 @@ func main() {
 
 func TestE2EFileCreateNotifiesGopls(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "")
 
 	uri := makeURI(t, "file://"+tmpDir)
@@ -2428,7 +2428,7 @@ func Helper() {}
 
 func TestE2EFileRenameNotifiesGopls(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "")
 
 	uri := makeURI(t, "file://"+tmpDir)
@@ -2584,7 +2584,7 @@ func Helper() {}
 
 func TestE2EReinitializePreservesParams(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "testdata")
 
 	mainPath := filepath.Join(tmpDir, "main.go")
@@ -2684,29 +2684,6 @@ func drainDiagnostics(
 	}
 }
 
-func findGopls(t *testing.T) string {
-	t.Helper()
-	goplsBin, err := exec.LookPath("gopls")
-	if err != nil {
-		for _, p := range []string{
-			filepath.Join(
-				os.Getenv("HOME"),
-				".rune", "bin", "gopls",
-			),
-			filepath.Join(
-				os.Getenv("HOME"),
-				"go", "bin", "gopls",
-			),
-		} {
-			if _, err := os.Stat(p); err == nil {
-				return p
-			}
-		}
-		t.Skip("gopls not found, skipping e2e test")
-	}
-	return goplsBin
-}
-
 func setupTestWorkspace(t *testing.T, testdataDir string) string {
 	t.Helper()
 	tmpDir, err := os.MkdirTemp("", "")
@@ -2748,7 +2725,7 @@ func copyDir(t *testing.T, src, dst string) {
 
 func TestE2EOutOfRootHover(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "testdata")
 
 	mainPath := filepath.Join(tmpDir, "main.go")
@@ -2819,7 +2796,7 @@ func TestE2EOutOfRootHover(t *testing.T) {
 
 func TestWatchServerRestartsOnConnLoss(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "testdata")
 
 	uri := makeURI(t, "file://"+tmpDir)
@@ -2907,7 +2884,7 @@ func TestWatchServerRestartsOnConnLoss(t *testing.T) {
 
 func TestManagerCloseTerminatesGopls(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "testdata")
 
 	uri := makeURI(t, "file://"+tmpDir)

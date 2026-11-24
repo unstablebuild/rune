@@ -49,24 +49,6 @@ import (
 // otherwise passed. Mirrors idelsp/go_test.go.
 const realLSPCloseTimeout = 15 * time.Second
 
-// findGopls locates the gopls binary or skips the test.
-func findGopls(t *testing.T) string {
-	t.Helper()
-	goplsBin, err := exec.LookPath("gopls")
-	if err != nil {
-		for _, p := range []string{
-			filepath.Join(os.Getenv("HOME"), ".rune", "bin", "gopls"),
-			filepath.Join(os.Getenv("HOME"), "go", "bin", "gopls"),
-		} {
-			if _, err := os.Stat(p); err == nil {
-				return p
-			}
-		}
-		t.Skip("gopls not found, skipping e2e test")
-	}
-	return goplsBin
-}
-
 // testFile describes a file to create in the test workspace.
 type testFile struct {
 	name    string
@@ -919,7 +901,7 @@ func newTestHandler(
 	me := newMockEditor()
 	mn := &mockNotifications{}
 	wm := &fakeWM{autoConfirm: true}
-	_, handler, err := newGoHandler(env.mgr, me, wm, mn, nil, executor, nil, nil, nil, nil)
+	_, handler, err := newGoHandler(env.mgr, me, wm, mn, nil, executor, nil, newTestScheme(), nil, nil)
 	require.NoError(t, err)
 	return handler, me, mn
 }

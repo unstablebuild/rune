@@ -20,30 +20,70 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/debug"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
+	"golang.org/x/mod/modfile"
 	"unstable.build/rune/internal/ide/idelsp/lspcmd"
 )
 
-// modCommandHandler creates a handler for module management commands
-// (tidy, vendor) that execute gopls workspace commands against the
-// go.mod file. These commands expect {"URIs": [goModURI]} as arguments.
+// modCommandHandler creates a handler for a module management command
+// that executes goplsCommand against the go.mod nearest to the open file.
+// buildArgs returns the command's argument for that go.mod: gopls does
+// not validate it, and panics on a struct missing its URI.
 func modCommandHandler(
 	lsp semanticapi.LSP,
 	notify browserapi.Notifications,
 	goplsCommand string,
+	buildArgs func(goModURI string) (any, error),
 ) textapi.CommandHandler {
 	return &modCmd{
-		lsp: lsp, notify: notify, goplsCommand: goplsCommand,
-		buildArgs: func(goModURI string) any {
-			return map[string]any{"URIs": []string{goModURI}}
-		},
+		lsp: lsp, notify: notify, goplsCommand: goplsCommand, buildArgs: buildArgs,
+	}
+}
+
+// tidyArgs builds gopls.tidy's command.URIArgs.
+func tidyArgs(goModURI string) (any, error) {
+	return map[string]any{"URIs": []string{goModURI}}, nil
+}
+
+// vendorArgs builds gopls.vendor's command.URIArg.
+func vendorArgs(goModURI string) (any, error) {
+	return map[string]any{"URI": goModURI}, nil
+}
+
+// checkUpgradesArgs builds gopls.check_upgrades's command.CheckUpgradesArgs.
+// gopls only checks the modules it is given, so it is given every
+// requirement in go.mod, as gopls's own "Check for upgrades" code lens does.
+func checkUpgradesArgs(fs workspaceapi.FileSystem) func(string) (any, error) {
+	return func(goModURI string) (any, error) {
+		path := strings.TrimPrefix(goModURI, "file://")
+		f, err := fs.OpenFile(path, os.O_RDONLY, 0)
+		if err != nil {
+			return nil, fmt.Errorf("open %s: %w", path, err)
+		}
+		defer func() { _ = f.Close() }()
+		data, err := io.ReadAll(f)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		mod, err := modfile.ParseLax(path, data, nil)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		modules := make([]string, 0, len(mod.Require))
+		for _, req := range mod.Require {
+			modules = append(modules, req.Mod.Path)
+		}
+		return map[string]any{"URI": goModURI, "Modules": modules}, nil
 	}
 }
 
@@ -109,7 +149,7 @@ type modCmd struct {
 	lsp          semanticapi.LSP
 	notify       browserapi.Notifications
 	goplsCommand string
-	buildArgs    func(goModURI string) any
+	buildArgs    func(goModURI string) (any, error)
 }
 
 func (h *modCmd) HandleCommand(
@@ -122,7 +162,11 @@ func (h *modCmd) HandleCommand(
 	fileURI := lspcmd.URIToLSP(cmd.URI)
 	goModURI := findGoModURI(fileURI)
 
-	argsData, err := json.Marshal(h.buildArgs(goModURI))
+	args, err := h.buildArgs(goModURI)
+	if err != nil {
+		return fmt.Errorf("%s: %w", h.goplsCommand, err)
+	}
+	argsData, err := json.Marshal(args)
 	if err != nil {
 		return fmt.Errorf("marshal args: %w", err)
 	}
@@ -156,19 +200,44 @@ func (h *modCmd) Complete(
 }
 
 // addImportHandler creates a handler for the "add-import" subcommand
-// that adds an import path to the current file.
+// that adds an import path to the current file. It completes the path
+// from the packages the last focused Go file can import, so it subscribes
+// to the editor's focus events.
 func addImportHandler(
 	lsp semanticapi.LSP,
+	editor textapi.Editor,
 	notify browserapi.Notifications,
-) textapi.CommandHandler {
-	return &addImportCmd{lsp: lsp, notify: notify}
+) (textapi.CommandHandler, error) {
+	h := &addImportCmd{lsp: lsp, notify: notify}
+	if err := editor.SubscribeEvents([]textapi.EventType{textapi.EventTypeFocus}, h); err != nil {
+		return nil, fmt.Errorf("subscribe focus events: %w", err)
+	}
+	return h, nil
 }
 
-var _ textapi.CommandHandler = (*addImportCmd)(nil)
+var (
+	_ textapi.CommandHandler = (*addImportCmd)(nil)
+	_ textapi.EventHandler   = (*addImportCmd)(nil)
+)
 
 type addImportCmd struct {
 	lsp    semanticapi.LSP
 	notify browserapi.Notifications
+
+	mu sync.Mutex
+	// focused is the Go file focused last. Focusing the console or a
+	// non-Go file does not clear it, since completion runs from the
+	// console.
+	focused workspaceapi.URI
+}
+
+func (h *addImportCmd) Handle(_ context.Context, ev textapi.Event) bool {
+	if ev.Type == textapi.EventTypeFocus && strings.HasSuffix(ev.URI.Path(), ".go") {
+		h.mu.Lock()
+		h.focused = ev.URI
+		h.mu.Unlock()
+	}
+	return false
 }
 
 func (h *addImportCmd) HandleCommand(
@@ -209,25 +278,42 @@ func (h *addImportCmd) HandleCommand(
 func (h *addImportCmd) Complete(
 	ctx context.Context, _ string, args []string,
 ) (iterator.Iterator[string], error) {
-	if len(args) > 0 {
+	// Only the package argument completes; with no args the subcommand
+	// name itself is the word being completed.
+	if len(args) != 1 {
 		return iterator.Empty[string](), nil
+	}
+	h.mu.Lock()
+	focused := h.focused
+	h.mu.Unlock()
+	if focused.String() == "" {
+		return iterator.Empty[string](), nil
+	}
+	argsData, err := json.Marshal(map[string]string{"URI": lspcmd.URIToLSP(focused)})
+	if err != nil {
+		return nil, fmt.Errorf("marshal args: %w", err)
 	}
 	result, err := h.lsp.ExecuteCommand(ctx, semanticapi.ExecuteCommandParams{
-		Command: "gopls.list_known_packages",
+		Command:   "gopls.list_known_packages",
+		Arguments: []json.RawMessage{argsData},
 	})
 	if err != nil {
-		return iterator.Empty[string](), nil
-	}
-	if result == "" {
-		return iterator.Empty[string](), nil
+		return nil, fmt.Errorf("list known packages: %w", err)
 	}
 	var resp struct {
 		Packages []string `json:"Packages"`
 	}
 	if err := json.Unmarshal([]byte(result), &resp); err != nil {
-		return iterator.Empty[string](), nil
+		return nil, fmt.Errorf("decode known packages: %w", err)
 	}
-	return iterator.FromSlice(resp.Packages), nil
+	prefix := args[0]
+	matches := make([]string, 0, len(resp.Packages))
+	for _, pkg := range resp.Packages {
+		if strings.HasPrefix(pkg, prefix) {
+			matches = append(matches, pkg)
+		}
+	}
+	return iterator.FromSlice(matches), nil
 }
 
 // findGoModURI walks up from the given file URI to find the nearest

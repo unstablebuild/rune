@@ -39,6 +39,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	runehandlertest "unstable.build/rune/internal/handler/handlertest"
 	idelsp "unstable.build/rune/internal/ide/idelsp"
+	"unstable.build/rune/internal/ide/idelsp/goplstest"
 )
 
 func newTestRenameFloating(
@@ -609,7 +610,7 @@ func TestApplyWorkspaceEdit(t *testing.T) {
 
 func TestE2ERename(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "../testdata")
 
 	rootURI, err := workspaceapi.ParseURI("file://" + tmpDir)

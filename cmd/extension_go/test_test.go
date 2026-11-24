@@ -233,7 +233,7 @@ func TestHandlersExecuteOutlivesRequestContext(t *testing.T) {
 		{
 			name: "tidy",
 			newHandler: func(lsp semanticapi.LSP) textapi.CommandHandler {
-				return modCommandHandler(lsp, &mockNotifications{}, "gopls.tidy")
+				return modCommandHandler(lsp, &mockNotifications{}, "gopls.tidy", tidyArgs)
 			},
 		},
 		{

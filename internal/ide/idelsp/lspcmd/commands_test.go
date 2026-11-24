@@ -37,6 +37,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/handler/locationpicker"
 	idelsp "unstable.build/rune/internal/ide/idelsp"
+	"unstable.build/rune/internal/ide/idelsp/goplstest"
 )
 
 // collectIter drains an iterator into a string slice.
@@ -217,7 +218,7 @@ func TestRouterCompleteReferencedSymbolFallback(t *testing.T) {
 
 func TestE2ECommands(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "../testdata")
 
 	rootURI, err := workspaceapi.ParseURI(
@@ -574,7 +575,7 @@ func TestE2ECommands(t *testing.T) {
 
 func TestE2EDocumentSymbolNormalization(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "../testdata")
 
 	rootURI, err := workspaceapi.ParseURI("file://" + tmpDir)
@@ -682,7 +683,7 @@ func collectRawDocSymbolNames(names *[]string, syms []semanticapi.DocumentSymbol
 
 func TestE2ECompleteNormalization(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "../testdata")
 
 	rootURI, err := workspaceapi.ParseURI("file://" + tmpDir)
@@ -770,7 +771,7 @@ func TestE2ECompleteNormalization(t *testing.T) {
 
 func TestE2ESignatureHelpAutoTrigger(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "../testdata")
 
 	rootURI, err := workspaceapi.ParseURI("file://" + tmpDir)
