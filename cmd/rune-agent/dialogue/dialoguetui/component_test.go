@@ -5021,6 +5021,229 @@ func TestComponentSetStatusBarConfig(t *testing.T) {
 	}
 }
 
+func TestComponentFocusStyle(t *testing.T) {
+	const width, height = 30, 10
+	layout := func(s string) []StatusBarComponent {
+		l, err := ParseStatusBarLayout(s)
+		require.NoError(t, err)
+		return l
+	}
+	focusFrame := component.FrameCharSetDefault()
+	focusFrame.TopLeft = '╔'
+	focusStyle := func() *ChatStyle {
+		return &ChatStyle{
+			StatusBar:            &StatusBarConfig{Enabled: true, Layout: layout(`<{{ .Model }}>`)},
+			FrameCharSet:         focusFrame,
+			FrameAttr:            term.Attributes{Fg: term.ColorAqua},
+			InputBackgroundColor: term.ColorRed,
+			BackgroundColor:      term.ColorNavy,
+		}
+	}
+	focused := term.ContextWithWindowFocus(context.Background(), true)
+	unfocused := term.ContextWithWindowFocus(context.Background(), false)
+	// look is what the frames drawn show of the chat's look.
+	type look struct {
+		bar           string
+		corner        rune
+		frame         term.Attributes
+		inputBg, fill term.Color
+		// errorBg is the background of the error message, which the chat
+		// writes in its own background.
+		errorBg term.Color
+	}
+	own := look{bar: "opus", corner: '┌', fill: term.ColorBlue, errorBg: term.ColorBlue}
+	focusLook := look{
+		bar: "<opus>", corner: '╔', frame: term.Attributes{Fg: term.ColorAqua, Bg: term.ColorRed},
+		inputBg: term.ColorRed, fill: term.ColorNavy, errorBg: term.ColorNavy,
+	}
+	tests := []struct {
+		name  string
+		focus func() *ChatStyle
+		ctx   context.Context
+		want  look
+	}{
+		{name: "the focus style while its window holds the focus", focus: focusStyle, ctx: focused, want: focusLook},
+		{name: "its own look while it doesn't", focus: focusStyle, ctx: unfocused, want: own},
+		{name: "its own look when the host doesn't tell", focus: focusStyle, want: own},
+		{name: "its own look without a focus style", focus: func() *ChatStyle { return nil }, ctx: focused, want: own},
+		{
+			name: "the chat's status bar when the focus style has none",
+			focus: func() *ChatStyle {
+				s := focusStyle()
+				s.StatusBar = nil
+				return s
+			},
+			ctx: focused, want: func() look { l := focusLook; l.bar = "opus"; return l }(),
+		},
+		{
+			name: "no status bar when the focus style disables it",
+			focus: func() *ChatStyle {
+				s := focusStyle()
+				s.StatusBar = &StatusBarConfig{}
+				return s
+			},
+			ctx: focused, want: func() look { l := focusLook; l.bar = ""; return l }(),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := NewComponent(ComponentConfig{
+				StatusBar:       StatusBarConfig{Enabled: true, Layout: layout(`{{ .Model }}`)},
+				BackgroundColor: term.ColorBlue,
+				ErrorStringConfig: component.StringConfig{
+					Attributes:           term.Attributes{Bg: term.ColorBlue},
+					BackgroundAttributes: term.Attributes{Bg: term.ColorBlue},
+				},
+				Focus: tt.focus(),
+			})
+			h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp, term.NopInterrupter())
+			t.Cleanup(func() {
+				close(tx)
+				assert.NoError(t, comp.Close())
+			})
+			h.Resize(width, height)
+			comp.SetStatusBarState(func(s *StatusBarState) { s.Model = "opus" })
+			comp.AddErrorMessage("oops")
+			typeText(h, "hi")
+
+			w := term.NewStringWriter(width, height)
+			w.SetContext = tt.ctx
+			h.Draw(w)
+			require.NoError(t, w.Flush())
+			cells := w.Cells()
+			rows := strings.Split(w.String(), "\n")
+			var got look
+			if comp.barHeight() > 0 {
+				got.bar = strings.TrimSpace(rows[height-1])
+			}
+			pos := comp.InputPosition()
+			corner := cells[pos.Y*width+pos.X]
+			got.corner, got.frame = corner.Ch, corner.Attributes()
+			got.inputBg = cells[(pos.Y+1)*width+pos.X+1].Bg
+			// The error message takes the first row, and nothing the second.
+			got.fill = cells[width].Bg
+			for i, row := range rows {
+				if before, _, ok := strings.Cut(row, "oops"); ok {
+					got.errorBg = cells[i*width+len([]rune(before))].Bg
+				}
+			}
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, height-comp.barHeight(), pos.Y+comp.boxHeight(comp.boxWidth(width)),
+				"the compose box sits right above the bar")
+		})
+	}
+}
+
+func TestComponentFocusStyleSwitches(t *testing.T) {
+	const width, height = 30, 10
+	layout := func(s string) []StatusBarComponent {
+		l, err := ParseStatusBarLayout(s)
+		require.NoError(t, err)
+		return l
+	}
+	comp := NewComponent(ComponentConfig{
+		StatusBar: StatusBarConfig{Enabled: true, Layout: layout(`{{ .Model }}`)},
+		Focus: &ChatStyle{
+			StatusBar: &StatusBarConfig{Enabled: true, Layout: layout(`<{{ .Model }}>`)},
+		},
+	})
+	h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp, term.NopInterrupter())
+	t.Cleanup(func() {
+		close(tx)
+		assert.NoError(t, comp.Close())
+	})
+	h.Resize(width, height)
+	bar := func(focused bool) string {
+		t.Helper()
+		w := term.NewStringWriter(width, height)
+		w.SetContext = term.ContextWithWindowFocus(context.Background(), focused)
+		h.Draw(w)
+		require.NoError(t, w.Flush())
+		rows := strings.Split(w.String(), "\n")
+		return strings.TrimSpace(rows[height-1])
+	}
+
+	comp.SetStatusBarState(func(s *StatusBarState) { s.Model = "opus" })
+	assert.Equal(t, "<opus>", bar(true))
+	comp.SetStatusBarState(func(s *StatusBarState) { s.Model = "sonnet" })
+	assert.Equal(t, "sonnet", bar(false), "the bar not drawn follows the state too")
+	assert.Equal(t, "<sonnet>", bar(true))
+
+	comp.SetStatusBarConfig(StatusBarConfig{Enabled: true, Layout: layout(`[{{ .Model }}]`)})
+	assert.Equal(t, "<sonnet>", bar(true), "the focus style's bar stays drawn while the chat has the focus")
+	assert.Equal(t, "[sonnet]", bar(false))
+
+	comp.SetFocusStyle(&ChatStyle{StatusBar: &StatusBarConfig{Enabled: true, Layout: layout(`({{ .Model }})`)}})
+	assert.Equal(t, "(sonnet)", bar(true))
+	comp.SetFocusStyle(nil)
+	assert.Equal(t, "[sonnet]", bar(true))
+}
+
+// fillRecorder is a string writer that records the fills drawn into it.
+type fillRecorder struct {
+	*term.StringWriter
+	fills []recordedFill
+}
+
+type recordedFill struct {
+	cells image.Rectangle
+	color term.Color
+	layer term.ImageLayer
+}
+
+func (w *fillRecorder) DrawImage(img term.Image) bool {
+	if img.Fill {
+		w.fills = append(w.fills, recordedFill{img.Visible(), img.FillColor, img.Layer})
+	}
+	return true
+}
+
+func TestComponentFillsTheGapAboveItsBar(t *testing.T) {
+	const width, height = 30, 10
+	layout, err := ParseStatusBarLayout(`{{ .Model }}`)
+	require.NoError(t, err)
+	bar := StatusBarConfig{Enabled: true, Layout: layout}
+	gap := func(c term.Color) []recordedFill {
+		return []recordedFill{
+			{image.Rect(0, height-1, width, height), c, term.ImageLayerBelowBackground},
+		}
+	}
+	tests := []struct {
+		name    string
+		cfg     ComponentConfig
+		focused bool
+		want    []recordedFill
+	}{
+		{
+			name: "in the chat's background",
+			cfg:  ComponentConfig{StatusBar: bar, BackgroundColor: term.ColorNavy},
+			want: gap(term.ColorNavy),
+		},
+		{
+			name: "in the focus style's background while the chat has the focus",
+			cfg: ComponentConfig{
+				StatusBar: bar, BackgroundColor: term.ColorNavy,
+				Focus: &ChatStyle{BackgroundColor: term.ColorTeal},
+			},
+			focused: true,
+			want:    gap(term.ColorTeal),
+		},
+		{name: "not without a background of its own", cfg: ComponentConfig{StatusBar: bar}},
+		{name: "not without a bar", cfg: ComponentConfig{BackgroundColor: term.ColorNavy}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := NewComponent(tt.cfg)
+			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
+			comp.Resize(width, height)
+			w := &fillRecorder{StringWriter: term.NewStringWriter(width, height)}
+			w.SetContext = term.ContextWithWindowFocus(context.Background(), tt.focused)
+			comp.Draw(w)
+			assert.Equal(t, tt.want, w.fills)
+		})
+	}
+}
+
 func TestComponentInputBoxFrameGraphics(t *testing.T) {
 	const width, height = 24, 4
 	// Nothing is on disk at uri, so only a reloaded image can draw.
@@ -5074,6 +5297,86 @@ func TestComponentInputBoxFrameGraphics(t *testing.T) {
 			h.Draw(w)
 			require.NoError(t, w.Flush())
 			assert.Equal(t, tt.expected, w.String())
+		})
+	}
+}
+
+func TestComponentInputBoxFrameInside(t *testing.T) {
+	const width, height = 24, 6
+	line := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	for x := range 4 {
+		line.Set(x, 1, color.NRGBA{R: 0x80, A: 0xff})
+	}
+	const uri = "file:///nonexistent/line.png"
+	graphics := component.FrameCharSetDefault()
+	graphics.Graphics = component.FrameCharSetGraphics{HorizontalTop: uri}
+	tests := []struct {
+		name    string
+		cs      component.FrameCharSet
+		frame   term.Attributes
+		inputBg term.Color
+		// wantFrame is the background of the frame's top edge, and fills
+		// whether a fill paints the inside of its images.
+		wantFrame term.Color
+		fills     bool
+	}{
+		{
+			name: "images keep the chat's background and fill their inside", cs: graphics,
+			inputBg: term.ColorRed, wantFrame: term.ColorNavy, fills: true,
+		},
+		{
+			name: "images take the frame's own background", cs: graphics,
+			frame:   term.Attributes{Bg: term.ColorTeal},
+			inputBg: term.ColorRed, wantFrame: term.ColorTeal, fills: true,
+		},
+		{
+			name: "images without an input background fill nothing", cs: graphics,
+			wantFrame: term.ColorNavy,
+		},
+		{
+			name: "runes take the input's background", cs: component.FrameCharSetDefault(),
+			inputBg: term.ColorRed, wantFrame: term.ColorRed,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := NewComponent(ComponentConfig{
+				BackgroundColor:      term.ColorNavy,
+				InputBackgroundColor: tt.inputBg,
+				InputBox: InputBoxConfig{
+					FrameAttr:       tt.frame,
+					GraphicsStorage: storagestub.NewInMemoryService(),
+				},
+			})
+			t.Cleanup(func() { assert.NoError(t, comp.Close()) })
+			h, tx, _ := Handler(context.Background(), new(sync.Mutex), comp, term.NopInterrupter())
+			defer close(tx)
+			h.Resize(width, height)
+			comp.SetInputBoxFrameCharSet(tt.cs, nil)
+			h.Draw(term.NewStringWriter(width, height))
+			comp.SetInputBoxFrameCharSet(tt.cs, map[string]image.Image{uri: line})
+
+			w := &fillRecorder{StringWriter: term.NewStringWriter(width, height)}
+			h.Draw(w)
+			require.NoError(t, w.Flush())
+			pos := comp.InputPosition()
+			assert.Equal(t, tt.wantFrame, w.Cells()[pos.Y*width+pos.X+1].Bg)
+			var masks []recordedFill
+			for _, f := range w.fills {
+				if f.layer == term.ImageLayerBelowText {
+					masks = append(masks, f)
+				}
+			}
+			if !tt.fills {
+				assert.Empty(t, masks)
+				return
+			}
+			boxW := comp.boxWidth(width)
+			require.Len(t, masks, boxW-2, "a fill under each image of the top edge")
+			for i, f := range masks {
+				assert.Equal(t, term.ColorRed, f.color)
+				assert.Equal(t, image.Rect(pos.X+1+i, pos.Y, pos.X+2+i, pos.Y+1), f.cells)
+			}
 		})
 	}
 }

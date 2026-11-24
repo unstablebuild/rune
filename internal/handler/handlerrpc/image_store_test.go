@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/handler/handlerrpc"
+	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/handler/handlerrpc/handlerrpctest"
 )
 
@@ -324,4 +325,29 @@ func TestImageStoreBuffers(t *testing.T) {
 	st.apply(&handlerrpc.DrawStreamResponse{Released: []uint64{1}})
 	assert.Empty(t, st.images)
 	assert.Zero(t, st.bytes)
+}
+
+func TestImageStoreDrawsFills(t *testing.T) {
+	st := newTestImageStore(t, 0, false)
+	upload(t, st.dir, "1-0", handlerrpctest.Gradient(2, 2, 1).Pix)
+	st.apply(&handlerrpc.DrawStreamResponse{Uploads: []*handlerrpc.ImageUpload{{
+		Id: 1, Version: 1, Seq: 1, File: "1-0", Width: 2, Height: 2,
+	}}})
+	w := new(handlerrpctest.ImageRecorder)
+	st.beginDraw()
+	st.draw(w, []*handlerrpc.ImagePlacement{
+		{Fill: true, FillColor: uint32(term.ColorNavy), Width: 3, Height: 1},
+		{Id: 1, Version: 1, Fill: true, FillColor: uint32(term.ColorTeal), Width: 1, Height: 1},
+		{Id: 9, Version: 1, Fill: true, Width: 1, Height: 1},
+	})
+	require.Len(t, w.Images, 2, "a mask that was never uploaded is not drawn")
+	solid := w.Images[0].Image
+	assert.True(t, solid.Fill)
+	assert.Nil(t, solid.Src)
+	assert.Equal(t, term.ColorNavy, solid.FillColor)
+	assert.Equal(t, 3, solid.Width)
+	masked := w.Images[1].Image
+	assert.True(t, masked.Fill)
+	assert.Equal(t, term.ColorTeal, masked.FillColor)
+	assert.Equal(t, handlerrpctest.Gradient(2, 2, 1).Pix, w.Images[1].Pix)
 }

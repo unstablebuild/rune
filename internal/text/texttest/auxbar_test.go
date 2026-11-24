@@ -477,6 +477,44 @@ func TestAuxBarEditContextCancelledKeepsFolds(t *testing.T) {
 		"folds must survive an edit whose context is already cancelled")
 }
 
+func TestAuxBarFoldsKeepTheEventLoopFree(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		cfg  text.AuxBarConfig
+	}{
+		{name: "absolute lines", cfg: text.AuxBarConfig{LinesEnabled: true, AbsoluteLines: true}},
+		{name: "relative lines", cfg: text.AuxBarConfig{LinesEnabled: true}},
+		{name: "no lines"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			loop := handlertest.NewEventLoop(t)
+			buf := cell.NewBuffer()
+			buf.WriteString(copy)
+			fs := &loopGatedFoldsService{loop: loop}
+			fs.view = buf.WithView(fs)
+			scroll := component.NewScroll(buf)
+			cfg := tt.cfg
+			cfg.FoldsEnabled = true
+			cfg.ScheduleNextTick = loop.Schedule
+
+			var bar text.Handler
+			loop.Run(func() {
+				bar = text.WithAuxBar(newTestHandler(scroll), buf, scroll, cfg)
+				bar.Resize(20, 10)
+			})
+			loop.Eventually(func() bool {
+				w := term.NewStringWriter(20, 10)
+				if w.Clear(term.Attributes{}) != nil {
+					return false
+				}
+				bar.Draw(w)
+				return w.Flush() == nil &&
+					strings.Count(w.String(), string(auxBarVisibleFoldIcon)) == 2
+			}, "both folds must be drawn")
+		})
+	}
+}
+
 func TestAuxBarGitEventSubscriptions(t *testing.T) {
 	fixture := newAuxBarEventFixture(t)
 	defer fixture.close(t)
@@ -909,6 +947,26 @@ func (f blockingFoldsService) FoldsFrom(term.Coordinates) (
 	return blockingIterator(), true
 }
 
+// loopGatedFoldsService answers like a composite syntax tree whose host is
+// parsed while a section still waits for its parse to finish on the event
+// loop: the host's fold is at hand, the section's only once the loop runs.
+type loopGatedFoldsService struct {
+	testFoldsService
+	loop *handlertest.EventLoop
+}
+
+func (f loopGatedFoldsService) Folds() (iterator.Iterator[term.Range], bool) {
+	return handlertest.LoopGatedIterator(f.loop,
+		[]term.Range{{Start: term.Coordinates{Y: 2}, End: term.Coordinates{Y: 6}}},
+		[]term.Range{{Start: term.Coordinates{Y: 8}, End: term.Coordinates{Y: 13}}}), true
+}
+
+func (f loopGatedFoldsService) FoldsFrom(term.Coordinates) (
+	iterator.Iterator[term.Range], bool,
+) {
+	return f.Folds()
+}
+
 type testHandler struct {
 	*component.Scroll
 	cursor int
@@ -1121,6 +1179,92 @@ const (
 	auxBarVisibleFoldIcon = '\uf44b'
 )
 
+func TestAuxBarFoldPointerShape(t *testing.T) {
+	t.Parallel()
+	onFold := func(fold term.Coordinates) term.Coordinates { return fold }
+	tests := []struct {
+		name  string
+		width int
+		key   term.Key
+		// at maps the cell of the fold drawn 40 columns wide to the
+		// cell the mouse event is at.
+		at   func(fold term.Coordinates) term.Coordinates
+		want term.PointerShape
+	}{
+		{name: "hover over a fold", width: 40, at: onFold, want: term.PointerLink},
+		{
+			name: "press on a fold", width: 40, key: term.MouseLeft, at: onFold,
+			want: term.PointerLink,
+		},
+		{
+			name: "hover beside a fold", width: 40,
+			at:   func(f term.Coordinates) term.Coordinates { f.X++; return f },
+			want: term.PointerText,
+		},
+		{
+			name: "hover over a line number", width: 40,
+			at:   func(f term.Coordinates) term.Coordinates { f.X = 0; return f },
+			want: term.PointerText,
+		},
+		{
+			name: "hover over the text", width: 40,
+			at:   func(f term.Coordinates) term.Coordinates { f.X += 10; return f },
+			want: term.PointerText,
+		},
+		{
+			name: "hover where a fold was before the bar hid", width: 6, at: onFold,
+			want: term.PointerText,
+		},
+	}
+	for _, absolute := range []bool{false, true} {
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("%s absolute=%t", tt.name, absolute), func(t *testing.T) {
+				t.Parallel()
+				bar, _, settle := newPointerAuxBar(t, absolute)
+				bar.Resize(40, 10)
+				settle()
+				fold, ok := screenRuneAt(pointerStateOf(bar, 40, 10).Screen, auxBarVisibleFoldIcon)
+				require.True(t, ok, "no fold drawn")
+				bar.Resize(tt.width, 10)
+
+				at := tt.at(fold)
+				p := new(term.Pointer)
+				bar.Handle(term.Event{
+					Type: term.EventMouse, Key: tt.key, MouseX: at.X, MouseY: at.Y,
+					Context: term.ContextWithPointer(context.Background(), p),
+				})
+				shape, _ := p.Shape()
+				require.Equal(t, tt.want, shape)
+			})
+		}
+	}
+}
+
+func TestAuxBarHiddenBarIgnoresFoldClicks(t *testing.T) {
+	t.Parallel()
+	for _, absolute := range []bool{false, true} {
+		t.Run(fmt.Sprintf("absolute=%t", absolute), func(t *testing.T) {
+			t.Parallel()
+			bar, scroll, settle := newPointerAuxBar(t, absolute)
+			bar.Resize(40, 10)
+			settle()
+			fold, ok := screenRuneAt(pointerStateOf(bar, 40, 10).Screen, auxBarVisibleFoldIcon)
+			require.True(t, ok, "no fold drawn")
+			bar.Resize(6, 10)
+
+			ctx := term.ContextWithPointer(context.Background(), new(term.Pointer))
+			for _, key := range []term.Key{term.MouseLeft, term.MouseRelease} {
+				bar.Handle(term.Event{
+					Type: term.EventMouse, Key: key, MouseX: fold.X, MouseY: fold.Y, Context: ctx,
+				})
+			}
+			bar.mu.Lock()
+			defer bar.mu.Unlock()
+			require.Zero(t, scroll.HiddenLineCount(), "a click on text toggled a hidden fold")
+		})
+	}
+}
+
 // newPointerAuxBar returns a pointerEditor in an aux bar with lines and
 // folds, serialized with the ticks the bar schedules as the event loop
 // does, the editor's scroll, and a func that waits for the bar to draw
@@ -1233,10 +1377,14 @@ func newPointerEditor() *pointerEditor {
 	}
 }
 
-func (e *pointerEditor) Handle(ev term.Event) (bool, bool) { return e.mouse.Handle(ev) }
-func (e *pointerEditor) CursorAtScroll() term.Coordinates  { return e.cursor.CursorAtScroll() }
-func (e *pointerEditor) CellView() cell.View               { return e.buf.View() }
-func (e *pointerEditor) CellEditor() cell.Editor           { return e.buf.Editor() }
+func (e *pointerEditor) Handle(ev term.Event) (bool, bool) {
+	term.SetPointerShape(ev, term.PointerText)
+	return e.mouse.Handle(ev)
+}
+
+func (e *pointerEditor) CursorAtScroll() term.Coordinates { return e.cursor.CursorAtScroll() }
+func (e *pointerEditor) CellView() cell.View              { return e.buf.View() }
+func (e *pointerEditor) CellEditor() cell.Editor          { return e.buf.Editor() }
 
 func (e *pointerEditor) SetCursorAtScroll(pos term.Coordinates) bool {
 	_, ok := e.cursor.MoveToScroll(pos)

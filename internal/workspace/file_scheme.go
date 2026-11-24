@@ -967,6 +967,18 @@ func (f *fileSchemeFile) Fd() uintptr {
 	return f.fd
 }
 
+// SyscallConn marks the file as owning a host descriptor, which is
+// what lets the vte drive a local pty master with raw reads and
+// polls. It is the wrapped file's connection when it has one.
+func (f *fileSchemeFile) SyscallConn() (syscall.RawConn, error) {
+	if c, ok := f.File.(syscall.Conn); ok {
+		return c.SyscallConn()
+	}
+	return nil, errors.ErrUnsupported
+}
+
+var _ syscall.Conn = (*fileSchemeFile)(nil)
+
 func (f *fileSchemeFile) Close() error {
 	f.closeOnce.Do(func() {
 		// Delete only our own registration: the OS recycles

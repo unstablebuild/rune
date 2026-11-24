@@ -79,6 +79,7 @@ import (
 	"unstable.build/rune/internal/ide/console/lspconsole"
 	"unstable.build/rune/internal/ide/console/pkgconsole"
 	"unstable.build/rune/internal/ide/console/searchconsole"
+	"unstable.build/rune/internal/ide/defsearch"
 	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/ideacp"
 	"unstable.build/rune/internal/ide/ideacp/acpcmd"
@@ -98,6 +99,7 @@ import (
 	"unstable.build/rune/internal/ide/idetask"
 	"unstable.build/rune/internal/ide/regexsearch"
 	"unstable.build/rune/internal/ide/semanticsearch"
+	"unstable.build/rune/internal/ide/syntax/multitree"
 	"unstable.build/rune/internal/ide/syntax/symboldb"
 	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/ide/vctrl"
@@ -239,7 +241,7 @@ type workspaceManagerHandler struct {
 	// unfocused is set while the host terminal reports that Rune lost
 	// focus, when the user sees none of the workspaces.
 	unfocused           bool
-	defAttr             term.Attributes
+	theme               ThemeColors
 	homeURI             workspaceapi.URI
 	homeWorkspace       workspace.Workspace
 	empty               *ex
@@ -859,7 +861,7 @@ func (h *workspaceManagerHandler) init(
 	h.homeInstallDir = installDataDir(trackedCwd, homeDirUri, h.sixDir)
 	runner, lspManager, dapManager, acpManager, _, _, err := h.buildExtensions(
 		cfg, homeDirUri, trackedCwd, h.empty, extExec, homeParser, false,
-		h.homeInstallDir, noRegexpSearch{}, extension.NewLiveConfig(cfg.cfg))
+		h.homeInstallDir, noRegexpSearch{}, searchconsole.Config{}, extension.NewLiveConfig(cfg.cfg))
 	if err != nil {
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building channel for extensions and plugins: %v", err)
@@ -1109,16 +1111,16 @@ func (h *workspaceManagerHandler) focusBrowser() browser.Browser {
 	return h.empty.Browser()
 }
 
-func (h *workspaceManagerHandler) setDefaultAttr(attr term.Attributes) {
-	h.defAttr = attr
+func (h *workspaceManagerHandler) setThemeColors(c ThemeColors) {
+	h.theme = c
 	for _, w := range h.workspaces {
 		if w == nil || w.ex == nil {
 			continue
 		}
-		w.ex.setDefaultAttr(attr)
+		w.ex.setThemeColors(c)
 	}
 	if h.empty != nil {
-		h.empty.setDefaultAttr(attr)
+		h.empty.setThemeColors(c)
 	}
 }
 
@@ -1574,6 +1576,19 @@ type configChangeState struct {
 	lastApplied map[string]any
 }
 
+// packageInstalled has the symbol index of every open workspace scan
+// again, so the files of a language whose grammar the package installed
+// or changed are parsed with it. It may run on any goroutine.
+func (h *workspaceManagerHandler) packageInstalled() {
+	h.scheduleNextTick(func() {
+		for _, wh := range h.workspaces {
+			if wh != nil && wh.symbolIndex != nil {
+				wh.symbolIndex.Rescan()
+			}
+		}
+	})
+}
+
 // configChanged reads the user config again and puts what differs from
 // the one in effect into effect, as far as the running process can,
 // then tells the user what did and did not take. source says what
@@ -1794,8 +1809,8 @@ func (h *workspaceManagerHandler) textOpts(
 		text.WithPackageManager(h.pkgmanager),
 		text.WithSyntaxConfig(cfg.syntaxConfig()),
 		text.WithMaxSyntaxParseSize(cfg.editorMaxSizeForSyntax()),
-		text.WithSyntaxTree(treesitter.New),
-		text.WithSyntaxParse(treesitter.Parse),
+		text.WithSyntaxTree(multitree.New),
+		text.WithSyntaxParse(multitree.Parse),
 		text.WithSwapDirectory(h.swapDirectory(cfg, ws, uri)),
 		text.WithMarkdownConfig(markdownConfig),
 		text.WithMarkdownImageStorage(
@@ -2158,22 +2173,11 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 
 	parser := treesitter.NewParser(cwd, h.pkgmanager, uri).
 		WithCaptureNamesAttributes(cfg.syntaxConfig().CaptureNamesAttributes)
+	symbolIndex, indexedSymbols := h.openSymbolIndex(cfg, uri, cwd, parser)
+	symbolDBCloser := io.Closer(symbolIndex)
 	var wsParser syntaxapi.Parser = parser
-	var symbolDB *symboldb.Parser
-	var symbolDBCloser io.Closer
-	if cfg.workspaceSymbolDB() {
-		sdb, sdbErr := symboldb.New(parser, cwd, uri, storageapi.WithPartition(
-			storageapi.WithPartition(h.ideStorage, symboldb.PartitionName),
-			uri.String()),
-			h.notifications.current(), h.scheduleNextTick)
-		if sdbErr != nil {
-			h.empty.log(log.ErrorLevel, "symbol database for workspace %q: %v",
-				uri.Path(), sdbErr)
-		} else {
-			symbolDB = sdb
-			wsParser = sdb
-			symbolDBCloser = sdb
-		}
+	if indexedSymbols {
+		wsParser = symbolIndex
 	}
 	textOpts := h.textOpts(cfg, wsParser, uri, cwd)
 	vctrlService, err := gogit.NewService(uri, cwd)
@@ -2213,18 +2217,16 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		cfg.metaOpenURL(),
 		textOpts...)
 	if err != nil {
-		if symbolDBCloser != nil {
-			_ = symbolDBCloser.Close()
-		}
+		_ = symbolDBCloser.Close()
 		return nil, fmt.Errorf("new ex: %w", err)
 	}
 	ex.sponsorsURL = h.sponsorsURL
 	ex.statusBars = statusBars
-	if symbolDB != nil {
+	if indexedSymbols {
 		if serr := ex.comp.SubscribeEvents(
-			symboldb.EditorEvents(), symbolDB,
+			symboldb.EditorEvents(), symbolIndex,
 		); serr != nil {
-			log.Errorf("subscribe symbol database events for %s: %v",
+			log.Errorf("subscribe symbol index events for %s: %v",
 				uri.String(), serr)
 		}
 	}
@@ -2236,20 +2238,20 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		h.scheduleNextTick, fexURI, gitshowBaseURI(),
 	)
 	if err != nil {
-		if symbolDBCloser != nil {
-			_ = symbolDBCloser.Close()
-		}
+		_ = symbolDBCloser.Close()
 		return nil, fmt.Errorf("install cursor history: %w", err)
 	}
 	tm.tm = ex.Browser()
 	searchIndexCloser := h.openSearchIndex(cfg, ex, uri, cwd)
 	regexIndex := h.openRegexIndex(cfg, ex, uri, cwd)
 	h.subscribeSearchRegex(ex, uri, regexIndex, wsParser, apibrowser)
+	h.subscribeSearchDefs(ex, uri, symbolIndex, wsParser, apibrowser)
 
 	wh := &workspaceHandler{
 		vctrlService:        vctrlService,
 		cursorHistoryCloser: cursorHistoryCloser,
 		symbolDBCloser:      symbolDBCloser,
+		symbolIndex:         symbolIndex,
 		searchIndexCloser:   searchIndexCloser,
 		regexIndex:          regexIndex,
 		cancelCtx:           pending.cancelCtx,
@@ -2267,9 +2269,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 	extExec, err := newExtensionsExecutor()
 	if err != nil {
 		_ = cursorHistoryCloser.Close()
-		if symbolDBCloser != nil {
-			_ = symbolDBCloser.Close()
-		}
+		_ = symbolDBCloser.Close()
 		if searchIndexCloser != nil {
 			_ = searchIndexCloser.Close()
 		}
@@ -2281,8 +2281,8 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		return nil, fmt.Errorf("new extensions executor: %w", err)
 	}
 	runner, lspManager, dapManager, acpManager, hostPkgs, promptStorage, err := h.buildExtensions(
-		cfg, uri, trackedCwd, ex, extExec, wsParser, symbolDB != nil, wh.installDir, regexIndex,
-		wh.extensionConfig)
+		cfg, uri, trackedCwd, ex, extExec, wsParser, indexedSymbols, wh.installDir, regexIndex,
+		consoleIndexes(cfg, regexIndex, symbolIndex, indexedSymbols), wh.extensionConfig)
 	if err != nil {
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building channel for extensions and plugins: %v", err)
@@ -2407,6 +2407,65 @@ func (h *workspaceManagerHandler) subscribeSearchRegex(
 	}
 }
 
+// openSymbolIndex opens the symbol index of the workspace uri over
+// backing, and reports whether it keeps one: with search.symbols_enabled
+// off, or when its database cannot open, it keeps none, lookups go to
+// backing and searchfunc, searchvar and searchtype parse the files they
+// cover.
+func (h *workspaceManagerHandler) openSymbolIndex(
+	cfg ideConfig, uri workspaceapi.URI, cwd workspace.Workspace, backing treesitter.Parser,
+) (*symboldb.Parser, bool) {
+	scfg := symboldb.Config{
+		Root: uri, FS: cwd, Backing: backing,
+		// A scan of the workspace must not offer to install the package
+		// of every language it meets.
+		Indexer:         treesitter.NewParser(cwd, installedPackages{h.pkgmanager.pkg}, uri),
+		ExcludedFolders: cfg.searchConfig().Options.ExcludedFolders,
+	}
+	if cfg.workspaceSymbolsSearch() {
+		scfg.DB = storageapi.WithPartition(
+			storageapi.WithPartition(h.ideStorage, symboldb.PartitionName), uri.String())
+		notify, schedule := h.notifications.current(), h.scheduleNextTick
+		scfg.Progress = func() symboldb.Progress { return symboldb.NotifyProgress(notify, schedule) }
+		idx, err := symboldb.New(scfg)
+		if err == nil {
+			return idx, true
+		}
+		h.empty.log(log.ErrorLevel, "symbol index for workspace %q: %v", uri.Path(), err)
+		scfg.DB, scfg.Progress = nil, nil
+	}
+	// Without a database New does not fail.
+	idx, _ := symboldb.New(scfg)
+	return idx, false
+}
+
+// subscribeSearchDefs registers the searchfunc, searchvar and searchtype
+// commands of the workspace uri, which search idx.
+func (h *workspaceManagerHandler) subscribeSearchDefs(
+	ex *ex, uri workspaceapi.URI, idx *symboldb.Parser, parser syntaxapi.Parser,
+	apibrowser browserapi.Browser,
+) {
+	cfg := defsearch.Config{
+		Root:     uri,
+		Searcher: idx,
+		Clients: finder.Clients{
+			ResourceOpener: apibrowser,
+			WindowManager:  apibrowser,
+			Interrupter:    apibrowser,
+			Notifications:  h.notifications.new(uri, ex.container),
+			Editor:         newEditorAdapter(ex.Editor()),
+			FileSystem:     ex.workspace,
+		},
+		Parser:           parser,
+		ScheduleNextTick: h.scheduleNextTick,
+	}
+	for _, man := range defsearch.Manuals() {
+		if err := ex.editorObserver.SubscribeCommand(man, defsearch.New(man.Name, cfg)); err != nil {
+			log.Errorf("subscribe %s command: %v", man.Name, err)
+		}
+	}
+}
+
 // isUserConfig reports whether filename in the workspace uri is the user's
 // own config file, as when the workspace is the home directory: it already
 // applied as the user config, so it needs no trust.
@@ -2516,7 +2575,7 @@ func (h *workspaceManagerHandler) installPendingWorkspace(
 
 	ex := built.ex
 	wh := built.wh
-	ex.setDefaultAttr(h.defAttr)
+	ex.setThemeColors(h.theme)
 	if h.hud != nil && h.hud.load > built.hudLoads && wh.configOverlay == nil {
 		// The build read the config before the installed HUD's load did.
 		ex.restyle(h.hud.base, h.hud.images, h.hud.statusBarImages)
@@ -2697,7 +2756,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 	cfg ideConfig, uri workspaceapi.URI,
 	cwd workspace.Workspace, ex *ex, extExecutor *extensionsExecutor,
 	parser syntaxapi.Parser, indexedSymbols bool, installDir string,
-	regexp regexpSearcher, extensionConfig *extension.LiveConfig,
+	regexp regexpSearcher, indexes searchconsole.Config, extensionConfig *extension.LiveConfig,
 ) (
 	_ extension.Runner, _ *idelsp.Manager, _ *idedebug.Manager,
 	_ *ideacp.Manager, _ *pkgManager, _ storageapi.Service, retErr error,
@@ -2906,9 +2965,10 @@ func (h *workspaceManagerHandler) buildExtensions(
 		log.Errorf("register llm repl command: %v", err)
 	}
 	if err := ex.editorObserver.RegisterREPLCommand(searchconsole.Manual(), searchconsole.New(searchconsole.Config{
-		Searcher: searcher,
-		Search:   h.llmRouter.SearchService(),
-		Root:     uri,
+		Search:  h.llmRouter.SearchService(),
+		Root:    uri,
+		Regex:   indexes.Regex,
+		Symbols: indexes.Symbols,
 	})); err != nil {
 		log.Errorf("register search repl command: %v", err)
 	}
@@ -4018,6 +4078,7 @@ type workspaceHandler struct {
 	vctrlService        vctrl.Service
 	cursorHistoryCloser io.Closer
 	symbolDBCloser      io.Closer
+	symbolIndex         *symboldb.Parser
 	searchIndexCloser   io.Closer
 	regexIndex          *codesearch.Index
 	cancelCtx           func()
@@ -4379,6 +4440,11 @@ func (s statusWorkspaces) TabName(ws, uri workspaceapi.URI) (string, bool) {
 	return name, ok
 }
 
+// Preview previews in a view of its own a terminal, attached or not, an
+// ACP chat, or a chat of an extension in statusPreviewSchemes, tab or
+// not. What is shown nowhere else, a minimized task's program or the
+// hidden companion terminal, is lent to the inbox. Anything else is
+// borrowed from the tab or the window that shows it.
 func (s statusWorkspaces) Preview(ws, uri workspaceapi.URI) (idestatus.Preview, bool) {
 	e := s.h.exForWorkspace(ws)
 	if e == nil {
@@ -4386,29 +4452,172 @@ func (s statusWorkspaces) Preview(ws, uri workspaceapi.URI) (idestatus.Preview, 
 	}
 	b := e.comp.Browser()
 	if tab, ok := b.Tab(uri); ok {
+		if p, ok := statusOwnPreview(e, uri, tab.Handler()); ok {
+			return p, true
+		}
 		w, h := tab.ContentSize()
-		return idestatus.Preview{Content: tab, Width: w, Height: h, Fit: tab.Resize}, true
+		return idestatus.Preview{Content: tab, Width: w, Height: h}, true
 	}
 	if t, ok := statusTaskOf(e, uri); ok {
 		if win, ok := t.Shown(); ok {
-			return statusWindowPreview(b, win)
+			return statusWindowPreview(e, win)
 		}
 		// Minimized, the task draws its bar alone: preview its program.
-		p := t.Program()
-		return idestatus.Preview{Content: p, Fit: p.Resize, Hidden: true}, true
+		return statusLentPreview(t.Program()), true
 	}
 	if win, ok := statusWindowOf(e, uri); ok {
-		return statusWindowPreview(b, win)
+		return statusWindowPreview(e, win)
 	}
 	if v, ok := hiddenCompanionTerminal(e, uri); ok {
-		return idestatus.Preview{Content: v, Fit: v.Resize, Hidden: true}, true
+		return statusLentPreview(v), true
 	}
 	if info, ok := e.terminals.detached(uri); ok {
-		if v, err := e.terminals.previewOf(info.ID); err == nil {
-			return idestatus.Preview{Content: v, Fit: v.Resize, Hidden: true}, true
+		return statusTerminalPreview(e, info), true
+	}
+	return statusOwnPreview(e, uri, nil)
+}
+
+// statusPreviewSchemes are the schemes of the extension resources whose
+// opener honors text.PreviewQuery.
+var statusPreviewSchemes = map[string]bool{"rune-agent": true}
+
+// statusOwnPreview previews in a view of its own what reports at uri in
+// e, shown in content unless it is nil, when it is a terminal, an ACP
+// chat or a resource of statusPreviewSchemes.
+func statusOwnPreview(e *ex, uri workspaceapi.URI, content browserapi.Handler) (idestatus.Preview, bool) {
+	if v, ok := content.(vte.View); ok {
+		if info, ok := e.terminals.info(v.ID()); ok {
+			return statusTerminalPreview(e, info), true
 		}
 	}
-	return idestatus.Preview{}, false
+	if e.acpChats != nil {
+		if open, ok := e.acpChats.Preview(uri); ok {
+			return idestatus.Preview{Open: open}, true
+		}
+	}
+	opener, ok := e.comp.ResourceOpener(uri.Scheme())
+	// A tab still waiting for its extension shows what it waits for.
+	if !ok || !statusPreviewSchemes[uri.Scheme()] || e.comp.PendingTabs().Contains(uri) {
+		return idestatus.Preview{}, false
+	}
+	u, err := url.Parse(uri.String())
+	if err != nil {
+		return idestatus.Preview{}, false
+	}
+	q := u.Query()
+	q.Set(text.PreviewQuery, "")
+	u.RawQuery = q.Encode()
+	preview, err := workspaceapi.ParseURI(u.String())
+	if err != nil {
+		return idestatus.Preview{}, false
+	}
+	return idestatus.Preview{Open: func(width, height int) (tui.Component, func()) {
+		p := openStatusResourcePreview(e, opener, preview, width, height)
+		return p, p.close
+	}}, true
+}
+
+// statusTerminalPreview previews the terminal info describes in a view
+// of its own. The sole view of a detached terminal sizes it; any other
+// view asks for room for the grid, and shows its bottom-left corner when
+// given less.
+func statusTerminalPreview(e *ex, info vte.Info) idestatus.Preview {
+	p := idestatus.Preview{Open: func(width, height int) (tui.Component, func()) {
+		v, err := e.terminals.previewOf(info.ID)
+		if err != nil {
+			return nil, nil
+		}
+		v.Resize(width, height)
+		return v, func() { _ = v.Close() }
+	}}
+	if info.Attachments > 0 {
+		p.Width, p.Height = info.Width, info.Height
+	}
+	return p
+}
+
+// statusLentPreview previews content, shown nowhere, by lending it to
+// the inbox, which sizes it until it shows somewhere again.
+func statusLentPreview(content tui.Component) idestatus.Preview {
+	return idestatus.Preview{Open: func(width, height int) (tui.Component, func()) {
+		content.Resize(width, height)
+		return content, nil
+	}}
+}
+
+// statusResourcePreview is the preview an extension opens of a resource
+// for the status inbox. It shows nothing until the extension answers,
+// and why the extension failed if it does.
+type statusResourcePreview struct {
+	width, height int
+	cancel        context.CancelFunc
+	h             browserapi.Handler
+	failed        *component.String
+	closed        bool
+}
+
+// openStatusResourcePreview asks opener for uri off the event loop.
+func openStatusResourcePreview(
+	e *ex, opener textapi.ResourceOpenHandler, uri workspaceapi.URI, width, height int,
+) *statusResourcePreview {
+	ctx, cancel := context.WithTimeout(e.bgCtx, extensionHandleWait)
+	p := &statusResourcePreview{width: width, height: height, cancel: cancel}
+	go debug.CapturePanicReport(func() {
+		defer cancel()
+		h, err := opener.OpenResource(ctx, uri)
+		if err == nil && h == nil {
+			err = errors.New("the extension returned no content")
+		}
+		if !e.sched(func() { p.opened(h, err) }) && h != nil {
+			_ = h.Close()
+		}
+	})
+	return p
+}
+
+func (p *statusResourcePreview) opened(h browserapi.Handler, err error) {
+	switch {
+	case p.closed:
+		if h != nil {
+			_ = h.Close()
+		}
+	case err != nil:
+		failed := component.NewStringWithConfig(fmt.Sprintf("preview unavailable: %v", err),
+			component.StringConfig{Alignment: component.AlignmentCentered})
+		failed.Resize(p.width, p.height)
+		p.failed = &failed
+	default:
+		h.Resize(p.width, p.height)
+		p.h = h
+	}
+}
+
+func (p *statusResourcePreview) Resize(width, height int) {
+	p.width, p.height = width, height
+	switch {
+	case p.h != nil:
+		p.h.Resize(width, height)
+	case p.failed != nil:
+		p.failed.Resize(width, height)
+	}
+}
+
+func (p *statusResourcePreview) Draw(w term.Writer) {
+	switch {
+	case p.h != nil:
+		p.h.Draw(w)
+	case p.failed != nil:
+		p.failed.Draw(w)
+	}
+}
+
+func (p *statusResourcePreview) close() {
+	p.closed = true
+	p.cancel()
+	if p.h != nil {
+		_ = p.h.Close()
+		p.h = nil
+	}
 }
 
 // focusStatusSource brings in sight what reported a status at uri in
@@ -4431,7 +4640,6 @@ func focusStatusSource(e *ex, uri workspaceapi.URI) error {
 		return e.toggleCompanionTerminal()
 	}
 	if info, ok := e.terminals.detached(uri); ok {
-		e.terminals.closePreview()
 		return e.attachTerminalTab(info, e.invokeWindow())
 	}
 	if e.acpChats != nil {
@@ -4467,8 +4675,9 @@ func hiddenCompanionTerminal(e *ex, uri workspaceapi.URI) (vte.View, bool) {
 	return v, true
 }
 
-// statusWindowPreview previews the content of win.
-func statusWindowPreview(b *browser.Component, win browser.Window) (idestatus.Preview, bool) {
+// statusWindowPreview previews the content of win, in a view of its own
+// when it is a terminal.
+func statusWindowPreview(e *ex, win browser.Window) (idestatus.Preview, bool) {
 	if win == nil || win.Closed() {
 		return idestatus.Preview{}, false
 	}
@@ -4476,7 +4685,12 @@ func statusWindowPreview(b *browser.Component, win browser.Window) (idestatus.Pr
 	if err != nil {
 		return idestatus.Preview{}, false
 	}
-	w, h := b.ContentSize(win)
+	if v, ok := content.(vte.View); ok {
+		if info, ok := e.terminals.info(v.ID()); ok {
+			return statusTerminalPreview(e, info), true
+		}
+	}
+	w, h := e.comp.Browser().ContentSize(win)
 	return idestatus.Preview{Content: content, Width: w, Height: h}, true
 }
 
@@ -5560,4 +5774,19 @@ func lspCommandsConfig(
 		handlermarkdown.WithOnLinkClick(onLinkClick),
 	}
 	return cmdcfg
+}
+
+// consoleIndexes returns the indexes of a workspace that the search
+// console manages: those the workspace keeps.
+func consoleIndexes(
+	cfg ideConfig, regex *codesearch.Index, symbols *symboldb.Parser, indexedSymbols bool,
+) searchconsole.Config {
+	var out searchconsole.Config
+	if cfg.workspaceRegexSearch() {
+		out.Regex = regex
+	}
+	if indexedSymbols {
+		out.Symbols = symbols
+	}
+	return out
 }

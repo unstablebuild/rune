@@ -1605,7 +1605,7 @@ func TestShowFallbackPromptInstallsFuzzySearch(t *testing.T) {
 func TestHomeFallbackPromptDoesNotInstall(t *testing.T) {
 	commands := []string{
 		"agent", "?",
-		"chateffort", "chatmaxtokens", "chatskill", "chatmodel",
+		"chateffort", "chatspeed", "chatmaxtokens", "chatskill", "chatmodel",
 		"chatclear", "chatcompact", "chatfork", "chatexport", "chatlog",
 		"searchfile", "searchtext", "searchast", "searchsemantic", "searchregex",
 	}
@@ -4177,6 +4177,16 @@ func newExForTestingVTECapacity(
 	t *testing.T, ws workspace.Workspace, initialVTECapacity int,
 ) testEx {
 	t.Helper()
+	return newExForTestingVTEConfig(t, ws, initialVTECapacity, vte.DefaultConfig())
+}
+
+// newExForTestingVTEConfig is newExForTestingVTECapacity with the
+// terminal configuration its terminals are created with.
+func newExForTestingVTEConfig(
+	t *testing.T, ws workspace.Workspace, initialVTECapacity int,
+	emulatorCfg vte.Config,
+) testEx {
+	t.Helper()
 	e := new(ex)
 	e.syncCommandPrompt = true
 	opts := defCommandKeyBindings()
@@ -4190,7 +4200,6 @@ func newExForTestingVTECapacity(
 	uri, err := ws.URI(".")
 	require.NoError(t, err)
 
-	emulatorCfg := vte.DefaultConfig()
 	scheduler, mu := installDefaultTestScheduler(&emulatorCfg)
 	require.NoError(t, e.init(
 		func(exoeditor.Reloader, schemeapi.Terminal) (text.Editor, error) {
@@ -4304,6 +4313,143 @@ func TestExResizeDoesNotBlockOnPtyResize(t *testing.T) {
 		ws.armFor(80, 24)
 		assertResizeReturns(t, b)
 		assert.Equal(t, [2]int{80, 24}, ws.waitEntered(t))
+	})
+}
+
+// newMemoryShellEx builds an ex on a memory workspace holding notes.txt
+// whose terminals, created through the production spawn path, run the
+// Rune shell.
+func newMemoryShellEx(t *testing.T, capacity int, cfg vte.Config) testEx {
+	t.Helper()
+	uri, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+	scheme, err := workspace.NewMemoryScheme(context.Background(), config.NopConfig(), uri)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = scheme.Close() })
+	touchTestFile(t, scheme, "notes.txt")
+	b := newExForTestingVTEConfig(t,
+		workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule), capacity, cfg)
+	t.Cleanup(func() { _ = b.Close() })
+	return b
+}
+
+// typeShell types s into the focused terminal a key at a time, with the
+// bytes the host terminal reports for each.
+func typeShell(b testEx, s string) {
+	for _, r := range s {
+		ev := term.Event{Type: term.EventKey, Ch: r, Raw: []byte(string(r))}
+		switch r {
+		case '\n':
+			ev = term.Event{Type: term.EventKey, Key: term.KeyEnter}
+		case '\x1b':
+			ev = term.Event{Type: term.EventKey, Key: term.KeyEsc}
+		}
+		b.Handle(ev)
+	}
+}
+
+// waitShellDrawn runs what the terminal scheduled until the frame shows
+// substr, and returns the frame.
+func waitShellDrawn(t *testing.T, b testEx, width, height int, substr string) string {
+	t.Helper()
+	var frame string
+	require.Eventuallyf(t, func() bool {
+		b.flushScheduled()
+		frame = handlertest.DrawHandler(b, width, height)
+		return strings.Contains(frame, substr)
+	}, 10*time.Second, 5*time.Millisecond, "%q never drawn, last frame:\n%s", substr, frame)
+	return frame
+}
+
+func TestExRunsTheRuneShellInMemoryWorkspaces(t *testing.T) {
+	const width, height = 40, 10
+	ctx := context.Background()
+
+	openTerminal := func(t *testing.T, b testEx, open func(context.Context, ...string) error) {
+		t.Helper()
+		b.Resize(width, height)
+		require.NoError(t, open(ctx))
+		b.waitAsyncVTELoads()
+		b.flushScheduled()
+		require.True(t, terminalLive(b))
+		waitShellDrawn(t, b, width, height, "$ ▐")
+	}
+
+	t.Run("terminalnewtab lists the workspace", func(t *testing.T) {
+		b := newMemoryShellEx(t, 0, vte.DefaultConfig())
+		openTerminal(t, b, b.ex.terminalnewtab)
+		require.NoError(t, b.ex.tabrename(ctx, "shell"))
+		typeShell(b, "ls\n")
+		waitShellDrawn(t, b, width, height, "notes.txt")
+		frame := waitShellDrawn(t, b, width, height, "$ ▐")
+		assert.Equal(t, `┌━━━━━━━───────────────────────────────┐
+│$ shell                               │
+├──────────────────────────────────────┤
+│Rune's built-in in-memory shell — type│
+│ 'help' for the available commands.   │
+│memory:/// $ ls                       │
+│bin        notes.txt                  │
+│memory:/// $ ▐                        │
+│                                      │
+└──────────────────────────────────────┘`, frame)
+	})
+
+	t.Run("terminalnew lists the workspace", func(t *testing.T) {
+		b := newMemoryShellEx(t, 0, vte.DefaultConfig())
+		openTerminal(t, b, b.ex.terminalnew)
+		typeShell(b, "ls\n")
+		assert.Contains(t, waitShellDrawn(t, b, width, height, "notes.txt"), "$ ls")
+	})
+
+	t.Run("a warm reservoir terminal", func(t *testing.T) {
+		b := newMemoryShellEx(t, 1, vte.DefaultConfig())
+		require.NotNil(t, b.terminals.reservoir)
+		b.terminals.reservoir.WaitForInitialFill()
+		openTerminal(t, b, b.ex.terminalnewtab)
+		typeShell(b, "ls\n")
+		assert.Contains(t, waitShellDrawn(t, b, width, height, "notes.txt"), "$ ls")
+	})
+
+	t.Run("exit drops the tab", func(t *testing.T) {
+		b := newMemoryShellEx(t, 0, vte.DefaultConfig())
+		openTerminal(t, b, b.ex.terminalnewtab)
+		content, err := b.ex.invokeWindow().Content()
+		require.NoError(t, err)
+		uri := content.(*browser.Tab).URI()
+		typeShell(b, "exit\n")
+		require.Eventually(t, func() bool {
+			b.flushScheduled()
+			return !terminalLive(b)
+		}, 10*time.Second, 5*time.Millisecond, "the terminal outlived its shell")
+		_, open := b.comp.Browser().Tab(uri)
+		assert.False(t, open, "a shell that exited cleanly leaves no tab behind")
+	})
+
+	t.Run("modal mode", func(t *testing.T) {
+		cfg := vte.DefaultConfig()
+		cfg.Modal = true
+		b := newMemoryShellEx(t, 0, cfg)
+		openTerminal(t, b, b.ex.terminalnewtab)
+		typeShell(b, "echo bla\n")
+		waitShellDrawn(t, b, width, height, "│bla ")
+		typeShell(b, "\x1b")
+		require.Eventually(t, func() bool {
+			b.flushScheduled()
+			_, style, _ := b.Cursor()
+			return style != term.CursorStyleSteadyBar
+		}, 10*time.Second, 5*time.Millisecond,
+			"<esc> must enter vi mode once the shell rings the bell")
+		typeShell(b, "k0")
+		// vi keys at the prompt line apply once the shell rings the bell.
+		waitShellDrawn(t, b, width, height, "│▐la ")
+	})
+
+	t.Run("console", func(t *testing.T) {
+		b := newMemoryShellEx(t, 0, vte.DefaultConfig())
+		b.Resize(width, height)
+		require.NoError(t, b.ex.consolenewtab(ctx, "ls"))
+		b.ex.companionConsole.Wait()
+		assert.Contains(t, waitShellDrawn(t, b, width, height, "notes.txt"), "ls")
 	})
 }
 
@@ -4790,6 +4936,7 @@ func TestExRestyle(t *testing.T) {
 				"frame_charset": map[string]any{
 					"topleft": "╭", "graphics": map[string]any{"topleft": uri},
 				},
+				"background_attr": map[string]any{"bg": "navy"},
 			},
 			"focus_tab_highlight_char": "=",
 			"tab_images": map[string]any{"focus": map[string]any{
@@ -4844,6 +4991,21 @@ func TestExRestyle(t *testing.T) {
 
 	const width, height = 40, 10
 	b.Resize(width, height)
+	navyCells := func(c *browser.Component) int {
+		w := term.NewStringWriter(width, height)
+		c.Resize(width, height)
+		c.Draw(w)
+		require.NoError(t, w.Flush())
+		n := 0
+		for _, cell := range w.Cells() {
+			if cell.Bg == term.ColorNavy {
+				n++
+			}
+		}
+		return n
+	}
+	assert.NotZero(t, navyCells(b.ex.comp.Browser()), "the windows draw their background")
+	assert.Zero(t, navyCells(b.ex.cmdV.C), "the command prompt draws no window background")
 
 	tab := b.ex.comp.Browser().NewTab(workspaceapi.URI{}, 'x', "tab", browsertest.NewTestHandler(), nil)
 	require.NoError(t, b.ex.comp.Browser().Focus().SetContent(tab))
@@ -4869,6 +5031,144 @@ func TestExRestyle(t *testing.T) {
 	}
 	require.Len(t, corner, 1, "the notification draws with the restyled frame")
 	assert.True(t, w.images[corner[0]], "the notification draws the reloaded image over its corner")
+}
+
+func TestCommandPromptTakesTheFocusBackground(t *testing.T) {
+	const width, height = 40, 20
+	teal := tcomponent.WindowBackground{Attr: term.Attributes{Bg: term.ColorTeal}}
+	tests := []struct {
+		name  string
+		focus *tcomponent.WindowBackground
+		// theme is the theme's focus background colour.
+		theme term.Color
+		// wantPrompt reports whether the prompt takes the focus
+		// background, and the window under it loses it.
+		wantPrompt bool
+	}{
+		{name: "with a focus background", focus: &teal, wantPrompt: true},
+		{name: "without one"},
+		{name: "with the theme's", theme: term.ColorTeal, wantPrompt: true},
+		{
+			name:  "the config's wins over the theme's",
+			focus: &teal, theme: term.ColorNavy, wantPrompt: true,
+		},
+		{
+			name:  "an empty one turns the theme's off",
+			focus: &tcomponent.WindowBackground{}, theme: term.ColorTeal,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wmCfg := thandler.DefaultWindowManagerConfig()
+			wmCfg.FocusBackground = tt.focus
+			b := newExForTesting(t, texttest.NopEditor(),
+				text.WithCommandKey(testCommandKey), text.WithWindowManagerConfig(wmCfg))
+			defer b.Close()
+			b.ex.setThemeColors(ThemeColors{FocusBackground: tt.theme})
+			b.Resize(width, height)
+			browser := b.ex.comp.Browser()
+			browser.Split(browserapi.OrientationRight, browser.Focus(), browsertest.NewTestHandler())
+
+			// tealCells returns how many cells are teal inside the prompt
+			// and outside it.
+			tealCells := func() (inside, outside int) {
+				t.Helper()
+				w := term.NewStringWriter(width, height)
+				b.Draw(w)
+				require.NoError(t, w.Flush())
+				for i, c := range w.Cells() {
+					if c.Bg != term.ColorTeal {
+						continue
+					}
+					ev := term.Event{MouseX: i % width, MouseY: i / width}
+					if b.ex.cmd != nil && !b.ex.promptClickOutside(ev) {
+						inside++
+					} else {
+						outside++
+					}
+				}
+				return inside, outside
+			}
+			_, before := tealCells()
+			assert.Equal(t, tt.wantPrompt, before > 0, "the focus window's background")
+
+			b.ex.openCommandPrompt()
+			require.NotNil(t, b.ex.cmd)
+			inside, outside := tealCells()
+			assert.Equal(t, tt.wantPrompt, inside > 0, "the prompt's background")
+			assert.Zero(t, outside, "no window under the prompt keeps the focus background")
+
+			require.NoError(t, b.ex.cmdWin.Close())
+			_, after := tealCells()
+			assert.Equal(t, before, after, "closing the prompt gives the focus window its background back")
+		})
+	}
+}
+
+func TestExFocusBackgroundFollowsTheTheme(t *testing.T) {
+	const width, height = 40, 20
+	themeBg, configBg := term.NewRGBColor(1, 2, 3), term.NewRGBColor(4, 5, 6)
+	b := newExForTesting(t, texttest.NopEditor(), text.WithCommandKey(testCommandKey))
+	defer b.Close()
+	b.Resize(width, height)
+	browser := b.ex.comp.Browser()
+	browser.Split(browserapi.OrientationRight, browser.Focus(), browsertest.NewTestHandler())
+
+	// cells returns how many cells of the screen, and of the open command
+	// prompt, have the background bg.
+	cells := func(bg term.Color) (screen, prompt int) {
+		t.Helper()
+		w := term.NewStringWriter(width, height)
+		b.Draw(w)
+		require.NoError(t, w.Flush())
+		for i, c := range w.Cells() {
+			if c.Bg != bg {
+				continue
+			}
+			screen++
+			ev := term.Event{MouseX: i % width, MouseY: i / width}
+			if b.ex.cmd != nil && !b.ex.promptClickOutside(ev) {
+				prompt++
+			}
+		}
+		return screen, prompt
+	}
+	restyle := func(wm map[string]any) {
+		t.Helper()
+		cfg := ideConfig{cfg: map[string]any{
+			"browser": map[string]any{"window_manager": wm},
+		}, errors: map[string]error{}}
+		style := cfg.hudStyle()
+		require.Empty(t, cfg.errors)
+		b.ex.restyle(style, nil, nil)
+	}
+
+	screen, _ := cells(themeBg)
+	require.Zero(t, screen, "a theme without a focus background colours nothing")
+
+	b.ex.setThemeColors(ThemeColors{FocusBackground: themeBg})
+	screen, _ = cells(themeBg)
+	assert.NotZero(t, screen, "a theme change colours the focus window")
+
+	restyle(map[string]any{})
+	screen, _ = cells(themeBg)
+	assert.NotZero(t, screen, "a restyle without focus background keys keeps the theme's")
+
+	b.ex.openCommandPrompt()
+	require.NotNil(t, b.ex.cmd)
+	_, prompt := cells(themeBg)
+	assert.NotZero(t, prompt, "the prompt takes the theme's focus background")
+	b.ex.setThemeColors(ThemeColors{})
+	screen, _ = cells(themeBg)
+	assert.Zero(t, screen, "a theme change while the prompt is open restyles it")
+	require.NoError(t, b.ex.cmdWin.Close())
+
+	b.ex.setThemeColors(ThemeColors{FocusBackground: themeBg})
+	restyle(map[string]any{"focus_background_attr": map[string]any{"bg": "#040506"}})
+	screen, _ = cells(themeBg)
+	assert.Zero(t, screen, "the config's focus background replaces the theme's")
+	screen, _ = cells(configBg)
+	assert.NotZero(t, screen, "the config's focus background colours the focus window")
 }
 
 func TestCommandPromptHasNoWindowBar(t *testing.T) {
@@ -8816,38 +9116,26 @@ func TestExEchoMultipleArgs(t *testing.T) {
 	assert.Equal(t, term.KeyEnter, published[1].Key)
 }
 
-func TestSearchAstAliasesFromRuneStar(t *testing.T) {
-	// Source of truth: cmd/rune/rune.star. Keep these in sync with
-	// the strings declared there.
-	const (
-		searchfuncBody = `echo {prompt}searchast<space>locals.scm<space>local.definition.method|local.definition.function<enter>`
-		searchvarBody  = `echo {prompt}searchast<space>locals.scm<space>local.definition.var<enter>`
-		searchtypeBody = `echo {prompt}searchast<space>locals.scm<space>local.definition.type<enter>`
+func TestCommandListAliasShadowsCommand(t *testing.T) {
+	b := newExForTesting(t, texttest.NopEditor(),
+		text.WithCommandKey(testCommandKey),
+		text.WithCommandAliases(map[string]text.CommandAlias{
+			"edit":  {Commands: []string{"echo shadowed"}},
+			"hello": {Commands: []string{"echo hello"}},
+		}),
 	)
-	cases := []struct {
-		alias string
-		body  string
-	}{
-		{"searchfunc", searchfuncBody},
-		{"searchvar", searchvarBody},
-		{"searchtype", searchtypeBody},
-	}
-	for _, tc := range cases {
-		t.Run(tc.alias, func(t *testing.T) {
-			publishEvent := func(ev term.Event) bool { return true }
-			e := newExForTestingWithWorkspace(t, &testLoader{},
-				texttest.NopEditor(), vte.DefaultConfig(),
-				publishEvent, clipboard.NewInMemory(),
-				text.WithCommandKey(testCommandKey),
-				text.WithCommandAliases(map[string]text.CommandAlias{
-					tc.alias: {Commands: []string{tc.body}},
-				}),
-			)
-			defer e.Close()
+	defer b.Close()
 
-			require.NoError(t, e.dispatchCommand(tc.alias))
-		})
+	byName := map[string][]command.Manual{}
+	for _, man := range b.ex.commandList() {
+		byName[man.Name] = append(byName[man.Name], man)
 	}
+	require.Len(t, byName["edit"], 1, "a command an alias shadows is listed once")
+	assert.Equal(t, []string{"echo shadowed"}, byName["edit"][0].AliasOf,
+		"the listed entry is the alias, which is what runs")
+	require.Len(t, byName["hello"], 1)
+	require.Len(t, byName["quit"], 1)
+	assert.Empty(t, byName["quit"][0].AliasOf)
 }
 
 func TestDispatchAliasCycle(t *testing.T) {

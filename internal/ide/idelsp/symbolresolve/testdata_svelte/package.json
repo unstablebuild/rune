@@ -1,0 +1,9 @@
+{
+  "name": "resolvetest-svelte",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "svelte": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}

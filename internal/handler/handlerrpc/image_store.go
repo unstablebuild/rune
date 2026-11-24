@@ -122,6 +122,20 @@ func pixelSizeOf(ctx context.Context) pixelSize {
 	return pixelSize{width: width, height: height}
 }
 
+// windowFocusOf leaves the focus unspecified when the host doesn't tell it,
+// so the handler draws its normal style.
+func windowFocusOf(ctx context.Context) handlerrpc.WindowFocus {
+	focused, ok := term.WindowFocusFromContext(ctx)
+	switch {
+	case !ok:
+		return handlerrpc.WindowFocus_WindowFocusUnspecified
+	case focused:
+		return handlerrpc.WindowFocus_WindowFocusFocused
+	default:
+		return handlerrpc.WindowFocus_WindowFocusUnfocused
+	}
+}
+
 func (st *imageStore) maxBytes() uint64 {
 	if st.cfg.MaxBytes == 0 {
 		return DefaultMaxImageBytes
@@ -394,6 +408,12 @@ func (st *imageStore) drop(id uint64) {
 
 func (st *imageStore) draw(w term.Writer, placements []*handlerrpc.ImagePlacement) {
 	for _, p := range placements {
+		if p.GetFill() && p.GetId() == 0 {
+			if !w.DrawImage(p.ToModel()) {
+				return
+			}
+			continue
+		}
 		img := st.images[p.GetId()]
 		if img == nil || img.pixels == nil || img.version != p.GetVersion() {
 			continue

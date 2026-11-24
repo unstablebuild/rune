@@ -157,10 +157,12 @@ type Component struct {
 	// boxGraphics draws the images of the compose box frame. It is nil
 	// until the frame names one.
 	boxGraphics *tcomponent.FrameGraphics
-	loadingBox  loadingFrame
-	input       Input
-	height      int
-	width       int
+	// boxMasks paints the inside of the lines of boxGraphics' images.
+	boxMasks   tcomponent.FrameMasks
+	loadingBox loadingFrame
+	input      Input
+	height     int
+	width      int
 
 	// layout: the viewport is split vertically between the messages region
 	// (top, full width) and the compose box (bottom, horizontally centered
@@ -181,7 +183,15 @@ type Component struct {
 	barState StatusBarState
 	// shadedBar wraps the status bar so a configured effect can run
 	// over it for as long as a turn does.
-	shadedBar shadedBar
+	shadedBar *shadedBar
+	// otherBar is the status bar of the style not drawn while
+	// ComponentConfig.Focus has one of its own, which is nil when that
+	// style disables it, and otherShaded the effect over it. They swap
+	// with statusBar and shadedBar as the chat takes and loses the focus.
+	otherBar    *StatusBar
+	otherShaded *shadedBar
+	// focused is whether the chat is drawn with ComponentConfig.Focus.
+	focused bool
 	// nextKey allocates draft-local attachment keys. It only ever
 	// advances, so removing a chip never hands its key to a later
 	// attachment and re-targets a stale inline link.
@@ -325,13 +335,7 @@ func (c *Component) Init(cfg ComponentConfig) {
 
 	c.input = c.newInputBackend(cfg)
 	c.box = handler.NewFrame(c.input)
-	c.box.SetAttr(cfg.InputBox.FrameAttr)
-	if cfg.InputBackgroundColor != term.ColorDefault {
-		c.box.Bg = cfg.InputBackgroundColor
-	}
-	if cfg.InputBox.FrameCharSet != (component.FrameCharSet{}) {
-		c.box.FrameCharSet = cfg.InputBox.FrameCharSet
-	}
+	c.applyBoxStyle()
 	c.loadingBox.root = &framedBox{c: c}
 	c.boxArea.C = &c.loadingBox
 
@@ -341,59 +345,136 @@ func (c *Component) Init(cfg ComponentConfig) {
 
 	// The interrupter only reaches the Component once Handler wraps it,
 	// which is where the bar starts repainting.
-	c.installStatusBar(cfg.StatusBar)
+	c.shadedBar, c.otherShaded = new(shadedBar), new(shadedBar)
+	c.installStatusBars()
 }
 
-// installStatusBar makes the status bar the one cfg configures, showing
-// barState, or none when cfg disables it. The bar it replaces must be
+// installStatusBars makes the status bars those c.cfg configures, for the
+// style focused selects, showing barState. The bars they replace must be
 // closed already.
-func (c *Component) installStatusBar(cfg StatusBarConfig) {
-	c.statusBar = nil
-	c.barArea.C = nil
-	if !cfg.Enabled {
-		return
+func (c *Component) installStatusBars() {
+	c.statusBar = c.newStatusBar(c.cfg.StatusBar, c.shadedBar)
+	c.otherBar = nil
+	focus := c.focusStatusBar()
+	if focus != nil {
+		c.otherBar = c.newStatusBar(*focus, c.otherShaded)
 	}
-	c.statusBar = NewStatusBar(cfg, nil)
-	state := c.barState
-	c.statusBar.SetState(func(s *StatusBarState) { *s = state })
-	c.shadedBar.configure(c.statusBar, cfg)
-	c.barArea.C = &c.shadedBar
+	c.barArea.C = nil
+	if c.focused && focus != nil {
+		c.swapStatusBars()
+	} else if c.statusBar != nil {
+		c.barArea.C = c.shadedBar
+	}
 }
 
-// SetStatusBarConfig replaces the status bar with the one cfg configures,
-// or removes it when cfg disables it, and lays the dialogue out again. The
-// new bar reports what the old one did: a running turn keeps its elapsed
-// time, and the effect cfg names runs over it.
-func (c *Component) SetStatusBarConfig(cfg StatusBarConfig) {
+// newStatusBar returns the status bar cfg configures, showing barState,
+// with shaded configured to run cfg's effect over it, or nil when cfg
+// disables it.
+func (c *Component) newStatusBar(cfg StatusBarConfig, shaded *shadedBar) *StatusBar {
+	if !cfg.Enabled {
+		return nil
+	}
+	bar := NewStatusBar(cfg, nil)
+	state := c.barState
+	bar.SetState(func(s *StatusBarState) { *s = state })
+	shaded.configure(bar, cfg)
+	return bar
+}
+
+// focusStatusBar returns the status bar of the focus style, or nil when
+// it keeps the chat's.
+func (c *Component) focusStatusBar() *StatusBarConfig {
+	if c.cfg.Focus == nil || c.cfg.Focus.StatusBar == nil {
+		return nil
+	}
+	cfg := *c.cfg.Focus.StatusBar
+	if cfg.Storage == nil {
+		cfg.Storage = c.cfg.StatusBar.Storage
+	}
+	return &cfg
+}
+
+// swapStatusBars draws the status bar of the other style.
+func (c *Component) swapStatusBars() {
+	c.statusBar, c.otherBar = c.otherBar, c.statusBar
+	c.shadedBar, c.otherShaded = c.otherShaded, c.shadedBar
+	c.barArea.C = nil
 	if c.statusBar != nil {
-		c.shadedBar.setRunning(false, c.interrupter)
-		if err := c.statusBar.Close(); err != nil {
-			slog.Warn("dialoguetui: close the replaced status bar", "error", err)
+		c.barArea.C = c.shadedBar
+	}
+}
+
+// startStatusBars hands the status bars the interrupter that repaints
+// them.
+func (c *Component) startStatusBars(interrupter term.Interrupter) {
+	for _, bar := range []*StatusBar{c.statusBar, c.otherBar} {
+		if bar != nil {
+			bar.start(interrupter)
 		}
 	}
-	c.cfg.StatusBar = cfg
-	c.installStatusBar(cfg)
+}
+
+// closeStatusBars stops the effect over the status bar drawn and closes
+// the status bars.
+func (c *Component) closeStatusBars() error {
 	if c.statusBar != nil {
-		c.statusBar.start(c.interrupter)
+		c.shadedBar.setRunning(false, c.interrupter)
 	}
+	var errs []error
+	for _, bar := range []*StatusBar{c.statusBar, c.otherBar} {
+		if bar != nil {
+			errs = append(errs, bar.Close())
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// reinstallStatusBars replaces the status bars with those c.cfg
+// configures, and lays the dialogue out again. The new bars report what
+// the old ones did.
+func (c *Component) reinstallStatusBars() {
+	if err := c.closeStatusBars(); err != nil {
+		slog.Warn("dialoguetui: close the replaced status bar", "error", err)
+	}
+	c.installStatusBars()
+	c.startStatusBars(c.interrupter)
 	c.relayout()
 	if c.statusBar != nil {
 		c.shadedBar.setRunning(c.barState.Active, c.interrupter)
 	}
 }
 
+// SetStatusBarConfig replaces the status bar with the one cfg configures,
+// or removes it when cfg disables it, and lays the dialogue out again. The
+// new bar reports what the old one did: a running turn keeps its elapsed
+// time, and the effect cfg names runs over it. The focus style's bar
+// stays drawn while the chat has the focus.
+func (c *Component) SetStatusBarConfig(cfg StatusBarConfig) {
+	c.cfg.StatusBar = cfg
+	c.reinstallStatusBars()
+}
+
+// SetFocusStyle draws the chat with focus while its window holds the
+// focus, from the next Draw on, or with its own look when focus is nil.
+// The frame of focus draws the images it names as SetInputBoxFrameCharSet
+// last loaded them, and fetches the others.
+func (c *Component) SetFocusStyle(focus *ChatStyle) {
+	c.cfg.Focus = focus
+	c.focused = c.focused && focus != nil
+	c.reinstallStatusBars()
+	c.applyBoxStyle()
+}
+
 // SetInputBoxFrameCharSet draws the compose box frame with cs from the
 // next Draw on, or with component.FrameCharSetDefault when cs is zero.
 // The frame draws images, by URI, without fetching them, and fetches any
-// other image cs names again.
+// other image cs names again. The focus style's frame stays drawn while
+// the chat has the focus.
 func (c *Component) SetInputBoxFrameCharSet(
 	cs component.FrameCharSet, images map[string]image.Image,
 ) {
 	c.cfg.InputBox.FrameCharSet = cs
-	if cs == (component.FrameCharSet{}) {
-		cs = component.FrameCharSetDefault()
-	}
-	c.box.FrameCharSet = cs
+	c.applyBoxStyle()
 	if c.boxGraphics != nil {
 		c.boxGraphics.Reload(images)
 	}
@@ -403,16 +484,76 @@ func (c *Component) SetInputBoxFrameCharSet(
 // box with bg, from the next Draw on. A bg of term.ColorDefault fills the
 // frame with frame's background and leaves the input at the terminal
 // default. The prompt feedback inputboxes opened from then on are drawn
-// with content.
+// with content. The focus style's colours stay drawn while the chat has
+// the focus.
 func (c *Component) SetInputBoxColors(frame, content term.Attributes, bg term.Color) {
 	c.cfg.InputBox.FrameAttr = frame
 	c.cfg.InputBox.ContentAttr = content
 	c.cfg.InputBackgroundColor = bg
-	c.box.SetAttr(frame)
-	if bg != term.ColorDefault {
-		c.box.Bg = bg
+	c.applyBoxStyle()
+}
+
+// style returns the look the chat is drawn with: that of
+// ComponentConfig.Focus while focused.
+func (c *Component) style() ChatStyle {
+	if c.focused {
+		return *c.cfg.Focus
 	}
-	c.input.SetDefaultAttributes(term.Attributes{Bg: bg})
+	return ChatStyle{
+		FrameCharSet:         c.cfg.InputBox.FrameCharSet,
+		FrameAttr:            c.cfg.InputBox.FrameAttr,
+		ContentAttr:          c.cfg.InputBox.ContentAttr,
+		InputBackgroundColor: c.cfg.InputBackgroundColor,
+		BackgroundColor:      c.cfg.BackgroundColor,
+	}
+}
+
+// applyBoxStyle draws the compose box with the frame and colours of the
+// style the chat is drawn with.
+func (c *Component) applyBoxStyle() {
+	s := c.style()
+	cs := s.FrameCharSet
+	if cs == (component.FrameCharSet{}) {
+		cs = component.FrameCharSetDefault()
+	}
+	c.box.FrameCharSet = cs
+	c.box.SetAttr(boxFrameAttr(s, !cs.Graphics.Empty()))
+	c.input.SetDefaultAttributes(term.Attributes{Bg: s.InputBackgroundColor})
+}
+
+// boxFrameAttr returns the attributes of the cells of the compose box
+// frame in style s. A frame of runes takes the input's background, which
+// fills the box with it. A frame of images keeps the background under it
+// unless its own attributes name one: a cell has a single background,
+// which shows on both sides of a line drawn through it, so the side
+// outside the box shows the chat around it and framedBox paints the side
+// inside in the input's background.
+func boxFrameAttr(s ChatStyle, images bool) term.Attributes {
+	attr := s.FrameAttr
+	switch {
+	case images && attr.Bg == term.ColorDefault:
+		attr.Attrs |= term.AttrKeepBackground
+	case !images && s.InputBackgroundColor != term.ColorDefault:
+		attr.Bg = s.InputBackgroundColor
+	}
+	return attr
+}
+
+// setFocused draws the chat with ComponentConfig.Focus, or without it,
+// from now on.
+func (c *Component) setFocused(focused bool) {
+	c.focused = focused
+	if c.focusStatusBar() != nil {
+		if c.statusBar != nil {
+			c.shadedBar.setRunning(false, c.interrupter)
+		}
+		c.swapStatusBars()
+		if c.statusBar != nil {
+			c.shadedBar.setRunning(c.barState.Active, c.interrupter)
+		}
+	}
+	c.applyBoxStyle()
+	c.relayout()
 }
 
 // frameGraphics returns what draws the images of the compose box frame,
@@ -441,9 +582,41 @@ func (b *framedBox) Resize(width, height int) {
 
 func (b *framedBox) Draw(w term.Writer) {
 	b.c.box.Draw(w)
-	if g := b.c.frameGraphics(); g != nil {
-		g.Draw(w, &b.c.box.Frame, b.width, b.height)
+	g := b.c.frameGraphics()
+	if g == nil {
+		return
 	}
+	if bg := b.c.style().InputBackgroundColor; bg != term.ColorDefault {
+		w = &tcomponent.FrameInsideWriter{
+			Writer: w, Area: image.Rect(0, 0, b.width, b.height),
+			Inside: bg, Masks: &b.c.boxMasks,
+		}
+	}
+	g.Draw(w, &b.c.box.Frame, b.width, b.height)
+}
+
+// backgroundSwapWriter writes the cells written to it with the background
+// from in to instead, which is how the transcript, built with the chat's
+// background, takes that of its focus style.
+type backgroundSwapWriter struct {
+	term.Writer
+	from, to term.Color
+}
+
+func (w *backgroundSwapWriter) SetCell(pos term.Coordinates, c term.Cell) {
+	// Those cells show some other background than theirs.
+	if c.Bg == w.from && c.Attrs&(term.AttrKeepBackground|term.AttrReverse) == 0 {
+		c.Bg = w.to
+	}
+	w.Writer.SetCell(pos, c)
+}
+
+func (w *backgroundSwapWriter) UnionAttributes(pos term.Coordinates, attr term.Attributes) {
+	// A default background leaves the cell's in a union.
+	if attr.Bg == w.from && w.from != term.ColorDefault {
+		attr.Bg = w.to
+	}
+	w.Writer.UnionAttributes(pos, attr)
 }
 
 func (c *Component) newInputBackend(cfg ComponentConfig) Input {
@@ -477,17 +650,25 @@ func (c *Component) newInputBackend(cfg ComponentConfig) Input {
 
 // Draw satisfies tui.Component.
 func (c *Component) Draw(w term.Writer) {
+	focused, _ := term.WindowFocusFromContext(w.Context())
+	if focused = focused && c.cfg.Focus != nil; focused != c.focused {
+		c.setFocused(focused)
+	}
 	if c.messagesContentHeight() != c.layoutMsgH {
 		c.relayout()
 	} else {
 		c.layoutIfDirty()
 	}
 
-	if c.cfg.BackgroundColor != 0 {
-		bg := term.NewCell(0, 0, term.Attributes{Bg: c.cfg.BackgroundColor})
+	bg := c.style().BackgroundColor
+	if bg != c.cfg.BackgroundColor {
+		w = &backgroundSwapWriter{Writer: w, from: c.cfg.BackgroundColor, to: bg}
+	}
+	if bg != term.ColorDefault {
+		fill := term.NewCell(0, 0, term.Attributes{Bg: bg})
 		for y := range c.height {
 			for x := range c.width {
-				w.SetCell(term.Coordinates{X: x, Y: y}, bg)
+				w.SetCell(term.Coordinates{X: x, Y: y}, fill)
 			}
 		}
 	}
@@ -509,6 +690,17 @@ func (c *Component) Draw(w term.Writer) {
 	c.boxArea.Draw(&vw)
 	if c.statusBar != nil {
 		c.barArea.Draw(&vw)
+		if bg != term.ColorDefault && c.barHeight() > 0 {
+			// The renderer moves the bar half a cell down, which leaves
+			// the top of its row showing the writer's default background
+			// rather than the chat's.
+			vw.DrawImage(term.Image{
+				Fill: true, FillColor: bg,
+				Pos:   term.Coordinates{Y: c.height - c.barHeight()},
+				Width: c.width, Height: 1,
+				Layer: term.ImageLayerBelowBackground,
+			})
+		}
 	}
 }
 
@@ -2138,10 +2330,7 @@ func (c *Component) Close() error {
 		errs = append(errs, c.boxGraphics.Close())
 		c.boxGraphics = nil
 	}
-	if c.statusBar != nil {
-		c.shadedBar.setRunning(false, c.interrupter)
-		errs = append(errs, c.statusBar.Close())
-	}
+	errs = append(errs, c.closeStatusBars())
 	return errors.Join(errs...)
 }
 
@@ -2483,10 +2672,13 @@ func (c *Component) drawStatusBarImages(w term.Writer) {
 // shows the state once it is enabled.
 func (c *Component) SetStatusBarState(fn func(*StatusBarState)) {
 	fn(&c.barState)
+	state := c.barState
+	if c.otherBar != nil {
+		c.otherBar.SetState(func(s *StatusBarState) { *s = state })
+	}
 	if c.statusBar == nil {
 		return
 	}
-	state := c.barState
 	c.statusBar.SetState(func(s *StatusBarState) { *s = state })
 	if c.shadedBar.setRunning(state.Active, c.interrupter) {
 		// The effect only repaints on its own ticker, so the frame

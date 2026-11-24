@@ -79,8 +79,10 @@ keys to every open workspace, as `themereload` does:
 - `browser.window_manager`: `frame_attr`, `focus_frame_attr`,
   `frame_charset`, `focus_frame_charset`, `floating_frame_charset`,
   `focus_floating_frame_charset`, `focus_window_bar_charset`, `scroll_bar_attr`,
-  `scroll_bar_charset`, `scroll_bar_char`, `scroll_bar_hover_char`,
-  `window_bar`, `window_bar_charset`, `close_icon` and `close_icon_attr`;
+  `scroll_bar_charset`, `focus_scroll_bar_charset`, `scroll_bar_char`,
+  `scroll_bar_hover_char`, `background_attr`, `focus_background_attr`,
+  `background_graphics`, `focus_background_graphics`, `window_bar`,
+  `window_bar_charset`, `close_icon` and `close_icon_attr`;
 - `browser.frameunion_charset`;
 - `browser`: `focus_tab_attr`, `non_focus_tab_attr`, `focus_tab_icon_attr`,
   `non_focus_tab_icon_attr`, `focus_tab_highlight_attr`, `hover_tab_attr`,
@@ -90,8 +92,8 @@ keys to every open workspace, as `themereload` does:
   `clicked_attr`, `background_attr` and `images`;
 - `command.frame_charset`, `command.separator_charset` and
   `command.show_manual`;
-- `editor.status_bar`: `layout`, `background_attr` and
-  `foreground_error_attr`;
+- `editor.status_bar`: `layout`, `background_attr`,
+  `foreground_error_attr` and `focus`;
 - `gui`: `quick_menu`, `quick_menu_sounds`, `themes`, `default_theme`,
   `sound_volume` and [`app_icon`](../config.md#gui);
 - `notifications`: `attr`, `background_attr`, `frame_charset`, `padding`,
@@ -100,7 +102,8 @@ keys to every open workspace, as `themereload` does:
 - `terminal.bell`;
 - `workspace`: `wallpaper_image`, `wallpaper_image_ascii`,
   `wallpaper_ascii`, `wallpaper`, `wallpaper_attr`,
-  `wallpaper_background_attr`, `wallpaper_density_characters`,
+  `wallpaper_background_attr`, `wallpaper_density_characters`, their
+  `focus_` versions such as `focus_wallpaper_image`,
   `focus_tab_highlight_char`, `tab_images`,
   `focus_tab_highlight_graphics` and `tab_sounds`;
 - `sounds`.

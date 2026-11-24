@@ -23,7 +23,7 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-build
         with:
-          extra-packages: mesa-utils vim
+          extra-packages: mesa-utils vim autoconf automake
 
       # The e2e suites self-skip when a binary is absent, so a failed
       # install here would silently shrink the run to a green no-op.
@@ -82,12 +82,40 @@ jobs:
           unzip -q "$RUNNER_TEMP/clangd.zip" -d "$HOME/.local"
           echo "$HOME/.local/clangd_$tag/bin" >> "$GITHUB_PATH"
 
+      # The compilation database tests fail on a Bear other than the one
+      # the ccpp package ships, and distributions carry Bear 3, which
+      # lacks parse-sh, so build the pinned release from source. Its
+      # install script puts bear in ~/.local/bin, already on PATH.
+      - name: Install the pinned Bear
+        run: |
+          e2e=cmd/extension_ccpp/generate_e2e_test.go
+          version=$(sed -n 's/.*pinnedBearVersion[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' $e2e)
+          if [ -z "$version" ]; then
+            echo "could not read the Bear pin from $e2e" >&2
+            exit 1
+          fi
+          git clone --depth 1 --branch "$version" https://github.com/rizsotto/Bear.git "$RUNNER_TEMP/bear"
+          cd "$RUNNER_TEMP/bear"
+          cargo build --release --locked
+          PREFIX="$HOME/.local" ./scripts/install.sh
+
+      # The compilation database tests run every build system the ccpp
+      # extension generates one with. Both runners ship CMake, Ninja and
+      # make; Meson comes with neither, Autotools only through apt above.
+      - name: Install C and C++ build systems
+        run: |
+          uv tool install meson
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install autoconf automake
+          fi
+
       # Every suite gates on exec.LookPath, so an unexported install dir
       # turns into skipped coverage that still reports success.
       - name: Verify toolchains resolve on PATH
         run: |
           status=0
-          for bin in gopls dlv rust-analyzer cargo uv uvx ty ruff clangd; do
+          for bin in gopls dlv rust-analyzer cargo uv uvx ty ruff clangd \
+            bear make cmake meson ninja autoreconf autoconf automake aclocal; do
             if ! command -v "$bin"; then
               echo "$bin is not on PATH; e2e suites would silently skip" >&2
               status=1

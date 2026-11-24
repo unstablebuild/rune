@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/cmd/rune-agent/agent"
@@ -82,8 +83,11 @@ type chatSession struct {
 	mu sync.Mutex
 	// views show the chat, the last focused last.
 	views []*chatView
-	busy  bool
-	queue []dialoguetui.SubmitMessage
+	// previews show the chat to viewers of their own; they are none of
+	// its views.
+	previews []*chatView
+	busy     bool
+	queue    []dialoguetui.SubmitMessage
 	// prompts are the prompts pending, by ID.
 	prompts map[int]sessionPrompt
 	// interruptTurn cancels the running turn.
@@ -188,7 +192,7 @@ func (s *chatSession) publishLocked(ev chatEvent) (chatEvent, bool) {
 	if !ok {
 		return ev, false
 	}
-	views := s.shownIn()
+	views := s.showing()
 	for _, v := range views {
 		v.show(ev)
 	}
@@ -205,6 +209,13 @@ func (s *chatSession) shownIn() []*chatView {
 	return slices.Clone(s.views)
 }
 
+// showing returns the views and the previews of the chat.
+func (s *chatSession) showing() []*chatView {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Concat(s.views, s.previews)
+}
+
 // replace replaces the transcript with msgs.
 func (s *chatSession) replace(msgs []llmapi.Message) {
 	s.publish(chatEvent{Kind: chatEventHistory, History: msgs})
@@ -215,7 +226,7 @@ func (s *chatSession) setStatusBarState(fn func(*dialoguetui.StatusBarState)) {
 	s.pubMu.Lock()
 	defer s.pubMu.Unlock()
 	fn(&s.status)
-	for _, v := range s.shownIn() {
+	for _, v := range s.showing() {
 		v.setStatusBarState(s.status)
 	}
 }
@@ -371,7 +382,7 @@ func (s *chatSession) attach(uri workspaceapi.URI) (*chat, error) {
 	if err != nil {
 		return nil, err
 	}
-	v := newChatView(s, uri)
+	v := newChatView(s, uri, false)
 	events, _ := s.log.snapshot()
 	v.replay(events, s.status)
 	s.mu.Lock()
@@ -379,6 +390,25 @@ func (s *chatSession) attach(uri workspaceapi.URI) (*chat, error) {
 	s.mu.Unlock()
 	s.h.focusedViews.Store(s.id, v)
 	return &chat{content: v.content(), id: s.id, uri: uri}, nil
+}
+
+// preview opens a preview of the chat: a view that takes no input,
+// answers no prompt, reports at no tab and is none of the chat's views,
+// so it keeps no idle session from ending. It fails with errChatClosed
+// once the session ended.
+func (s *chatSession) preview() (browserapi.Handler, error) {
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	if s.isEnded() {
+		return nil, errChatClosed
+	}
+	v := newChatView(s, s.uri, true)
+	events, _ := s.log.snapshot()
+	v.replay(events, s.status)
+	s.mu.Lock()
+	s.previews = append(s.previews, v)
+	s.mu.Unlock()
+	return v.previewContent(), nil
 }
 
 // viewURILocked returns the URI a new view is shown at: requested, or
@@ -469,6 +499,12 @@ func (s *chatSession) focus(v *chatView) {
 func (s *chatSession) detach(v *chatView) {
 	s.pubMu.Lock()
 	s.mu.Lock()
+	if v.preview {
+		s.previews = slices.DeleteFunc(s.previews, func(o *chatView) bool { return o == v })
+		s.mu.Unlock()
+		s.pubMu.Unlock()
+		return
+	}
 	s.views = slices.DeleteFunc(s.views, func(o *chatView) bool { return o == v })
 	var focused *chatView
 	if n := len(s.views); n > 0 {
@@ -507,7 +543,7 @@ func (s *chatSession) attachToFocused(a dialoguetui.Attachment) {
 // compose box colours of style, whose frame images by URI are
 // frameImages.
 func (s *chatSession) restyle(style dialoguetui.ComponentConfig, frameImages map[string]stdimage.Image) {
-	for _, v := range s.shownIn() {
+	for _, v := range s.showing() {
 		v.restyle(style, frameImages)
 	}
 }
@@ -530,7 +566,7 @@ func (s *chatSession) finish(reason string) {
 	s.tab.close()
 	s.pubMu.Lock()
 	s.log.close()
-	views := s.shownIn()
+	views := s.showing()
 	s.pubMu.Unlock()
 	for _, v := range views {
 		v.end()

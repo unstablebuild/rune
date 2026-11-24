@@ -341,20 +341,6 @@ func newTerminalE2EEx(t *testing.T, dir string, cfg vte.Config) (testEx, *atomic
 	return b, woke
 }
 
-// terminalLive reports whether a running terminal is in the focused
-// window, in a tab or directly.
-func terminalLive(b testEx) bool {
-	content, err := b.ex.invokeWindow().Content()
-	if err != nil {
-		return false
-	}
-	if tab, ok := content.(*browser.Tab); ok {
-		content = tab.Handler()
-	}
-	av, ok := content.(*asyncVTE)
-	return ok && av.real != nil && !av.closed
-}
-
 func TestE2ETerminalDetach(t *testing.T) {
 	const width, height = 60, 16
 	ctx := context.Background()

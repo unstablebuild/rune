@@ -156,9 +156,7 @@ func Handler(
 ) (h tui.Handler, tx chan<- MessageEvent, rx <-chan SubmitMessage) {
 	c.interrupter = interrupter
 	c.mu = locker
-	if c.statusBar != nil {
-		c.statusBar.start(interrupter)
-	}
+	c.startStatusBars(interrupter)
 	ch1 := make(chan SubmitMessage)
 	ch2 := make(chan MessageEvent)
 	sh := &dialogueHandler{

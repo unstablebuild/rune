@@ -42,16 +42,55 @@ file.
 clangd gives accurate answers only when it knows how each file is
 compiled: include paths, defines, language standard. It reads those
 from a **compilation database**, a `compile_commands.json` written by
-your build system, or from a hand-written `compile_flags.txt`. Rune does
-not generate either; your build system does.
+your build system, or from a hand-written `compile_flags.txt`.
 
-- **CMake**: `cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`
-  writes `build/compile_commands.json`.
-- **Meson**: `meson setup build` writes it to the build directory.
-- **Autotools, Make or any other build**: `bear -- make` records the
-  compiler invocations into `compile_commands.json`.
-  [Bear](https://github.com/rizsotto/Bear) ships with the C/C++
-  package, so it is on your `PATH` in Rune's terminals and console.
+### Generating the compilation database
+
+When you open a C or C++ file whose project has no compilation database,
+Rune offers to generate one with the project's build system:
+
+- **Yes** generates it now.
+- **Always** generates it now, and from then on generates the database of
+  any project in the workspace that opens without one, without asking.
+  `ccpp compdb auto off` makes Rune ask again.
+- **No** leaves the project alone until Rune restarts.
+
+Rune asks first because generating runs the project's build scripts.
+Like every command an extension runs, each one also goes through Rune's
+command permissions. `ccpp compdb generate` generates the database any
+time, which also refreshes it after the build changes. Once the database
+is written, Rune restarts clangd so files already open pick it up.
+
+| Build system | What Rune runs | Writes |
+| --- | --- | --- |
+| CMake | `cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON` | `build/compile_commands.json` |
+| Meson | `meson setup build` | `build/compile_commands.json` |
+| Autotools | `autoreconf -i` and `./configure` when the project is not yet configured, then `bear --append -- make` | `compile_commands.json` |
+| Make | `make -nBw \| bear parse-sh` | `compile_commands.json` |
+
+[Bear](https://github.com/rizsotto/Bear), which ships with the C/C++
+package, writes the database for Autotools and Make projects:
+
+- For **Make**, Rune asks make to print the commands a full build runs
+  without running them, and Bear turns that output into the database, so
+  nothing is compiled. A build that hides its commands or generates
+  sources first leaves the database empty; record a real build instead
+  by running `bear -- make` in a terminal.
+- For **Autotools**, Rune builds the project while Bear records each
+  compiler call. Automake's makefiles do not survive a dry run: it would
+  rerun `configure` and clear the header dependencies make tracks.
+  Rebuilding keeps the entries of files that did not need compiling
+  again. A project built before it had a database compiles nothing, so
+  the database comes out empty; run `make clean`, then
+  `ccpp compdb generate`.
+
+Rune does not generate a database for Bazel projects. Add the
+[`hedron_compile_commands`](https://github.com/hedronvision/bazel-compile-commands-extractor)
+extractor and run `bazel run @hedron_compile_commands//:refresh_all`.
+A folder with no build system needs a hand-written
+`compile_flags.txt`, with one compiler flag per line.
+
+### Where clangd looks
 
 For each file, clangd walks up from the file's folder and uses the first
 `compile_commands.json` or `compile_flags.txt` it finds, looking in each
@@ -201,6 +240,8 @@ as `ccpp <subcommand>`, or submit a one-off from the
 | `ccpp compdb` | List the compilation databases of the focused file's project, marking the active one. |
 | `ccpp compdb use <dir>` | Make clangd read `compile_commands.json` from `<dir>` and restart it. |
 | `ccpp compdb clear` | Drop the compilation database override and restart clangd. |
+| `ccpp compdb generate` | Generate `compile_commands.json` for the focused file's project with its build system and restart clangd. |
+| `ccpp compdb auto [on \| off]` | Show or set whether a project that opens without `compile_commands.json` gets one without asking. |
 | `ccpp restart` | Restart the clangd language server. |
 | `ccpp version` | Show the clangd version. |
 | `ccpp help [<subcommand>]` | Show the command's usage, or one subcommand's details. |
@@ -211,12 +252,9 @@ their direct children, so CMake multi-config trees such as `out/Debug`
 and `out/Release` show up side by side. Pick one with
 `ccpp compdb use <dir>`; the choice is saved for the workspace and
 survives restarts. When a project has no database at all, `ccpp compdb`
-and `ccpp status` print the recipe that produces one for the project's
-build system: the CMake flag, `meson setup`, Bazel's
-`hedron_compile_commands` extractor, or `bear -- make` for Autotools
-and plain Make projects, naming the packaged Bear by path when it is
-not on `PATH`. A folder with no build system is told to write a
-`compile_flags.txt`.
+and `ccpp status` show the command `ccpp compdb generate` runs for it,
+or, for Bazel and folders with no build system, how to write one
+yourself.
 
 A project's root, for `ccpp status` and `ccpp compdb`, is found from
 the build files above the focused file: `CMakeLists.txt`,

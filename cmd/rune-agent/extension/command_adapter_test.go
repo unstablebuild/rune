@@ -144,6 +144,73 @@ func TestCommandAdapterEffortReportsModelDefault(t *testing.T) {
 	assert.Equal(t, llmapi.ReasoningEffortLow, a.agent.Effort())
 }
 
+func TestCommandAdapterSpeed(t *testing.T) {
+	opus := llmapi.ModelEntry{Provider: anthropic.LLMProvider, Name: anthropic.ClaudeOpus5Dot5}
+	sonnet := llmapi.ModelEntry{Provider: anthropic.LLMProvider, Name: anthropic.ClaudeSonnet5Dot5}
+	tests := []struct {
+		name      string
+		model     llmapi.ModelEntry
+		initial   llmapi.Speed
+		args      []string
+		wantSpeed llmapi.Speed
+		wantText  string
+		wantErr   string
+	}{
+		{
+			name: "show unset reads standard", model: opus,
+			wantText: "Current speed: standard",
+		},
+		{
+			name: "show set speed", model: opus, initial: llmapi.SpeedFast,
+			wantSpeed: llmapi.SpeedFast, wantText: "Current speed: fast",
+		},
+		{
+			name: "set fast on a supported model", model: opus, args: []string{"fast"},
+			wantSpeed: llmapi.SpeedFast, wantText: "Set speed to fast.",
+		},
+		{
+			name: "set fast on an unsupported model", model: sonnet, args: []string{"fast"},
+			wantSpeed: llmapi.SpeedFast,
+			wantText: "Set speed to fast. anthropic/claude-sonnet-5-5 has no fast mode, " +
+				"so its requests run at standard speed.",
+		},
+		{
+			name: "standard clears the speed", model: opus, initial: llmapi.SpeedFast,
+			args: []string{"standard"}, wantText: "Set speed to standard.",
+		},
+		{
+			name: "invalid speed", model: opus, initial: llmapi.SpeedFast, args: []string{"warp"},
+			wantSpeed: llmapi.SpeedFast,
+			wantErr:   `invalid speed "warp": must be standard, fast, or ultrafast`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := newMaxTokensAdapter(t, tt.model)
+			a.agent.SetSpeed(tt.initial)
+
+			res, err := a.handleSpeed(tt.args)
+			if tt.wantErr != "" {
+				require.EqualError(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+				got := strings.Join(strings.Fields(renderDisplay(t, res.Display)), " ")
+				assert.Equal(t, tt.wantText, got)
+			}
+			assert.Equal(t, tt.wantSpeed, a.agent.Speed())
+		})
+	}
+}
+
+func TestCommandAdapterSpeedCompleter(t *testing.T) {
+	ctx := context.Background()
+	it, err := (&commandAdapter{}).Complete(ctx, "speed", nil)
+	require.NoError(t, err)
+	got, err := iterator.ToSlice(ctx, it)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"standard", "fast", "ultrafast"}, got)
+}
+
 func renderDisplay(t *testing.T, it iterator.Iterator[component.Responsive]) string {
 	t.Helper()
 	w := term.NewStringWriter(60, 4)

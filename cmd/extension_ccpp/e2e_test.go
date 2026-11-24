@@ -66,9 +66,17 @@ type e2eEnv struct {
 // given extra config; lsp_path always names the clangd found on the host
 // so bring-up never depends on a Rune package.
 func newE2EEnv(t *testing.T, extra map[string]any) *e2eEnv {
+	return newE2EEnvOn(t, "testdata/e2e", extra, &fakePrompter{}, &langexttest.Installer{})
+}
+
+// newE2EEnvOn is newE2EEnv on a copy of the fixture at src, answering
+// prompts with prompter and finding the ccpp package's tools with inst.
+func newE2EEnvOn(
+	t *testing.T, src string, extra map[string]any, prompter *fakePrompter, inst *langexttest.Installer,
+) *e2eEnv {
 	t.Helper()
 	clangdBin := findClangdBin(t)
-	dir := setupWorkspace(t)
+	dir := setupWorkspace(t, src)
 	rootURI, err := workspaceapi.ParseURI("file://" + dir)
 	require.NoError(t, err)
 
@@ -91,8 +99,8 @@ func newE2EEnv(t *testing.T, extra map[string]any) *e2eEnv {
 	}
 	ext := &ccppExtension{}
 	err = ext.extendWorkspaceWith(context.Background(),
-		scheme, scheme, env.notify, mgr, env.editor, env.wm, env.opener,
-		storagestub.NewInMemoryService(), &langexttest.Installer{}, config.JSONFromMap(settings),
+		scheme, scheme, env.notify, mgr, env.editor, env.wm, prompter, env.opener,
+		storagestub.NewInMemoryService(), inst, config.JSONFromMap(settings),
 		func(_ textapi.CommandManual, h textapi.REPLHandler) error {
 			env.repl = h.(*ccppHandler)
 			return nil

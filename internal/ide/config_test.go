@@ -485,8 +485,8 @@ func assertDefaultConfig(t *testing.T, cfg *ideConfig) {
 
 	assert.Equal(t, browser.DefaultConfig().FocusTabAttr, cfg.focusTabAttr())
 	assert.Equal(t, browser.DefaultConfig().NonFocusTabAttr, cfg.nonFocusTabAttr())
-	assert.Equal(t, term.Attributes{}, cfg.workspaceWallpaperAttr())
-	assert.Equal(t, term.Attributes{}, cfg.workspaceWallpaperBackgroundAttr())
+	assert.Equal(t, term.Attributes{}, cfg.wallpaperStyleAttr("", "wallpaper_attr"))
+	assert.Equal(t, term.Attributes{}, cfg.wallpaperStyleAttr("", "wallpaper_background_attr"))
 	selectAttr := term.Attributes{Attrs: term.AttrReverse}
 
 	reservoir := cfg.initialTerminalCapacity()
@@ -839,6 +839,58 @@ func TestStatusInboxStyle(t *testing.T) {
 				"program_status.divider_charset.top", "program_status.divider_charset.vertical",
 				"program_status.divider_charset.graphics.outset.left",
 			},
+		},
+		{
+			name: "a focus block over the style",
+			cfg: map[string]any{"program_status": map[string]any{
+				"selected_attr": map[string]any{"bg": "navy"},
+				"divider_attr":  map[string]any{"fg": "olive"},
+				"images": map[string]any{
+					"idle":     map[string]any{"middle": "file:///inbox/idle.png"},
+					"selected": map[string]any{"middle": "file:///inbox/selected.png"},
+				},
+				"focus": map[string]any{
+					"selected_attr":   map[string]any{"bg": "blue"},
+					"divider_charset": map[string]any{"vertical": "┃"},
+					"images": map[string]any{
+						"selected": map[string]any{"middle": "file:///inbox/focus.png"},
+					},
+				},
+			}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.SelectedAttr = term.Attributes{Bg: term.ColorNavy}
+				s.DividerAttr = term.Attributes{Fg: term.ColorOlive}
+				s.Images = browser.PromptImages{
+					Idle:     browser.PromptButtonImage{Middle: "file:///inbox/idle.png"},
+					Selected: browser.PromptButtonImage{Middle: "file:///inbox/selected.png"},
+				}
+				focus := s
+				focus.SelectedAttr = term.Attributes{Bg: term.ColorBlue}
+				focus.Divider.VerticalTop, focus.Divider.Vertical, focus.Divider.VerticalBottom = '┃', '┃', '┃'
+				focus.Images.Selected = browser.PromptButtonImage{Middle: "file:///inbox/focus.png"}
+				s.Focus = &focus
+				return s
+			}(),
+		},
+		{
+			name: "an invalid focus block entry",
+			cfg: map[string]any{"program_status": map[string]any{
+				"focus": map[string]any{"marker": true},
+			}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				focus := def
+				s.Focus = &focus
+				return s
+			}(),
+			wantErr: []string{"program_status.focus.marker"},
+		},
+		{
+			name:    "a focus block that isn't a table",
+			cfg:     map[string]any{"program_status": map[string]any{"focus": "blue"}},
+			want:    def,
+			wantErr: []string{"program_status.focus"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2264,8 +2316,10 @@ func TestConfigSetting(t *testing.T) {
 
 	assert.Equal(t, term.Attributes{Fg: term.GetColor("#f0f0f0")}, cfg.focusTabAttr())
 	assert.Equal(t, term.Attributes{Fg: term.ColorWhite}, cfg.nonFocusTabAttr())
-	assert.Equal(t, term.Attributes{Fg: term.ColorYellow, Bg: term.ColorWhite}, cfg.workspaceWallpaperAttr())
-	assert.Equal(t, term.Attributes{Bg: term.ColorWhite}, cfg.workspaceWallpaperBackgroundAttr())
+	assert.Equal(t, term.Attributes{Fg: term.ColorYellow, Bg: term.ColorWhite},
+		cfg.wallpaperStyleAttr("", "wallpaper_attr"))
+	assert.Equal(t, term.Attributes{Bg: term.ColorWhite},
+		cfg.wallpaperStyleAttr("", "wallpaper_background_attr"))
 
 	reservoir := cfg.initialTerminalCapacity()
 	assert.Equal(t, 0, reservoir)
@@ -2713,6 +2767,107 @@ func TestConfigWallpaperResolvesTheImagesThenTheTextThenTheLogo(t *testing.T) {
 	}
 }
 
+func TestConfigWallpaperResolvesTheFocusWallpaper(t *testing.T) {
+	logo := Logo{
+		Wallpaper: browser.Wallpaper{NewComponent: func() tui.Component {
+			return component.NewString("logo")
+		}},
+		ShaderFPS: 1,
+	}
+	yellow := term.Attributes{Fg: term.ColorYellow}
+	navy := term.Attributes{Bg: term.ColorNavy}
+	// drawn returns the text w draws and the foreground of its first rune.
+	drawn := func(w browser.Wallpaper) (string, term.Color) {
+		comp := w.NewComponent()
+		comp.Resize(10, 1)
+		sw := term.NewStringWriter(10, 1)
+		comp.Draw(sw)
+		require.NoError(t, sw.Flush())
+		var fg term.Color
+		for _, c := range sw.Cells() {
+			if c.Ch != 0 && c.Ch != ' ' {
+				fg = c.Fg
+				break
+			}
+		}
+		return strings.TrimSpace(sw.String()), fg
+	}
+	cases := []struct {
+		name      string
+		workspace map[string]any
+		// wantFocus is the focus wallpaper's text, empty for none.
+		wantFocus   string
+		wantFocusFg term.Color
+		wantFocusBg term.Attributes
+		wantErr     string
+	}{
+		{
+			name:      "no focus keys show the normal wallpaper",
+			workspace: map[string]any{"wallpaper_ascii": "N"},
+		},
+		{
+			name: "the focus text with the normal attributes",
+			workspace: map[string]any{
+				"wallpaper_ascii": "N", "focus_wallpaper_ascii": "F",
+				"wallpaper_attr": map[string]any{"fg": "yellow"},
+			},
+			wantFocus:   "F",
+			wantFocusFg: yellow.Fg,
+		},
+		{
+			name: "a focus attribute alone restyles the normal text",
+			workspace: map[string]any{
+				"wallpaper_ascii":                 "N",
+				"focus_wallpaper_background_attr": map[string]any{"bg": "navy"},
+			},
+			wantFocus:   "N",
+			wantFocusBg: navy,
+		},
+		{
+			name: "an empty focus text shows the logo",
+			workspace: map[string]any{
+				"wallpaper_ascii": "N", "focus_wallpaper_ascii": "",
+			},
+			wantFocus: "logo",
+		},
+		{
+			name: "focus errors are reported under their own keys",
+			workspace: map[string]any{
+				"wallpaper_ascii": "N", "focus_wallpaper_image": "/nonexistent.png",
+			},
+			wantFocus: "logo",
+			wantErr:   "workspace.focus_wallpaper_image",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ideConfig{
+				cfg:    map[string]any{"workspace": tc.workspace},
+				errors: map[string]error{},
+				logo:   &logo,
+			}
+			wallpaper := cfg.wallpaper()
+			text, _ := drawn(wallpaper)
+			assert.Equal(t, "N", text, "the normal wallpaper keeps the normal keys")
+			assert.Equal(t, term.Attributes{}, wallpaper.BackgroundAttr)
+			if tc.wantFocus == "" {
+				assert.Nil(t, wallpaper.Focus)
+			} else if assert.NotNil(t, wallpaper.Focus) {
+				text, fg := drawn(*wallpaper.Focus)
+				assert.Equal(t, tc.wantFocus, text)
+				assert.Equal(t, tc.wantFocusFg, fg)
+				assert.Equal(t, tc.wantFocusBg, wallpaper.Focus.BackgroundAttr)
+			}
+			if tc.wantErr == "" {
+				assert.Empty(t, cfg.errors)
+			} else {
+				assert.Len(t, cfg.errors, 1)
+				assert.Contains(t, cfg.errors, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestConfigWallpaperImageSection(t *testing.T) {
 	const lengthErr = `must be a number of cells, such as 40, or a percentage of the ` +
 		`window from 1% to 100%, such as "60%"`
@@ -2769,7 +2924,7 @@ func TestConfigWallpaperImageSection(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &ideConfig{errors: map[string]error{}}
-			assert.Equal(t, tc.want, cfg.wallpaperImageConfig(config.MapConfig(tc.section)))
+			assert.Equal(t, tc.want, cfg.wallpaperImageConfig(config.MapConfig(tc.section), "wallpaper_image"))
 			errs := map[string]string{}
 			for key, err := range cfg.errors {
 				errs[key] = err.Error()
@@ -3140,6 +3295,195 @@ func TestConfigWindowScrollBarCharset(t *testing.T) {
 	}
 }
 
+func TestConfigFocusScrollBarCharset(t *testing.T) {
+	cases := []struct {
+		name      string
+		wm        map[string]any
+		want      *component.ScrollBarCharSet
+		wantHover *component.ScrollBarCharSet
+		wantError string
+	}{
+		{
+			name: "unset keeps the normal one",
+			wm: map[string]any{"scroll_bar_charset": map[string]any{
+				"middle_char": "▐",
+			}},
+		},
+		{
+			name: "slots left out are the normal one's",
+			wm: map[string]any{
+				"scroll_bar_charset": map[string]any{
+					"top_char": "▗", "middle_char": "▐", "hover_middle_char": "█",
+					"graphics": map[string]any{
+						"mode": "overlay", "middle_char": "file:///bar/middle.png",
+					},
+				},
+				"focus_scroll_bar_charset": map[string]any{
+					"middle_char": "┃",
+					"graphics": map[string]any{
+						"middle_char":       "file:///bar/focused-middle.png",
+						"hover_middle_char": "file:///bar/focused-hover.png",
+					},
+				},
+			},
+			want: &component.ScrollBarCharSet{
+				Top: '▗', Middle: '┃',
+				Graphics: component.ScrollBarCharSetGraphics{
+					Middle: "file:///bar/focused-middle.png", Overlay: true,
+				},
+			},
+			wantHover: &component.ScrollBarCharSet{
+				Middle: '█',
+				Graphics: component.ScrollBarCharSetGraphics{
+					Middle: "file:///bar/focused-hover.png", Overlay: true,
+				},
+			},
+		},
+		{
+			name: "an empty URI clears a slot",
+			wm: map[string]any{
+				"scroll_bar_charset": map[string]any{"graphics": map[string]any{
+					"middle_char": "file:///bar/middle.png",
+				}},
+				"focus_scroll_bar_charset": map[string]any{"graphics": map[string]any{
+					"middle_char": "",
+				}},
+			},
+			want:      &component.ScrollBarCharSet{},
+			wantHover: &component.ScrollBarCharSet{},
+		},
+		{
+			name: "invalid graphics are reported",
+			wm: map[string]any{"focus_scroll_bar_charset": map[string]any{
+				"middle_char": "┃",
+				"graphics":    map[string]any{"middle_char": "ftp://example.com/x.png"},
+			}},
+			want:      &component.ScrollBarCharSet{Middle: '┃'},
+			wantHover: &component.ScrollBarCharSet{},
+			wantError: "window_manager.focus_scroll_bar_charset",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ideConfig{cfg: map[string]any{
+				"browser": map[string]any{"window_manager": tc.wm},
+			}, errors: map[string]error{}}
+
+			wmCfg := cfg.windowManagerConfig()
+			assert.Equal(t, tc.want, wmCfg.FocusScrollBarCharSet)
+			assert.Equal(t, tc.wantHover, wmCfg.FocusScrollBarHoverCharSet)
+			if tc.wantError == "" {
+				assert.Empty(t, cfg.errors)
+			} else {
+				assert.Len(t, cfg.errors, 1)
+				assert.Contains(t, cfg.errors, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestConfigWindowBackground(t *testing.T) {
+	navy, teal := term.ColorNavy, term.ColorTeal
+	cases := []struct {
+		name      string
+		wm        map[string]any
+		want      tcomponent.WindowBackground
+		wantFocus *tcomponent.WindowBackground
+		wantError string
+	}{
+		{
+			name: "unset draws no background",
+			wm:   map[string]any{},
+		},
+		{
+			name: "the colour and panel",
+			wm: map[string]any{
+				"background_attr": map[string]any{"bg": "navy", "fg": "teal", "attrs": "bold"},
+				"background_graphics": map[string]any{
+					"center": "file:///panel/center.png", "topleft": "file:///panel/tl.png",
+					"fit": "tile",
+				},
+			},
+			want: tcomponent.WindowBackground{
+				Attr: term.Attributes{Fg: teal, Bg: navy},
+				Graphics: tcomponent.BackgroundGraphics{
+					Center: "file:///panel/center.png", TopLeft: "file:///panel/tl.png",
+					Fit: term.ImageFitTile,
+				},
+			},
+		},
+		{
+			name: "the focus keys inherit what they leave out",
+			wm: map[string]any{
+				"background_attr": map[string]any{"bg": "navy", "fg": "teal"},
+				"background_graphics": map[string]any{
+					"center": "file:///panel/center.png", "topleft": "file:///panel/tl.png",
+					"fit": "tile",
+				},
+				"focus_background_attr": map[string]any{"bg": "teal"},
+				"focus_background_graphics": map[string]any{
+					"center": "file:///focused/center.png", "topleft": "",
+				},
+			},
+			want: tcomponent.WindowBackground{
+				Attr: term.Attributes{Fg: teal, Bg: navy},
+				Graphics: tcomponent.BackgroundGraphics{
+					Center: "file:///panel/center.png", TopLeft: "file:///panel/tl.png",
+					Fit: term.ImageFitTile,
+				},
+			},
+			wantFocus: &tcomponent.WindowBackground{
+				Attr: term.Attributes{Fg: teal, Bg: teal},
+				Graphics: tcomponent.BackgroundGraphics{
+					Center: "file:///focused/center.png", Fit: term.ImageFitTile,
+				},
+			},
+		},
+		{
+			name: "a focus key alone styles only the focused window",
+			wm: map[string]any{
+				"focus_background_attr": map[string]any{"bg": "navy"},
+			},
+			wantFocus: &tcomponent.WindowBackground{Attr: term.Attributes{Bg: navy}},
+		},
+		{
+			name: "an unknown fit is reported",
+			wm: map[string]any{"background_graphics": map[string]any{
+				"center": "file:///panel/center.png", "fit": "contain",
+			}},
+			want: tcomponent.WindowBackground{
+				Graphics: tcomponent.BackgroundGraphics{Center: "file:///panel/center.png"},
+			},
+			wantError: "window_manager.background_graphics.fit",
+		},
+		{
+			name: "an invalid URI is reported",
+			wm: map[string]any{"focus_background_graphics": map[string]any{
+				"center": "ftp://example.com/x.png",
+			}},
+			wantFocus: &tcomponent.WindowBackground{},
+			wantError: "window_manager.focus_background_graphics",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ideConfig{cfg: map[string]any{
+				"browser": map[string]any{"window_manager": tc.wm},
+			}, errors: map[string]error{}}
+
+			wmCfg := cfg.windowManagerConfig()
+			assert.Equal(t, tc.want, wmCfg.Background)
+			assert.Equal(t, tc.wantFocus, wmCfg.FocusBackground)
+			if tc.wantError == "" {
+				assert.Empty(t, cfg.errors)
+			} else {
+				assert.Len(t, cfg.errors, 1)
+				assert.Contains(t, cfg.errors, tc.wantError)
+			}
+		})
+	}
+}
+
 func TestConfigWindowBarGraphics(t *testing.T) {
 	def := handler.DefaultWindowManagerConfig().WindowBarCharSet
 	cases := []struct {
@@ -3431,6 +3775,28 @@ func TestConfigHUDStyle(t *testing.T) {
 				assert.Equal(t, 2, wm.ScrollBarOutset)
 			},
 			wantURIs: []string{"file:///bar/hover.png", "file:///bar/middle.png"},
+		},
+		{
+			name: "window backgrounds and the focus scroll bar",
+			cfg: map[string]any{"browser": map[string]any{"window_manager": map[string]any{
+				"background_graphics": map[string]any{"center": "file:///panel/normal.png"},
+				"focus_background_graphics": map[string]any{
+					"topleft": "file:///panel/focused-tl.png",
+				},
+				"focus_scroll_bar_charset": map[string]any{"graphics": map[string]any{
+					"middle_char":       "file:///bar/focused.png",
+					"hover_middle_char": "file:///bar/focused-hover.png",
+				}},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				wm := s.browser.WindowManager
+				require.NotNil(t, wm.FocusBackground)
+				assert.Equal(t, "file:///panel/normal.png", wm.FocusBackground.Graphics.Center)
+			},
+			wantURIs: []string{
+				"file:///bar/focused-hover.png", "file:///bar/focused.png",
+				"file:///panel/focused-tl.png", "file:///panel/normal.png",
+			},
 		},
 		{
 			name: "window bar",
@@ -3762,7 +4128,45 @@ func TestConfigHUDStyle(t *testing.T) {
 				assert.Equal(t, time.Hour, images[0].TTL)
 				assert.Equal(t, "file:///bar/b.png", images[1].URI)
 				assert.Equal(t, template.DefaultImageTTL, images[1].TTL)
+				assert.Nil(t, s.statusBar.Focus)
 			},
+		},
+		{
+			name: "a status bar focus block",
+			cfg: map[string]any{"editor": map[string]any{"status_bar": map[string]any{
+				"layout":                `{{ .Status }}{{ .Image | src "file:///bar/a.png" }}`,
+				"background_attr":       map[string]any{"bg": "navy"},
+				"foreground_error_attr": map[string]any{"fg": "red"},
+				"focus": map[string]any{
+					"layout":          `<{{ .Status }}>{{ .Image | src "file:///bar/focus.png" }}`,
+					"background_attr": map[string]any{"bg": "blue"},
+				},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				assert.Equal(t, term.ColorNavy, s.statusBar.BackgroundColor)
+				require.NotNil(t, s.statusBar.Focus)
+				focus := s.statusBar.Focus
+				assert.Equal(t, term.ColorBlue, focus.BackgroundColor)
+				assert.Equal(t, term.ColorRed, focus.ErrorColor, "the focus style inherits what it leaves out")
+				require.Len(t, focus.Layout, 2)
+				assert.Equal(t, "<%s>", focus.Layout[0].Template)
+				assert.Nil(t, focus.Focus)
+				images := s.statusBarImages()
+				require.Len(t, images, 2)
+				assert.Equal(t, "file:///bar/a.png", images[0].URI)
+				assert.Equal(t, "file:///bar/focus.png", images[1].URI)
+			},
+		},
+		{
+			name: "a status bar focus layout that does not parse",
+			cfg: map[string]any{"editor": map[string]any{"status_bar": map[string]any{
+				"focus": map[string]any{"layout": `{{ .Nope }}`},
+			}}},
+			check: func(t *testing.T, s hudStyle) {
+				require.NotNil(t, s.statusBar.Focus)
+				assert.Nil(t, s.statusBar.Focus.Layout)
+			},
+			wantErr: "editor.status_bar.focus.layout",
 		},
 		{
 			name: "a status bar layout that does not parse",
@@ -3839,6 +4243,26 @@ func TestConfigHUDStyle(t *testing.T) {
 				}, n.ProgressRunes.Graphics)
 			},
 			wantURIs: []string{"file:///noti/br.png", "file:///noti/start.png", "file:///noti/tl.png"},
+		},
+		{
+			name: "the program status inbox and its focus style",
+			cfg: map[string]any{"program_status": map[string]any{
+				"images":          map[string]any{"idle": map[string]any{"middle": "file:///inbox/idle.png"}},
+				"marker_graphics": map[string]any{"vertical": "file:///inbox/marker.png"},
+				"focus": map[string]any{
+					"images":                map[string]any{"selected": map[string]any{"middle": "file:///inbox/focus.png"}},
+					"divider_charset":       map[string]any{"graphics": map[string]any{"vertical": "file:///inbox/divider.png"}},
+					"progress_bar_graphics": map[string]any{"filled": "file:///inbox/filled.png"},
+				},
+			}},
+			check: func(t *testing.T, s hudStyle) {
+				require.NotNil(t, s.statusInbox.Focus)
+				assert.Equal(t, "file:///inbox/marker.png", s.statusInbox.Focus.MarkerGraphics.Middle)
+			},
+			wantURIs: []string{
+				"file:///inbox/divider.png", "file:///inbox/filled.png", "file:///inbox/focus.png",
+				"file:///inbox/idle.png", "file:///inbox/marker.png",
+			},
 		},
 		{
 			name: "an invalid notification progress image keeps the default progress",
@@ -4772,6 +5196,7 @@ func TestSearchConfig(t *testing.T) {
 	defaults := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
 	assert.False(t, defaults.workspaceSearch(), "semantic indexing is off by default")
 	assert.True(t, defaults.workspaceRegexSearch(), "regexp indexing remains on by default")
+	assert.True(t, defaults.workspaceSymbolsSearch(), "symbols indexing is on by default")
 	assert.Equal(t, llmsearch.DefaultConfig(), defaults.searchConfig())
 
 	c := ideConfig{cfg: map[string]any{
@@ -4812,24 +5237,24 @@ func TestWorkspaceSearchIndexingConfig(t *testing.T) {
 		search   map[string]any
 		semantic bool
 		regexp   bool
+		symbols  bool
 	}{
-		{"defaults", nil, false, true},
-		{"regexp enabled", map[string]any{"regex_enabled": true}, false, true},
-		{"semantic disabled", map[string]any{"regex_enabled": true, "semantic_enabled": false}, false, true},
-		{"semantic enabled", map[string]any{"semantic_enabled": true}, true, true},
-		{"semantic only", map[string]any{"regex_enabled": false, "semantic_enabled": true}, true, false},
-		{"all disabled", map[string]any{"regex_enabled": false, "semantic_enabled": false}, false, false},
+		{"defaults", nil, false, true, true},
+		{"regexp enabled", map[string]any{"regex_enabled": true}, false, true, true},
+		{"semantic disabled", map[string]any{"regex_enabled": true, "semantic_enabled": false}, false, true, true},
+		{"semantic enabled", map[string]any{"semantic_enabled": true}, true, true, true},
+		{"semantic only", map[string]any{"regex_enabled": false, "semantic_enabled": true}, true, false, true},
+		{"symbols disabled", map[string]any{"symbols_enabled": false}, false, true, false},
+		{"all disabled", map[string]any{"regex_enabled": false, "semantic_enabled": false, "symbols_enabled": false}, false, false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			c := ideConfig{cfg: map[string]any{
-				"workspace": map[string]any{"symboldb": true},
-			}, errors: map[string]error{}}
+			c := ideConfig{cfg: map[string]any{}, errors: map[string]error{}}
 			if tt.search != nil {
 				c.cfg["search"] = tt.search
 			}
 			assert.Equal(t, tt.semantic, c.workspaceSearch())
 			assert.Equal(t, tt.regexp, c.workspaceRegexSearch())
-			assert.True(t, c.workspaceSymbolDB(), "search settings do not disable symbol indexing")
+			assert.Equal(t, tt.symbols, c.workspaceSymbolsSearch())
 			assert.Empty(t, c.errors)
 		})
 	}

@@ -19,10 +19,12 @@ package gui
 import (
 	"context"
 	"image"
+	"image/color"
 	"image/draw"
 	"math"
 
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/colorm"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/term/gui/font"
@@ -63,12 +65,14 @@ var (
 	// order tileQuad returns them.
 	quadIndices = []uint16{0, 1, 2, 1, 2, 3}
 	tileOptions = ebiten.DrawTrianglesOptions{Address: ebiten.AddressRepeat}
+	maskOptions = colorm.DrawTrianglesOptions{Address: ebiten.AddressRepeat}
 )
 
 // placement is the pixel geometry of one image placement: src selects
 // the texels in the picture's texture, area is where the whole picture
 // would land, or where its tiles repeat across, and clip narrows the
-// painting to the cells the placement still covers.
+// painting to the cells the placement still covers. src is empty for a
+// fill without a mask.
 type placement struct {
 	src, area, clip image.Rectangle
 }
@@ -80,16 +84,21 @@ func resolvePlacement(
 	img term.Image, m *font.Manager, bounds image.Rectangle, shift int,
 ) (placement, bool) {
 	visible := pixelSize(m).Covered(img)
-	src := cropRect(img)
-	if visible.Empty() || src.Empty() {
+	if visible.Empty() {
 		return placement{}, false
 	}
-	// Crop is expressed in Src's coordinate space; the texture always
-	// starts at the origin.
-	src = src.Sub(img.Src.Bounds().Min)
+	var src image.Rectangle
+	if !solidFill(img) {
+		if src = cropRect(img); src.Empty() {
+			return placement{}, false
+		}
+		// Crop is expressed in Src's coordinate space; the texture
+		// always starts at the origin.
+		src = src.Sub(img.Src.Bounds().Min)
+	}
 
 	area := cellRectToPixels(img.Bounds(), m)
-	if img.Fit == term.ImageFitContain {
+	if img.Fit == term.ImageFitContain && !src.Empty() {
 		area = containRect(src, area)
 	}
 	down := image.Pt(0, shift)
@@ -103,6 +112,26 @@ func resolvePlacement(
 		return placement{}, false
 	}
 	return placement{src: src, area: area, clip: clip}, true
+}
+
+// solidFill reports whether img paints its whole placement in its fill
+// colour.
+func solidFill(img term.Image) bool {
+	return img.Fill && img.Src == nil
+}
+
+// fillColorM paints a mask's coverage in fill, a premultiplied colour,
+// whatever colour the mask's pixels are.
+func fillColorM(fill color.RGBA) colorm.ColorM {
+	var cm colorm.ColorM
+	if fill.A == 0 {
+		cm.Scale(0, 0, 0, 0)
+		return cm
+	}
+	a := float64(fill.A)
+	cm.Scale(0, 0, 0, a/0xff)
+	cm.Translate(float64(fill.R)/a, float64(fill.G)/a, float64(fill.B)/a, 0)
+	return cm
 }
 
 // pixelSize is the size of the font manager's cell, which is what the
@@ -119,21 +148,34 @@ func frameContext(ctx context.Context, m *font.Manager) context.Context {
 
 // drawOne paints one placement and reports the pixel rectangle it
 // covered, which is empty when the placement painted nothing. shift
-// moves it down as resolvePlacement does.
+// moves it down as resolvePlacement does, and fill is the premultiplied
+// colour of a Fill placement.
 func (l *imageLayer) drawOne(
-	dst *ebiten.Image, img term.Image, m *font.Manager, shift int,
+	dst *ebiten.Image, img term.Image, m *font.Manager, shift int, fill color.RGBA,
 ) image.Rectangle {
 	p, ok := resolvePlacement(img, m, dst.Bounds(), shift)
 	if !ok {
 		return image.Rectangle{}
 	}
+	if solidFill(img) {
+		// Fill replaces the pixels rather than blending over them, as a
+		// cell's background does, so a translucent window background is
+		// not composited twice.
+		dst.SubImage(p.clip).(*ebiten.Image).Fill(fill)
+		return p.clip
+	}
 	tex := l.texture(img)
 	if tex == nil {
 		return image.Rectangle{}
 	}
+	src := tex.SubImage(p.src).(*ebiten.Image)
 	if img.Fit == term.ImageFitTile {
 		l.quad = tileQuad(p)
-		dst.DrawTriangles(l.quad[:], quadIndices, tex.SubImage(p.src).(*ebiten.Image), &tileOptions)
+		if img.Fill {
+			colorm.DrawTriangles(dst, l.quad[:], quadIndices, src, fillColorM(fill), &maskOptions)
+		} else {
+			dst.DrawTriangles(l.quad[:], quadIndices, src, &tileOptions)
+		}
 		return p.clip
 	}
 
@@ -149,7 +191,12 @@ func (l *imageLayer) drawOne(
 	if !p.clip.Eq(dst.Bounds()) {
 		target = dst.SubImage(p.clip).(*ebiten.Image)
 	}
-	target.DrawImage(tex.SubImage(p.src).(*ebiten.Image), &op)
+	if img.Fill {
+		colorm.DrawImage(target, src, fillColorM(fill),
+			&colorm.DrawImageOptions{GeoM: op.GeoM, Filter: op.Filter})
+	} else {
+		target.DrawImage(src, &op)
+	}
 	return p.clip
 }
 

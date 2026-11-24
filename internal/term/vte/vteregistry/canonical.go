@@ -95,6 +95,9 @@ func (c *canonical) detach(a *attachment) {
 		delete(c.previews, a)
 		if c.resizeOwner == a {
 			c.resizeOwner = c.nextResizeOwnerLocked()
+			if heir := c.resizeOwner; heir != nil {
+				c.followLocked(heir)
+			}
 		}
 		c.mu.Unlock()
 		return
@@ -121,13 +124,21 @@ func (c *canonical) detach(a *attachment) {
 	c.changed(vte.LivenessUnknown)
 }
 
-// nextResizeOwnerLocked picks the most recently focused attachment,
-// the oldest one when none was focused.
+// nextResizeOwnerLocked picks the most recently focused attachment, the
+// oldest one when none was focused, or else the latest preview.
 func (c *canonical) nextResizeOwnerLocked() *attachment {
 	var ret *attachment
 	for a := range c.attachments {
 		if ret == nil || a.focusedAt > ret.focusedAt ||
 			(a.focusedAt == ret.focusedAt && a.seq < ret.seq) {
+			ret = a
+		}
+	}
+	if ret != nil {
+		return ret
+	}
+	for a := range c.previews {
+		if ret == nil || a.seq > ret.seq {
 			ret = a
 		}
 	}

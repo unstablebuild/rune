@@ -205,6 +205,15 @@ func getGUIColorThemes(browser browser.Browser, cfg config.Config) (
 					continue
 				}
 				theme.Background = value.Tcell()
+			case "focus_background":
+				value, err := colorsCfg.GetColor(colorName)
+				if err != nil {
+					_, _ = browser.Notify(browserapi.LevelWarn,
+						"Invalid color value for 'focus_background' in "+
+							"'gui.themes.%s' config: %v", name, err)
+					continue
+				}
+				theme.FocusBackground = value.Tcell()
 			default:
 				color, ok := term.GetColorNames()[colorName]
 				if !ok {
@@ -559,7 +568,9 @@ func rootConfig(path string) (config.Config, error) {
 	return ide.Config(path, runeDefaultConfig(), ide.WithDataDir(*flagDataPath))
 }
 
-func resolveInitialThemeAttr(b browser.Browser, rootCfg config.Config) term.Attributes {
+// resolveInitialThemeColors returns the colours of the theme rootCfg's
+// gui.default_theme names.
+func resolveInitialThemeColors(b browser.Browser, rootCfg config.Config) ide.ThemeColors {
 	guiCfg, ok, err := getGUIConfig(rootCfg)
 	if err != nil {
 		_, _ = b.Notify(browserapi.LevelError, "%v", err)
@@ -569,9 +580,16 @@ func resolveInitialThemeAttr(b browser.Browser, rootCfg config.Config) term.Attr
 	}
 	defaultColorTheme := getGUIDefaultColorTheme(b, guiCfg)
 	themes := getGUIColorThemes(b, guiCfg)
-	t := themes[defaultColorTheme]
-	return term.Attributes{
-		Fg: term.FromTcellColor(t.Foreground),
-		Bg: term.FromTcellColor(t.Background),
+	return themeColors(themes[defaultColorTheme])
+}
+
+// themeColors returns the colours of theme the IDE draws with.
+func themeColors(theme gui.Theme) ide.ThemeColors {
+	return ide.ThemeColors{
+		Default: term.Attributes{
+			Fg: term.FromTcellColor(theme.Foreground),
+			Bg: term.FromTcellColor(theme.Background),
+		},
+		FocusBackground: term.FromTcellColor(theme.FocusBackground),
 	}
 }

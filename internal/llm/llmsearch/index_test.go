@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/searchapi"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -460,4 +462,179 @@ func TestIndexWaitAfterClose(t *testing.T) {
 	require.NoError(t, ti.idx.Close())
 	assert.ErrorIs(t, ti.idx.Wait(context.Background()), errClosed)
 	assert.False(t, ti.event(t, textapi.EventTypeFlush, "geo/distance.py"))
+}
+
+// blockingEmbedder holds every EmbedTexts until its context ends.
+type blockingEmbedder struct {
+	fakeEmbedder
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (e *blockingEmbedder) EmbedTexts(ctx context.Context, _ []string) ([][]float32, error) {
+	e.once.Do(func() { close(e.entered) })
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// undroppable is storage that cannot be dropped, though its partitions
+// can.
+type undroppable struct{ storageapi.Service }
+
+func countDocs(t *testing.T, db storageapi.Service, part string) int {
+	t.Helper()
+	p, err := db.Partition(part)
+	require.NoError(t, err)
+	n := 0
+	require.NoError(t, list(context.Background(), p, func(struct{ ID uint32 }) error {
+		n++
+		return nil
+	}))
+	return n
+}
+
+func TestIndexRemove(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		// blocking holds the scan, which Remove stops.
+		blocking    bool
+		undroppable bool
+		// concurrent is how many Remove calls race, of which one
+		// removes the index and the rest fail; 0 is one call.
+		concurrent int
+		// before runs on the open index, before Remove.
+		before          func(t *testing.T, ti *testIndex)
+		wantErr         error
+		wantErrContains string
+		// wantMeta and wantFiles are set when the index's marker and file
+		// records are left.
+		wantMeta, wantFiles bool
+	}{
+		{
+			name: "deletes what the index persisted",
+		},
+		{
+			name:     "stops the scan under way",
+			blocking: true,
+		},
+		{
+			name:       "removes once when asked at once",
+			concurrent: 4,
+		},
+		{
+			name: "fails once closed",
+			before: func(t *testing.T, ti *testIndex) {
+				require.NoError(t, ti.idx.Close())
+			},
+			wantErr:   errClosed,
+			wantMeta:  true,
+			wantFiles: true,
+		},
+		{
+			name: "fails once removed",
+			before: func(t *testing.T, ti *testIndex) {
+				require.NoError(t, ti.idx.Remove(ctx))
+			},
+			wantErr: errClosed,
+		},
+		{
+			name:            "reports storage it cannot drop",
+			undroppable:     true,
+			wantErrContains: "does not support dropping",
+			wantMeta:        true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ideStorage := storagestub.NewInMemoryService()
+			t.Cleanup(func() { _ = ideStorage.Close() })
+			workspaceDB := func(root workspaceapi.URI) storageapi.Service {
+				return storageapi.WithPartition(storageapi.WithPartition(ideStorage, PartitionName), root.String())
+			}
+			dir, root, fsys := newWorkspace(t)
+			reg := newRegistry(t, true)
+			embed := EmbedderFactory(NewFakeEmbedderFactory())
+			blocking := &blockingEmbedder{entered: make(chan struct{})}
+			if tt.blocking {
+				embed = embedWith(blocking)
+			}
+			ti := &testIndex{
+				dir: dir, root: root, fs: fsys, db: workspaceDB(root),
+				notify: &recordingNotifications{}, svc: newService(t, reg, embed), reg: reg,
+			}
+			if tt.undroppable {
+				ti.db = undroppable{ti.db}
+			}
+			other, err := workspaceapi.ParseURI(root.String() + "-other")
+			require.NoError(t, err)
+			otherDB := workspaceDB(other)
+			require.NoError(t, otherDB.Set(ctx, metaID, metaDoc{Version: schemaVersion}))
+
+			ti.start(t, DefaultOptions())
+			if tt.blocking {
+				select {
+				case <-blocking.entered:
+				case <-time.After(waitTimeout):
+					t.Fatal("the scan never embedded")
+				}
+			} else {
+				ti.wait(t)
+				require.NotZero(t, countDocs(t, ti.db, filesPartition))
+			}
+			if tt.before != nil {
+				tt.before(t, ti)
+			}
+
+			switch {
+			case tt.concurrent > 0:
+				errs := make(chan error, tt.concurrent)
+				for range tt.concurrent {
+					go func() { errs <- ti.idx.Remove(ctx) }()
+				}
+				removed := 0
+				for range tt.concurrent {
+					if err := <-errs; err == nil {
+						removed++
+					} else {
+						assert.ErrorIs(t, err, errClosed)
+					}
+				}
+				assert.Equal(t, 1, removed)
+			case tt.wantErrContains != "":
+				assert.ErrorContains(t, ti.idx.Remove(ctx), tt.wantErrContains)
+			default:
+				assert.ErrorIs(t, ti.idx.Remove(ctx), tt.wantErr)
+			}
+
+			var m metaDoc
+			assert.Equal(t, tt.wantMeta, ti.db.Get(ctx, metaID, &m) == nil, "the index's marker is left")
+			assert.Equal(t, tt.wantFiles, countDocs(t, ti.db, filesPartition) > 0, "the file records are left")
+			if !tt.wantFiles {
+				for _, part := range []string{segmentsPartition, vectorsPartition} {
+					assert.Zero(t, countDocs(t, ti.db, part), "%s is deleted", part)
+				}
+			}
+			assert.NoError(t, otherDB.Get(ctx, metaID, &m), "the index of another workspace is kept")
+
+			_, ok := ti.svc.Index(root)
+			assert.False(t, ok, "the workspace has no index")
+			_, _, err = ti.svc.Search(ctx, root, searchapi.SemanticRequest{Query: "radius", Model: localModel(testModel)})
+			assert.ErrorIs(t, err, ErrNoIndex)
+			assert.False(t, ti.event(t, textapi.EventTypeFlush, "geo/distance.py"))
+			assert.ErrorIs(t, ti.idx.Reindex(), errClosed)
+			assert.ErrorIs(t, ti.idx.Wait(ctx), errClosed)
+			require.NoError(t, ti.idx.Close())
+			if tt.wantErr != nil || tt.wantErrContains != "" {
+				return
+			}
+
+			counting := newCountingEmbedder()
+			ti.svc = newService(t, reg, embedWith(counting))
+			ti.open(t, DefaultOptions())
+			assert.Positive(t, counting.count(), "the workspace is embedded again")
+			assert.Equal(t, map[string]int{stateDone: len(fixtureCode) - 1, stateSkipped: 1}, ti.idx.Status().Files,
+				"opened again, the index is built from scratch")
+		})
+	}
 }

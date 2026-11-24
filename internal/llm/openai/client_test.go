@@ -1031,6 +1031,32 @@ func TestResponsesReasoningSummaryFromRequest(t *testing.T) {
 	assert.Equal(t, "detailed", reasoning["summary"])
 }
 
+func TestResponsesServiceTier(t *testing.T) {
+	tests := []struct {
+		name          string
+		supportsSpeed func(string, llmapi.Speed) bool
+		model         string
+		speed         llmapi.Speed
+		want          any
+	}{
+		{"fast sends priority", SupportsSpeed, GPT6Dot1Terra, llmapi.SpeedFast, "priority"},
+		{"ultrafast sends ultrafast", SupportsSpeed, GPT6Dot1Sol, llmapi.SpeedUltrafast, "ultrafast"},
+		{"unsupported ultrafast is dropped", SupportsSpeed, GPT6Dot1Terra, llmapi.SpeedUltrafast, nil},
+		{"standard is omitted", SupportsSpeed, GPT6Dot1Sol, llmapi.SpeedStandard, nil},
+		{"nil hook sends no speed", nil, GPT6Dot1Sol, llmapi.SpeedFast, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := captureResponsesRequestForModel(t, Config{SupportsSpeed: tt.supportsSpeed}, tt.model,
+				llmapi.Request{
+					Messages: []llmapi.Message{{Role: llmapi.RoleUser, Content: "hello"}},
+					Speed:    tt.speed,
+				})
+			assert.Equal(t, tt.want, got.Body["service_tier"])
+		})
+	}
+}
+
 func TestResponsesMaxOutputTokens(t *testing.T) {
 	t.Run("request override", func(t *testing.T) {
 		body := captureResponsesRequestBody(t, Config{}, llmapi.Request{
@@ -1410,6 +1436,13 @@ type capturedResponsesRequest struct {
 
 func captureResponsesRequest(t *testing.T, cfg Config, req llmapi.Request) capturedResponsesRequest {
 	t.Helper()
+	return captureResponsesRequestForModel(t, cfg, GPT5Dot3Codex, req)
+}
+
+func captureResponsesRequestForModel(
+	t *testing.T, cfg Config, model string, req llmapi.Request,
+) capturedResponsesRequest {
+	t.Helper()
 	cfg.ForceResponsesAPI = true
 	var captured capturedResponsesRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1429,7 +1462,7 @@ func captureResponsesRequest(t *testing.T, cfg Config, req llmapi.Request) captu
 	cfg.BaseURL = srv.URL
 	c := NewClient("test-key", cfg)
 	ctx := context.Background()
-	it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: GPT5Dot3Codex, ContextWindow: 200000}, req)
+	it, err := c.CreateCompletion(ctx, llmapi.ModelEntry{Name: model, ContextWindow: 200000}, req)
 	require.NoError(t, err)
 	for {
 		_, ok := it.Next(ctx)

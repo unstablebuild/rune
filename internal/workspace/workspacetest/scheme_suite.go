@@ -909,6 +909,27 @@ func TestWorkspaceSchemeRemove(
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, os.ErrNotExist))
 	})
+	t.Run("removes an empty directory", func(t *testing.T) {
+		scheme := schemeFn(t)
+		defer scheme.Close()
+		require.NoError(t, scheme.MkdirAll("./emptydir", 0o777))
+		require.NoError(t, scheme.Remove("./emptydir"))
+		_, err := scheme.Stat("./emptydir")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, os.ErrNotExist))
+	})
+	t.Run("fails to remove a non-empty directory", func(t *testing.T) {
+		scheme := schemeFn(t)
+		defer scheme.Close()
+		require.NoError(t, scheme.MkdirAll("./fulldir", 0o777))
+		_, cleanup := createTestFile(t, scheme, "./fulldir/file", "")
+		defer cleanup()
+		err := scheme.Remove("./fulldir")
+		require.Error(t, err)
+		info, serr := scheme.Stat("./fulldir/file")
+		require.NoError(t, serr, "the directory's content must survive the failed Remove")
+		assert.False(t, info.IsDir())
+	})
 }
 
 func TestWorkspaceSchemeRename(
@@ -1547,6 +1568,88 @@ func TestWorkspaceSchemeMkdirAll(
 		require.NoError(t, werr)
 		require.NoError(t, file.Close())
 	})
+
+	t.Run("creates an empty directory that Stat and ReadDir report", func(t *testing.T) {
+		scheme := schemeFn(t)
+		defer scheme.Close()
+
+		require.NoError(t, scheme.MkdirAll("./empty/inner", 0o755))
+
+		for _, p := range []string{"./empty", "./empty/inner"} {
+			info, err := scheme.Stat(p)
+			require.NoErrorf(t, err, "Stat(%q)", p)
+			assert.Truef(t, info.IsDir(), "Stat(%q).IsDir", p)
+			assert.Truef(t, info.Mode().IsDir(), "Stat(%q).Mode().IsDir", p)
+		}
+
+		entries, err := scheme.ReadDir(".")
+		require.NoError(t, err)
+		var found bool
+		for _, e := range entries {
+			if e.Name() == "empty" {
+				found = true
+				assert.True(t, e.IsDir())
+				assert.True(t, e.Type().IsDir())
+			}
+		}
+		assert.True(t, found, "the parent must list the empty directory")
+
+		inner, err := scheme.ReadDir("./empty")
+		require.NoError(t, err)
+		require.Len(t, inner, 1)
+		assert.Equal(t, "inner", inner[0].Name())
+		assert.True(t, inner[0].IsDir())
+
+		leaf, err := scheme.ReadDir("./empty/inner")
+		require.NoError(t, err)
+		assert.Empty(t, leaf)
+	})
+
+	t.Run("opening a directory as a file fails", func(t *testing.T) {
+		scheme := schemeFn(t)
+		defer scheme.Close()
+
+		require.NoError(t, scheme.MkdirAll("./dir", 0o755))
+		_, err := scheme.OpenFile("./dir", os.O_RDWR, 0)
+		require.Error(t, err)
+		_, err = scheme.OpenFile("./dir", os.O_RDWR|os.O_CREATE, 0o644)
+		require.Error(t, err)
+	})
+
+	t.Run("names that a URI escapes", func(t *testing.T) {
+		scheme := schemeFn(t)
+		defer scheme.Close()
+
+		names := []string{"a b", "per%cent", "q?uery", "h#ash"}
+		for _, name := range names {
+			dir := "./" + name
+			require.NoErrorf(t, scheme.MkdirAll(dir, 0o755), "MkdirAll(%q)", dir)
+			info, err := scheme.Stat(dir)
+			require.NoErrorf(t, err, "Stat(%q)", dir)
+			assert.Truef(t, info.IsDir(), "Stat(%q).IsDir", dir)
+			_, cleanup := createTestFile(t, scheme, dir+"/f", "")
+			cleanup()
+		}
+		entries, err := scheme.ReadDir(".")
+		require.NoError(t, err)
+		var listed []string
+		for _, e := range entries {
+			listed = append(listed, e.Name())
+		}
+		assert.Subset(t, listed, names, "the parent lists every directory by its name")
+
+		for _, name := range names {
+			dir := "./" + name
+			require.NoErrorf(t, scheme.Remove(dir), "Remove(%q)", dir)
+			_, err := scheme.Stat(dir)
+			assert.ErrorIsf(t, err, fs.ErrNotExist, "Stat(%q) after Remove", dir)
+		}
+		entries, err = scheme.ReadDir(".")
+		require.NoError(t, err)
+		for _, e := range entries {
+			assert.NotContains(t, names, e.Name(), "a removed directory is listed")
+		}
+	})
 }
 
 func expectNoMoreEvents(t *testing.T, ch chan schemeapi.EventInfo) {
@@ -1619,6 +1722,33 @@ func TestWorkspaceSchemeWatch(
 		assert.Equal(t, filepath.Base(f.Name()), filepath.Base(ei.URI().Path()), ei.URI().Path())
 		assert.Equal(t, schemeapi.Write, ei.Event())
 
+		expectNoMoreEvents(t, ch)
+
+		require.NoError(t, scheme.StopWatch(id))
+	})
+
+	t.Run("schemeapi.Write watches for writes closed without a sync", func(t *testing.T) {
+		scheme := schemeFn(t)
+		defer scheme.Close()
+
+		f, cleanup := createTestFile(t, scheme, "szb", "")
+		defer cleanup()
+
+		ch := make(chan schemeapi.EventInfo, 2)
+		id, err := scheme.Watch(".", ch, schemeapi.Write)
+		require.NoError(t, err)
+
+		_, err = f.Write([]byte("1234"))
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+
+		select {
+		case ei := <-ch:
+			assert.Equal(t, filepath.Base(f.Name()), filepath.Base(ei.URI().Path()), ei.URI().Path())
+			assert.Equal(t, schemeapi.Write, ei.Event())
+		case <-time.After(5 * time.Second):
+			t.Fatal("no Write event for a write closed without a sync")
+		}
 		expectNoMoreEvents(t, ch)
 
 		require.NoError(t, scheme.StopWatch(id))

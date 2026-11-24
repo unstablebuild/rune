@@ -269,7 +269,11 @@ type Theme struct {
 	Foreground tcell.Color
 	Background tcell.Color
 	Cursor     tcell.Color
-	Colors     map[tcell.Color]tcell.Color
+	// FocusBackground is the background of the window in focus where the
+	// host's config sets none. The GUI doesn't draw it: the host's window
+	// manager does. tcell.ColorDefault is none.
+	FocusBackground tcell.Color
+	Colors          map[tcell.Color]tcell.Color
 }
 
 // WithColorThemes defines the color themes available for later calls to GUI.SetTheme,

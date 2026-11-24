@@ -81,6 +81,10 @@ type InboxStyle struct {
 	MarkerGraphics tcomponent.LineGraphics
 	// ProgressBarGraphics are drawn over the progress bars.
 	ProgressBarGraphics ProgressBarGraphics
+	// Focus styles an inbox while the writer's context tells it its
+	// window holds the focus, as term.WindowFocusFromContext reads it.
+	// Nil keeps this style, and its own Focus is ignored.
+	Focus *InboxStyle
 }
 
 // ProgressBarGraphics names the images drawn over the cells of a progress
@@ -140,23 +144,35 @@ func DefaultInboxStyle() InboxStyle {
 	}
 }
 
-// Preview is what the inbox shows of a program: Content, drawn at Width
-// by Height. Fit, if not nil, sizes Content when it was never sized, as
-// it would draw nothing; content shown elsewhere must have none, as
-// resizing it would reflow it there. Hidden content, shown nowhere, is
-// fit to the preview and drawn whole.
+// Preview is what the inbox shows of a program.
+//
+// Open, if not nil, opens a view of the program for the inbox alone,
+// width by height, and returns it with what closes it, or a nil view
+// when it has none to show. The inbox resizes that view as the preview
+// changes size, never sends it input, and closes it once it previews
+// something else or closes. Width and Height, when not zero, are the
+// size the view would rather have, such as that of a terminal another
+// view sizes, which a smaller view crops.
+//
+// Without Open, the inbox borrows Content, shown elsewhere at Width by
+// Height: it draws it at that size, cutting the top rows and right
+// columns that do not fit, and never resizes it, as that would reflow
+// it where it is shown. Content without a size shows no preview.
 type Preview struct {
+	Open          func(width, height int) (tui.Component, func())
 	Content       tui.Component
 	Width, Height int
-	Fit           func(width, height int)
-	Hidden        bool
+}
+
+func (p Preview) borrowed() bool {
+	return p.Open == nil && p.Content != nil && p.Width > 0 && p.Height > 0
 }
 
 // View is the status inbox: a sidebar listing every program that
 // reported a status, beside a live preview of the selected one, kept up
-// to date until it is closed. The preview draws its content at the
-// content's own size, as it looks in its window, cutting the top rows
-// and right columns that do not fit, and never sends it input. Use
+// to date until it is closed. The preview is a view of the program of
+// its own when its host opens one, and otherwise what shows the program
+// elsewhere, drawn as it looks there; it never gets input. Use
 // Store.View to create one.
 type View struct {
 	store   *Store
@@ -177,11 +193,13 @@ type View struct {
 	// ticker wakes the host while the view is open, for the spinners to
 	// turn and the preview to follow a workspace out of focus.
 	ticker *statusTicker
-	// fitted is the size hidden content was last fit to, for it to be
-	// resized only as the preview changes size.
-	fitted        statusFit
+	// shown is the preview of the selection.
+	shown         statusShown
 	minWidth      func() int
 	width, height int
+	// focused is whether the window of the writer last drawn to holds
+	// the focus, which selects the style drawn.
+	focused bool
 }
 
 // Select selects uri in the workspace at ws, and reports whether the
@@ -193,8 +211,8 @@ func (v *View) Select(ws, uri workspaceapi.URI) bool {
 	return i >= 0
 }
 
-// Resize sizes the view, and fits the previewed content to the preview
-// when that content was never sized or is hidden.
+// Resize sizes the view, and the view of the selected program it
+// previews, if it opened one, to the preview.
 func (v *View) Resize(width, height int) {
 	v.width, v.height = width, height
 	v.sizePreview()
@@ -208,12 +226,13 @@ func (v *View) Draw(w term.Writer) {
 	}
 	v.drawing = true
 	defer func() { v.drawing = false }()
+	v.focused, _ = term.WindowFocusFromContext(w.Context())
 	sideW := v.sidebarWidth()
 	v.drawSidebar(&component.VirtualWriter{Writer: w, Width: sideW, Height: v.height}, sideW)
 	if sideW >= v.width {
 		return
 	}
-	style := v.store.style
+	style, _ := v.style()
 	divider := term.NewCell(style.Divider.Vertical, 1, style.DividerAttr)
 	for y := range v.height {
 		w.SetCell(term.Coordinates{X: sideW, Y: y}, divider)
@@ -242,7 +261,8 @@ func (v *View) StitchFrame(
 	if width < 3 || height < 3 || x <= 0 || x >= width-1 {
 		return
 	}
-	style := v.store.style
+	v.focused, _ = term.WindowFocusFromContext(w.Context())
+	style, _ := v.style()
 	cs := style.Divider
 	if !bar {
 		w.SetCell(term.Coordinates{X: x}, term.NewCell(cs.Top, 1, f.Attributes))
@@ -314,6 +334,15 @@ func (v *View) Cursor() (term.Coordinates, term.CursorStyle, bool) {
 	return term.Coordinates{}, term.CursorStyleDefault, false
 }
 
+// style returns the style the view draws with and the images of its
+// buttons: those of the focus style while its window holds the focus.
+func (v *View) style() (*InboxStyle, *component.ButtonImages) {
+	if v.focused && v.store.style.Focus != nil {
+		return v.store.style.Focus, v.store.focusImages
+	}
+	return &v.store.style, v.store.images
+}
+
 // Selection returns the name of the selected program, or false when
 // nothing is listed.
 func (v *View) Selection() (string, bool) {
@@ -324,17 +353,18 @@ func (v *View) Selection() (string, bool) {
 	return v.entries[i].name, true
 }
 
-// Close stops updating the view and turning its spinners. It returns
-// nil.
+// Close stops updating the view and turning its spinners, and closes
+// the view of the selected program it previews, if any. It returns nil.
 func (v *View) Close() error {
 	delete(v.store.views, v)
 	v.setTicking(false)
+	v.closePreview()
 	return nil
 }
 
 // Dimensions returns the size the view asks for: the sidebar beside the
-// previewed content at its own size, at least as wide as minWidth asks
-// and 40 rows high.
+// preview at the size it asks for, at least as wide as minWidth asks and
+// 40 rows high.
 func (v *View) Dimensions() (int, int) {
 	sideW, sideH := v.sidebarSize()
 	w, h := v.previewSize()
@@ -404,7 +434,6 @@ func (v *View) selectAt(i int) {
 	}
 	v.sel, v.selIdx = v.entries[i].ref(), i
 	v.scrolled = false
-	v.fitted = statusFit{}
 	v.sizePreview()
 }
 
@@ -471,49 +500,72 @@ func (v *View) sidebarWidth() int {
 	return min(w, v.width)
 }
 
-func (v *View) preview() (Preview, bool) {
+// preview returns the preview of the selection, or nil when nothing is
+// listed. What the view opens is kept while the selection stays; what it
+// borrows is asked for again, as it follows what shows it.
+func (v *View) preview() *statusShown {
 	i := v.resolve()
 	if i < 0 {
-		return Preview{}, false
+		v.closePreview()
+		return nil
 	}
-	return v.store.host.Preview(v.entries[i].ws, v.entries[i].uri)
+	e := v.entries[i]
+	if ref := e.ref(); v.shown.ref == ref && v.shown.preview.Open != nil {
+		return &v.shown
+	}
+	v.closePreview()
+	p, ok := v.store.host.Preview(e.ws, e.uri)
+	if !ok {
+		p = Preview{}
+	}
+	v.shown = statusShown{ref: e.ref(), preview: p}
+	return &v.shown
+}
+
+func (v *View) closePreview() {
+	if v.shown.close != nil {
+		v.shown.close()
+	}
+	v.shown = statusShown{}
 }
 
 func (v *View) previewSize() (int, int) {
-	p, ok := v.preview()
+	s := v.preview()
 	switch {
-	case !ok:
+	case s == nil || (s.preview.Open == nil && !s.preview.borrowed()):
 		return graphemecluster.StringWidth(statusPreviewNone) + 4, 0
-	case p.Hidden, p.Width == 0 && p.Height == 0:
+	case s.preview.Width <= 0 || s.preview.Height <= 0:
 		return statusPreviewWidth, statusPreviewHeight
 	}
-	return p.Width, p.Height
+	return s.preview.Width, s.preview.Height
 }
 
-// sizePreview must run whenever the selection or the size changes.
+// sizePreview opens the view of the selection the preview shows, or
+// resizes it to the preview. It must run whenever the selection or the
+// size changes.
 func (v *View) sizePreview() {
-	p, ok := v.preview()
-	if !ok || p.Fit == nil {
+	s := v.preview()
+	if s == nil || s.preview.Open == nil {
 		return
 	}
 	width := v.width - v.sidebarWidth() - statusDividerWidth
-	if width <= 0 || v.height <= 0 {
+	if width <= 0 || v.height <= 0 || (s.opened && s.width == width && s.height == v.height) {
 		return
 	}
-	switch fit := (statusFit{ref: v.sel, width: width, height: v.height}); {
-	case p.Hidden:
-		if v.fitted != fit {
-			v.fitted = fit
-			p.Fit(width, v.height)
-		}
-	case p.Width == 0 && p.Height == 0:
-		p.Fit(width, v.height)
+	s.width, s.height = width, v.height
+	if !s.opened {
+		s.opened = true
+		s.comp, s.close = s.preview.Open(width, v.height)
+		return
+	}
+	if s.comp != nil {
+		s.comp.Resize(width, v.height)
 	}
 }
 
 func (v *View) drawSidebar(w term.Writer, width int) {
 	v.rows = slices.Repeat([]int{-1}, v.height)
-	style := v.store.style
+	style, images := v.style()
 	if len(v.entries) == 0 {
 		statusText(w, statusIconX, statusPadTop, statusViewEmpty, style.PlaceholderAttr, width-statusPadRight)
 		return
@@ -530,7 +582,7 @@ func (v *View) drawSidebar(w term.Writer, width int) {
 	spans := v.layout(heights)
 	// A program cut short stops above the arrow's row.
 	list := &component.VirtualWriter{Writer: w, Width: width, Height: statusPadTop + rows}
-	g, images := v.store.graphics, v.store.images
+	g := v.store.graphics
 	for _, s := range spans {
 		st := component.ButtonIdle
 		var base term.Attributes
@@ -614,14 +666,15 @@ func (v *View) drawItem(w term.Writer, s statusSpan, sel, width int, base term.A
 	}
 	v.drawEntry(w, s.i, s.y, width, base, s.i == sel)
 	if s.i == sel {
-		v.store.style.MarkerGraphics.DrawCells(w, term.Coordinates{X: statusPadLeft, Y: s.y}, s.n,
+		style, _ := v.style()
+		style.MarkerGraphics.DrawCells(w, term.Coordinates{X: statusPadLeft, Y: s.y}, s.n,
 			true, v.markerCell(base))
 	}
 }
 
 // markerCell returns the marker drawn over base.
 func (v *View) markerCell(base term.Attributes) term.Cell {
-	style := v.store.style
+	style, _ := v.style()
 	return term.NewCell(style.Marker, uint8(max(graphemecluster.StringWidth(string(style.Marker)), 1)),
 		term.AttributesUnion(base, style.MarkerAttr))
 }
@@ -645,7 +698,7 @@ func (v *View) scroll(down bool) bool {
 
 func (v *View) drawEntry(w term.Writer, i, y, width int, base term.Attributes, selected bool) {
 	e := v.entries[i]
-	style := v.store.style
+	style, _ := v.style()
 	if bar, ok := v.progressBar(i, y, width, base, selected); ok {
 		bar.draw(w)
 	}
@@ -683,7 +736,7 @@ func (v *View) progressBar(i, y, width int, base term.Attributes, selected bool)
 	if e.wsName != "" {
 		y++
 	}
-	style := v.store.style
+	style, _ := v.style()
 	textEnd := width - statusPadRight - statusSelectionPad
 	bar := term.AttributesUnion(base, style.ProgressAttr)
 	remaining := style.ProgressRemainingAttr
@@ -701,28 +754,33 @@ func (v *View) progressBar(i, y, width int, base term.Attributes, selected bool)
 }
 
 func (v *View) drawPreview(w term.Writer, width, height int) {
-	p, ok := v.preview()
-	if ok && p.Hidden {
-		p.Content.Draw(&component.VirtualWriter{Writer: w, Width: width, Height: height})
+	// What the selection previews may only just have become something
+	// to open, such as a terminal done loading.
+	v.sizePreview()
+	s := v.preview()
+	switch {
+	case s != nil && s.comp != nil:
+		s.comp.Draw(&component.VirtualWriter{Writer: w, Width: width, Height: height})
 		return
-	}
-	if !ok || p.Width == 0 || p.Height == 0 {
-		s := component.NewStringWithConfig(statusPreviewNone, component.StringConfig{
-			Alignment:  component.AlignmentCentered,
-			Attributes: v.store.style.PlaceholderAttr,
+	case s != nil && s.preview.borrowed():
+		// The bottom of a program, such as its prompt, matters the most:
+		// the top rows are the ones cut.
+		p := s.preview
+		p.Content.Draw(&component.VirtualWriter{
+			Writer: w,
+			Offset: term.Coordinates{Y: -max(p.Height-height, 0)},
+			Width:  p.Width,
+			Height: p.Height,
 		})
-		s.Resize(width, height)
-		s.Draw(w)
 		return
 	}
-	// The bottom of a program, such as its prompt, matters the most: the
-	// top rows are the ones cut.
-	p.Content.Draw(&component.VirtualWriter{
-		Writer: w,
-		Offset: term.Coordinates{Y: -max(p.Height-height, 0)},
-		Width:  p.Width,
-		Height: p.Height,
+	style, _ := v.style()
+	none := component.NewStringWithConfig(statusPreviewNone, component.StringConfig{
+		Alignment:  component.AlignmentCentered,
+		Attributes: style.PlaceholderAttr,
 	})
+	none.Resize(width, height)
+	none.Draw(w)
 }
 
 func (v *View) handleMouse(ev term.Event) bool {
@@ -889,8 +947,14 @@ func (in statusInbox) glyph(state programstatus.State, kind programstatus.Kind, 
 	return string(icon)
 }
 
-type statusFit struct {
+// statusShown is the preview of the selection ref, and the view it
+// opened, if it did, width by height, which close closes.
+type statusShown struct {
 	ref           statusRef
+	preview       Preview
+	opened        bool
+	comp          tui.Component
+	close         func()
 	width, height int
 }
 

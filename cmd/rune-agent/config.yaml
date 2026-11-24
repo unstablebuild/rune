@@ -86,6 +86,26 @@ extensions:
         horizontalbottom: "─"
         verticalleft: "│"
         verticalright: "│"
+      # The chat's style while its window is in focus and more than one
+      # window is open, to match browser.window_manager's
+      # focus_background_attr in rune.star. Its keys are laid over the
+      # ones above; the status bar changes only when it has a status_bar.
+      #focus:
+      #  background_attr:
+      #    bg: "#1b1f2a"
+      #  input_background_color: "#1b1f2a"
+      #  input_box_attr:
+      #    fg: default
+      #    bg: "#1b1f2a"
+      #  input_box_frame_attr:
+      #    fg: silver
+      #    bg: "#1b1f2a"
+      #  input_box_frame_charset:
+      #    graphics:
+      #      topleft: file:///path/to/focused-topleft.png
+      #  status_bar:
+      #    background_attr:
+      #      bg: "#1b1f2a"
       # Styling for the '#' context completion overlay. Defaults mirror
       # the command prompt (see "command.*_attr" in rune.star) so both
       # search overlays look consistent.
@@ -131,9 +151,10 @@ extensions:
         enabled: true
         # Layout of the status bar. Available components include:
         # Spinner, Status, Conversation, Elapsed, Model, Provider,
-        # Effort, MaxTokens, TokensSent, TokensReceived, ContextTokens,
-        # ContextWindow, ContextPct, Cache, CachePct, ContextGauge,
-        # CacheGauge, Image, and ShiftRight. Pipe operators support bg,
+        # Effort, Speed, MaxTokens, TokensSent, TokensReceived,
+        # ContextTokens, ContextWindow, ContextPct, Cache, CachePct,
+        # ContextGauge, CacheGauge, Image, and ShiftRight. Speed is hidden
+        # at standard speed. Pipe operators support bg,
         # fg, bold, italic, underline, reverse, and dim. Spinner and
         # Status take their colors from status below, so naming one here
         # only sets the fallback for a status the palette does not cover.
@@ -175,7 +196,7 @@ extensions:
         # characters but newlines.
         # A badge after the model, nudged 3 pixels up:
         #   {{ .Model | fg "white" }}  {{ .Image | src "file:///path/to/logo.png" | y_pixel_offset -3 }}
-        layout: ' {{ .Spinner }} {{ .Status | bold }} █▓▒░  {{ .Model | fg "white" }}  {{ .Effort }}{{ .ShiftRight }}󰗂 {{ .Cache }}  {{ .Elapsed }}  {{ .Conversation | bold | fg "white" }}  {{ .ContextGauge }} '
+        layout: ' {{ .Spinner }} {{ .Status | bold }} █▓▒░  {{ .Model | fg "white" }}  {{ .Effort }}  󱐋 {{ .Speed }}{{ .ShiftRight }}󰗂 {{ .Cache }}  {{ .Elapsed }}  {{ .Conversation | bold | fg "white" }}  {{ .ContextGauge }} '
         # Effect drawn over the whole bar while a turn runs. One of
         # blaze, burn, inferno, pulse, shine. Off by
         # default: every frame of the effect redraws the whole chat.

@@ -327,9 +327,9 @@ func (c *chat) showError(msg string) {
 	c.interrupt()
 }
 
-// restyle draws the chat with the status bar, compose box frame and
-// compose box colours of style, whose frame images by URI are frameImages,
-// unless the chat closed.
+// restyle draws the chat with the status bar, compose box frame, compose
+// box colours and focus style of style, whose frame images by URI are
+// frameImages, unless the chat closed.
 func (c *chat) restyle(style dialoguetui.ComponentConfig, frameImages map[string]stdimage.Image) {
 	c.mu.Lock()
 	if c.ctx.Err() != nil {
@@ -339,6 +339,7 @@ func (c *chat) restyle(style dialoguetui.ComponentConfig, frameImages map[string
 	c.comp.SetStatusBarConfig(style.StatusBar)
 	c.comp.SetInputBoxFrameCharSet(style.InputBox.FrameCharSet, frameImages)
 	c.comp.SetInputBoxColors(style.InputBox.FrameAttr, style.InputBox.ContentAttr, style.InputBackgroundColor)
+	c.comp.SetFocusStyle(style.Focus)
 	c.mu.Unlock()
 	c.interrupt()
 }

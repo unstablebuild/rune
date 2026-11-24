@@ -91,6 +91,7 @@ type ClientStream[T handlerrpc.StreamMessage] struct {
 	resized           bool
 	sentCellPixelSize pixelSize
 	forceRequest      bool
+	windowFocus       handlerrpc.WindowFocus
 
 	req struct {
 		height, width int
@@ -320,6 +321,12 @@ func (s *ClientStream[T]) Draw(w term.Writer) {
 		s.sendResize()
 		s.forceRequest = true
 	}
+	// The peer draws the focus style from the request, so a cached response
+	// is stale once the focus changes.
+	if focus := windowFocusOf(w.Context()); focus != s.windowFocus {
+		s.windowFocus = focus
+		s.forceRequest = true
+	}
 
 	ctx := w.Context()
 	iterationID, reqIsTick := tui.IterationFromContext(ctx)
@@ -448,6 +455,7 @@ func (s *ClientStream[T]) scheduleDrawRequest(ctx context.Context, reqIsTick boo
 			PackedOk:         true,
 			CellsUnchangedOk: true,
 			ImageAck:         s.images.ack,
+			WindowFocus:      s.windowFocus,
 		}
 		sendMsg := handlerrpc.ServerMessage{Type: handlerrpc.MessageType_Draw, Draw: &req}
 		err := s.stream.SendMsg(&sendMsg)

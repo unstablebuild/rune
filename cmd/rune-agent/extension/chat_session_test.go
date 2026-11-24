@@ -32,6 +32,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 	"unstable.build/rune/cmd/rune-agent/llm/llmtest"
+	"unstable.build/rune/internal/text"
 )
 
 const sessionTestID = "rolling-fox"
@@ -301,6 +302,114 @@ func TestChatSessionLastIdleViewClosesWithoutStatus(t *testing.T) {
 
 	assert.Equal(t, before, len(wm.tabStatuses()),
 		"the outcome the tab showed is not listed again for a chat that ended")
+}
+
+// openPreview opens a preview of the chat c shows, as the host's status
+// inbox does, and sizes it width by height. The preview closes with the
+// test unless the test closes it.
+func openPreview(t *testing.T, h *aiEditorHandler, c *chat, width, height int) *chat {
+	t.Helper()
+	uri, err := workspaceapi.ParseURI(c.uri.String() + "?" + text.PreviewQuery)
+	require.NoError(t, err)
+	p, err := h.OpenResource(t.Context(), uri)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, p.Close()) })
+	p.Resize(width, height)
+	return &chat{content: p, id: c.id, uri: uri}
+}
+
+func TestChatSessionPreview(t *testing.T) {
+	const msg = "a message long enough to wrap"
+	t.Run("follows the chat at a size of its own", func(t *testing.T) {
+		svc := llmtest.New(sessionTestModels, llmtest.Response{Chunks: []string{"Hi there."}})
+		h, _ := newChatTestHandler(t, svc, newMemDialogueStore())
+		c := openChat(t, h, sessionTestID, 60, 12)
+		p := openPreview(t, h, c, 24, 12)
+		s, ok := h.runningChat(sessionTestID)
+		require.True(t, ok)
+		assert.Len(t, s.shownIn(), 1, "a preview is none of the chat's views")
+
+		typeInto(t, c, msg+"<enter>")
+		screen := awaitScreen(t, p, 24, 12, "Hi there.")
+		assert.NotContains(t, screen, msg, "it wraps at its own width:\n%s", screen)
+		assert.Contains(t, screen, "a message", screen)
+
+		_, handled := p.content.Handle(term.Event{Type: term.EventKey, Ch: 'x'})
+		assert.False(t, handled, "it takes no input")
+	})
+
+	t.Run("keeps no idle chat from ending", func(t *testing.T) {
+		h, _ := newChatTestHandler(t, llmtest.New(sessionTestModels), newMemDialogueStore())
+		c, err := h.newChat(textapi.Command{Name: commandChat, Args: []string{sessionTestID}}, workspaceapi.URI{})
+		require.NoError(t, err)
+		p := openPreview(t, h, c, 40, 10)
+		s, ok := h.runningChat(sessionTestID)
+		require.True(t, ok)
+		require.NoError(t, c.content.Close())
+		awaitClosed(t, s)
+		awaitScreen(t, p, 40, 10, chatClosedText)
+	})
+
+	t.Run("closing it leaves the chat be", func(t *testing.T) {
+		h, _ := newChatTestHandler(t, llmtest.New(sessionTestModels), newMemDialogueStore())
+		c := openChat(t, h, sessionTestID, 40, 10)
+		p := openPreview(t, h, c, 40, 10)
+		require.NoError(t, p.content.Close())
+		s, ok := h.runningChat(sessionTestID)
+		require.True(t, ok, "the chat runs on")
+		assert.Len(t, s.shownIn(), 1)
+		assert.False(t, s.isEnded())
+	})
+
+	t.Run("answers no prompt", func(t *testing.T) {
+		args := mustJSON(t, map[string]any{
+			"questions": []map[string]any{{
+				"question": "Pick one", "header": "Choice",
+				"options": []map[string]any{
+					{"label": "A", "description": ""},
+					{"label": "B", "description": ""},
+				},
+				"multiSelect": false,
+			}},
+		})
+		svc := llmtest.New(sessionTestModels,
+			llmtest.Response{
+				Chunks: []string{"Let me ask."},
+				ToolCalls: []llmapi.ToolCall{{
+					ID: "call-1", Type: llmapi.ToolTypeFunction,
+					Function: llmapi.FunctionCall{Name: "ask_user_question", Arguments: args},
+				}},
+				FinishReason: llmapi.FinishReasonToolCall,
+			},
+			llmtest.Response{Chunks: []string{"You picked A."}},
+		)
+		h, _ := newChatTestHandler(t, svc, newMemDialogueStore())
+		const width, height = 60, 24
+		c := openChat(t, h, sessionTestID, width, height)
+		typeInto(t, c, "ask me<enter>")
+		awaitScreen(t, c, width, height, "Pick one")
+		p := openPreview(t, h, c, width, height)
+		awaitScreen(t, p, width, height, "Let me ask.", "Pick one", "> A")
+		typeInto(t, p, "<enter>")
+		time.Sleep(50 * time.Millisecond)
+		assert.Len(t, svc.Requests(), 1, "the preview answers nothing")
+
+		typeInto(t, c, "<enter>")
+		screen := awaitScreen(t, p, width, height, "You picked A.")
+		assert.NotContains(t, screen, "> A", "the preview takes the prompt down:\n%s", screen)
+	})
+
+	t.Run("of a chat that does not run", func(t *testing.T) {
+		h, _ := newChatTestHandler(t, llmtest.New(sessionTestModels), newMemDialogueStore())
+		uri, err := getModelUri(sessionTestID, "test-model")
+		require.NoError(t, err)
+		uri, err = workspaceapi.ParseURI(uri.String() + "?" + text.PreviewQuery)
+		require.NoError(t, err)
+		_, err = h.OpenResource(t.Context(), uri)
+		require.ErrorContains(t, err, "is not running")
+		_, ok := h.runningChat(sessionTestID)
+		assert.False(t, ok, "a preview starts no chat")
+	})
 }
 
 func TestChatSessionEndsWithItsLastIdleView(t *testing.T) {

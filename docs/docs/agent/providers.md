@@ -263,6 +263,40 @@ the session default with `agent effort <level>`. Unlike the config value,
 these are explicit per-session choices, so Rune warns you when the current
 model cannot honor the level you asked for.
 
+### Speed
+
+Some models can answer faster for a higher price. Pick the speed of the focused
+chat with `chatspeed`, or `/speed` inside the chat:
+
+| Speed | Meaning |
+| --- | --- |
+| `standard` | The provider's normal speed and price. Every new chat starts here. |
+| `fast` | Faster output, billed at a premium. |
+| `ultrafast` | The fastest output, billed at a higher premium. |
+
+Fast and ultrafast requests are billed at premium rates and count against
+their own rate limits, separate from standard requests. Check your provider's
+pricing before turning them on.
+
+Speed is supported on these models:
+
+| Provider | `fast` | `ultrafast` |
+| --- | --- | --- |
+| Anthropic, Claude | `claude-fable-5-2`, `claude-opus-5-5`, `claude-opus-5` | None |
+| OpenAI | `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.2`, `gpt-5.1`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4o` | `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6-astra`, `gpt-6.1-sol` |
+| Codex | Every Codex model | `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6-astra`, `gpt-6.1-sol` |
+
+Fast mode on `claude-opus-5` is still a preview, and some accounts may have
+their fast requests rejected until it is generally available. Codex ultrafast
+also requires a ChatGPT Pro $500 plan or an eligible Enterprise or Edu
+workspace; on other plans, ChatGPT rejects the request.
+
+The chat keeps its speed when you switch models. On a model that does not
+support the chosen speed, requests run at standard speed and are billed as
+standard, and the speed applies again once you switch back to a model that
+supports it. The [status bar](config.md#status-bar) shows the speed only
+while the chat is actually paying for it.
+
 ### Reasoning summary
 
 `models.reasoning_summary` controls how Rune surfaces a reasoning model's

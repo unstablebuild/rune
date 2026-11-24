@@ -462,6 +462,7 @@ Your installed language package must contain:
 | `lib/indents.scm` | Structural indentation. |
 | `lib/folds.scm` | Foldable regions. |
 | `lib/locals.scm` | Definitions, references, scopes, and local symbols. |
+| `lib/injections.scm` | Regions written in another language, such as `<script>` and `<style>` blocks. Optional. |
 
 Some grammars already publish useful queries. Others need queries from a project
 such as nvim-treesitter or custom queries written for Rune. Python's package
@@ -473,7 +474,10 @@ The exact files copied into the package are visible in the
 [Python Makefile](https://github.com/unstablebuild/rune-language-python/blob/main/Makefile#L99-L113).
 
 The most important file for indexing is `locals.scm`. It labels syntax nodes
-with captures such as:
+with captures such as the following; the `local.definition.*` captures also
+feed the definitions the [symbol index](../languages/symbol-index.md) lists
+for `searchfunc`, `searchvar` and `searchtype`, so every installed language
+gets them:
 
 ```scheme
 @local.definition.function
@@ -494,6 +498,31 @@ and
 [Zig](https://github.com/unstablebuild/rune-language-zig/blob/main/tree-sitter-zig/queries/locals.scm#L1-L96)
 queries are practical references.
 
+`injections.scm` is only needed by languages that embed others, such as
+HTML, Svelte, Vue, or Markdown. Each region it marks with
+`@injection.content` is parsed, highlighted, folded and indented with the
+package of the language it names, which is installed the way opening a file
+in that language installs it; a declined package leaves the region to the
+host. The language comes from `(#set! injection.language "x")`
+or from the text of an `@injection.language` capture; a name that is a file
+extension, such as `ts`, resolves the way a filename with that extension
+would. `#offset!` trims the region. Only the standard predicates (`#eq?`,
+`#match?`, `#any-of?` and their negations) are evaluated: a pattern that
+uses any other predicate, such as nvim-treesitter's `#lua-match?` or
+`#gsub!`, is disabled. The language template refuses to package a query
+containing one; when an upstream file needs them, commit a hand-written
+replacement with the same patterns and `#match?` predicates under
+`queries/<lang>/`, the way
+[`queries/html_tags/injections.scm`](https://github.com/unstablebuild/rune-language-template/blob/main/queries/html_tags/injections.scm)
+replaces the upstream file every HTML-like grammar inherits. Each content
+node is one region; `injection.combined` and `injection.include-children`
+are not supported. Inside a region, indentation follows nvim-treesitter:
+the region's own `indents.scm` runs on top of the indentation of the line
+holding the region's first token, and the host's `indents.scm` is not
+consulted. A region whose language ships no `indents.scm`, such as
+`comment` or `markdown_inline`, or whose package was declined, is indented
+by the host.
+
 Rune looks up syntax assets by language ID. The native library must also export
 the grammar symbol Rune expects, usually `tree_sitter_<languageID>`. Renaming a
 shared library does not change that exported symbol. If the grammar's identifier
@@ -508,16 +537,22 @@ entry in
 Add the corresponding Rune-core syntax suite at
 `internal/ide/syntax/syntaxtest/<file-id>_test.go`. Commit a package-shaped
 fixture directory containing the real native parser and the real
-`highlights.scm`, `indents.scm`, `folds.scm`, and `locals.scm` files. The suite
-must load those assets through Rune and run them against representative source,
-including incomplete code. Follow the existing
+`highlights.scm`, `indents.scm`, `folds.scm`, `locals.scm` and, when the
+language embeds others, `injections.scm` files. The suite must load those
+assets through Rune and run them against representative source, including
+incomplete code. Every committed `injections.scm` is also compiled against its
+fixture grammar by a test in the `treesitter` package, which fails on any
+pattern Rune would disable. Follow the existing
 [Go](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/go_test.go),
 [Python](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/py_test.go),
 [Rust](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/rs_test.go),
 [Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/zig_test.go),
 [C](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/c_test.go),
-and
 [C++](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/cpp_test.go)
+and, for embedded languages,
+[Svelte](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/svelte_test.go)
+and
+[Markdown](https://github.com/unstablebuild/rune/blob/main/internal/ide/syntax/syntaxtest/md_test.go)
 suites. A test that mocks captures or reads different query files from the ones
 you package does not satisfy this requirement.
 
@@ -538,7 +573,7 @@ inside Rune core. Copy the existing spec closest to your language's module
 system, rename it, and replace its queries and callbacks. Then add it to the
 [`registry`](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/registry.go#L26-L39).
 
-Choose examples by semantics, not syntax:
+Examples:
 
 - [Go](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/golang.go#L26-L59)
   is useful for package clauses, import aliases, exported-name rules for
@@ -560,6 +595,10 @@ Choose examples by semantics, not syntax:
   demonstrates two specs sharing one language server, file-stem qualifiers
   for a language without packages (C), and namespace-derived packages with
   `ns::name` and `Type::method` qualified references (C++).
+- [Svelte](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/svelte.go)
+  demonstrates a host language: a spec with no queries of its own whose
+  `Injected` list names the specs that read the regions its grammar's
+  `injections.scm` marks as another language.
 
 Add focused fixtures while writing the spec. Test imports with and without
 aliases, two symbols with the same name, nested modules, private declarations,
@@ -578,11 +617,14 @@ parser, the packaged syntax queries, and the real resolver specification. The
 [Zig](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/zig_test.go),
 [TypeScript](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/ts_test.go),
 [C](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/c_test.go),
-and
 [C++](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/cpp_test.go)
+and
+[Svelte](https://github.com/unstablebuild/rune/blob/main/internal/ide/idelsp/symbolresolve/svelte_test.go)
 suites show the required structure. A passing language-server test does not
 replace this suite because Rune's indexer resolves these names independently of
-the language server.
+the language server. A host language's suite must additionally cover a
+region whose grammar is not installed and a host package without an
+`injections.scm`, both of which must extract nothing rather than fail.
 
 ## 7. Add debugging and language-specific commands
 

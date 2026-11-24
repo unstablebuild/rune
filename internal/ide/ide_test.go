@@ -307,11 +307,11 @@ func TestIDEInitializationIntegration(t *testing.T) {
 		assert.NoError(t, i.closeResources())
 	})
 
-	t.Run("init shader factory receives attrs set via SetDefaultAttributes before Ready", func(t *testing.T) {
+	t.Run("init shader factory receives attrs set via SetThemeColors before Ready", func(t *testing.T) {
 		// Documents RUNE-203 contract: callers MUST invoke
-		// SetDefaultAttributes before Ready() so the init-shader
+		// SetThemeColors before Ready() so the init-shader
 		// factory observes the configured GUI theme background.
-		// Calling SetDefaultAttributes after Ready() leaves the
+		// Calling SetThemeColors after Ready() leaves the
 		// shader runner painting with the stale config defAttr.
 		configPath := makeConfigFile(t, logoConfig)
 
@@ -336,17 +336,17 @@ func TestIDEInitializationIntegration(t *testing.T) {
 			Fg: term.ColorWhite,
 			Bg: term.ColorBlack,
 		}
-		i.SetDefaultAttributes(wantAttr)
+		i.SetThemeColors(ThemeColors{Default: wantAttr})
 
 		_ = i.Ready()
 
 		assert.Equal(t, wantAttr, captured,
 			"init shader factory must observe attrs set via "+
-				"SetDefaultAttributes prior to Ready()")
+				"SetThemeColors prior to Ready()")
 		assert.NoError(t, i.closeResources())
 	})
 
-	t.Run("SetDefaultAttributes propagates default fg to home ex before Ready", func(t *testing.T) {
+	t.Run("SetThemeColors propagates the theme to home ex before Ready", func(t *testing.T) {
 		configFile, _ := makeTestFiles(t)
 
 		dataDir, err := os.MkdirTemp("", "")
@@ -362,17 +362,22 @@ func TestIDEInitializationIntegration(t *testing.T) {
 			WithLocker(new(sync.Mutex)))
 		require.NoError(t, err)
 
-		wantAttr := term.Attributes{
-			Fg: term.NewRGBColor(210, 180, 140),
-			Bg: term.ColorBlack,
+		want := ThemeColors{
+			Default: term.Attributes{
+				Fg: term.NewRGBColor(210, 180, 140),
+				Bg: term.ColorBlack,
+			},
+			FocusBackground: term.NewRGBColor(40, 40, 40),
 		}
-		i.SetDefaultAttributes(wantAttr)
+		i.SetThemeColors(want)
 
 		require.NotNil(t, i.workspaceHandler.empty)
-		assert.Equal(t, wantAttr, i.workspaceHandler.empty.defAttr,
-			"home ex must observe attrs set via SetDefaultAttributes")
-		assert.Equal(t, wantAttr, i.workspaceHandler.defAttr,
-			"workspace handler must cache the live default attrs for "+
+		assert.Equal(t, want.Default, i.workspaceHandler.empty.defAttr,
+			"home ex must observe attrs set via SetThemeColors")
+		assert.Equal(t, want.FocusBackground, i.workspaceHandler.empty.themeFocusBg,
+			"home ex must observe the focus background set via SetThemeColors")
+		assert.Equal(t, want, i.workspaceHandler.theme,
+			"workspace handler must cache the live theme colours for "+
 				"seeding future workspaces")
 		assert.NoError(t, i.closeResources())
 	})
@@ -2393,8 +2398,6 @@ func TestE2EWorkspaceSymbolDBIndexing(t *testing.T) {
 	configPath := filepath.Join(dataDir, "rune.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte(`
 clipboard: memory
-workspace:
-  symboldb: true
 `), 0o666))
 
 	mu := new(sync.Mutex)
@@ -2419,9 +2422,8 @@ workspace:
 	wh := i.workspaceHandler.workspaces[i.workspaceHandler.focus]
 	mu.Unlock()
 	require.NotNil(t, wh)
-	sdb, ok := wh.symbolDBCloser.(*symboldb.Parser)
-	require.True(t, ok,
-		"workspace parser must be wrapped with the symbol database")
+	sdb := wh.symbolIndex
+	require.NotNil(t, sdb)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -2458,45 +2460,6 @@ func mustResolve(
 	it, err := p.ResolveSymbol(ctx, name, nil)
 	require.NoError(t, err)
 	return it
-}
-
-func TestWorkspaceSymbolDBDisabledByDefault(t *testing.T) {
-	rawDir := t.TempDir()
-	dir, err := filepath.EvalSymlinks(rawDir)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, "alpha.go"), []byte("package a\n"), 0o644))
-
-	dataDir := t.TempDir()
-	configPath := filepath.Join(dataDir, "rune.yaml")
-	require.NoError(t, os.WriteFile(configPath, []byte(`
-clipboard: memory
-`), 0o666))
-
-	mu := new(sync.Mutex)
-	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
-
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
-		WithLocker(mu),
-		WithScheduleNextTick(scheduleNextTick),
-		WithPublishEvent(func(term.Event) bool { return true }),
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = i.Close() })
-
-	root := i.Ready()
-	mu.Lock()
-	root.Resize(80, 24)
-	mu.Unlock()
-	drainSchedule()
-	i.WaitWorkspaces()
-
-	mu.Lock()
-	wh := i.workspaceHandler.workspaces[i.workspaceHandler.focus]
-	mu.Unlock()
-	require.NotNil(t, wh)
-	assert.Nil(t, wh.symbolDBCloser,
-		"symbol database must not be built when workspace.symboldb is unset")
 }
 
 func TestWorkspaceSearchIndexing(t *testing.T) {
@@ -2586,6 +2549,80 @@ func TestWorkspaceSearchIndexing(t *testing.T) {
 			assert.False(t, open, "closing the workspace closes its index")
 			_, err = wh.regexIndex.RegexpSearch(ctx, searchapi.RegexpRequest{Pattern: "x"})
 			assert.Error(t, err, "closing the workspace closes its regex index")
+		})
+	}
+}
+
+func TestWorkspaceSymbolIndexing(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  string
+		indexed bool
+	}{
+		{"enabled by default", "clipboard: memory\n", true},
+		{"disabled", "clipboard: memory\nsearch:\n  symbols_enabled: false\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "invoice.go"),
+				[]byte("package billing\n\nfunc InvoiceTotal() {}\n"), 0o644))
+			dataDir := t.TempDir()
+			stageTreeSitterGo(t, dataDir)
+			configPath := filepath.Join(dataDir, "rune.yaml")
+			require.NoError(t, os.WriteFile(configPath, []byte(tt.config), 0o666))
+
+			mu := new(sync.Mutex)
+			scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
+			i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
+				WithLocker(mu),
+				WithScheduleNextTick(scheduleNextTick),
+				WithPublishEvent(func(term.Event) bool { return true }),
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = i.Close() })
+			root := i.Ready()
+			mu.Lock()
+			root.Resize(80, 24)
+			mu.Unlock()
+			drainSchedule()
+			i.WaitWorkspaces()
+
+			mu.Lock()
+			wh := i.workspaceHandler.workspaces[i.workspaceHandler.focus]
+			storage := i.workspaceHandler.ideStorage
+			mu.Unlock()
+			require.NotNil(t, wh)
+			idx := wh.symbolIndex
+			require.NotNil(t, idx)
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			require.NoError(t, idx.Wait(ctx))
+			st := idx.Status()
+			assert.True(t, st.Scanned)
+			assert.Equal(t, tt.indexed, st.Files == 1)
+			db := storageapi.WithPartition(storageapi.WithPartition(storage, symboldb.PartitionName), wh.uri.String())
+			var marker map[string]any
+			err = db.Get(ctx, "scan", &marker)
+			assert.Equal(t, tt.indexed, err == nil, "the symbol index persists only when enabled")
+
+			it, err := idx.Definitions(ctx, symboldb.DefinitionQuery{Kinds: []symboldb.Kind{symboldb.KindFunction}})
+			require.NoError(t, err)
+			defs, err := sdkiterator.ToSlice(ctx, it)
+			require.NoError(t, err)
+			assert.Equal(t, []symboldb.Definition{{
+				Path: "invoice.go", Line: 3, Col: 6, Kind: symboldb.KindFunction, Lang: "go", Name: "InvoiceTotal",
+			}}, defs, "definitions are listed with or without an index")
+
+			mu.Lock()
+			_, _, err = i.workspaceHandler.closeWorkspace()
+			mu.Unlock()
+			require.NoError(t, err)
+			i.workspaceHandler.waitClosing()
+			_, err = idx.Definitions(ctx, symboldb.DefinitionQuery{})
+			assert.Error(t, err, "closing the workspace closes its symbol index")
 		})
 	}
 }

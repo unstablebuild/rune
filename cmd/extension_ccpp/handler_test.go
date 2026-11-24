@@ -47,12 +47,13 @@ type testHandler struct {
 	*ccppHandler
 	fs        *fakeFS
 	exec      *fakeExecutor
+	notify    *fakeNotifications
 	restarts  int
 	restarter error
 }
 
 func newTestHandler(fs *fakeFS, cfg config.Config) *testHandler {
-	th := &testHandler{fs: fs, exec: newFakeExecutor()}
+	th := &testHandler{fs: fs, exec: newFakeExecutor(), notify: newFakeNotifications()}
 	th.exec.respond(testClangd+" --version", scriptedCmd{stdout: "clangd version 21.1.0\n"})
 	uri, err := workspaceapi.ParseURI("file:///ws")
 	if err != nil {
@@ -63,23 +64,28 @@ func newTestHandler(fs *fakeFS, cfg config.Config) *testHandler {
 	tools := langext.NewInitializer(context.Background(), nil, nil, notInstalled, langext.ProjectConfig{
 		LanguageID: ccppLanguageID, Tools: ccppToolNames,
 	}).Tools()
+	state := &serverState{}
+	restart := func(context.Context) error {
+		th.restarts++
+		return th.restarter
+	}
 	_, h := newCcppHandler(ccppHandlerConfig{
 		exec:   th.exec,
 		fs:     fs,
 		cfg:    cfg,
-		notify: newFakeNotifications(),
+		notify: th.notify,
 		wsRoot: langext.Root{Dir: "/ws", URI: "file:///ws"},
 		focus:  &focusTracker{wsDir: "/ws"},
 		compdb: newCompdbSetting(storagestub.NewInMemoryService(), uri),
-		state:  &serverState{},
-		clangd: func(context.Context) string { return testClangd },
-		bear: func(ctx context.Context) string {
-			return resolveBear(ctx, newFakeNotifications(), th.exec, tools)
+		state:  state,
+		gen: &compdbGenerator{
+			fs: fs, exec: th.exec, notify: th.notify, state: state, restart: restart,
+			bear: func(ctx context.Context) string {
+				return resolveBear(ctx, newFakeNotifications(), th.exec, tools)
+			},
 		},
-		restart: func(context.Context) error {
-			th.restarts++
-			return th.restarter
-		},
+		clangd:  func(context.Context) string { return testClangd },
+		restart: restart,
 	})
 	th.ccppHandler = h.(*ccppHandler)
 	return th
@@ -208,7 +214,8 @@ func TestCcppHandlerStatus(t *testing.T) {
 		out, err := runCcpp(t, h.ccppHandler, "status")
 		require.NoError(t, err)
 		assert.Contains(t, out, "none; clangd falls back to clang <file>")
-		assert.Contains(t, out, "CMAKE_EXPORT_COMPILE_COMMANDS")
+		assert.Contains(t, out, "ccpp compdb generate writes one by running "+
+			"cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
 		assert.NotContains(t, out, "bear")
 
 		fs := newFakeFS().addFile("/ws/Makefile").addFile("/ws/cmake-build-debug/compile_commands.json").
@@ -220,7 +227,7 @@ func TestCcppHandlerStatus(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, out, "ccpp compdb use cmake-build-debug")
 	})
-	t.Run("an autotools tree is one project advised to run bear", func(t *testing.T) {
+	t.Run("an autotools tree is one project advised to record its build", func(t *testing.T) {
 		fs := newFakeFS().
 			addFile("/ws/configure.ac").addFile("/ws/configure").
 			addFile("/ws/Makefile.in").addFile("/ws/Makefile").
@@ -230,16 +237,17 @@ func TestCcppHandlerStatus(t *testing.T) {
 		out, err := runCcpp(t, h.ccppHandler, "status")
 		require.NoError(t, err)
 		assert.Contains(t, out, "Project: . (configure.ac, Makefile)")
-		assert.Contains(t, out, "./configure && bear -- make")
-		assert.Contains(t, out, "pkg install ccpp")
+		assert.Contains(t, out, "ccpp compdb generate writes one by running bear --append -- make.")
 		assert.NotContains(t, out, "cmake")
 		assert.NotContains(t, out, "meson")
-
-		h.exec.onPath("bear", "/opt/homebrew/bin/bear")
-		out, err = runCcpp(t, h.ccppHandler, "status")
+	})
+	t.Run("a project Rune cannot generate for gets the recipe", func(t *testing.T) {
+		h := newTestHandler(newFakeFS().addFile("/ws/MODULE.bazel"), nil)
+		focusOn(t, h.ccppHandler, "/ws/a.cc")
+		out, err := runCcpp(t, h.ccppHandler, "status")
 		require.NoError(t, err)
-		assert.Contains(t, out, "./configure && bear -- make")
-		assert.NotContains(t, out, "pkg install")
+		assert.Contains(t, out, "bazel run @hedron_compile_commands//:refresh_all")
+		assert.NotContains(t, out, "ccpp compdb generate")
 	})
 	t.Run("a non C file focused", func(t *testing.T) {
 		h := newTestHandler(newFakeFS(), nil)
@@ -345,7 +353,7 @@ func TestCcppHandlerCompdb(t *testing.T) {
 		focusOn(t, h.ccppHandler, "/ws/a.c")
 		out, err = runCcpp(t, h.ccppHandler, "compdb")
 		require.NoError(t, err)
-		assert.Contains(t, out, "meson setup build")
+		assert.Contains(t, out, "ccpp compdb generate writes one by running meson setup build")
 	})
 	t.Run("a failed restart surfaces", func(t *testing.T) {
 		h := newTestHandler(buildTreeFS(), nil)
@@ -371,6 +379,87 @@ func TestCcppHandlerRestart(t *testing.T) {
 	assert.Equal(t, 1, h.restarts)
 }
 
+func TestCcppHandlerCompdbGenerate(t *testing.T) {
+	// lib/ is a Make project whose Bear run writes two entries.
+	newGenerating := func(t *testing.T, cfg config.Config) *testHandler {
+		t.Helper()
+		fs := newFakeFS().addFile("/ws/lib/Makefile").addFile("/ws/lib/src/Makefile")
+		h := newTestHandler(fs, cfg)
+		h.exec.onPath("make", "/usr/bin/make").onPath("bear", "/opt/homebrew/bin/bear")
+		h.exec.respond("/opt/homebrew/bin/bear parse-sh", scriptedCmd{effect: func() {
+			fs.addContent("/ws/lib/compile_commands.json", []byte(twoEntries))
+		}})
+		focusOn(t, h.ccppHandler, "/ws/lib/src/a.c")
+		return h
+	}
+	t.Run("writes the focused project's database and restarts clangd", func(t *testing.T) {
+		h := newGenerating(t, nil)
+		h.state.running(clangdOptions{bin: testClangd})
+		out, err := runCcpp(t, h.ccppHandler, "compdb", "generate")
+		require.NoError(t, err)
+		assert.Contains(t, out, "Wrote lib/compile_commands.json with 2 compile commands. clangd restarted.")
+		assert.Equal(t, 1, h.restarts)
+		started := h.exec.startedSnapshot()
+		require.Len(t, started, 2)
+		assert.Equal(t, "/ws/lib", started[0].dir, "the project is the outermost Makefile's directory")
+		assert.Equal(t, "/opt/homebrew/bin/bear parse-sh", started[1].key)
+	})
+	t.Run("names the database clangd keeps using instead", func(t *testing.T) {
+		h := newGenerating(t, newStubConfig(map[string]string{"compile_commands_dir": "out"}))
+		out, err := runCcpp(t, h.ccppHandler, "compdb", "generate")
+		require.NoError(t, err)
+		assert.Contains(t, out, "clangd is pointed at out instead; ccpp status says by what.")
+	})
+	t.Run("a failure is the command's error", func(t *testing.T) {
+		h := newGenerating(t, nil)
+		h.exec.respond("/usr/bin/make -nBw", scriptedCmd{stderr: "make: *** missing separator.  Stop.\n", err: assertErr})
+		_, err := runCcpp(t, h.ccppHandler, "compdb", "generate")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "missing separator")
+	})
+	t.Run("a project Rune cannot generate for gets the recipe", func(t *testing.T) {
+		h := newTestHandler(newFakeFS().addFile("/ws/MODULE.bazel"), nil)
+		focusOn(t, h.ccppHandler, "/ws/a.cc")
+		out, err := runCcpp(t, h.ccppHandler, "compdb", "generate")
+		require.NoError(t, err)
+		assert.Contains(t, out, "Rune cannot generate a compile_commands.json for .")
+		assert.Contains(t, out, "hedron_compile_commands")
+		assert.Empty(t, h.exec.callsSnapshot())
+	})
+	t.Run("takes no arguments", func(t *testing.T) {
+		h := newTestHandler(newFakeFS(), nil)
+		_, err := runCcpp(t, h.ccppHandler, "compdb", "generate", "lib")
+		require.EqualError(t, err, "usage: ccpp compdb generate")
+	})
+}
+
+func TestCcppHandlerCompdbAuto(t *testing.T) {
+	h := newTestHandler(newFakeFS(), nil)
+	out, err := runCcpp(t, h.ccppHandler, "compdb", "auto")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Rune asks before generating compile_commands.json")
+
+	out, err = runCcpp(t, h.ccppHandler, "compdb", "auto", "on")
+	require.NoError(t, err)
+	assert.Contains(t, out, "gets one without asking")
+	on, err := h.compdb.autoGenerate(context.Background())
+	require.NoError(t, err)
+	assert.True(t, on)
+	out, err = runCcpp(t, h.ccppHandler, "compdb", "auto")
+	require.NoError(t, err)
+	assert.Contains(t, out, "gets one without asking")
+
+	out, err = runCcpp(t, h.ccppHandler, "compdb", "auto", "off")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Rune asks before generating")
+	on, err = h.compdb.autoGenerate(context.Background())
+	require.NoError(t, err)
+	assert.False(t, on)
+
+	_, err = runCcpp(t, h.ccppHandler, "compdb", "auto", "sometimes")
+	require.EqualError(t, err, "usage: ccpp compdb auto [on | off]")
+}
+
 func TestCcppHandlerVersion(t *testing.T) {
 	h := newTestHandler(newFakeFS(), nil)
 	out, err := runCcpp(t, h.ccppHandler, "version")
@@ -389,12 +478,14 @@ func TestCcppHandlerUsageAndHelp(t *testing.T) {
 	out, err := runCcpp(t, h.ccppHandler)
 	require.NoError(t, err)
 	assert.Contains(t, out, "ccpp <command> [<args>]")
-	assert.Contains(t, out, "compdb [use <dir> | clear]")
+	assert.Contains(t, out, "compdb [use <dir> | clear | generate | auto [on | off]]")
 
 	out, err = runCcpp(t, h.ccppHandler, "help", "compdb")
 	require.NoError(t, err)
 	assert.Contains(t, out, "use <dir>")
 	assert.Contains(t, out, "clear")
+	assert.Contains(t, out, "generate")
+	assert.Contains(t, out, "auto [on | off]")
 
 	_, err = runCcpp(t, h.ccppHandler, "frobnicate")
 	require.Error(t, err)
@@ -413,8 +504,11 @@ func TestCcppHandlerComplete(t *testing.T) {
 	}
 	assert.Equal(t, ccppSubcommandNames, complete())
 	assert.Equal(t, []string{"compdb"}, complete("co"))
-	assert.Equal(t, []string{"clear", "use"}, complete("compdb", ""))
+	assert.Equal(t, []string{"auto", "clear", "generate", "use"}, complete("compdb", ""))
 	assert.Equal(t, []string{"use"}, complete("compdb", "u"))
+	assert.Equal(t, []string{"generate"}, complete("compdb", "g"))
+	assert.Equal(t, []string{"off", "on"}, complete("compdb", "auto", ""))
+	assert.Equal(t, []string{"off"}, complete("compdb", "auto", "of"))
 	assert.Equal(t, []string{"lib/build", "lib/out/Debug"}, complete("compdb", "use", ""))
 	assert.Equal(t, []string{"lib/out/Debug"}, complete("compdb", "use", "lib/o"))
 	assert.Empty(t, complete("compdb", "clear", ""))

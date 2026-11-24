@@ -106,3 +106,22 @@ func UpstreamModelName(model string) string { return model }
 
 // MaxOutputTokens returns 0 because Codex does not accept client-set output limits.
 func MaxOutputTokens(string) int { return 0 }
+
+// SupportsSpeed reports whether the Codex backend can run model at speed. The
+// empty speed and llmapi.SpeedStandard are supported by every model. Ultrafast
+// also depends on the ChatGPT plan, which the server enforces.
+func SupportsSpeed(model string, speed llmapi.Speed) bool {
+	switch speed {
+	case "", llmapi.SpeedStandard:
+		return true
+	case llmapi.SpeedFast:
+		_, ok := AvailableModels()[model]
+		return ok
+	case llmapi.SpeedUltrafast:
+		switch model {
+		case GPT6Dot2Astra, GPT6Dot2Sol, GPT6Astra, GPT6Dot1Sol:
+			return true
+		}
+	}
+	return false
+}

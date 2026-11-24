@@ -21,10 +21,12 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/vte/vteparser"
 	"unstable.build/rune/internal/workspace/workspacetest"
 )
@@ -62,6 +64,116 @@ func (h *keyboardHarness) written() string {
 	}
 	h.pty.Writes = nil
 	return sb.String()
+}
+
+// modalHarness is a keyboardHarness in modal mode whose event loop is the
+// test goroutine: ticks only run when it drains them.
+type modalHarness struct {
+	*keyboardHarness
+	ticks  chan func()
+	notes  *recordingNotifications
+	played []string
+}
+
+// newModalHarness returns a modalHarness showing the prompt "$ echo hi",
+// whose probe times out after 50ms.
+func newModalHarness(t *testing.T, cfg Config) *modalHarness {
+	t.Helper()
+	h := &modalHarness{ticks: make(chan func(), 1000), notes: new(recordingNotifications)}
+	cfg.Modal = true
+	cfg.ScheduleNextTick = func(cb func()) bool {
+		select {
+		case h.ticks <- cb:
+			return true
+		default:
+			return false
+		}
+	}
+	cfg.Sounds = sounds.PlayerFunc(func(name string) { h.played = append(h.played, name) })
+	comp, err := NewComponent(&testExecutor{}, &testExecutor{}, &mockTabManager{}, cfg)
+	require.NoError(t, err)
+	comp.bellProbeTimeout = 50 * time.Millisecond
+	pty, ok := comp.pty.Master.(*workspacetest.File)
+	require.True(t, ok)
+	handler := &Handler{
+		comp: comp, ctx: context.Background(), notifications: h.notes,
+		modalEnabled: true, viEnabled: true,
+	}
+	handler.vi.init(comp, cfg)
+	handler.vi.refused = handler.modalRefused
+	handler.Resize(80, 24)
+	h.keyboardHarness = &keyboardHarness{Handler: handler, pty: pty}
+	h.output("$ echo hi")
+	h.written()
+	return h
+}
+
+// press handles keys, written as in term.ParseKeys, and runs the ticks
+// they schedule.
+func (h *modalHarness) press(t *testing.T, keys string) {
+	t.Helper()
+	combs, err := term.ParseKeys(keys)
+	require.NoError(t, err)
+	for _, k := range combs {
+		ev := term.Event{Type: term.EventKey, Key: k.Key, Ch: k.Ch, Mod: k.Mod}
+		// the GUI gives a plain key its bytes
+		switch {
+		case k.Mod != 0:
+		case k.Ch != 0:
+			ev.Raw = []byte(string(k.Ch))
+		case k.Key == term.KeyEsc:
+			ev.Raw = []byte{0x1b}
+		}
+		h.Handle(ev)
+	}
+	h.drain()
+}
+
+func (h *modalHarness) drain() {
+	for {
+		select {
+		case cb := <-h.ticks:
+			cb()
+		default:
+			return
+		}
+	}
+}
+
+// waitTick runs the next tick, which only a timer schedules, and the
+// ticks it schedules.
+func (h *modalHarness) waitTick(t *testing.T) {
+	t.Helper()
+	select {
+	case cb := <-h.ticks:
+		cb()
+	case <-time.After(5 * time.Second):
+		t.Fatal("nothing was scheduled")
+	}
+	h.drain()
+}
+
+func (h *modalHarness) errorSounds() int {
+	var n int
+	for _, name := range h.played {
+		if name == sounds.Error {
+			n++
+		}
+	}
+	return n
+}
+
+// screen returns what the terminal draws, with the rows trimmed.
+func (h *modalHarness) screen(t *testing.T) []string {
+	t.Helper()
+	w := term.NewStringWriter(80, 24)
+	h.Draw(w)
+	require.NoError(t, w.Flush())
+	rows := strings.Split(w.String(), "\n")
+	for i, row := range rows {
+		rows[i] = strings.TrimRight(row, " ")
+	}
+	return rows
 }
 
 func keyEv(key term.Key, mod term.Modifier) term.Event {
@@ -319,6 +431,338 @@ func TestHandlerKeyboardProtocols(t *testing.T) {
 			_, handled := h.Handle(tc.ev)
 			assert.True(t, handled)
 			assert.Equal(t, tc.want, h.written())
+		})
+	}
+}
+
+func TestHandlerShiftEsc(t *testing.T) {
+	t.Parallel()
+	const (
+		command = "\x1b]133;C\x1b\\"
+		// a full-screen program draws two rows and leaves its cursor on
+		// the second
+		altScreen = "\x1b[?1049h\x1b[Hfirst row\r\nsecond row\x1b[2;3H"
+		altCursor = "\x1b[2;3H"
+	)
+	cases := []struct {
+		name       string
+		output     string
+		steps      []modalStep
+		wantViMode bool
+		wantCursor *term.Coordinates
+		wantScreen []string
+		wantErrors int
+		// wantYanked is what yy copies after the steps, empty to not yank.
+		wantYanked string
+	}{
+		{
+			name:       "enters modal mode",
+			steps:      []modalStep{{keys: "<s-esc>"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 8},
+		},
+		{
+			name:       "enters modal mode under kitty",
+			output:     "\x1b[>1u",
+			steps:      []modalStep{{keys: "<s-esc>"}},
+			wantViMode: true,
+		},
+		{
+			name:       "stays in modal mode",
+			steps:      []modalStep{{keys: "<s-esc>h<s-esc>"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 7},
+		},
+		{
+			name:       "does not arm esc for the command",
+			output:     command,
+			steps:      []modalStep{{keys: "<s-esc><esc>"}},
+			wantViMode: true,
+		},
+		{
+			name:       "esc arms after it",
+			output:     command,
+			steps:      []modalStep{{keys: "<s-esc>i<esc><esc>", want: "\x1b"}},
+			wantViMode: true,
+		},
+		{
+			name:   "esc stays with a full-screen program",
+			output: altScreen,
+			steps:  []modalStep{{keys: "<esc>", want: "\x1b"}},
+		},
+		{
+			name:       "enters modal mode over a full-screen program",
+			output:     altScreen,
+			steps:      []modalStep{{keys: "<s-esc>"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 2, Y: 1},
+			wantScreen: []string{"first row", "second row"},
+		},
+		{
+			name:   "no key reaches the full-screen program",
+			output: altScreen,
+			steps: []modalStep{
+				{keys: "<s-esc>kx<enter>$a1<esc>dd<up>"},
+			},
+			wantViMode: true, wantErrors: 5, wantScreen: []string{"first row", "second row"},
+		},
+		{
+			name:   "the screen does not follow the program",
+			output: altScreen,
+			steps: []modalStep{
+				{keys: "<s-esc>", output: "\x1b[Hdrawn later"},
+			},
+			wantViMode: true, wantScreen: []string{"first row", "second row"},
+		},
+		{
+			name:       "yanks from the screen",
+			output:     altScreen,
+			steps:      []modalStep{{keys: "<s-esc>k0"}},
+			wantViMode: true, wantYanked: "first row",
+		},
+		{
+			name:   "leaving shows the program again",
+			output: altScreen,
+			steps: []modalStep{
+				{keys: "<s-esc>", output: "\x1b[Hdrawn later"},
+				{keys: "i"},
+			},
+			wantScreen: []string{"drawn later", "second row"},
+		},
+		{
+			name:   "leaving writes nothing",
+			output: altScreen,
+			steps:  []modalStep{{keys: "<s-esc>kk<c-c>"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newModalHarness(t, DefaultConfig())
+			h.output(tc.output)
+			h.written()
+			for i, step := range tc.steps {
+				h.press(t, step.keys)
+				h.output(step.output)
+				h.drain()
+				assert.Equal(t, step.want, h.written(), "step %d", i)
+			}
+			assert.Equal(t, tc.wantViMode, h.viMode)
+			if tc.wantCursor != nil {
+				assert.Equal(t, *tc.wantCursor, h.vi.cursorAtScroll())
+			}
+			if tc.wantScreen != nil {
+				assert.Equal(t, tc.wantScreen, h.screen(t)[:len(tc.wantScreen)])
+			}
+			assert.Equal(t, tc.wantErrors, h.errorSounds())
+			if tc.wantYanked != "" {
+				h.press(t, "yy")
+				data, err := h.vi.config.Clipboard.Paste(h.vi.config.ClipboardRegister)
+				require.NoError(t, err)
+				assert.Equal(t, tc.wantYanked, strings.TrimRight(data.Text, " \x00\n"))
+				assert.Empty(t, h.written())
+			}
+		})
+	}
+}
+
+// modalStep handles events, presses keys, then the program prints
+// output, then, with timeout, the probe times out; want is what reached
+// the program.
+type modalStep struct {
+	events  []term.Event
+	keys    string
+	output  string
+	timeout bool
+	want    string
+}
+
+func TestHandlerModalEsc(t *testing.T) {
+	t.Parallel()
+	const (
+		probe = "\x01\x07"
+		// the shell's answer to the probe: ctrl-a put its cursor after "$ "
+		answer  = "\x1b[3G\a"
+		right   = "\x1b[C"
+		del     = "\x1b[3~"
+		command = "\x1b]133;C\x1b\\"
+		working = "\x1b]7501;state=working\x1b\\"
+		prompt  = "\x1b]133;A\x1b\\"
+	)
+	hover := term.Event{Type: term.EventMouse, MouseX: 3, MouseY: 0}
+	cases := []struct {
+		name       string
+		output     string
+		steps      []modalStep
+		wantViMode bool
+		// wantCursor is the vi cursor, nil to not check it.
+		wantCursor *term.Coordinates
+		wantErrors int
+		wantNotes  int
+		// wantHint is whether the notes tell how to send <esc>.
+		wantHint bool
+	}{
+		{
+			name:       "esc enters at once",
+			steps:      []modalStep{{keys: "<esc>"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 8},
+		},
+		{
+			name:       "motions write nothing",
+			steps:      []modalStep{{keys: "<esc>hhh0"}},
+			wantViMode: true, wantCursor: &term.Coordinates{},
+		},
+		{
+			name:       "motions stay on the content",
+			steps:      []modalStep{{keys: "<esc>hG"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 7},
+		},
+		{
+			name: "an edit probes the shell",
+			steps: []modalStep{
+				{keys: "<esc>x", want: probe},
+				{output: answer, want: strings.Repeat(right, 6) + del + probe},
+			},
+			wantViMode: true,
+		},
+		{
+			name: "a shell that does not answer turns modal mode read-only",
+			steps: []modalStep{
+				{keys: "<esc>xh", want: probe},
+				{timeout: true},
+				{output: "\a"},
+				{keys: "x"},
+			},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 7}, wantErrors: 2, wantNotes: 1,
+		},
+		{
+			name:       "a program that reported a status is not rung",
+			output:     command + working,
+			steps:      []modalStep{{keys: "<esc>x"}, {keys: "x"}},
+			wantViMode: true, wantErrors: 2, wantNotes: 1, wantHint: true,
+		},
+		{
+			name:   "a command that does not answer gets the hint",
+			output: command,
+			steps: []modalStep{
+				{keys: "<esc>x", want: probe},
+				{timeout: true},
+			},
+			wantViMode: true, wantErrors: 1, wantNotes: 1, wantHint: true,
+		},
+		{
+			name:       "a program that reported no status is rung",
+			output:     command,
+			steps:      []modalStep{{keys: "<esc>x", want: probe}},
+			wantViMode: true,
+		},
+		{
+			name:  "leaving without moving writes nothing",
+			steps: []modalStep{{keys: "<esc>i"}},
+		},
+		{
+			name:  "leaving at the start of the line probes",
+			steps: []modalStep{{keys: "<esc>0i", want: probe}},
+		},
+		{
+			name: "leaving moves the shell's cursor to the vi cursor",
+			steps: []modalStep{
+				{keys: "<esc>hhi", want: probe},
+				{output: answer, want: strings.Repeat(right, 4)},
+			},
+		},
+		{
+			name: "enter runs the line",
+			steps: []modalStep{
+				{keys: "<esc><enter>", want: probe},
+				{output: answer, want: "\r"},
+			},
+		},
+		{
+			name:       "esc again sends esc to a running command",
+			output:     command,
+			steps:      []modalStep{{keys: "<esc><esc>", want: "\x1b"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 8},
+		},
+		{
+			name:       "esc again sends esc in the command's encoding",
+			output:     "\x1b[>1u" + command,
+			steps:      []modalStep{{keys: "<esc><esc>", want: "\x1b[27u"}},
+			wantViMode: true,
+		},
+		{
+			name:       "every esc after the first is sent",
+			output:     command,
+			steps:      []modalStep{{keys: "<esc><esc><esc>", want: "\x1b\x1b"}},
+			wantViMode: true,
+		},
+		{
+			name:       "a key between keeps esc in modal mode",
+			output:     command,
+			steps:      []modalStep{{keys: "<esc>j<esc>"}},
+			wantViMode: true,
+		},
+		{
+			name:   "moving the pointer between sends esc",
+			output: command,
+			steps: []modalStep{
+				{keys: "<esc>"},
+				{events: []term.Event{hover}, keys: "<esc>", want: "\x1b"},
+			},
+			wantViMode: true,
+		},
+		{
+			name:       "esc again at the prompt stays in modal mode",
+			output:     command + prompt,
+			steps:      []modalStep{{keys: "<esc><esc>"}},
+			wantViMode: true,
+		},
+		{
+			name:       "esc again without marks stays in modal mode",
+			steps:      []modalStep{{keys: "<esc><esc>"}},
+			wantViMode: true,
+		},
+		{
+			name:   "a probe answered in the command keeps esc in modal mode",
+			output: command,
+			steps: []modalStep{
+				{keys: "<esc>x", want: probe},
+				{output: answer, want: strings.Repeat(right, 6) + del + probe},
+				{output: "\a"},
+				{keys: "i", want: probe},
+				{output: answer, want: strings.Repeat(right, 6)},
+				{keys: "<esc><esc>"},
+				{output: command},
+				{keys: "<esc>", want: "\x1b"},
+			},
+			wantViMode: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newModalHarness(t, DefaultConfig())
+			h.output(tc.output)
+			h.written()
+			for i, step := range tc.steps {
+				for _, ev := range step.events {
+					h.Handle(ev)
+				}
+				h.press(t, step.keys)
+				h.output(step.output)
+				h.drain()
+				if step.timeout {
+					h.waitTick(t)
+				}
+				assert.Equal(t, step.want, h.written(), "step %d", i)
+			}
+			assert.Equal(t, tc.wantViMode, h.viMode)
+			if tc.wantCursor != nil {
+				assert.Equal(t, *tc.wantCursor, h.vi.cursorAtScroll())
+			}
+			assert.Equal(t, tc.wantErrors, h.errorSounds())
+			notes := h.notes.Messages()
+			assert.Len(t, notes, tc.wantNotes)
+			for _, note := range notes {
+				assert.Equal(t, tc.wantHint, strings.Contains(note, modalRefusedEscHint), note)
+			}
 		})
 	}
 }

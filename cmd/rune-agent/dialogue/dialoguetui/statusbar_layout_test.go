@@ -38,6 +38,7 @@ func TestParseStatusBarLayoutFields(t *testing.T) {
 		{"Model", StatusBarModel, "%s"},
 		{"Provider", StatusBarProvider, "%s"},
 		{"Effort", StatusBarEffort, "%s"},
+		{"Speed", StatusBarSpeed, "%s"},
 		{"MaxTokens", StatusBarMaxTokens, "%s"},
 		{"TokensSent", StatusBarTokensSent, "%s"},
 		{"TokensReceived", StatusBarTokensReceived, "%s"},
@@ -206,7 +207,7 @@ func TestParseStatusBarLayoutDefault(t *testing.T) {
 	}
 	assert.Equal(t, []StatusBarComponentType{
 		StatusBarSpinner, StatusBarStatus, StatusBarModel,
-		StatusBarEffort, StatusBarVoid, StatusBarCache,
+		StatusBarEffort, StatusBarSpeed, StatusBarVoid, StatusBarCache,
 		StatusBarElapsed, StatusBarConversation, StatusBarContextGauge,
 	}, types)
 
@@ -218,9 +219,10 @@ func TestParseStatusBarLayoutDefault(t *testing.T) {
 	// keeps the padding the layout puts around it.
 	assert.Equal(t, "  %s", got[2].Template, "model")
 	assert.Equal(t, "  %s", got[3].Template, "effort")
-	assert.Equal(t, "󰗂 %s  ", got[5].Template, "cache")
-	assert.Equal(t, "%s  ", got[6].Template, "elapsed")
-	assert.Equal(t, "%s ", got[8].Template, "context gauge")
+	assert.Equal(t, "  󱐋 %s", got[4].Template, "speed")
+	assert.Equal(t, "󰗂 %s  ", got[6].Template, "cache")
+	assert.Equal(t, "%s  ", got[7].Template, "elapsed")
+	assert.Equal(t, "%s ", got[9].Template, "context gauge")
 
-	assert.Equal(t, "%s  ", got[7].Template, "conversation")
+	assert.Equal(t, "%s  ", got[8].Template, "conversation")
 }

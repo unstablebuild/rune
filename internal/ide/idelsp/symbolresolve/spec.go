@@ -167,6 +167,11 @@ type Spec struct {
 	// the cross-language SearchNode/QueryNode results to this spec's
 	// files. Empty means no extension filtering.
 	Extensions []string
+
+	// Injected lists the specs applied to the regions of other languages
+	// that this language's grammar marks through its injections query,
+	// each identified by its LangID.
+	Injected []*Spec
 }
 
 // exported reports whether name passes the spec's export predicate. A
@@ -199,6 +204,47 @@ func (s *Spec) hasReexports() bool {
 // re-export files.
 func (s *Spec) isReexportFile(uri string) bool {
 	return slices.Contains(s.ReexportFiles, path.Base(uri))
+}
+
+// isHost reports whether the spec extracts symbols through injected
+// specs rather than its own queries.
+func (s *Spec) isHost() bool {
+	return len(s.Injected) > 0
+}
+
+// HasImports reports whether the spec, or any spec it injects, resolves
+// import aliases, so that matches can be deduplicated by import path.
+func (s *Spec) HasImports() bool {
+	if s.ImportPathQuery != "" {
+		return true
+	}
+	for _, sub := range s.Injected {
+		if sub.HasImports() {
+			return true
+		}
+	}
+	return false
+}
+
+// querySource is one spec whose queries join a file's extraction batch:
+// the file's own spec, or an injected spec applied to regions of lang.
+type querySource struct {
+	spec *Spec
+	lang string
+}
+
+// querySources returns the specs whose queries extract symbols from a
+// file of this spec: the spec itself, or for a host the injected specs,
+// each bound to the regions of its own language.
+func (s *Spec) querySources() []querySource {
+	if !s.isHost() {
+		return []querySource{{spec: s}}
+	}
+	sources := make([]querySource, len(s.Injected))
+	for i, sub := range s.Injected {
+		sources[i] = querySource{spec: sub, lang: sub.LangID}
+	}
+	return sources
 }
 
 // qualifier returns the bare-definition prefix for a file URI when the

@@ -284,6 +284,7 @@ func (s *SyncClientStream[T]) Draw(w term.Writer) {
 		PackedOk:         true,
 		CellsUnchangedOk: true,
 		ImageAck:         s.images.ack,
+		WindowFocus:      windowFocusOf(w.Context()),
 	}
 	sendMsg := handlerrpc.ServerMessage{Type: handlerrpc.MessageType_Draw, Draw: &req}
 	err := s.stream.SendMsg(&sendMsg)

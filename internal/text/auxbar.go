@@ -235,10 +235,20 @@ func (b *auxBar) Handle(ev term.Event) (quit, handled bool) {
 	// A parent that captures a drag keeps sending it, button held, once
 	// the pointer leaves the bar; that is a drag for the editor, not a
 	// click on a fold.
-	fold := b.foldsEnabled && ev.Type == term.EventMouse && ev.Key == term.MouseLeft &&
+	inFolds := b.foldsEnabled && b.barWidth > 0 && ev.Type == term.EventMouse &&
 		ev.MouseX >= b.linesWidth && ev.MouseX < b.linesWidth+foldsWidth &&
 		ev.MouseY >= 0 && ev.MouseY < b.height
-	if !fold {
+	posAtWindow := term.Coordinates{Y: ev.MouseY, X: ev.MouseX}
+	var folded, ok bool
+	if inFolds {
+		folded, ok = b.foldAt(posAtWindow)
+	}
+	if ok {
+		// Set after the editor's, which shows its text pointer over the
+		// bar too.
+		defer term.SetPointerShape(ev, term.PointerLink)
+	}
+	if !inFolds || ev.Key != term.MouseLeft {
 		quit, handled = b.vhandler.Handle(ev)
 		prevCursor := b.prevCursor
 		prevOffset := b.prevOffset
@@ -251,10 +261,8 @@ func (b *auxBar) Handle(ev term.Event) (quit, handled bool) {
 		return
 	}
 
-	posAtWindow := term.Coordinates{Y: ev.MouseY, X: ev.MouseX}
 	posAtScroll := b.scroll.WindowToScrollCoordinates(posAtWindow)
 	posAtScroll.X = 0
-	folded, ok := b.foldAt(posAtWindow)
 	b.log(log.TraceLevel, "received mouse click at bar,"+
 		" win pos: %+v, scroll pos: %+v, folded: %t, ok: %t",
 		posAtWindow, posAtScroll, folded, ok)
@@ -433,7 +441,7 @@ func (b *auxBar) rebuildBar() {
 	b.dirty = false
 
 	var diff textapi.LocationList
-	var foldsIterator iterator.Iterator[term.Range]
+	var folds []term.Range
 	var wg sync.WaitGroup
 
 	b.bar.Buffer().ResetPerformance()
@@ -461,27 +469,32 @@ func (b *auxBar) rebuildBar() {
 		offset := b.scroll.Offset()
 		go debug.CapturePanicReport(func() {
 			defer wg.Done()
-			var folds iterator.Iterator[term.Range]
+			var it iterator.Iterator[term.Range]
 			var ok bool
 			if !b.linesEnabled || b.absoluteLines {
-				folds, ok = svc.Folds()
+				it, ok = svc.Folds()
 			} else {
 				// relative bar doesn't need folds above current view,
 				// and it ignores the folds below current view.
 				// This makes recalculating on every cursor change much
 				// more efficient.
-				folds, ok = svc.FoldsFrom(offset)
+				it, ok = svc.FoldsFrom(offset)
 			}
 			if !ok {
 				return
 			}
-			folds, isEmpty := iterator.IsEmpty(ctx, folds)
-			if isEmpty {
+			defer it.Close()
+			// Any fold may wait on work the event loop does, such as the
+			// parse of a composite tree's section, so they are all
+			// gathered here rather than on the loop.
+			all, err := iterator.ToSlice(ctx, it)
+			if err != nil {
+				if ctx.Err() == nil {
+					b.log(log.ErrorLevel, "error rebuilding auxiliary bar: %v", err)
+				}
 				return
 			}
-			// once first fold has been returned, this should not block on I/O anymore
-			// run on next loop tick, so we don't need to worry about synchronization
-			foldsIterator = folds
+			folds = all
 		})
 	}
 
@@ -509,12 +522,11 @@ func (b *auxBar) rebuildBar() {
 					b.rebuildGitAbsolute(diff)
 				}
 			}
-			if foldsIterator != nil {
-				defer foldsIterator.Close()
+			if len(folds) > 0 {
 				if b.linesEnabled && !b.absoluteLines {
-					b.rebuildFoldsRelative(ctx, foldsIterator)
+					b.rebuildFoldsRelative(ctx, folds)
 				} else {
-					b.rebuildFoldsAbsolute(ctx, foldsIterator)
+					b.rebuildFoldsAbsolute(ctx, folds)
 				}
 			}
 		})
@@ -650,16 +662,10 @@ func (b *auxBar) rebuildLinesRelative(ctx context.Context) {
 	}
 }
 
-func (b *auxBar) rebuildFoldsRelative(
-	ctx context.Context, folds iterator.Iterator[term.Range],
-) {
+func (b *auxBar) rebuildFoldsRelative(ctx context.Context, folds []term.Range) {
 	clear(b.folds)
 	var i int
-	for {
-		fold, ok := folds.Next(ctx)
-		if !ok {
-			break
-		}
+	for _, fold := range folds {
 		i++
 
 		// we're not interested in these
@@ -704,22 +710,12 @@ func (b *auxBar) rebuildFoldsRelative(
 		b.bar.Buffer().Edit(ctx, from, to, "")
 		b.bar.Buffer().InsertWithAttr(from, icon, b.barLineAttr)
 	}
-	if err := folds.Err(); err != nil {
-		b.log(log.ErrorLevel, "error rebuilding auxiliary bar: %v", err)
-	}
 	b.log(log.TraceLevel, "got %d folds", i)
 }
 
-func (b *auxBar) rebuildFoldsAbsolute(
-	ctx context.Context, folds iterator.Iterator[term.Range],
-) {
+func (b *auxBar) rebuildFoldsAbsolute(ctx context.Context, folds []term.Range) {
 	clear(b.folds)
-	for {
-		fold, ok := folds.Next(ctx)
-		if !ok {
-			break
-		}
-
+	for _, fold := range folds {
 		// we're not interested in these
 		if fold.Start.Y >= fold.End.Y {
 			continue
@@ -763,9 +759,6 @@ func (b *auxBar) rebuildFoldsAbsolute(
 		to.X++ // replace
 		b.bar.Buffer().Edit(ctx, from, to, "")
 		b.bar.Buffer().InsertWithAttr(from, icon, b.barLineAttr)
-	}
-	if err := folds.Err(); err != nil {
-		b.log(log.ErrorLevel, "error rebuilding auxiliary bar: %v", err)
 	}
 }
 

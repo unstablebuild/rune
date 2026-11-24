@@ -75,6 +75,25 @@ func TestCaptureNameAttributesColorsDiffLines(t *testing.T) {
 	}
 }
 
+func TestCaptureNameAttributesColorsMarkupTags(t *testing.T) {
+	attrs := DefaultConfig().CaptureNamesAttributes
+	for _, tc := range []struct {
+		name string
+		want term.Attributes
+	}{
+		{"tag", term.Attributes{Fg: term.ColorAqua}},
+		{"tag.attribute", term.Attributes{Fg: term.ColorAqua}},
+		{"tag.builtin", term.Attributes{Fg: term.ColorAqua}},
+		{"attribute", term.Attributes{Fg: term.ColorAqua}},
+		{"attribute.builtin", term.Attributes{Fg: term.ColorAqua}},
+		{"tag.delimiter", term.Attributes{}},
+		{"property", term.Attributes{}},
+	} {
+		assert.Equal(t, tc.want, CaptureNameAttributes(attrs, tc.name), tc.name)
+		assert.Equal(t, tc.want, CaptureNameAttributes(nil, tc.name), tc.name)
+	}
+}
+
 func TestCaptureNameAttributesFallsBackToBaseCapture(t *testing.T) {
 	attrs := DefaultConfig().CaptureNamesAttributes
 

@@ -17,9 +17,15 @@
 package component
 
 import (
+	"bytes"
 	"cmp"
+	"context"
 	"fmt"
 	"image"
+	"image/png"
+	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,6 +38,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
+	"unstable.build/rune/internal/cell"
 )
 
 func TestSetWidthHeight(t *testing.T) {
@@ -3505,6 +3512,1324 @@ type scrollingFloating struct {
 }
 
 func (scrollingFloating) Dimensions() (int, int) { return 4, 2 }
+
+// stripedContent draws S on a teal background in its first row and C
+// with the default colours in the others. shifted moves the first row
+// down half a cell, as a status bar is, and gap is the colour it fills
+// the gap that leaves with, if any.
+type stripedContent struct {
+	width, height int
+	shifted       bool
+	gap           term.Color
+}
+
+func (c *stripedContent) Resize(width, height int) { c.width, c.height = width, height }
+
+func (c *stripedContent) Draw(w term.Writer) {
+	for y := range c.height {
+		for x := range c.width {
+			cell := term.NewCell('C', 1, term.Attributes{})
+			if y == 0 {
+				attr := term.Attributes{Bg: term.ColorTeal}
+				if c.shifted {
+					attr.Attrs = term.AttrVerticalRenderOffset
+				}
+				cell = term.NewCell('S', 1, attr)
+			}
+			w.SetCell(term.Coordinates{X: x, Y: y}, cell)
+		}
+	}
+	if c.gap != term.ColorDefault {
+		w.DrawImage(term.Image{
+			Fill: true, FillColor: c.gap, Width: c.width, Height: 1,
+			Layer: term.ImageLayerBelowBackground,
+		})
+	}
+}
+
+// colorMap returns the colour of each cell of s, as fg or bg picks it:
+// n for navy, t for teal, w for white and . for the default.
+func colorMap(s *imageScreen, pick func(term.Cell) term.Color) string {
+	var b strings.Builder
+	for i, c := range s.Cells() {
+		if i%s.width == 0 {
+			b.WriteByte('\n')
+		}
+		switch pick(c) {
+		case term.ColorDefault:
+			b.WriteByte('.')
+		case term.ColorNavy:
+			b.WriteByte('n')
+		case term.ColorTeal:
+			b.WriteByte('t')
+		case term.ColorWhite:
+			b.WriteByte('w')
+		default:
+			b.WriteByte('?')
+		}
+	}
+	return b.String()
+}
+
+func TestWindowManagerBackground(t *testing.T) {
+	pics := newFramePictures(t)
+	navy := term.Attributes{Bg: term.ColorNavy}
+	panel := func(names map[string]string) BackgroundGraphics {
+		var g BackgroundGraphics
+		for slot, dst := range map[string]*string{
+			"tl": &g.TopLeft, "tr": &g.TopRight, "bl": &g.BottomLeft, "br": &g.BottomRight,
+			"t": &g.HorizontalTop, "b": &g.HorizontalBottom, "l": &g.VerticalLeft,
+			"r": &g.VerticalRight, "c": &g.Center,
+		} {
+			*dst = pics.uris[names[slot]]
+		}
+		return g
+	}
+	every := panel(map[string]string{
+		"tl": "i", "tr": "i", "bl": "i", "br": "i", "t": "i", "b": "i", "l": "i", "r": "i", "c": "i",
+	})
+	edges := panel(map[string]string{
+		"tl": "i", "tr": "i", "bl": "i", "br": "i", "t": "i", "b": "i", "l": "i", "r": "i",
+	})
+	center := panel(map[string]string{"c": "i"})
+	colored := `
+nnnnnnnn
+nttttttn
+nnnnnnnn
+nnnnnnnn
+nnnnnnnn`
+	bg := func(c term.Cell) term.Color { return c.Bg }
+	fg := func(c term.Cell) term.Color { return c.Fg }
+	type placement struct {
+		area  image.Rectangle
+		layer term.ImageLayer
+	}
+	type fill struct {
+		area  image.Rectangle
+		color term.Color
+	}
+
+	tests := []struct {
+		name       string
+		background WindowBackground
+		noFrame    bool
+		noImages   bool
+		notLoaded  bool
+		shifted    bool
+		gap        term.Color
+		loads      int
+		pick       func(term.Cell) term.Color
+		expected   string
+		images     []placement
+		// fills are the cells painted in a colour under the rows of
+		// shifted cells.
+		fills []fill
+	}{
+		{
+			name:       "the colour fills the cells left with the default background",
+			background: WindowBackground{Attr: navy},
+			pick:       bg,
+			expected:   colored,
+		},
+		{
+			name:       "the colour fills a window without a frame",
+			background: WindowBackground{Attr: navy},
+			noFrame:    true,
+			pick:       bg,
+			expected: `
+tttttttt
+nnnnnnnn
+nnnnnnnn
+nnnnnnnn
+nnnnnnnn`,
+		},
+		{
+			name:       "the foreground replaces the default one on default backgrounds",
+			background: WindowBackground{Attr: term.Attributes{Fg: term.ColorWhite}},
+			pick:       fg,
+			expected: `
+wwwwwwww
+w......w
+wwwwwwww
+wwwwwwww
+wwwwwwww`,
+		},
+		{
+			name:       "the panel shows under the default backgrounds and the colour around it",
+			background: WindowBackground{Attr: navy, Graphics: center},
+			loads:      1,
+			pick:       bg,
+			expected: `
+nnnnnnnn
+nttttttn
+n......n
+n......n
+nnnnnnnn`,
+			images: []placement{{image.Rect(1, 1, 7, 4), term.ImageLayerBelowBackground}},
+		},
+		{
+			name:       "a panel over every slice leaves the default backgrounds",
+			background: WindowBackground{Attr: navy, Graphics: every},
+			loads:      1,
+			pick:       bg,
+			expected: `
+........
+.tttttt.
+........
+........
+........`,
+			images: []placement{
+				{image.Rect(0, 0, 1, 1), term.ImageLayerBelowBackground},
+				{image.Rect(7, 0, 8, 1), term.ImageLayerBelowBackground},
+				{image.Rect(0, 4, 1, 5), term.ImageLayerBelowBackground},
+				{image.Rect(7, 4, 8, 5), term.ImageLayerBelowBackground},
+				{image.Rect(1, 0, 7, 1), term.ImageLayerBelowBackground},
+				{image.Rect(1, 4, 7, 5), term.ImageLayerBelowBackground},
+				{image.Rect(0, 1, 1, 4), term.ImageLayerBelowBackground},
+				{image.Rect(7, 1, 8, 4), term.ImageLayerBelowBackground},
+				{image.Rect(1, 1, 7, 4), term.ImageLayerBelowBackground},
+			},
+		},
+		{
+			name:       "a panel of edges only leaves the colour in the interior",
+			background: WindowBackground{Attr: navy, Graphics: edges},
+			loads:      1,
+			pick:       bg,
+			expected: `
+........
+.tttttt.
+.nnnnnn.
+.nnnnnn.
+........`,
+			images: []placement{
+				{image.Rect(0, 0, 1, 1), term.ImageLayerBelowBackground},
+				{image.Rect(7, 0, 8, 1), term.ImageLayerBelowBackground},
+				{image.Rect(0, 4, 1, 5), term.ImageLayerBelowBackground},
+				{image.Rect(7, 4, 8, 5), term.ImageLayerBelowBackground},
+				{image.Rect(1, 0, 7, 1), term.ImageLayerBelowBackground},
+				{image.Rect(1, 4, 7, 5), term.ImageLayerBelowBackground},
+				{image.Rect(0, 1, 1, 4), term.ImageLayerBelowBackground},
+				{image.Rect(7, 1, 8, 4), term.ImageLayerBelowBackground},
+			},
+		},
+		{
+			name:       "a writer that cannot draw images gets the colour",
+			background: WindowBackground{Attr: navy, Graphics: every},
+			loads:      1,
+			noImages:   true,
+			pick:       bg,
+			expected:   colored,
+		},
+		{
+			name:       "a panel that is not loaded yet leaves the colour",
+			background: WindowBackground{Attr: navy, Graphics: every},
+			loads:      1,
+			notLoaded:  true,
+			pick:       bg,
+			expected:   colored,
+		},
+		{
+			name:       "the colour fills the gap a shifted row leaves",
+			background: WindowBackground{Attr: navy},
+			shifted:    true,
+			pick:       bg,
+			expected:   colored,
+			fills:      []fill{{image.Rect(1, 1, 7, 2), term.ColorNavy}},
+		},
+		{
+			name:       "the colour fills the gap a shifted row leaves without a frame",
+			background: WindowBackground{Attr: navy},
+			noFrame:    true,
+			shifted:    true,
+			pick:       bg,
+			expected: `
+tttttttt
+nnnnnnnn
+nnnnnnnn
+nnnnnnnn
+nnnnnnnn`,
+			fills: []fill{{image.Rect(0, 0, 8, 1), term.ColorNavy}},
+		},
+		{
+			name:       "the content's own fill of the gap wins",
+			background: WindowBackground{Attr: navy},
+			shifted:    true,
+			gap:        term.ColorTeal,
+			pick:       bg,
+			expected:   colored,
+			fills:      []fill{{image.Rect(1, 1, 7, 2), term.ColorTeal}},
+		},
+		{
+			name:       "a panel under a shifted row fills its gap",
+			background: WindowBackground{Attr: navy, Graphics: center},
+			loads:      1,
+			shifted:    true,
+			pick:       bg,
+			expected: `
+nnnnnnnn
+nttttttn
+n......n
+n......n
+nnnnnnnn`,
+			images: []placement{{image.Rect(1, 1, 7, 4), term.ImageLayerBelowBackground}},
+		},
+		{
+			name:       "a shifted row without a colour leaves its gap",
+			background: WindowBackground{Attr: term.Attributes{Fg: term.ColorWhite}},
+			shifted:    true,
+			pick:       fg,
+			expected: `
+wwwwwwww
+w......w
+wwwwwwww
+wwwwwwww
+wwwwwwww`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testWindowManagerConfig()
+			cfg.Frame = !tt.noFrame
+			cfg.Background = tt.background
+			cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			irq := make(interruptCounter, 16)
+			cfg.Interrupter = irq
+			wm, _ := NewWindowManager(&stripedContent{shifted: tt.shifted, gap: tt.gap}, cfg)
+			t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+			wm.Resize(8, 5)
+			if !tt.notLoaded {
+				wm.Draw(term.NewStringWriter(8, 5))
+				irq.wait(t, tt.loads)
+			}
+
+			s := newImageScreen(8, 5)
+			s.noImages = tt.noImages
+			wm.Draw(s)
+			require.NoError(t, s.Flush())
+			assert.Equal(t, tt.expected, colorMap(s, tt.pick))
+			var images []placement
+			var fills []fill
+			for _, img := range s.images {
+				if img.Fill {
+					assert.Nil(t, img.Src, "a fill has no pixels")
+					assert.Equal(t, term.ImageLayerBelowBackground, img.Layer)
+					fills = append(fills, fill{img.Visible(), img.FillColor})
+					continue
+				}
+				assert.Equal(t, term.ImageFitFill, img.Fit)
+				images = append(images, placement{img.Bounds(), img.Layer})
+			}
+			assert.ElementsMatch(t, tt.images, images)
+			assert.Equal(t, tt.fills, fills)
+
+			if tt.notLoaded {
+				irq.wait(t, tt.loads)
+			}
+		})
+	}
+}
+
+func TestWindowManagerFloatingBackground(t *testing.T) {
+	pics := newFramePictures(t)
+	cfg := testWindowManagerConfig()
+	cfg.Background = WindowBackground{Graphics: BackgroundGraphics{Center: pics.uris["i"]}}
+	cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	irq := make(interruptCounter, 16)
+	cfg.Interrupter = irq
+	wm, tile := NewWindowManager(&component.TestComponent{Ch: ' '}, cfg)
+	t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+	wm.Resize(8, 5)
+	float := wm.FloatingWindow(
+		component.StaticFloating(&component.TestComponent{Ch: 'B'}, 2, 1),
+		FloatingConfig{Offset: term.Coordinates{X: 1, Y: 1}},
+	)
+	float.SetBackground(&WindowBackground{Attr: term.Attributes{Bg: term.ColorNavy}})
+	wm.Draw(term.NewStringWriter(8, 5))
+	irq.wait(t, 1)
+
+	s := newImageScreen(8, 5)
+	wm.Draw(s)
+	assert.Equal(t, `
+┌──────┐
+│┌──┐ii│
+││BB│ii│
+│└──┘ii│
+└──────┘`, s.composite(t, pics), "the floating window must cut the tile's panel")
+	assert.Equal(t, `
+........
+.nnnn...
+.nnnn...
+.nnnn...
+........`, colorMap(s, func(c term.Cell) term.Color { return c.Bg }),
+		"the floating window must take its own background")
+
+	assert.Equal(t, cfg.Background, tile.Background())
+	float.SetBackground(nil)
+	assert.Equal(t, cfg.Background, float.Background(), "nil restores the manager's")
+}
+
+func TestWindowManagerWithoutBackgroundRecordsNothing(t *testing.T) {
+	wm, _ := NewWindowManager(&stripedContent{}, testWindowManagerConfig())
+	wm.Resize(8, 5)
+	wm.FloatingWindow(
+		component.StaticFloating(&component.TestComponent{Ch: 'B'}, 2, 1),
+		FloatingConfig{},
+	)
+	wm.Draw(term.NewStringWriter(8, 5))
+	assert.Nil(t, wm.bgWriter.Writer)
+	assert.Nil(t, wm.bgWriter.cells)
+}
+
+// lineSprites writes the sprites of a frame drawn with lines through
+// the middle of its cells, transparent either side, and returns its
+// graphics: a cross in the corners, so that each corner's bend is a
+// quarter of it.
+func lineSprites(t *testing.T) component.FrameCharSetGraphics {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(name, art string) string {
+		var b bytes.Buffer
+		require.NoError(t, png.Encode(&b, spritePixels(art)))
+		path := filepath.Join(dir, name+".png")
+		require.NoError(t, os.WriteFile(path, b.Bytes(), 0o600))
+		return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	}
+	h := write("h", "....\n####\n....\n....")
+	v := write("v", ".#..\n.#..\n.#..\n.#..")
+	cross := write("cross", ".#..\n####\n.#..\n.#..")
+	return component.FrameCharSetGraphics{
+		TopLeft: cross, TopRight: cross, BottomLeft: cross, BottomRight: cross,
+		HorizontalTop: h, HorizontalBottom: h, VerticalLeft: v, VerticalRight: v,
+	}
+}
+
+// fillMap returns where s holds a fill, f for one in navy and ? for one
+// in another colour, and checks that each is a mask under the text.
+func fillMap(t *testing.T, s *imageScreen) string {
+	t.Helper()
+	grid := make([][]byte, s.height)
+	for y := range grid {
+		grid[y] = []byte(strings.Repeat(".", s.width))
+	}
+	for _, img := range s.images {
+		if !img.Fill {
+			continue
+		}
+		assert.NotNil(t, img.Src, "the fill of %v has a mask", img.Pos)
+		assert.Equal(t, term.ImageLayerBelowText, img.Layer)
+		ch := byte('f')
+		if img.FillColor != term.ColorNavy {
+			ch = '?'
+		}
+		grid[img.Pos.Y][img.Pos.X] = ch
+	}
+	var b strings.Builder
+	for _, row := range grid {
+		b.WriteByte('\n')
+		b.Write(row)
+	}
+	return b.String()
+}
+
+func TestWindowManagerBorderInsides(t *testing.T) {
+	lines := lineSprites(t)
+	pics := newFramePictures(t)
+	navy := term.Attributes{Bg: term.ColorNavy}
+	ring := `
+ffffffff
+f......f
+f......f
+f......f
+ffffffff`
+	none := `
+........
+........
+........
+........
+........`
+	tests := []struct {
+		name       string
+		background WindowBackground
+		graphics   component.FrameCharSetGraphics
+		noImages   bool
+		loads      int
+		fills      string
+		bg         string
+	}{
+		{
+			name:       "the colour fills inside the lines and leaves the cells under them",
+			background: WindowBackground{Attr: navy},
+			graphics:   lines,
+			loads:      3,
+			fills:      ring,
+			bg: `
+........
+.tttttt.
+.nnnnnn.
+.nnnnnn.
+........`,
+		},
+		{
+			name:       "opaque images take the colour under them",
+			background: WindowBackground{Attr: navy},
+			graphics: component.FrameCharSetGraphics{
+				TopLeft: pics.uris["i"], TopRight: pics.uris["i"],
+				BottomLeft: pics.uris["i"], BottomRight: pics.uris["i"],
+				HorizontalTop: pics.uris["i"], HorizontalBottom: pics.uris["i"],
+				VerticalLeft: pics.uris["i"], VerticalRight: pics.uris["i"],
+			},
+			loads: 1,
+			fills: none,
+			bg: `
+nnnnnnnn
+nttttttn
+nnnnnnnn
+nnnnnnnn
+nnnnnnnn`,
+		},
+		{
+			name:       "a panel draws the cells it covers",
+			background: WindowBackground{Attr: navy, Graphics: BackgroundGraphics{TopLeft: pics.uris["i"]}},
+			graphics:   lines,
+			loads:      4,
+			fills: `
+.fffffff
+f......f
+f......f
+f......f
+ffffffff`,
+			bg: `
+........
+.tttttt.
+.nnnnnn.
+.nnnnnn.
+........`,
+		},
+		{
+			name:       "no colour, no fill",
+			background: WindowBackground{Attr: term.Attributes{Fg: term.ColorWhite}},
+			graphics:   lines,
+			loads:      3,
+			fills:      none,
+			bg: `
+........
+.tttttt.
+........
+........
+........`,
+		},
+		{
+			name:       "a writer that cannot draw images gets the colour",
+			background: WindowBackground{Attr: navy},
+			graphics:   lines,
+			loads:      3,
+			noImages:   true,
+			fills:      none,
+			bg: `
+nnnnnnnn
+nttttttn
+nnnnnnnn
+nnnnnnnn
+nnnnnnnn`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testWindowManagerConfig()
+			cfg.Background = tt.background
+			cfg.FrameCharSet.Graphics = tt.graphics
+			cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			irq := make(interruptCounter, 16)
+			cfg.Interrupter = irq
+			wm, _ := NewWindowManager(&stripedContent{}, cfg)
+			t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+			wm.Resize(8, 5)
+			wm.Draw(term.NewStringWriter(8, 5))
+			irq.wait(t, tt.loads)
+
+			s := newImageScreen(8, 5)
+			s.noImages = tt.noImages
+			wm.Draw(s)
+			require.NoError(t, s.Flush())
+			assert.Equal(t, tt.fills, fillMap(t, s))
+			assert.Equal(t, tt.bg, colorMap(s, func(c term.Cell) term.Color { return c.Bg }))
+		})
+	}
+}
+
+// ownBorderContent draws a border of line sprites of its own around
+// blank cells, over the background under it, and fills the inside of
+// its top-left corner in teal itself.
+type ownBorderContent struct {
+	width, height int
+	masks         FrameMasks
+}
+
+func (c *ownBorderContent) Resize(width, height int) { c.width, c.height = width, height }
+
+func (c *ownBorderContent) Dimensions() (int, int) { return 5, 4 }
+
+func (c *ownBorderContent) Draw(w term.Writer) {
+	area := image.Rect(0, 0, c.width, c.height)
+	h := spritePixels("....\n####\n....\n....")
+	v := spritePixels(".#..\n.#..\n.#..\n.#..")
+	cross := spritePixels(".#..\n####\n.#..\n.#..")
+	for y := range c.height {
+		for x := range c.width {
+			p := term.Coordinates{X: x, Y: y}
+			sides := RingSides(image.Pt(x, y), area)
+			if sides == 0 {
+				w.SetCell(p, term.NewCell('B', 1, term.Attributes{}))
+				continue
+			}
+			w.SetCell(p, term.NewCell(' ', 1, term.Attributes{Attrs: term.AttrKeepBackground}))
+			src := image.Image(cross)
+			switch sides {
+			case SideTop, SideBottom:
+				src = h
+			case SideLeft, SideRight:
+				src = v
+			}
+			sprite := term.Image{Src: src, ID: term.NewImageID(), Pos: p, Width: 1, Height: 1}
+			w.DrawImage(sprite)
+			if x == 0 && y == 0 {
+				fill, ok := c.masks.Inside(sprite, sides, term.ColorTeal)
+				if ok {
+					w.DrawImage(fill)
+				}
+			}
+		}
+	}
+}
+
+func TestWindowManagerFloatingOwnBorder(t *testing.T) {
+	cfg := testWindowManagerConfig()
+	cfg.Frame = false
+	cfg.FloatingOwnBorder = true
+	wm, _ := NewWindowManager(&component.TestComponent{
+		Ch: 'T', Attributes: term.Attributes{Bg: term.ColorWhite},
+	}, cfg)
+	wm.Resize(9, 6)
+	float := wm.FloatingWindow(&ownBorderContent{}, FloatingConfig{Offset: term.Coordinates{X: 2, Y: 1}})
+
+	s := newImageScreen(9, 6)
+	wm.Draw(s)
+	require.NoError(t, s.Flush())
+	assert.Equal(t, `
+wwwwwwwww
+wwwwwwwww
+www...www
+www...www
+wwwwwwwww
+wwwwwwwww`, colorMap(s, func(c term.Cell) term.Color { return c.Bg }),
+		"the window clears only inside its border")
+
+	float.SetBackground(&WindowBackground{Attr: term.Attributes{Bg: term.ColorNavy}})
+	s = newImageScreen(9, 6)
+	wm.Draw(s)
+	require.NoError(t, s.Flush())
+	assert.Equal(t, `
+wwwwwwwww
+wwwwwwwww
+wwwnnnwww
+wwwnnnwww
+wwwwwwwww
+wwwwwwwww`, colorMap(s, func(c term.Cell) term.Color { return c.Bg }),
+		"the cells under the border keep the window under it")
+	assert.Equal(t, `
+.........
+..?ffff..
+..f...f..
+..f...f..
+..fffff..
+.........`, fillMap(t, s), "the window's own fill stays, and the colour fills the others")
+}
+
+func TestWindowManagerFloatingBorderInsides(t *testing.T) {
+	cfg := testWindowManagerConfig()
+	cfg.FrameCharSet.Graphics = lineSprites(t)
+	cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	irq := make(interruptCounter, 16)
+	cfg.Interrupter = irq
+	wm, _ := NewWindowManager(&component.TestComponent{
+		Ch: 'T', Attributes: term.Attributes{Bg: term.ColorTeal},
+	}, cfg)
+	t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+	wm.Resize(10, 6)
+	float := wm.FloatingWindow(
+		component.StaticFloating(&component.TestComponent{Ch: 'B'}, 3, 2),
+		FloatingConfig{Offset: term.Coordinates{X: 2, Y: 1}},
+	)
+	float.SetBackground(&WindowBackground{Attr: term.Attributes{Bg: term.ColorNavy}})
+	wm.Draw(term.NewStringWriter(10, 6))
+	irq.wait(t, 3)
+
+	s := newImageScreen(10, 6)
+	wm.Draw(s)
+	require.NoError(t, s.Flush())
+	assert.Equal(t, `
+..........
+..fffff...
+..f...f...
+..f...f...
+..fffff...
+..........`, fillMap(t, s))
+	assert.Equal(t, `
+..........
+.tttttttt.
+.ttnnnttt.
+.ttnnnttt.
+.tttttttt.
+..........`, colorMap(s, func(c term.Cell) term.Color { return c.Bg }),
+		"the cells under the border show the window under it")
+
+	float.SetBackground(&WindowBackground{})
+	s = newImageScreen(10, 6)
+	wm.Draw(s)
+	require.NoError(t, s.Flush())
+	assert.Equal(t, `
+..........
+..?????...
+..?...?...
+..?...?...
+..?????...
+..........`, fillMap(t, s), "without a colour the inside takes the default background")
+	for _, img := range s.images {
+		if img.Fill {
+			assert.Equal(t, term.ColorDefault, img.FillColor)
+		}
+	}
+	assert.Equal(t, `
+..........
+.tttttttt.
+.tt...ttt.
+.tt...ttt.
+.tttttttt.
+..........`, colorMap(s, func(c term.Cell) term.Color { return c.Bg }))
+}
+
+// statusRowContent draws B in every row but the last, which the renderer
+// moves half a cell down into the bottom of a frame, as a program's
+// status row is: blank cells with the default colours, and an S on white
+// last, as its timer is.
+type statusRowContent struct {
+	width, height int
+}
+
+func (c *statusRowContent) Resize(width, height int) { c.width, c.height = width, height }
+
+func (c *statusRowContent) Dimensions() (int, int) { return 4, 2 }
+
+func (c *statusRowContent) Draw(w term.Writer) {
+	for y := range c.height {
+		for x := range c.width {
+			cell := term.NewCell('B', 1, term.Attributes{})
+			if y == c.height-1 {
+				attr := term.Attributes{Attrs: term.AttrVerticalRenderOffset}
+				ch := ' '
+				if x == c.width-1 {
+					attr.Bg, ch = term.ColorWhite, 'S'
+				}
+				cell = term.NewCell(ch, 1, attr)
+			}
+			w.SetCell(term.Coordinates{X: x, Y: y}, cell)
+		}
+	}
+}
+
+// wallpaperContent draws T on teal under a picture over all of it, as a
+// window showing a wallpaper does.
+type wallpaperContent struct {
+	width, height int
+	pic           term.Image
+}
+
+func (c *wallpaperContent) Resize(width, height int) { c.width, c.height = width, height }
+
+func (c *wallpaperContent) Draw(w term.Writer) {
+	for y := range c.height {
+		for x := range c.width {
+			w.SetCell(term.Coordinates{X: x, Y: y},
+				term.NewCell('T', 1, term.Attributes{Bg: term.ColorTeal}))
+		}
+	}
+	pic := c.pic
+	pic.Width, pic.Height = c.width, c.height
+	w.DrawImage(pic)
+}
+
+func TestWindowManagerFloatingBorderOverAPicture(t *testing.T) {
+	navy := WindowBackground{Attr: term.Attributes{Bg: term.ColorNavy}}
+	pics := newFramePictures(t)
+	p := pics.uris["i"]
+	panel := WindowBackground{Attr: navy.Attr, Graphics: BackgroundGraphics{
+		TopLeft: p, TopRight: p, BottomLeft: p, BottomRight: p,
+		HorizontalTop: p, HorizontalBottom: p, VerticalLeft: p, VerticalRight: p, Center: p,
+	}}
+	tests := []struct {
+		name       string
+		ownBorder  bool
+		background WindowBackground
+		inside     term.Color
+	}{
+		{name: "the window manager's border, unfocused", inside: term.ColorDefault},
+		{name: "the window manager's border, focused", background: navy, inside: term.ColorNavy},
+		{name: "the window manager's border over a panel", background: panel},
+		{name: "the window's own border, unfocused", ownBorder: true, inside: term.ColorDefault},
+		{name: "the window's own border, focused", ownBorder: true, background: navy, inside: term.ColorNavy},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testWindowManagerConfig()
+			cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			irq := make(interruptCounter, 16)
+			cfg.Interrupter = irq
+			var content component.Floating = &statusRowContent{}
+			loads := 3
+			// The wallpaper fills the tile, inside the tile's frame when
+			// the window manager draws frames.
+			tile := image.Rect(1, 1, 9, 5)
+			if tt.ownBorder {
+				cfg.Frame, cfg.FloatingOwnBorder = false, true
+				content, loads, tile = &ownBorderContent{}, 0, image.Rect(0, 0, 10, 6)
+			} else {
+				cfg.FrameCharSet.Graphics = lineSprites(t)
+			}
+			hasPanel := !tt.background.Graphics.Empty()
+			if hasPanel {
+				loads++
+			}
+			wallpaper := term.Image{Src: image.NewRGBA(image.Rect(0, 0, 1, 1)), ID: term.NewImageID()}
+			wm, _ := NewWindowManager(&wallpaperContent{pic: wallpaper}, cfg)
+			t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+			wm.Resize(10, 6)
+			float := wm.FloatingWindow(content, FloatingConfig{Offset: term.Coordinates{X: 2, Y: 1}})
+			float.SetBackground(&tt.background)
+			wm.Draw(term.NewStringWriter(10, 6))
+			irq.wait(t, loads)
+
+			w := cell.NewBufferWriter(context.Background(), 10, 6)
+			wm.Draw(w)
+			images, cells := w.Images(), w.RawCells()
+			pos := float.Position()
+			area := image.Rect(pos.X, pos.Y, pos.X+float.Width(), pos.Y+float.Height())
+			for y := tile.Min.Y; y < tile.Max.Y; y++ {
+				for x := tile.Min.X; x < tile.Max.X; x++ {
+					p := image.Pt(x, y)
+					picture, inside, slice := -1, -1, -1
+					for k, img := range images {
+						if !p.In(img.Visible()) {
+							continue
+						}
+						switch {
+						case img.ID == wallpaper.ID:
+							picture = k
+						case img.Fill && img.Src != nil:
+							inside = k
+						case img.Layer != term.ImageLayerAboveText:
+							slice = k
+						}
+					}
+					switch {
+					case !p.In(area):
+						require.GreaterOrEqual(t, picture, 0, "the wallpaper at %v", p)
+						assert.Equal(t, term.ImageLayerAboveText, images[picture].Layer,
+							"the wallpaper away from the window at %v", p)
+					case RingSides(p, area) == 0:
+						assert.Negative(t, picture, "the wallpaper inside the window at %v", p)
+					default:
+						require.GreaterOrEqual(t, picture, 0,
+							"the wallpaper shows outside the line of the border at %v", p)
+						assert.Equal(t, term.ImageLayerBelowText, images[picture].Layer,
+							"the wallpaper at %v goes under the border", p)
+						switch {
+						case hasPanel:
+							require.Greater(t, slice, picture,
+								"the panel at %v goes over the wallpaper", p)
+							assert.Equal(t, term.ImageLayerBelowText, images[slice].Layer,
+								"the panel at %v goes under the border with the wallpaper", p)
+						case !tt.ownBorder || p != area.Min:
+							require.Greater(t, inside, picture,
+								"the inside of the line at %v goes over the wallpaper", p)
+							assert.Equal(t, tt.inside, images[inside].FillColor,
+								"the inside of the line at %v takes the window's background", p)
+						default:
+							require.Greater(t, inside, picture,
+								"the inside of the line at %v goes over the wallpaper", p)
+						}
+						assert.Equal(t, ' ', cells[y][x].Ch, "the text under the border at %v", p)
+						assert.Equal(t, term.ColorTeal, cells[y][x].Bg,
+							"the border at %v keeps the background under the window", p)
+					}
+				}
+			}
+			if tt.ownBorder {
+				return
+			}
+
+			// The status row is moved half a cell into the bottom of the
+			// border, timer included, over the inside of the line or the
+			// panel there.
+			inside := slices.IndexFunc(images, func(img term.Image) bool {
+				return img.Src != nil && img.ID != wallpaper.ID &&
+					img.Layer == term.ImageLayerBelowText && image.Pt(6, 4).In(img.Visible())
+			})
+			timer := slices.IndexFunc(images, func(img term.Image) bool {
+				return img.Fill && img.Src == nil && img.FillColor == term.ColorWhite &&
+					img.Visible() == image.Rect(6, 3, 7, 4) &&
+					img.Layer == term.ImageLayerBelowText && img.VerticalRenderOffset
+			})
+			require.GreaterOrEqual(t, inside, 0)
+			assert.Greater(t, timer, inside,
+				"the timer's background moves into the border with it, over the inside of the line")
+		})
+	}
+}
+
+func TestWindowManagerWindowBarOverWhatIsUnder(t *testing.T) {
+	pics := newFramePictures(t)
+	sprites := lineSprites(t)
+	frames := []struct {
+		name     string
+		graphics component.FrameCharSetGraphics
+	}{
+		{name: "runes frames"},
+		{name: "image frames", graphics: sprites},
+	}
+	images := WindowBarGraphics{Left: "s", Horizontal: "v", Right: "s"}
+	outsets := images
+	outsets.Outset = WindowBarOutset{Top: 1, Bottom: 1, Sides: 1, Inward: 1, HorizontalTop: 1}
+	overlay := images
+	overlay.Overlay = true
+	bars := []struct {
+		name     string
+		graphics WindowBarGraphics
+		// drawn reports that the bar's images load and show.
+		drawn bool
+	}{
+		{name: "images", graphics: images, drawn: true},
+		{name: "images with outsets", graphics: outsets, drawn: true},
+		{name: "overlay images", graphics: overlay, drawn: true},
+		{
+			name:     "images that fail to load",
+			graphics: WindowBarGraphics{Left: "missing", Horizontal: "missing", Right: "missing"},
+		},
+		{name: "runes"},
+	}
+	colours := []struct {
+		name string
+		attr term.Attributes
+	}{
+		{name: "bar colours", attr: term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}},
+		{name: "default colours"},
+	}
+	writers := []struct {
+		name   string
+		images bool
+	}{
+		{name: "a writer of images", images: true},
+		{name: "a writer of cells only"},
+	}
+	const width, height, title = 16, 7, "abcdef"
+	icon := DefaultWindowManagerConfig().CloseIconAttr
+	for _, frame := range frames {
+		for _, under := range underWindows {
+			for _, bg := range floatingBackgrounds(pics) {
+				for _, bar := range bars {
+					for _, colour := range colours {
+						for _, writer := range writers {
+							name := strings.Join([]string{
+								frame.name, under.name, bg.name, bar.name, colour.name, writer.name,
+							}, "/")
+							t.Run(name, func(t *testing.T) {
+								drawn, bare := bar.drawn && writer.images, bg.bare || !writer.images
+								newWriter := func() (*cell.BufferWriter, term.Writer) {
+									w := cell.NewBufferWriter(context.Background(), width, height)
+									if !writer.images {
+										return w, imagelessBufferWriter{w}
+									}
+									return w, w
+								}
+								cfg := testWindowManagerConfig()
+								cfg.WindowBar = true
+								cfg.FrameAttr = colour.attr
+								cfg.FrameCharSet.Graphics = frame.graphics
+								cfg.WindowBarCharSet.Graphics = pics.resolveWindowBar(bar.graphics)
+								cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+								irq := make(interruptCounter, 16)
+								cfg.Interrupter = irq
+								pane := under.pane()
+								wm, left := NewWindowManager(pane, cfg)
+								t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+								// The border between the two tiles runs under the title.
+								_, ok := wm.SplitVertical(left, under.pane())
+								require.True(t, ok)
+								wm.Resize(width, height)
+								wm.Draw(term.NewStringWriter(width, height))
+								irq.wait(t, pics.loads(frame.graphics))
+								before, target := newWriter()
+								wm.Draw(target)
+								underImages, underCells := before.Images(), before.RawCells()
+
+								float := wm.FloatingWindow(
+									component.StaticFloating(&component.TestComponent{Ch: 'B'}, 10, 2),
+									FloatingConfig{Offset: term.Coordinates{X: 2, Y: 1}, Title: title},
+								)
+								float.SetBackground(&bg.bg)
+								wm.Draw(term.NewStringWriter(width, height))
+								irq.wait(t, pics.loadsWindowBar(bar.graphics)+bg.loads)
+								w, target := newWriter()
+								wm.Draw(target)
+								images, cells := w.Images(), w.RawCells()
+								isEnd := func(k int) bool { return pics.name(images[k]) == 's' }
+								isMiddle := func(k int) bool { return pics.name(images[k]) == 'v' }
+
+								pos := float.Position()
+								require.Equal(t, 12, float.Width())
+								text := map[int]rune{WindowBarCloseIconX: wm.config.CloseIcon}
+								for i, r := range " " + title + " " {
+									text[3+i] = r
+								}
+								keeps := drawn && !bar.graphics.Overlay
+								tileBorders := 0
+								for x := pos.X; x < pos.X+float.Width(); x++ {
+									p := image.Pt(x, pos.Y)
+									cover := imagesOver(images, p)
+									shown := shownOver(images, cover)
+									ch, isText := text[x-pos.X]
+									end := x == pos.X || x == pos.X+float.Width()-1
+									if drawn && !end {
+										middles := slices.DeleteFunc(slices.Clone(cover), func(k int) bool { return !isMiddle(k) })
+										assert.Len(t, middles, 1, "the bar's image is drawn once at %v", p)
+									}
+									if !drawn && shown >= 0 {
+										assert.Fail(t, "the bar's runes leave an image over them",
+											"%s at %v", imageRole(pics, images[shown]), p)
+									}
+									if !bare {
+										assert.True(t, slices.ContainsFunc(cover, func(k int) bool {
+											return pics.name(images[k]) == 'p'
+										}), "the window's background is drawn at %v", p)
+									}
+									if keeps || drawn && !isText {
+										for _, k := range imagesOver(underImages, p) {
+											if underImages[k].Layer == term.ImageLayerAboveText {
+												tileBorders++
+											}
+											id := underImages[k].ID
+											assert.True(t, slices.ContainsFunc(cover, func(j int) bool {
+												return images[j].ID == id
+											}), "%s still shows under the bar at %v", imageRole(pics, underImages[k]), p)
+										}
+									}
+									if !isText {
+										continue
+									}
+									for _, k := range cover {
+										if !isEnd(k) {
+											assert.NotEqual(t, term.ImageLayerAboveText, images[k].Layer,
+												"%s goes over the text at %v", imageRole(pics, images[k]), p)
+										}
+									}
+
+									// The cells of the text over images keep the background
+									// under the window, as a floating window's border does,
+									// which leaves them to the window's background.
+									want := term.Attributes{Fg: colour.attr.Fg, Bg: underCells[p.Y][p.X].Bg}
+									defaultBg := true
+									if !keeps {
+										want = term.Attributes{Fg: colour.attr.Bg, Bg: colour.attr.Fg}
+										defaultBg = want.Bg == term.ColorDefault
+									}
+									if x-pos.X == WindowBarCloseIconX {
+										want.Fg = icon.Fg
+									}
+									if defaultBg {
+										if want.Fg == term.ColorDefault {
+											want.Fg = bg.bg.Attr.Fg
+										}
+										if bare && bg.bg.Attr.Bg != term.ColorDefault {
+											want.Bg = bg.bg.Attr.Bg
+										}
+									}
+									assert.Equal(t, ch, cells[p.Y][p.X].Ch, "the text at %v", p)
+									assert.Equal(t, want, cells[p.Y][p.X].Attributes(), "the colours of the text at %v", p)
+								}
+								if keeps && frame.graphics.HorizontalTop != "" {
+									assert.Positive(t, tileBorders, "no border of a tile runs under the bar")
+								}
+
+								// The bar shows over all it covers, outsets included, and
+								// its ends over the rest of it.
+								for y := pos.Y - 1; y <= pos.Y+1; y++ {
+									for x := pos.X - 1; x <= pos.X+float.Width(); x++ {
+										p := image.Pt(x, y)
+										cover := imagesOver(images, p)
+										want := 'v'
+										switch {
+										case slices.ContainsFunc(cover, isEnd):
+											want = 's'
+										case !slices.ContainsFunc(cover, isMiddle):
+											continue
+										}
+										shown := shownOver(images, cover)
+										require.GreaterOrEqual(t, shown, 0, "nothing shows over the bar at %v", p)
+										assert.Equal(t, want, pics.name(images[shown]),
+											"%s shows over the bar at %v", imageRole(pics, images[shown]), p)
+									}
+								}
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestWindowManagerMovedRowOverFloatingBorder(t *testing.T) {
+	pics := newFramePictures(t)
+	sprites := lineSprites(t)
+	rows := []struct {
+		name string
+		top  bool
+	}{
+		{name: "the bottom row moved down"},
+		{name: "the top row moved up", top: true},
+	}
+	const width, height = 12, 7
+	for _, row := range rows {
+		for _, under := range underWindows {
+			for _, bg := range floatingBackgrounds(pics) {
+				t.Run(row.name+"/"+under.name+"/"+bg.name, func(t *testing.T) {
+					cfg := testWindowManagerConfig()
+					cfg.FrameCharSet.Graphics = sprites
+					cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+					irq := make(interruptCounter, 16)
+					cfg.Interrupter = irq
+					wm, _ := NewWindowManager(under.pane(), cfg)
+					t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+					wm.Resize(width, height)
+					content := &movedRowContent{top: row.top}
+					float := wm.FloatingWindow(content, FloatingConfig{Offset: term.Coordinates{X: 2, Y: 1}})
+					float.SetBackground(&bg.bg)
+					wm.Draw(term.NewStringWriter(width, height))
+					irq.wait(t, pics.loads(sprites)+bg.loads)
+					w := cell.NewBufferWriter(context.Background(), width, height)
+					wm.Draw(w)
+					images, cells := w.Images(), w.RawCells()
+
+					pos := float.Position()
+					moved, border := pos.Y+float.Height()-2, pos.Y+float.Height()-1
+					if row.top {
+						moved, border = pos.Y+1, pos.Y
+					}
+					for x := pos.X + 1; x < pos.X+float.Width()-1; x++ {
+						n, p := term.Coordinates{X: x, Y: moved}, image.Pt(x, border)
+						own := content.bg(x - pos.X - 1)
+						var fills []int
+						for k, img := range images {
+							if img.Fill && img.Src == nil && img.Pos == n && img.Width == 1 && img.Height == 1 {
+								fills = append(fills, k)
+							}
+						}
+						if own == term.ColorDefault {
+							assert.Empty(t, fills, "the cell at %v has no background of its own to move", n)
+							continue
+						}
+						assert.Equal(t, own, cells[n.Y][n.X].Bg, "the cell at %v", n)
+						require.Len(t, fills, 1, "the background of the cell at %v moves into the border", n)
+						fill := images[fills[0]]
+						assert.Equal(t, own, fill.FillColor, "the background moved from %v", n)
+						assert.Equal(t, term.ImageLayerBelowText, fill.Layer, "the background moved from %v", n)
+						assert.Equal(t, !row.top, fill.VerticalRenderOffset, "the background moved from %v", n)
+						assert.Equal(t, row.top, fill.NegativeVerticalRenderOffset, "the background moved from %v", n)
+						for _, k := range imagesOver(images, p) {
+							if images[k].Layer == term.ImageLayerBelowText {
+								assert.Less(t, k, fills[0], "the background moved from %v goes over %s at %v",
+									n, imageRole(pics, images[k]), p)
+							}
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// underWindow is what a tile under a floating window shows: cells in the
+// default colours, under or over a picture in layer when picture is set,
+// as a pane showing a wallpaper or a program's graphics does.
+type underWindow struct {
+	name    string
+	picture bool
+	layer   term.ImageLayer
+}
+
+var underWindows = []underWindow{
+	{name: "cells"},
+	{name: "a picture over the text", picture: true, layer: term.ImageLayerAboveText},
+	{name: "a picture under the text", picture: true, layer: term.ImageLayerBelowText},
+	{name: "a picture under the background", picture: true, layer: term.ImageLayerBelowBackground},
+}
+
+// underPicture is the picture of the panes of underWindow.
+var underPicture = term.Image{Src: image.NewRGBA(image.Rect(0, 0, 1, 1)), ID: term.NewImageID()}
+
+func (u underWindow) pane() *paneContent {
+	c := &paneContent{}
+	if u.picture {
+		c.pic = underPicture
+		c.pic.Layer = u.layer
+	}
+	return c
+}
+
+// paneContent draws T in the default colours, and pic stretched over
+// all of it when it has a picture.
+type paneContent struct {
+	pic           term.Image
+	width, height int
+}
+
+func (c *paneContent) Resize(width, height int) { c.width, c.height = width, height }
+
+func (c *paneContent) Draw(w term.Writer) {
+	for y := range c.height {
+		for x := range c.width {
+			w.SetCell(term.Coordinates{X: x, Y: y}, term.NewCell('T', 1, term.Attributes{}))
+		}
+	}
+	if c.pic.Src != nil {
+		pic := c.pic
+		pic.Width, pic.Height = c.width, c.height
+		w.DrawImage(pic)
+	}
+}
+
+// imagelessBufferWriter is a writer that draws no images, as a terminal
+// without graphics is.
+type imagelessBufferWriter struct{ *cell.BufferWriter }
+
+func (imagelessBufferWriter) DrawImage(term.Image) bool { return false }
+
+// floatingBackground is a background of a floating window, which starts
+// loading loads images and leaves its cells bare of images, for them to
+// take its colour, when bare is set.
+type floatingBackground struct {
+	name  string
+	bg    WindowBackground
+	loads int
+	bare  bool
+}
+
+func floatingBackgrounds(pics framePictures) []floatingBackground {
+	colour := term.Attributes{Fg: term.ColorYellow, Bg: term.ColorNavy}
+	panel := func(name string) BackgroundGraphics {
+		uri := pics.uris[name]
+		return BackgroundGraphics{
+			TopLeft: uri, TopRight: uri, BottomLeft: uri, BottomRight: uri,
+			HorizontalTop: uri, HorizontalBottom: uri, VerticalLeft: uri, VerticalRight: uri,
+			Center: uri,
+		}
+	}
+	return []floatingBackground{
+		{name: "no background", bare: true},
+		{name: "a colour", bg: WindowBackground{Attr: colour}, bare: true},
+		{name: "images", bg: WindowBackground{Graphics: panel("p")}, loads: 1},
+		{name: "a colour and images", bg: WindowBackground{Attr: colour, Graphics: panel("p")}, loads: 1},
+		{
+			name:  "a colour and images that fail to load",
+			bg:    WindowBackground{Attr: colour, Graphics: panel("missing")},
+			loads: 1,
+			bare:  true,
+		},
+	}
+}
+
+// movedRowContent draws B in every row but the one the renderer moves
+// half a cell into the frame, its last or, when top, its first, as a
+// program's status bar is: a blank in the default colours, a character
+// on a background and a blank on another, over and over.
+type movedRowContent struct {
+	top           bool
+	width, height int
+}
+
+func (c *movedRowContent) Resize(width, height int) { c.width, c.height = width, height }
+
+func (c *movedRowContent) Dimensions() (int, int) { return 6, 3 }
+
+// bg returns the background of the cell x of the moved row.
+func (c *movedRowContent) bg(x int) term.Color {
+	return [...]term.Color{term.ColorDefault, term.ColorWhite, term.ColorMaroon}[x%3]
+}
+
+func (c *movedRowContent) Draw(w term.Writer) {
+	moved, offset := c.height-1, term.AttrVerticalRenderOffset
+	if c.top {
+		moved, offset = 0, term.AttrNegativeVerticalRenderOffset
+	}
+	for y := range c.height {
+		for x := range c.width {
+			cell := term.NewCell('B', 1, term.Attributes{})
+			if y == moved {
+				ch := ' '
+				if x%3 == 1 {
+					ch = 'S'
+				}
+				cell = term.NewCell(ch, 1, term.Attributes{Bg: c.bg(x), Attrs: offset})
+			}
+			w.SetCell(term.Coordinates{X: x, Y: y}, cell)
+		}
+	}
+}
+
+// imagesOver returns the indexes of the images that cover p.
+func imagesOver(images []term.Image, p image.Point) []int {
+	var ret []int
+	for k, img := range images {
+		if p.In(img.Visible()) {
+			ret = append(ret, k)
+		}
+	}
+	return ret
+}
+
+// shownOver returns which of the images at the indexes over shows on
+// top of their cell, as a writer composing the layers shows them: the
+// last above the text, or else the last under it, or -1 for none.
+func shownOver(images []term.Image, over []int) int {
+	shown := -1
+	for _, k := range over {
+		switch {
+		case images[k].Layer == term.ImageLayerAboveText:
+			shown = k
+		case images[k].Layer == term.ImageLayerBelowText &&
+			(shown < 0 || images[shown].Layer != term.ImageLayerAboveText):
+			shown = k
+		}
+	}
+	return shown
+}
+
+// imageRole describes what img is in the tests drawing a floating
+// window over underWindows with floatingBackgrounds.
+func imageRole(pics framePictures, img term.Image) string {
+	switch {
+	case img.ID == underPicture.ID:
+		return "the picture under the window"
+	case img.Fill:
+		return "a fill"
+	case pics.name(img) == 'v':
+		return "the bar"
+	case pics.name(img) == 's':
+		return "an end of the bar"
+	case pics.name(img) == 'p':
+		return "the window's background"
+	}
+	return "a frame's image"
+}
 
 func TestWindowManagerToggleMaximize(t *testing.T) {
 	cfg := DefaultWindowManagerConfig()

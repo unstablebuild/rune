@@ -500,25 +500,161 @@ func TestFrameGraphicsSharesOneImagePerURI(t *testing.T) {
 	}
 }
 
+func TestFrameGraphicsDrawBackground(t *testing.T) {
+	pics := newFramePictures(t)
+	type placement struct {
+		name  rune
+		area  image.Rectangle
+		fit   term.ImageFit
+		layer term.ImageLayer
+	}
+	below := term.ImageLayerBelowBackground
+	tests := []struct {
+		name     string
+		graphics BackgroundGraphics
+		area     image.Rectangle
+		noImages bool
+		loads    int
+		images   []placement
+		bare     []image.Rectangle
+	}{
+		{
+			name: "each slice covers its cells",
+			graphics: BackgroundGraphics{
+				TopLeft: "L", HorizontalTop: "R", VerticalRight: "i", Center: "s",
+			},
+			area:  image.Rect(1, 1, 5, 4),
+			loads: 4,
+			images: []placement{
+				{'L', image.Rect(1, 1, 2, 2), term.ImageFitFill, below},
+				{'R', image.Rect(2, 1, 4, 2), term.ImageFitFill, below},
+				{'i', image.Rect(4, 2, 5, 3), term.ImageFitFill, below},
+				{'s', image.Rect(2, 2, 4, 3), term.ImageFitFill, below},
+			},
+			bare: []image.Rectangle{
+				image.Rect(4, 1, 5, 2), image.Rect(1, 3, 2, 4), image.Rect(4, 3, 5, 4),
+				image.Rect(2, 3, 4, 4), image.Rect(1, 2, 2, 3),
+			},
+		},
+		{
+			name:     "tiles keep their fit",
+			graphics: BackgroundGraphics{Center: "s", Fit: term.ImageFitTile},
+			area:     image.Rect(0, 0, 4, 4),
+			loads:    1,
+			images:   []placement{{'s', image.Rect(1, 1, 3, 3), term.ImageFitTile, below}},
+			bare: []image.Rectangle{
+				image.Rect(0, 0, 1, 1), image.Rect(3, 0, 4, 1), image.Rect(0, 3, 1, 4),
+				image.Rect(3, 3, 4, 4), image.Rect(1, 0, 3, 1), image.Rect(1, 3, 3, 4),
+				image.Rect(0, 1, 1, 3), image.Rect(3, 1, 4, 3),
+			},
+		},
+		{
+			name:     "an area one cell high takes the center alone",
+			graphics: BackgroundGraphics{TopLeft: "L", Center: "s"},
+			area:     image.Rect(0, 2, 5, 3),
+			loads:    1,
+			images:   []placement{{'s', image.Rect(0, 2, 5, 3), term.ImageFitFill, below}},
+		},
+		{
+			name:     "a missing image leaves its slice bare",
+			graphics: BackgroundGraphics{Center: "missing"},
+			area:     image.Rect(0, 0, 3, 1),
+			loads:    1,
+			bare:     []image.Rectangle{image.Rect(0, 0, 3, 1)},
+		},
+		{
+			name:     "a writer that cannot draw images leaves every slice bare",
+			graphics: BackgroundGraphics{Center: "s"},
+			area:     image.Rect(0, 0, 3, 1),
+			noImages: true,
+			loads:    1,
+			bare:     []image.Rectangle{image.Rect(0, 0, 3, 1)},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gr := tt.graphics
+			for _, slot := range []*string{
+				&gr.TopLeft, &gr.TopRight, &gr.BottomLeft, &gr.BottomRight,
+				&gr.HorizontalTop, &gr.HorizontalBottom, &gr.VerticalLeft,
+				&gr.VerticalRight, &gr.Center,
+			} {
+				*slot = pics.uris[*slot]
+			}
+			irq := make(interruptCounter, 16)
+			g := NewFrameGraphics(storagestub.NewInMemoryService(), irq)
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			g.DrawBackground(term.NewStringWriter(6, 5), gr, tt.area, nil)
+			irq.wait(t, tt.loads)
+
+			s := newImageScreen(6, 5)
+			s.noImages = tt.noImages
+			bare := g.DrawBackground(s, gr, tt.area, nil)
+			var images []placement
+			for _, img := range s.images {
+				images = append(images, placement{pics.name(img), img.Bounds(), img.Fit, img.Layer})
+			}
+			assert.ElementsMatch(t, tt.images, images)
+			assert.ElementsMatch(t, tt.bare, bare)
+			for _, c := range s.Cells() {
+				assert.Zero(t, c.Ch, "no cell may be written")
+			}
+		})
+	}
+}
+
+func TestFrameGraphicsBackgroundImages(t *testing.T) {
+	pics := newFramePictures(t)
+	irq := make(interruptCounter, 16)
+	g := NewFrameGraphics(storagestub.NewInMemoryService(), irq)
+	t.Cleanup(func() { assert.NoError(t, g.Close()) })
+	area := image.Rect(0, 0, 1, 1)
+	filled := BackgroundGraphics{Center: pics.uris["s"]}
+	tiled := BackgroundGraphics{Center: pics.uris["s"], Fit: term.ImageFitTile}
+	draw := func(gr BackgroundGraphics) term.Image {
+		t.Helper()
+		s := newImageScreen(1, 1)
+		g.DrawBackground(s, gr, area, nil)
+		require.Len(t, s.images, 1)
+		return s.images[0]
+	}
+	g.DrawBackground(term.NewStringWriter(1, 1), filled, area, nil)
+	g.DrawBackground(term.NewStringWriter(1, 1), tiled, area, nil)
+	irq.wait(t, 2)
+
+	before := draw(filled)
+	assert.Equal(t, before.ID, draw(filled).ID, "a URI and fit share one ImageID")
+	assert.NotEqual(t, before.ID, draw(tiled).ID, "another fit gets its own")
+
+	g.Reload(map[string]image.Image{pics.uris["s"]: pics.imgs['p']})
+	after := draw(filled)
+	assert.NotEqual(t, before.ID, after.ID, "a reload replaces the image")
+	assert.Equal(t, 'p', pics.name(after), "the reloaded picture draws at once")
+	assert.Equal(t, 'p', pics.name(draw(tiled)))
+	select {
+	case <-irq:
+		assert.Fail(t, "a reloaded background was fetched")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestFrameGraphicsDrawCell(t *testing.T) {
 	pics := newFramePictures(t)
-	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
-	cell := term.NewCell('c', 1, attr)
+	under := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorTeal}
+	cell := term.NewCell('c', 1, term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack})
 	pos := term.Coordinates{X: 1}
 
 	tests := []struct {
 		name       string
 		uri        string
-		overlay    bool
 		noImages   bool
 		expected   string
 		underneath string
 	}{
-		{name: "an image replaces the cell", uri: "L", expected: "\n.L.", underneath: "\n. ."},
-		{name: "an overlay image keeps the cell under it", uri: "L", overlay: true, expected: "\n.L.", underneath: "\n.c."},
-		{name: "no image keeps the cell", expected: "\n.c."},
-		{name: "an image that fails to load keeps the cell", uri: "invalid", expected: "\n.c."},
-		{name: "a writer that cannot draw images keeps the cell", uri: "L", noImages: true, expected: "\n.c."},
+		{name: "an image goes over a blank cell keeping what is under it", uri: "L", expected: "\n.L.", underneath: "\n. ."},
+		{name: "no image draws nothing", expected: "\n.u."},
+		{name: "an image that fails to load writes the cell", uri: "invalid", expected: "\n.c."},
+		{name: "a writer that cannot draw images writes the cell", uri: "L", noImages: true, expected: "\n.c."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -529,14 +665,91 @@ func TestFrameGraphicsDrawCell(t *testing.T) {
 			s := newImageScreen(3, 1)
 			s.noImages = tt.noImages
 			for x := range 3 {
-				s.SetCell(term.Coordinates{X: x}, term.NewCell('.', 1, attr))
+				s.SetCell(term.Coordinates{X: x}, term.NewCell('.', 1, under))
 			}
-			s.SetCell(pos, cell)
-			g.DrawCell(s, pics.uris[tt.uri], pos, cell, tt.overlay)
-			assert.Equal(t, tt.expected, s.render(t, pics, attr, tt.overlay))
+			s.SetCell(pos, term.NewCell('u', 1, under))
+			g.DrawCell(s, pics.uris[tt.uri], pos, cell)
+			assert.Equal(t, tt.expected, s.render(t, pics, under, false))
 			if tt.underneath != "" {
 				assert.Equal(t, tt.underneath, "\n"+s.String())
 			}
+		})
+	}
+}
+
+func TestFrameGraphicsDrawOver(t *testing.T) {
+	pics := newFramePictures(t)
+	navy := term.Attributes{Fg: term.ColorWhite, Bg: term.ColorNavy}
+	teal := term.Attributes{Bg: term.ColorTeal}
+	gr := component.FrameCharSetGraphics{TopLeft: pics.uris["L"], HorizontalTop: pics.uris["L"]}
+	tests := []struct {
+		name     string
+		noImages bool
+		keep     []term.Coordinates
+		// bg is the background of each cell: t for teal, under the
+		// frame, and n for navy, the frame's.
+		bg string
+	}{
+		{
+			name: "the cells under images keep the background under the frame",
+			bg: `
+tttn
+n..n
+nnnn`,
+		},
+		{
+			name:     "the cells whose images do not draw take the frame's",
+			noImages: true,
+			bg: `
+nnnn
+n..n
+nnnn`,
+		},
+		{
+			name: "kept cells keep the background under the frame without an image",
+			keep: []term.Coordinates{{X: 0, Y: 1}, {X: 3, Y: 2}},
+			bg: `
+tttn
+t..n
+nnnt`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			g.Reload(map[string]image.Image{pics.uris["L"]: pics.imgs['L']})
+
+			s := newImageScreen(4, 3)
+			s.noImages = tt.noImages
+			for y := range 3 {
+				for x := range 4 {
+					s.SetCell(term.Coordinates{X: x, Y: y}, term.NewCell('u', 1, teal))
+				}
+			}
+			f := component.NewFrame(&component.TestComponent{Ch: '.'})
+			f.Attributes = navy
+			f.Graphics = gr
+			f.Resize(4, 3)
+			f.Draw(&FrameUnderWriter{Writer: s, Graphics: gr, Width: 4, Height: 3, Keep: tt.keep})
+			g.DrawOver(s, f, 4, 3)
+			require.NoError(t, s.Flush())
+
+			var b strings.Builder
+			for i, c := range s.Cells() {
+				if i%4 == 0 {
+					b.WriteByte('\n')
+				}
+				switch c.Bg {
+				case term.ColorTeal:
+					b.WriteByte('t')
+				case term.ColorNavy:
+					b.WriteByte('n')
+				default:
+					b.WriteByte('.')
+				}
+			}
+			assert.Equal(t, tt.bg, b.String())
 		})
 	}
 }

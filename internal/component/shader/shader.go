@@ -73,6 +73,10 @@ func (s Snapshot) copied(defaultFg term.Color) Snapshot {
 	// copyImages shares a copy among the placements of a picture.
 	desaturated := make(map[*image.RGBA]bool, len(out.Images))
 	for _, img := range out.Images {
+		// A fill without a mask has no pixels to desaturate.
+		if img.Src == nil {
+			continue
+		}
 		pixels := img.Src.(*image.RGBA)
 		if !desaturated[pixels] {
 			desaturatePixels(pixels, amount)

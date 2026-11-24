@@ -57,13 +57,25 @@ named colors live, use the `colorPalette` command.
 A theme entry maps color names to values. Each value can be a hex string
 (`"#ff2400"`) or another known color name (`"darkorange"`).
 
-Three keys are special:
+Four keys are special:
 
 | Key | Sets |
 | --- | --- |
 | `foreground` | the default text color |
 | `background` | the default background color |
 | `cursor` | the cursor color |
+| `focus_background` | the background of the window in focus, while more than one is open |
+
+`focus_background` marks the window in focus, and colors the command
+prompt, as `browser.window_manager.focus_background_attr` does (see
+[Focus styles](./styling.md#focus-styles)). It applies only while your config
+sets neither `focus_background_attr` nor `focus_background_graphics`, so a
+focus style of your own always wins. Set `focus_background_attr: {}` to keep
+the theme's off. A theme without it, or with `default`, leaves the window in
+focus on the theme's `background`. The light built-in themes, `pike` and
+`ritchie`, set it a shade brighter than their `background`, so the window in
+focus looks highlighted rather than recolored. The terminal UI ignores it, as
+it ignores the rest of the theme.
 
 Every other key remaps one of the named palette colors. These are
 essentially the 8 regular ANSI colors plus the 8 bold (bright) ones, 16 in

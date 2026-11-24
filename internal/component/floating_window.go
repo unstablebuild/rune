@@ -17,6 +17,7 @@
 package component
 
 import (
+	"image"
 	"unsafe"
 
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -35,6 +36,7 @@ type floatingNode struct {
 	noBar                       bool
 	title                       string
 	barCharSet                  *WindowBarCharSet
+	background                  *WindowBackground
 	moved                       bool
 	maximized                   bool
 	restoreAlignment            component.Alignment
@@ -120,7 +122,11 @@ func (w *floatingNode) Draw(wr term.Writer) {
 	}
 	frame, ok := w.bordered()
 	if !ok {
-		w.clear(wr, w.realOffset, w.realWidth, w.realHeight)
+		if inner, ok := w.ownBorderInterior(); ok {
+			w.clear(wr, term.Coordinates{X: inner.Min.X, Y: inner.Min.Y}, inner.Dx(), inner.Dy())
+		} else {
+			w.clear(wr, w.realOffset, w.realWidth, w.realHeight)
+		}
 		w.content.Draw(wr)
 		return
 	}
@@ -143,6 +149,17 @@ func (w *floatingNode) bordered() (*component.Frame, bool) {
 		return nil, false
 	}
 	return w.Content().(*component.Frame), true
+}
+
+// ownBorderInterior returns the cells inside the border w's content
+// draws of its own, when WindowManagerConfig.FloatingOwnBorder says it
+// does, in the window manager's coordinates.
+func (w *floatingNode) ownBorderInterior() (image.Rectangle, bool) {
+	if !w.wm.config.FloatingOwnBorder || w.wm.config.Frame || w.realWidth < 3 || w.realHeight < 3 {
+		return image.Rectangle{}, false
+	}
+	return image.Rect(1, 1, w.realWidth-1, w.realHeight-1).
+		Add(image.Pt(w.realOffset.X, w.realOffset.Y)), true
 }
 
 func (w *floatingNode) clear(wr term.Writer, pos term.Coordinates, width, height int) {

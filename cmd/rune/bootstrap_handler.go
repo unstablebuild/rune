@@ -90,7 +90,7 @@ type bootstrapHandler struct {
 	realIDE           *ide.IDE
 	g                 *gui.GUI
 	transparentWindow bool
-	initialThemeAttr  term.Attributes
+	initialTheme      ide.ThemeColors
 	client            *apiclient.Client
 	upgradeMgr        *ideupgrade.Manager
 	upgradeCancel     context.CancelFunc
@@ -239,7 +239,7 @@ func (b *bootstrapHandler) buildPreIDE() (*ide.IDE, error) {
 	if err != nil {
 		return nil, err
 	}
-	b.applyInitialThemeAttr(preIDE)
+	b.applyInitialThemeColors(preIDE)
 	return preIDE, nil
 }
 
@@ -276,29 +276,7 @@ func (b *bootstrapHandler) buildConfiguredIDE(
 		ide.WithTrustedWorkspaceConfig(docsConfigYAML),
 		ide.WithTabsClickCallback(b.handleTabsClick),
 		ide.WithConfigChangeHook(b.configChangeHook),
-		ide.WithDispatchOnPreview(cmdSetTheme,
-			func(cmd string, args ...string) (component.Responsive, func(), bool) {
-				if cmd != cmdSetTheme || b.g == nil {
-					return nil, nil, false
-				}
-				if len(args) == 0 {
-					return nil, nil, false
-				}
-				theme := b.g.Theme()
-				_, err := b.g.SetTheme(args[0])
-				if err != nil {
-					return nil, nil, false
-				}
-				return nil, func() {
-					theme, err := b.g.SetTheme(theme)
-					if err == nil && b.realIDE != nil {
-						b.realIDE.SetDefaultAttributes(term.Attributes{
-							Fg: term.FromTcellColor(theme.Foreground),
-							Bg: term.FromTcellColor(theme.Background),
-						})
-					}
-				}, true
-			}),
+		ide.WithDispatchOnPreview(cmdSetTheme, b.previewTheme),
 	}
 	opts = append(opts, embeddedTutorialOptions()...)
 	if startingTutorial {
@@ -323,7 +301,7 @@ func (b *bootstrapHandler) buildConfiguredIDE(
 	if err != nil {
 		return nil, err
 	}
-	b.applyInitialThemeAttr(realIDE)
+	b.applyInitialThemeColors(realIDE)
 	return realIDE, nil
 }
 
@@ -354,20 +332,46 @@ func (b *bootstrapHandler) wallpaperTheme() string {
 	return b.g.Theme()
 }
 
-// applyInitialThemeAttr must run before Ready(): Ready() captures
+// previewTheme shows the theme the guitheme command cmd names while the
+// command prompt previews it, and returns the func that restores the
+// theme shown before. It previews nothing, returning false, without a
+// GUI or for a theme the GUI doesn't have.
+func (b *bootstrapHandler) previewTheme(cmd string, args ...string) (component.Responsive, func(), bool) {
+	if cmd != cmdSetTheme || b.g == nil || len(args) == 0 {
+		return nil, nil, false
+	}
+	prev := b.g.Theme()
+	theme, err := b.g.SetTheme(args[0])
+	if err != nil {
+		return nil, nil, false
+	}
+	// The window manager draws the theme's focus background, so the
+	// preview hands the theme's colours over as guitheme does.
+	if b.realIDE != nil {
+		b.realIDE.SetThemeColors(themeColors(theme))
+	}
+	return nil, func() {
+		theme, err := b.g.SetTheme(prev)
+		if err == nil && b.realIDE != nil {
+			b.realIDE.SetThemeColors(themeColors(theme))
+		}
+	}, true
+}
+
+// applyInitialThemeColors must run before Ready(): Ready() captures
 // defAttr to materialize the init shader, so a later
-// SetDefaultAttributes would not propagate into the running shader
+// SetThemeColors would not propagate into the running shader
 // (RUNE-203). Seeding both the pre-bootstrap and configured IDEs
 // with the same attrs also avoids a color jump across performSwap.
 //
 // The IDE is already running async workspace builds by the time it is
 // returned, and those read the state the setter writes, so the seed
 // takes the event loop lock like a loop iteration would.
-func (b *bootstrapHandler) applyInitialThemeAttr(i *ide.IDE) {
-	b.initialThemeAttr = resolveInitialThemeAttr(i.Browser(), i.Config())
+func (b *bootstrapHandler) applyInitialThemeColors(i *ide.IDE) {
+	b.initialTheme = resolveInitialThemeColors(i.Browser(), i.Config())
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	i.SetDefaultAttributes(b.initialThemeAttr)
+	i.SetThemeColors(b.initialTheme)
 }
 
 func (b *bootstrapHandler) browser() browser.Browser {
@@ -468,10 +472,7 @@ func (b *bootstrapHandler) applyGUIEnv() error {
 func (b *bootstrapHandler) applyGUIThemes(guiCfg config.Config) {
 	themes := getGUIColorThemes(b.browser(), guiCfg)
 	if theme, reapplied := b.g.SetColorThemes(themes); reapplied {
-		b.currentIDE().SetDefaultAttributes(term.Attributes{
-			Fg: term.FromTcellColor(theme.Foreground),
-			Bg: term.FromTcellColor(theme.Background),
-		})
+		b.currentIDE().SetThemeColors(themeColors(theme))
 	}
 }
 
@@ -502,7 +503,7 @@ func (b *bootstrapHandler) setupConfiguredIDE(
 	i *ide.IDE, client *apiclient.Client,
 ) error {
 	b.mu.Lock()
-	i.SetDefaultAttributes(b.initialThemeAttr)
+	i.SetThemeColors(b.initialTheme)
 	b.mu.Unlock()
 
 	b.client = client
@@ -742,10 +743,7 @@ func (b *bootstrapHandler) applyGUIConfig(cfg config.Config, assets guiAssets) {
 			"Could not apply 'gui.default_theme': %v", err)
 		return
 	}
-	b.currentIDE().SetDefaultAttributes(term.Attributes{
-		Fg: term.FromTcellColor(theme.Foreground),
-		Bg: term.FromTcellColor(theme.Background),
-	})
+	b.currentIDE().SetThemeColors(themeColors(theme))
 }
 
 // screenshot captures the last frame the GUI drew. It must run on the

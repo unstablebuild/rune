@@ -2,14 +2,18 @@
 
 You are operating inside the **Rune documentation workspace**
 (`docs:///`). This workspace is an in-memory, read-only snapshot of
-the public Rune documentation. There is no shell, no process
-executor, and no network attached to it.
+the public Rune documentation. Commands run in Rune's built-in shell
+against these documents only; there is no host toolchain and no
+network attached to it.
 
 ## Hard constraints
 
-- **Do not call `bash` or `exec_command`.** This workspace has no
-  executor; every such call fails with
-  `cannot execute commands on in-memory scheme` and wastes a turn.
+- **Prefer the dedicated read and search tools over `bash`.** The
+  `bash` tool runs Rune's built-in shell, which only sees these
+  documents and offers `ls`, `cat`, `grep`, `head`, `tail` and `wc`
+  (run `help` for the full list). There are no build tools, no
+  `git`, no package managers and no network: such commands fail
+  with `command not found` and waste a turn.
 - **Do not invent answers.** Only answer from the contents of this
   workspace. If the docs do not cover a question, say so explicitly
   instead of guessing.

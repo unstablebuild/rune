@@ -81,8 +81,12 @@ func rgbaPixels(img term.Image) *image.RGBA {
 }
 
 // copyImage returns img with a copy of the pixels it shows, under an ID
-// of its own, for placements kept past the frame they were drawn in.
+// of its own, for placements kept past the frame they were drawn in. A
+// fill without a mask has no pixels and is returned as it is.
 func copyImage(img term.Image) term.Image {
+	if img.Src == nil {
+		return img
+	}
 	crop := cropOf(img)
 	dst := image.NewRGBA(image.Rect(0, 0, crop.Dx(), crop.Dy()))
 	draw.Draw(dst, dst.Rect, img.Src, crop.Min, draw.Src)
@@ -184,9 +188,25 @@ func paintPictures(cells [][]term.Cell, images []term.Image) {
 }
 
 func paintPicture(cells [][]term.Cell, img term.Image, screen image.Rectangle, shows [][]bool) {
-	crop := cropOf(img)
 	covered := sampleCell.Covered(img).Intersect(screen)
-	if crop.Empty() || covered.Empty() {
+	if covered.Empty() {
+		return
+	}
+	var fill [3]float64
+	if img.Fill {
+		// The default background is the colour the cells already show.
+		if !img.FillColor.Valid() || img.FillColor == term.ColorDefault {
+			return
+		}
+		r, g, b := img.FillColor.TrueColor().RGB()
+		fill = [3]float64{float64(r), float64(g), float64(b)}
+		if img.Src == nil {
+			paintSolid(cells, img.Layer, covered, shows, fill)
+			return
+		}
+	}
+	crop := cropOf(img)
+	if crop.Empty() {
 		return
 	}
 	x0, y0, x1, y1 := rasterArea(img, crop)
@@ -218,11 +238,27 @@ func paintPicture(cells [][]term.Cell, img term.Image, screen image.Rectangle, s
 					}
 					sx := crop.Min.X + texel(px-x0, scaleX, crop.Dx(), tile)
 					pr, pg, pb, pa := premultipliedAt(img.Src, sx, sy)
+					if img.Fill {
+						pr, pg, pb = uint32(fill[0])*pa/255, uint32(fill[1])*pa/255, uint32(fill[2])*pa/255
+					}
 					r, g, b, a = r+pr, g+pg, b+pb, a+pa
 				}
 			}
 			paintCell(row, x, img.Layer,
 				float64(r)/samples, float64(g)/samples, float64(b)/samples, float64(a)/samples)
+		}
+	}
+}
+
+// paintSolid paints the covered cells that shows lets through in fill,
+// an opaque colour.
+func paintSolid(cells [][]term.Cell, layer term.ImageLayer, covered image.Rectangle, shows [][]bool, fill [3]float64) {
+	for y := covered.Min.Y; y < covered.Max.Y; y++ {
+		row := cells[y]
+		for x := covered.Min.X; x < min(covered.Max.X, len(row)); x++ {
+			if shows == nil || shows[y][x] {
+				paintCell(row, x, layer, fill[0], fill[1], fill[2], 255)
+			}
 		}
 	}
 }

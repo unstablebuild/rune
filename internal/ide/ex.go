@@ -272,6 +272,9 @@ type ex struct {
 	// defAttr holds the live theme default attributes so the grayscale
 	// command-prompt dim writer resolves a ColorDefault foreground.
 	defAttr term.Attributes
+	// themeFocusBg is the live theme's focus background colour, which
+	// focusBackground falls back to, or term.ColorDefault for none.
+	themeFocusBg term.Color
 }
 
 type commandObserver interface {
@@ -615,12 +618,15 @@ func (e *ex) doInit(
 
 	e.cleanPartialReissueState()
 	cmdBrowserCfg := e.config.Config
+	cmdBrowserCfg.WindowManagerConfig = e.promptWindowManager(cmdBrowserCfg.WindowManagerConfig)
 	if cmdBrowserCfg.WindowManagerConfig.Frame {
 		wmOriginY := 2
 		if cmdBrowserCfg.TabBarHeight != 0 {
 			wmOriginY = cmdBrowserCfg.TabBarHeight - 1
 		}
 		cmdBrowserCfg.WindowManagerConfig.Frame = false
+		// The prompt draws its frame itself, over what is under it.
+		cmdBrowserCfg.WindowManagerConfig.FloatingOwnBorder = true
 		cmdBrowserCfg.TabBarHeight = wmOriginY
 	}
 	e.cmdV.C = browser.NewComponent(cmdBrowserCfg)
@@ -3273,17 +3279,32 @@ func (e *ex) handleEvent(ev term.Event) (
 }
 
 func (e *ex) resetCommandList(cmd *command.Prompt) {
+	cmd.Reset(e.commandList())
+}
+
+// commandList returns what the command prompt lists, sorted by name. An
+// alias named like a command takes its place, as it does on dispatch.
+func (e *ex) commandList() []command.Manual {
 	// commands can be registered dynamicall via Editor.Register:
 	// compile a new list every time we switch to command mode
-	commands := e.comp.Commands()
-	for i, c := range commands {
-		commands[i].RawArgs = e.rawArgsCommands[c.Name]
+	aliases := e.aliasExpander.Aliases()
+	shadowed := make(map[string]bool, len(aliases))
+	for _, a := range aliases {
+		shadowed[a.Name] = true
 	}
-	commands = append(commands, e.aliasExpander.Aliases()...)
+	var commands []command.Manual
+	for _, c := range e.comp.Commands() {
+		if shadowed[c.Name] {
+			continue
+		}
+		c.RawArgs = e.rawArgsCommands[c.Name]
+		commands = append(commands, c)
+	}
+	commands = append(commands, aliases...)
 	sort.Slice(commands, func(i, j int) bool {
 		return commands[i].Name < commands[j].Name
 	})
-	cmd.Reset(commands)
+	return commands
 }
 
 func (e *ex) openCommandPrompt() {
@@ -3480,13 +3501,21 @@ func (e *ex) Draw(w term.Writer) {
 	}
 }
 
-// setDefaultAttr stores the live theme default attributes and forwards
-// them to the browser window manager so grayscale dimming (both the
+// setThemeColors stores the live theme colours. The default attributes go
+// to the browser window manager so grayscale dimming (both the
 // unfocused-window path and the command prompt) resolves a ColorDefault
-// foreground against the current theme.
-func (e *ex) setDefaultAttr(attr term.Attributes) {
-	e.defAttr = attr
-	e.comp.Browser().SetDefaultAttr(attr)
+// foreground against the current theme. The focus background colour
+// restyles the focus window and the command prompt where the config sets
+// no focus background.
+func (e *ex) setThemeColors(c ThemeColors) {
+	e.defAttr = c.Default
+	e.comp.Browser().SetDefaultAttr(c.Default)
+	if c.FocusBackground == e.themeFocusBg {
+		return
+	}
+	e.themeFocusBg = c.FocusBackground
+	e.comp.Browser().SetBackgrounds(e.config.Config.WindowManagerConfig.Background, e.focusBackground())
+	e.cmdV.C.SetBackgrounds(e.promptBackground(), nil)
 }
 
 func (e *ex) drawCmdPrompt(w term.Writer) {
@@ -3494,6 +3523,12 @@ func (e *ex) drawCmdPrompt(w term.Writer) {
 	// can pass a DimWriter below and dim everything.
 	prev := e.comp.SetDim(false)
 	defer e.comp.SetDim(prev)
+	// The prompt takes the focus background, so no window under it
+	// keeps the look of the focus.
+	if e.promptTakesFocusBackground() {
+		prev := e.comp.SetFocusStyle(false)
+		defer e.comp.SetFocusStyle(prev)
+	}
 
 	if e.config.Config.Dim {
 		if e.config.Config.BW {
@@ -3699,12 +3734,65 @@ func (e *ex) restyle(s hudStyle, images, statusBarImages map[string]image.Image)
 			g.Reload(images)
 		}
 	}
-	e.comp.Browser().Restyle(s.browser)
-	e.cmdV.C.Restyle(s.browser)
+	style := s.browser
+	style.WindowManager.FocusBackground = e.focusBackground()
+	e.comp.Browser().Restyle(style)
+	cmdStyle := style
+	cmdStyle.WindowManager = e.promptWindowManager(cmdStyle.WindowManager)
+	e.cmdV.C.Restyle(cmdStyle)
 	e.container.Restyle(s.notifications)
 	if e.statusBars != nil {
 		e.statusBars.Restyle(s.statusBar, statusBarImages)
 	}
+}
+
+// focusBackground returns the background of the window holding the focus
+// style: the config's focus background, or else, while the theme has a
+// focus background colour, the normal background in that colour, or else
+// nil for the normal background. So a theme colours the focus window
+// only when the config sets none of the focus background keys.
+func (e *ex) focusBackground() *tcomponent.WindowBackground {
+	wm := e.config.Config.WindowManagerConfig
+	if wm.FocusBackground != nil || e.themeFocusBg == term.ColorDefault {
+		return wm.FocusBackground
+	}
+	bg := wm.Background
+	bg.Attr.Bg = e.themeFocusBg
+	return &bg
+}
+
+// promptWindowManager returns cfg for the browser of the command prompt,
+// whose window draws promptBackground.
+func (e *ex) promptWindowManager(cfg thandler.WindowManagerConfig) thandler.WindowManagerConfig {
+	cfg.Background = e.promptBackground()
+	cfg.FocusBackground = nil
+	return cfg
+}
+
+// promptBackground returns the background of the command prompt's window:
+// the colours of the focus background, without its images, and no
+// background without one.
+func (e *ex) promptBackground() tcomponent.WindowBackground {
+	var bg tcomponent.WindowBackground
+	if fb := e.focusBackground(); fb != nil {
+		bg.Attr = fb.Attr
+	}
+	return bg
+}
+
+// promptTakesFocusBackground reports whether the command prompt takes
+// the colours of the focus background, as promptBackground gives them.
+func (e *ex) promptTakesFocusBackground() bool {
+	return e.promptBackground().Attr != (term.Attributes{})
+}
+
+// promptInside returns the colour inside the command prompt's frame:
+// that of its elements, or else the focus background's it takes.
+func (e *ex) promptInside() term.Color {
+	if bg := e.config.CommandOverlay.ElementAttr.Bg; bg != term.ColorDefault {
+		return bg
+	}
+	return e.promptBackground().Attr.Bg
 }
 
 // restyleChats gives e's acp chats, open and later, the status bar and

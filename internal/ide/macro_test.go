@@ -528,6 +528,7 @@ command:
 search:
   regex_enabled: false
   semantic_enabled: false
+  symbols_enabled: false
 `), 0666))
 	return name
 }

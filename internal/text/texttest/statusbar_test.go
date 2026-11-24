@@ -750,6 +750,103 @@ func restyleStyle(t *testing.T, layout string) text.StatusBarStyle {
 	return text.StatusBarStyle{Layout: components, ErrorColor: term.ColorMaroon}
 }
 
+func TestStatusBarFocusStyle(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	withFocus := func(t *testing.T, layout, focus string) text.StatusBarStyle {
+		style := restyleStyle(t, layout)
+		focused := restyleStyle(t, focus)
+		style.Focus = &focused
+		return style
+	}
+	tests := []struct {
+		name  string
+		style func(t *testing.T) text.StatusBarStyle
+		run   func(t *testing.T, styles *text.StatusBarStyles, f *restyleBar)
+	}{
+		{
+			name:  "draws the focus style only while its window holds the focus",
+			style: func(t *testing.T) text.StatusBarStyle { return withFocus(t, `{{ .Status }}`, `[{{ .Status }}]`) },
+			run: func(t *testing.T, _ *text.StatusBarStyles, f *restyleBar) {
+				assert.Equal(t, "NORMAL", strings.TrimSpace(f.row()), "without a focus in the context")
+				f.focus(true)
+				assert.Equal(t, "[NORMAL]", strings.TrimSpace(f.row()))
+				f.focus(false)
+				assert.Equal(t, "NORMAL", strings.TrimSpace(f.row()))
+			},
+		},
+		{
+			name:  "keeps its style without a focus style",
+			style: func(t *testing.T) text.StatusBarStyle { return restyleStyle(t, `{{ .Status }}`) },
+			run: func(t *testing.T, _ *text.StatusBarStyles, f *restyleBar) {
+				f.focus(true)
+				assert.Equal(t, "NORMAL", strings.TrimSpace(f.row()))
+			},
+		},
+		{
+			name: "draws the focused background color",
+			style: func(t *testing.T) text.StatusBarStyle {
+				style := withFocus(t, `{{ .Status }}`, `{{ .Status }}`)
+				style.Focus.BackgroundColor = term.ColorBlue
+				return style
+			},
+			run: func(t *testing.T, _ *text.StatusBarStyles, f *restyleBar) {
+				assert.Equal(t, term.ColorDefault, f.cells()[0].Bg)
+				f.focus(true)
+				assert.Equal(t, term.ColorBlue, f.cells()[0].Bg)
+			},
+		},
+		{
+			name: "keeps the git branch it learned",
+			style: func(t *testing.T) text.StatusBarStyle {
+				return withFocus(t, `{{ .GitShortRef }}`, `<{{ .GitShortRef }}>`)
+			},
+			run: func(t *testing.T, _ *text.StatusBarStyles, f *restyleBar) {
+				f.settle(t, "main")
+				f.focus(true)
+				assert.Equal(t, "<main>", strings.TrimSpace(f.row()))
+			},
+		},
+		{
+			name: "learns the git branch the focus style adds",
+			style: func(t *testing.T) text.StatusBarStyle {
+				return withFocus(t, `{{ .Status }}`, `<{{ .GitShortRef }}>`)
+			},
+			run: func(t *testing.T, _ *text.StatusBarStyles, f *restyleBar) {
+				f.focus(true)
+				f.settle(t, "<main>")
+			},
+		},
+		{
+			name:  "keeps the language",
+			style: func(t *testing.T) text.StatusBarStyle { return withFocus(t, `{{ .Language }}`, `[{{ .Language }}]`) },
+			run: func(t *testing.T, _ *text.StatusBarStyles, f *restyleBar) {
+				f.sendSyntax(t, syntax.State{LangID: "GO"}, "GO")
+				f.focus(true)
+				assert.Equal(t, "[GO]", strings.TrimSpace(f.row()))
+			},
+		},
+		{
+			name:  "draws the focus style it is restyled with",
+			style: func(t *testing.T) text.StatusBarStyle { return withFocus(t, `{{ .Status }}`, `[{{ .Status }}]`) },
+			run: func(t *testing.T, styles *text.StatusBarStyles, f *restyleBar) {
+				f.focus(true)
+				assert.Equal(t, "[NORMAL]", strings.TrimSpace(f.row()))
+				styles.Restyle(withFocus(t, `{{ .Status }}`, `<{{ .Status }}>`), nil)
+				assert.Equal(t, "<NORMAL>", strings.TrimSpace(f.row()))
+				styles.Restyle(restyleStyle(t, `({{ .Status }})`), nil)
+				assert.Equal(t, "(NORMAL)", strings.TrimSpace(f.row()))
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			styles := text.NewStatusBarStyles(tt.style(t))
+			tt.run(t, styles, newRestyleBar(t, styles))
+		})
+	}
+}
+
 // restyleBar is a 40 columns wide status bar of relpath.go, with status
 // NORMAL, whose scheduled ticks run when the test settles it, as they
 // run on the event loop.
@@ -758,6 +855,8 @@ type restyleBar struct {
 	ticks   chan func()
 	syntax  chan syntax.State
 	streams *atomic.Int32
+	// ctx is the context of the writers the bar is drawn to.
+	ctx context.Context
 }
 
 func newRestyleBar(t *testing.T, styles *text.StatusBarStyles) *restyleBar {
@@ -795,9 +894,16 @@ func newRestyleBar(t *testing.T, styles *text.StatusBarStyles) *restyleBar {
 
 func (f *restyleBar) draw() *term.StringWriter {
 	w := term.NewStringWriter(40, 3)
+	w.SetContext = f.ctx
 	f.bar.Draw(w)
 	_ = w.Flush()
 	return w
+}
+
+// focus draws the bar from now on in a window that holds the focus, or
+// one that doesn't.
+func (f *restyleBar) focus(focused bool) {
+	f.ctx = term.ContextWithWindowFocus(context.Background(), focused)
 }
 
 // row returns the bar's row.

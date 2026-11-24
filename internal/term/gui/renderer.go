@@ -271,7 +271,8 @@ func (r *renderer) drawImageLayer(
 		if img.Layer != layer {
 			continue
 		}
-		if rect := r.images.drawOne(screen, img, r.fontManager, r.imageShift(img)); !rect.Empty() {
+		fill := tcellToColor(img.FillColor, r.bgColor, r.bgOpacity)
+		if rect := r.images.drawOne(screen, img, r.fontManager, r.imageShift(img), fill); !rect.Empty() {
 			rects = append(rects, rect)
 		}
 	}

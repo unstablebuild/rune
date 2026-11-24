@@ -638,3 +638,32 @@ func TestRegistryWatch(t *testing.T) {
 		assert.Equal(t, int64(1), n.Load())
 	})
 }
+
+func TestRegistryPreviewInheritsSize(t *testing.T) {
+	t.Parallel()
+	const job = 99
+	f := newFixture(t)
+	v, _ := f.create(t, 10, 4)
+	f.term.fg.Store(job)
+	preview, err := f.r.PreviewVTE(context.Background(), v.ID())
+	require.NoError(t, err)
+	preview.Resize(30, 8)
+	assert.Equal(t, []int{10, 4}, []int{f.info(t, v.ID()).Width, f.info(t, v.ID()).Height},
+		"a preview crops a terminal another view shows")
+
+	require.NoError(t, v.Close())
+	info := f.info(t, v.ID())
+	assert.Equal(t, 0, info.Attachments)
+	assert.Equal(t, []int{30, 8}, []int{info.Width, info.Height},
+		"once its last attachment detaches, a preview owns its size")
+
+	older, err := f.r.PreviewVTE(context.Background(), v.ID())
+	require.NoError(t, err)
+	older.Resize(25, 7)
+	latest, err := f.r.PreviewVTE(context.Background(), v.ID())
+	require.NoError(t, err)
+	latest.Resize(20, 6)
+	require.NoError(t, preview.Close())
+	info = f.info(t, v.ID())
+	assert.Equal(t, []int{20, 6}, []int{info.Width, info.Height}, "the latest preview inherits it")
+}

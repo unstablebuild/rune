@@ -226,9 +226,13 @@ config = {
     },
     "search": {
         # Off, `searchregex` reads every file instead of using its index.
-        # Independent of semantic indexing and workspace.symboldb.
+        # Independent of semantic and symbol indexing.
         "regex_enabled":       True,
-        # Build the semantic index for `search` and `searchsemantic`.
+        # Index the workspace symbols: the definitions `searchfunc`,
+        # `searchvar` and `searchtype` list, and the qualified names `lsp`
+        # commands and the agent look up. Off, those parse every file.
+        "symbols_enabled":     True,
+        # Build the semantic index `searchsemantic` searches.
         # Off by default; independent of regexp indexing. Meaning search
         # needs llama-server and the model below, which `searchsemantic`
         # offers to install on first use. Restart Rune after changing.
@@ -681,6 +685,9 @@ config = {
             "number":               attr(fg = "red"),
             "constant.builtin":     attr(fg = "default"),
             "comment":              attr(fg = "blue"),
+            "tag":                  attr(fg = "cyan"),
+            "tag.delimiter":        attr(fg = "default"),
+            "attribute":            attr(fg = "cyan"),
             "markup.heading":       attr(fg = "yellow", flags = "bold"),
             "markup.raw":           attr(fg = "magenta"),
             "markup.raw.delimiter": attr(fg = "yellow"),
@@ -753,6 +760,13 @@ config = {
             "background_attr":         attr(bg = "gray"),
             # Error color used for status-bar messages.
             "foreground_error_attr":   attr(fg = "yellow"),
+            # The focused editor's bar while more than one window is open:
+            # "layout", "background_attr" and "foreground_error_attr" laid
+            # over the keys above, to match browser.window_manager's
+            # focus_background_attr.
+            # "focus": {
+            #     "background_attr": attr(bg = "#262b38"),
+            # },
         },
         # aux_bar configures the vertical bar shown to the left of file tabs.
         "aux_bar": {
@@ -998,6 +1012,40 @@ config = {
             # "focus_floating_frame_charset": {"graphics": {
             #     "verticalright": "file:///path/to/float-shadow-right.png",
             # }},
+            # Fill each window's cells left at the default background, its
+            # frame's included while frame_attr and focus_frame_attr keep bg
+            # "default": "background_attr" every window's, and
+            # "focus_background_attr" the focused window's while more than
+            # one is open. With frame charsets of spaces, the frame is
+            # padding and the focused background alone marks focus. fg
+            # replaces the default foreground, for light backgrounds. What a
+            # focus key leaves out inherits the normal key.
+            # Without focus_background_attr and focus_background_graphics,
+            # the focused window takes the GUI theme's "focus_background"
+            # colour, when it has one; {} turns that off.
+            # "background_attr":       attr(bg = "default"),
+            # "focus_background_attr": attr(bg = "#1b1f2a"),
+            # GUI images drawn under each window's text and cell backgrounds:
+            # a 9-slice with the frame slot names and "center". Corners take
+            # one cell, edges are one cell thick, and "center" covers the
+            # interior. "fit" is "fill" (the default) or "tile". Missing focus
+            # slots inherit background_graphics, and an empty URI clears one.
+            # Where a slice isn't drawn, the background_attr colour shows.
+            # "background_graphics": {
+            #     "center": "file:///path/to/panel-center.png",
+            #     "fit":    "fill",
+            # },
+            # "focus_background_graphics": {
+            #     "topleft":          "file:///path/to/focused-topleft.png",
+            #     "topright":         "file:///path/to/focused-topright.png",
+            #     "bottomleft":       "file:///path/to/focused-bottomleft.png",
+            #     "bottomright":      "file:///path/to/focused-bottomright.png",
+            #     "horizontaltop":    "file:///path/to/focused-top.png",
+            #     "horizontalbottom": "file:///path/to/focused-bottom.png",
+            #     "verticalleft":     "file:///path/to/focused-left.png",
+            #     "verticalright":    "file:///path/to/focused-right.png",
+            #     "center":           "file:///path/to/focused-center.png",
+            # },
             "scroll_bar_attr":       attr(fg = "blue", bg = "default"),
             # The scroll bar's "top_char" draws its first cell and
             # "bottom_char" its last, when it spans two cells or more,
@@ -1028,6 +1076,13 @@ config = {
                 "middle_char":       "▐",
                 "hover_middle_char": "█",
             },
+            # The focused window's scroll bar while more than one window is
+            # open. Keys and graphics slots it leaves out inherit
+            # scroll_bar_charset.
+            # "focus_scroll_bar_charset": {
+            #     "middle_char": "▐",
+            #     "graphics":    {"middle_char": "file:///path/to/focused-middle.png"},
+            # },
             # Solid bar drawn over floating windows' top frame line.
             # Dragging the bar moves the window, dragging edges resizes
             # it, double-clicking it maximizes the window, and the close
@@ -1187,8 +1242,6 @@ config = {
         # Automatically restore the previous session's files, terminals, and
         # window layout.
         "auto_restore": True,
-        # Index workspace symbols for faster lookups.
-        "symboldb":     True,
         # Precedence: wallpaper_image, then wallpaper_image_ascii, then
         # wallpaper_ascii. The first non-empty one is shown; when all three
         # are "" the built-in Rune logo is.
@@ -1209,6 +1262,17 @@ config = {
         # wallpaper, the built-in logo included.
         "wallpaper_attr":               attr(fg = "blue", bg = "default"),
         "wallpaper_background_attr":    attr(bg = "default"),
+        # The wallpaper of the focused window while more than one is open,
+        # with the same forms and precedence as the keys above. Without a
+        # focus_ picture, art or text, it shows the picture, art or text
+        # above; the attributes and density characters left out inherit
+        # theirs. With no focus_ key set, it is the wallpaper above.
+        # "focus_wallpaper_image":              "",
+        # "focus_wallpaper_image_ascii":        "",
+        # "focus_wallpaper_ascii":              "",
+        # "focus_wallpaper_density_characters": " ▓▓▓▓",
+        # "focus_wallpaper_attr":               attr(fg = "silver", bg = "default"),
+        # "focus_wallpaper_background_attr":    attr(bg = "default"),
         # Character drawn on the bottom row of the workspace tab bar to
         # highlight the workspace currently in focus.
         "focus_tab_highlight_char":  "",
@@ -1260,7 +1324,9 @@ config = {
         # frame_charset are not drawn while it is on.
         "progress_bar": True,
         # A "graphics" table names an image for each of the five keys. The
-        # images are not tinted with the notification's level:
+        # images are not tinted with the notification's level, but in
+        # "overlay" mode the clear pixels each one closes in, away from the
+        # notification's edge, take the level's color:
         #
         #     "graphics": {
         #         "mode":        "overlay",
@@ -1493,6 +1559,15 @@ config = {
         #         "filled": "file:///path/to/progress-filled.png",
         #         "empty":  "file:///path/to/progress-empty.png",
         #         "right":  "file:///path/to/progress-right.png",
+        #     },
+        #
+        # "focus" lays any of the style keys above over them while the
+        # inbox window is in focus and more than one window is open, to
+        # match browser.window_manager's focus_background_attr:
+        #
+        #     "focus": {
+        #         "divider_attr": attr(fg = "silver"),
+        #         "images":       {"selected": {"middle": "file:///path/to/focused-entry.png"}},
         #     },
     },
 }

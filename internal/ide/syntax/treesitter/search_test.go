@@ -61,18 +61,80 @@ func (m *countingPkgManager) Calls() int {
 	return m.calls
 }
 
-func TestCachingPkgManagerReturnsCachedFiles(t *testing.T) {
-	root := &countingPkgManager{files: []string{"tree-sitter.so", "highlights.scm"}}
-	pkg := newCachingPkgManager(root)
-	pkg.cache("go", root.files)
+func TestCachingPkgManagerLibDir(t *testing.T) {
+	tests := []struct {
+		name string
+		// change alters the package, whose lib dir links to version 1,
+		// after its files were cached.
+		change     func(t *testing.T, lib, v1, v2 string)
+		wantListed bool
+	}{
+		{
+			name:   "unchanged",
+			change: func(*testing.T, string, string, string) {},
+		},
+		{
+			name: "files touched",
+			change: func(t *testing.T, _, v1, _ string) {
+				later := time.Now().Add(time.Hour)
+				require.NoError(t, os.Chtimes(filepath.Join(v1, ParserFilename), later, later))
+			},
+		},
+		{
+			name: "file added",
+			change: func(t *testing.T, _, v1, _ string) {
+				require.NoError(t, os.WriteFile(filepath.Join(v1, LocalsFilename), nil, 0o644))
+				// Some file systems keep the time of a change coarser
+				// than the test runs.
+				later := time.Now().Add(time.Second)
+				require.NoError(t, os.Chtimes(v1, later, later))
+			},
+			wantListed: true,
+		},
+		{
+			name: "another version in use",
+			change: func(t *testing.T, lib, _, v2 string) {
+				require.NoError(t, os.Remove(lib))
+				require.NoError(t, os.Symlink(v2, lib))
+			},
+			wantListed: true,
+		},
+		{
+			name: "uninstalled",
+			change: func(t *testing.T, lib, _, _ string) {
+				require.NoError(t, os.Remove(lib))
+			},
+			wantListed: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			dir := t.TempDir()
+			v1, v2 := filepath.Join(dir, "1"), filepath.Join(dir, "2")
+			for _, v := range []string{v1, v2} {
+				require.NoError(t, os.Mkdir(v, 0o755))
+				for _, name := range []string{ParserFilename, HighlightsFilename} {
+					require.NoError(t, os.WriteFile(filepath.Join(v, name), nil, 0o644))
+				}
+			}
+			lib := filepath.Join(dir, "lib")
+			require.NoError(t, os.Symlink(v1, lib))
+			files := []string{filepath.Join(lib, ParserFilename), filepath.Join(lib, HighlightsFilename)}
+			root := &countingPkgManager{files: files}
+			pkg := newCachingPkgManager(root)
+			pkg.cache("go", files)
 
-	it, err := pkg.LibDir(context.Background(), "go")
-	require.NoError(t, err)
-	files, err := iterator.ToSlice(context.Background(), it)
-	require.NoError(t, err)
-
-	assert.Equal(t, []string{"tree-sitter.so", "highlights.scm"}, files)
-	assert.Equal(t, 0, root.Calls())
+			tt.change(t, lib, v1, v2)
+			it, err := pkg.LibDir(ctx, "go")
+			require.NoError(t, err)
+			got, err := iterator.ToSlice(ctx, it)
+			_ = it.Close()
+			require.NoError(t, err)
+			assert.Equal(t, files, got)
+			assert.Equal(t, tt.wantListed, root.Calls() == 1)
+		})
+	}
 }
 
 func TestParserGrammarFingerprint(t *testing.T) {
@@ -107,6 +169,12 @@ func TestParserGrammarFingerprint(t *testing.T) {
 			name:      "only highlights changed",
 			mutate:    func(f map[string]string) { f[HighlightsFilename] = "(identifier) @type" },
 			wantEqual: true,
+		},
+		{
+			name: "injections query added",
+			mutate: func(f map[string]string) {
+				f[InjectionsFilename] = `((comment) @injection.content (#set! injection.language "comment"))`
+			},
 		},
 		{
 			name:    "grammar missing",
@@ -368,6 +436,7 @@ func TestAggregateProgressConcurrentReports(t *testing.T) {
 
 func TestNewParserCachesPackageFilesOnlyAfterRequiredFilesFound(t *testing.T) {
 	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "go"), 0o755))
 	root := &countingPkgManager{files: []string{
 		filepath.Join(dir, "go", ParserFilename),
 	}}
@@ -384,9 +453,9 @@ func TestNewParserCachesPackageFilesOnlyAfterRequiredFilesFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "open lib query file")
 	assert.Equal(t, 2, root.Calls())
-	files, ok := pkg.files.Load("go")
+	cached, ok := pkg.files.Load("go")
 	require.True(t, ok)
-	assert.Equal(t, root.files, files)
+	assert.Equal(t, root.files, cached.(cachedFiles).files)
 
 	_, err = newParser(context.Background(), "go", pkg, HighlightsFilename, "")
 	require.Error(t, err)

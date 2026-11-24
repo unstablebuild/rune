@@ -103,12 +103,14 @@ func (h *statusStoreTestHost) TabName(ws, uri workspaceapi.URI) (string, bool) {
 }
 func (h *statusStoreTestHost) Preview(ws, uri workspaceapi.URI) (Preview, bool) {
 	key := statusKey{ws.String(), uri.String()}
+	if p, ok := h.previews[key]; ok {
+		return p, true
+	}
 	if tab, ok := h.tabs[key]; ok {
 		w, hh := tab.ContentSize()
-		return Preview{Content: tab, Width: w, Height: hh, Fit: tab.Resize}, true
+		return Preview{Content: tab, Width: w, Height: hh}, true
 	}
-	p, ok := h.previews[key]
-	return p, ok
+	return Preview{}, false
 }
 func (h *statusStoreTestHost) TabIcon(ws, uri workspaceapi.URI) (rune, bool) {
 	if _, ok := h.tabs[statusKey{ws.String(), uri.String()}]; !ok {

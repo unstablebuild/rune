@@ -116,25 +116,11 @@ func TestKeyBindingsRender(t *testing.T) {
 			},
 		},
 		{
-			// The fuzzy-search extension binds searchfunc/searchvar/
-			// searchtype as aliases over searchast prefill macros.
-			name: "searchast alias macros describe their workspace search",
+			name: "definitions searches describe their workspace search",
 			keys: map[term.KeyComb][][]string{
 				{Ch: 'f', Mod: term.ModAltShift}: {{"searchfunc"}},
 				{Ch: 'v', Mod: term.ModAltShift}: {{"searchvar"}},
 				{Ch: 's', Mod: term.ModAltShift}: {{"searchtype"}},
-			},
-			aliases: map[string]text.CommandAlias{
-				"searchfunc": {Name: "searchfunc", Commands: []string{
-					"echo {prompt}searchast<space>locals.scm<space>" +
-						"local.definition.method|local.definition.function<enter>",
-				}},
-				"searchvar": {Name: "searchvar", Commands: []string{
-					"echo {prompt}searchast<space>locals.scm<space>local.definition.var<enter>",
-				}},
-				"searchtype": {Name: "searchtype", Commands: []string{
-					"echo {prompt}searchast<space>locals.scm<space>local.definition.type<enter>",
-				}},
 			},
 			contains: []string{
 				"- `<alt-shift-f>` **searchfunc**: Fuzzy search a function in the workspace",

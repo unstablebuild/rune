@@ -19,6 +19,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -163,4 +164,41 @@ func GetKey(c config.Config, key string) (term.KeyComb, error) {
 		return term.KeyComb{}, err
 	}
 	return term.ParseKey(s)
+}
+
+// FocusOverlay returns c with the table at key deep-merged over it and key
+// itself left out, so that a section's parser reads its focused style from
+// it: what the table leaves out is inherited from c, and a value it sets,
+// even "", replaces c's. Tables merge key by key, while any other value,
+// a list included, replaces c's whole. It returns config.ErrNotFound when c
+// has no table at key. c is left unchanged.
+func FocusOverlay(c config.Config, key string) (config.Config, error) {
+	focus, err := c.GetMap(key)
+	if err != nil {
+		return nil, err
+	}
+	merged := make(map[string]any)
+	c.Iterate(func(k string, v any) {
+		if k != key {
+			merged[k] = v
+		}
+	})
+	return config.MapConfig(mergeOver(merged, focus)), nil
+}
+
+// mergeOver merges src over dst, which it modifies, copying every table of
+// dst it merges into so that the tables dst shares stay unchanged.
+func mergeOver(dst, src map[string]any) map[string]any {
+	for k, v := range src {
+		vmap, ok := v.(map[string]any)
+		prev, prevOK := dst[k].(map[string]any)
+		if !ok || !prevOK {
+			dst[k] = v
+			continue
+		}
+		cp := make(map[string]any, len(prev))
+		maps.Copy(cp, prev)
+		dst[k] = mergeOver(cp, vmap)
+	}
+	return dst
 }

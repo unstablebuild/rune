@@ -63,6 +63,10 @@ const (
 	// LocalsFilename is the name given to the a query file
 	// used to define scopes, definitions and references.
 	LocalsFilename = "locals.scm"
+
+	// InjectionsFilename is the name given to the query file marking the
+	// regions of a file written in another language.
+	InjectionsFilename = "injections.scm"
 )
 
 var _ syntax.NewTreeFunc = New
@@ -196,6 +200,7 @@ type Tree struct {
 	indents           *tree_sitter.Query
 	folds             *tree_sitter.Query
 	locals            *tree_sitter.Query
+	injections        *tree_sitter.Query
 	statesubs         map[chan syntax.State]struct{}
 	currState         syntax.State
 	// fullPassTook is how long the last full parse and highlight of the
@@ -227,6 +232,16 @@ func (t *Tree) IndentationAt(line int) (int, bool) {
 	}
 	ret := t.getIndentation(uint(line))
 	return ret, ret >= 0
+}
+
+// CanIndent reports whether IndentationAt computes indentation: the tree is
+// parsed and its grammar ships an indents query. A tree that cannot indent
+// answers false for every line; one that can answers false only for a line
+// it leaves as is.
+func (t *Tree) CanIndent() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.ready && !t.closed && t.tree != nil && t.indents != nil
 }
 
 // State returns an iterator that eventually, when the Tree is ready
@@ -349,6 +364,9 @@ func (t *Tree) release() (ret error) {
 	}
 	if t.indents != nil {
 		t.indents.Close()
+	}
+	if t.injections != nil {
+		t.injections.Close()
 	}
 	ret = purego.Dlclose(t.lib)
 	for ch := range t.statesubs {
@@ -499,7 +517,7 @@ func (t *Tree) initParserFromFiles(f files, err error) initResult {
 		return res
 	}
 
-	var langFile, highlightsFile, indentsFile, foldsFile, localsFile string
+	var langFile, highlightsFile, indentsFile, foldsFile, localsFile, injectionsFile string
 	for _, file := range f.files {
 		switch filepath.Base(file) {
 		case ParserFilename:
@@ -512,6 +530,8 @@ func (t *Tree) initParserFromFiles(f files, err error) initResult {
 			foldsFile = file
 		case LocalsFilename:
 			localsFile = file
+		case InjectionsFilename:
+			injectionsFile = file
 		}
 	}
 	if langFile == "" {
@@ -521,7 +541,7 @@ func (t *Tree) initParserFromFiles(f files, err error) initResult {
 		return res
 	}
 	res.highlighted, res.err = t.initParser(f.langID, langFile,
-		highlightsFile, indentsFile, foldsFile, localsFile)
+		highlightsFile, indentsFile, foldsFile, localsFile, injectionsFile)
 	if res.err != nil {
 		t.log(log.ErrorLevel, "initialize language %s: %v", f.langID, res.err)
 		res.notAvail = true
@@ -560,7 +580,7 @@ func (t *Tree) finishInit(ctx context.Context, res initResult) {
 // initParser reports whether it left a full highlight pending in
 // highlightBuf.
 func (t *Tree) initParser(
-	langID, langfile, highlightsfile, indentsFile, foldsFile, localsFile string,
+	langID, langfile, highlightsfile, indentsFile, foldsFile, localsFile, injectionsFile string,
 ) (bool, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -569,9 +589,9 @@ func (t *Tree) initParser(
 		return false, nil
 	}
 
-	lib, err := purego.Dlopen(langfile, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	lib, err := dlopenGrammar(langfile)
 	if err != nil {
-		return false, fmt.Errorf("dlopen %q: %w", langfile, err)
+		return false, err
 	}
 	t.lib = lib
 
@@ -626,6 +646,12 @@ func (t *Tree) initParser(
 		}
 	} else {
 		t.log(log.InfoLevel, "locals file not found, some features will be disabled")
+	}
+
+	if injectionsFile != "" {
+		if err := t.initInjections(language, injectionsFile); err != nil {
+			t.log(log.ErrorLevel, "initialize injections: %v", err)
+		}
 	}
 
 	// build the syntax tree

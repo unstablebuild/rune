@@ -64,13 +64,43 @@ type viHandler struct {
 	// content that the parser scrolls into history.
 	active bool
 
-	// keeep a copy of vi and all the contents
-	// so it can be accessed synchronously and provide
-	// correct returned handled in Handle.
+	// probe is how far this modal session trusts the program with the
+	// keys that reach it.
+	probe viProbe
+	// pending holds the keys pressed while the probe waits for the bell.
+	pending []viKey
+	// entry is where the cursor was put on entering modal mode.
+	entry term.Coordinates
+	// bellAnswered is set while the keys that waited for the probe are
+	// sent: the bell that answered it left the shell's cursor at the
+	// start of its input, which is what the first of them waits for.
+	bellAnswered bool
+	// reading is set while a key that must not reach the shell runs.
+	reading bool
+	// refused is told, on the event loop, that the session turned
+	// read-only; probed is whether the program was rung first.
+	refused func(probed bool)
+	// syncedCommand is the Component.ShellCommand seq of the last command
+	// a probe succeeded in, zero for none.
+	syncedCommand uint64
+
+	// keeep a copy of vi, which reads the same contents but edits
+	// nothing, so it can be accessed synchronously and provide
+	// correct returned handled in Handle, and tell which keys edit.
 	copy struct {
-		mu     sync.Mutex
+		mu sync.Mutex
+		vi *vi.Vi
+	}
+
+	// frozen is the vi over a copy of the alternate screen, which modal
+	// mode shows over a full-screen program. The program keeps drawing,
+	// and nothing Rune could send it would edit that screen, so the copy
+	// never changes and no key reaches the program.
+	frozen struct {
+		on     bool
 		vi     *vi.Vi
-		editor cell.Editor
+		scroll *component.Scroll
+		buf    *cell.Buffer
 	}
 }
 
@@ -81,7 +111,54 @@ type parentComponent interface {
 	cursorAtScroll() term.Coordinates
 	scheduleBellCallback(callback func()) bool
 	pendingCallbacks() int
+	systemCanDispatchBell(callback func(error))
+	// shellCommand is Component.ShellCommand for callers that hold the
+	// PrimaryScroll Locker.
+	shellCommand() (seq uint64, running, reportedStatus bool)
 }
+
+// viProbe is how far a modal session trusts the program with the keys
+// that reach it. The first such key rings the bell: until a shell
+// answers it, its cursor is not known to be at the start of its input,
+// where every key that reaches it is sent from.
+type viProbe int
+
+const (
+	// viUnprobed sent the program nothing yet: the session is
+	// read-only, and the first key that would reach it probes it.
+	viUnprobed viProbe = iota
+	// viProbing waits for the bell, and so do the keys pressed since.
+	viProbing
+	// viSynced got the bell: every key that reaches the shell waits for
+	// one of its own.
+	viSynced
+	// viRefused got no bell, or must not ring one: the session stays
+	// read-only.
+	viRefused
+)
+
+// viKey is a key pressed in modal mode and what it does.
+type viKey struct {
+	ev   term.Event
+	kind viKeyKind
+}
+
+type viKeyKind int
+
+const (
+	// viKeyNone is not handled.
+	viKeyNone viKeyKind = iota
+	// viKeyRead moves, scrolls, searches, selects or yanks.
+	viKeyRead
+	viKeyEdit
+	viKeyEndOfLine
+	viKeyEnter
+	viKeyUp
+	viKeyDown
+	// viKeyExit leaves modal mode, moving the shell's cursor to the vi
+	// cursor.
+	viKeyExit
+)
 
 func (v *viHandler) init(comp *Component, config Config) {
 	v.doInit(comp, config)
@@ -108,7 +185,16 @@ func (v *viHandler) doInit(comp parentComponent, config Config) {
 	copyScroll.InvertOffset = true
 	v.copy.vi = new(vi.Vi)
 	v.copy.vi.InitWithScroll(copyScroll, comp.URI(), text.IndentRuneTab, 0, opts...)
-	v.copy.editor = copyScroll.Buffer().WithEditor(copyEditor{v: v})
+	copyBuffer.WithEditor(copyEditor{v: v})
+
+	v.frozen.buf = new(cell.Buffer)
+	v.frozen.buf.InitPerformance(80, 80, vtescreen.DefaultChar)
+	v.frozen.scroll = new(component.Scroll)
+	v.frozen.scroll.InitPerformance(v.frozen.buf)
+	v.frozen.scroll.InvertOffset = true
+	v.frozen.vi = new(vi.Vi)
+	v.frozen.vi.InitWithScroll(v.frozen.scroll, comp.URI(), text.IndentRuneTab, 0, opts...)
+	v.frozen.buf.WithEditor(frozenEditor{v: v})
 
 	vi := new(vi.Vi)
 	// do not share scroll (we don't want vi messing around with the offsets
@@ -122,6 +208,9 @@ func (v *viHandler) doInit(comp parentComponent, config Config) {
 	v.sync.vi = vi
 	v.sync.selector = v.sync.scroll.Buffer()
 	v.sync.editor = v.sync.scroll.Buffer().WithEditor(v)
+	// the parser writes the cells without going through any editor,
+	// so the copy must read them where the sync vi does
+	copyBuffer.WithView(v.sync.selector)
 
 	v.comp = comp
 	v.config = config
@@ -133,22 +222,21 @@ func (v *viHandler) Handle(ev term.Event) (exit, handled bool) {
 
 	exit, handled = v.handle(ev)
 	if exit {
-		if !(ev.Key == term.KeyEnter && ev.Mod == 0) {
-			v.scheduleAfterBell(false, func() {
-				pos := v.trimToLastValidColumn(v.sync.vi.CursorAtScroll())
-				v.log(log.TraceLevel, "call scheduled cleanup of vi position to comp: %+v", pos)
-				v.remoteMoveTo(pos)
-				v.remoteFlush()
-			})
+		for _, vi := range []*vi.Vi{v.sync.vi, v.copy.vi, v.frozen.vi} {
+			vi.Unselect()
+			vi.Search("")
+			vi.SetNormalMode()
 		}
-		v.sync.vi.Unselect()
-		v.sync.vi.Search("")
-		v.sync.vi.SetNormalMode()
-		v.copy.vi.Unselect()
-		v.copy.vi.Search("")
-		v.copy.vi.SetNormalMode()
 	}
 	return
+}
+
+// cur returns the vi on screen. v.sync.mu must be held.
+func (v *viHandler) cur() *vi.Vi {
+	if v.frozen.on {
+		return v.frozen.vi
+	}
+	return v.sync.vi
 }
 
 // SeekUp satisfies component.Scrollable.
@@ -156,7 +244,7 @@ func (v *viHandler) SeekUp() bool {
 	v.sync.mu.Lock()
 	defer v.sync.mu.Unlock()
 
-	return v.sync.vi.SeekUp()
+	return v.cur().SeekUp()
 }
 
 // SeekDown satisfies component.Scrollable.
@@ -164,7 +252,7 @@ func (v *viHandler) SeekDown() bool {
 	v.sync.mu.Lock()
 	defer v.sync.mu.Unlock()
 
-	return v.sync.vi.SeekDown()
+	return v.cur().SeekDown()
 }
 
 // SeekOffset satisfies component.Scrollable.
@@ -172,7 +260,8 @@ func (v *viHandler) SeekOffset() int {
 	v.sync.mu.Lock()
 	defer v.sync.mu.Unlock()
 
-	return max(0, v.sync.vi.MaxSeekOffset()-v.sync.vi.SeekOffset())
+	vi := v.cur()
+	return max(0, vi.MaxSeekOffset()-vi.SeekOffset())
 }
 
 // MaxSeekOffset satisfies component.Scrollable.
@@ -180,31 +269,37 @@ func (v *viHandler) MaxSeekOffset() int {
 	v.sync.mu.Lock()
 	defer v.sync.mu.Unlock()
 
-	return v.sync.vi.MaxSeekOffset()
+	return v.cur().MaxSeekOffset()
 }
 
 func (v *viHandler) Resize(width, height int) {
+	v.sync.mu.Lock()
+	defer v.sync.mu.Unlock()
+
+	// the copy reads the cells the parser writes under sync.mu
 	v.copy.mu.Lock()
 	v.copy.vi.Resize(width, height)
 	v.copy.mu.Unlock()
 
-	v.sync.mu.Lock()
-	defer v.sync.mu.Unlock()
-
 	v.width = width
 	v.height = height
 	v.sync.vi.Resize(width, height)
+	v.frozen.vi.Resize(width, height)
 }
 
 func (v *viHandler) cursorAtScroll() term.Coordinates {
 	v.sync.mu.Lock()
 	defer v.sync.mu.Unlock()
-	return v.sync.vi.CursorAtScroll()
+	return v.cur().CursorAtScroll()
 }
 
 func (v *viHandler) setCursorAtScroll(pos term.Coordinates) {
 	v.sync.mu.Lock()
 	defer v.sync.mu.Unlock()
+	if v.frozen.on {
+		v.frozen.vi.SetCursorAtScroll(pos)
+		return
+	}
 	v.viSetCursorAtScroll(pos)
 }
 
@@ -212,9 +307,9 @@ func (v *viHandler) Draw(w term.Writer) {
 	v.sync.mu.Lock()
 	defer v.sync.mu.Unlock()
 
-	v.sync.vi.Draw(w)
+	v.cur().Draw(w)
 
-	if v.config.Debug {
+	if v.config.Debug && !v.frozen.on {
 		v.drawPromptLine(w)
 	}
 }
@@ -223,7 +318,7 @@ func (v *viHandler) Cursor() (term.Coordinates, term.CursorStyle, bool) {
 	v.sync.mu.Lock()
 	defer v.sync.mu.Unlock()
 
-	return v.sync.vi.Cursor()
+	return v.cur().Cursor()
 }
 
 // Selection satisfies tui.Handler.
@@ -231,7 +326,7 @@ func (v *viHandler) Selection() (string, bool) {
 	v.sync.mu.Lock()
 	defer v.sync.mu.Unlock()
 
-	return v.sync.vi.Selection()
+	return v.cur().Selection()
 }
 
 // Edit implements the following behavior (B is content not allowed to edit,
@@ -268,12 +363,23 @@ func (v *viHandler) Selection() (string, bool) {
 func (v *viHandler) Edit(ctx context.Context, start, end term.Coordinates, str string) (
 	from, to term.Coordinates, old string,
 ) {
-	v.editCopy(ctx, start, end, str)
 	if screenContext := vtescreen.IsScreenContext(ctx); screenContext {
 		v.vteParserEdited = true
 		v.sync.vi.OnWillEdit(ctx, start, end, str)
-		from, to, old = v.sync.editor.Edit(ctx, start, end, str)
+		// through the copy vi's editor, so that its cursor follows the
+		// edit of the cells it reads
+		v.copy.mu.Lock()
+		from, to, old = v.copy.vi.CellEditor().Edit(ctx, start, end, str)
+		v.copy.mu.Unlock()
 		v.sync.vi.OnDidEdit(ctx, from, to, old)
+		return
+	}
+	if v.reading {
+		// the copy vi took the key for one that does not edit
+		from, to = start, start
+		v.log(log.DebugLevel, "edit not allowed before the shell answered: start: %+v, end: %+v, str: %q",
+			start, end, str)
+		v.config.Sounds.Play(sounds.Error)
 		return
 	}
 	insert := start == end
@@ -448,120 +554,322 @@ func (v *viHandler) remoteFlush() {
 }
 
 func (v *viHandler) handle(ev term.Event) (exit, handled bool) {
+	if v.frozen.on {
+		return v.handleFrozen(ev)
+	}
 	if ev.Type != term.EventKey {
 		_, _ = v.copy.vi.Handle(ev)
 		return v.sync.vi.Handle(ev)
 	}
 
+	k, exit, handled := v.classify(ev)
+	if k.kind == viKeyNone {
+		return
+	}
+	switch v.probe {
+	case viSynced:
+		v.send(k)
+	case viProbing:
+		v.pending = append(v.pending, k)
+	case viUnprobed:
+		if !v.reachesShell(k) {
+			v.read(k)
+			return
+		}
+		if _, running, reported := v.comp.shellCommand(); running && reported {
+			// it is no shell that reads the keys, and the bell's ctrl-g
+			// may do something else to it: Claude Code opens $EDITOR
+			v.refuse(false)
+			v.cancelCommand()
+			return k.kind == viKeyExit, handled
+		}
+		v.probe = viProbing
+		v.pending = append(v.pending[:0], k)
+		v.comp.systemCanDispatchBell(v.probed)
+	case viRefused:
+		if k.kind == viKeyExit || !v.reachesShell(k) {
+			v.read(k)
+			return
+		}
+		v.config.Sounds.Play(sounds.Error)
+		v.cancelCommand()
+		return false, handled
+	}
+	return
+}
+
+// handleFrozen runs ev on the frozen screen, which nothing edits and
+// whose program gets no key.
+func (v *viHandler) handleFrozen(ev term.Event) (exit, handled bool) {
+	if ev.Type != term.EventKey {
+		return v.frozen.vi.Handle(ev)
+	}
+	k, exit, handled := v.classifyOn(v.frozen.vi, ev)
+	switch k.kind {
+	case viKeyEndOfLine:
+		cells := v.frozen.vi.CellView().RawCells()
+		v.frozen.vi.SetCursorAtScroll(lastValidColumn(cells, v.frozen.vi.CursorAtScroll().Y))
+	case viKeyEdit:
+		// the editor refused it; drop what the key left pending
+		v.frozen.vi.SetNormalMode()
+		fallthrough
+	case viKeyEnter, viKeyUp, viKeyDown:
+		v.config.Sounds.Play(sounds.Error)
+		return false, handled
+	}
+	return exit, handled
+}
+
+// classify tells what the key ev does. Only the copy vi can tell whether
+// it edits, so it runs ev to find out. Its mode is the one ev meets: the
+// sync vi runs keys behind bells.
+func (v *viHandler) classify(ev term.Event) (k viKey, exit, handled bool) {
+	v.copy.mu.Lock()
+	defer v.copy.mu.Unlock()
+	if v.probe == viUnprobed || v.probe == viRefused {
+		// the sync vi ran every key the copy did here, but the copy's
+		// edits, which do nothing, did not move its cursor
+		v.copy.vi.SetCursorAtScroll(v.sync.vi.CursorAtScroll())
+	}
+	return v.classifyOn(v.copy.vi, ev)
+}
+
+// classifyOn tells what the key ev does by running it on vi, whose editor
+// must record the edits it gets in v.edited instead of making them.
+func (v *viHandler) classifyOn(vi *vi.Vi, ev term.Event) (k viKey, exit, handled bool) {
+	k.ev = ev
+	search := vi.IsSearchMode()
+	normal := !vi.IsEditMode() && !search
 	switch ev.Mod {
 	case 0:
-		switch ev.Ch {
-		case '$':
-			if !v.sync.vi.IsEditMode() && !v.sync.vi.IsSearchMode() {
-				// manage manually to avoid confusing shell blank cells
-				// with end of line.
-				v.scheduleAfterBell(false, v.remoteMoveToEndOfLine)
-				handled = true
-				return
-			}
-		case 'i':
-			if !v.sync.vi.IsEditMode() && !v.sync.vi.IsSearchMode() {
-				exit = true
-				handled = true
-				return
-			}
+		switch {
+		case ev.Ch == '$' && normal:
+			k.kind = viKeyEndOfLine
+			return k, false, true
+		case ev.Ch == 'i' && normal:
+			k.kind = viKeyExit
+			return k, true, true
 		// ensure that repeat is not invoked, as underlying
 		// buffer was not initialized with subscribe functionality,
 		// which repeat is dependent upon
-		case '.':
-			if !v.sync.vi.IsEditMode() && !v.sync.vi.IsSearchMode() {
-				return
-			}
-		}
-		handled = true
-		switch ev.Key {
-		case term.KeyEnter:
-			if !v.sync.vi.IsSearchMode() {
-				v.scheduleAfterBell(false, func() {
-					v.remote.linefeed()
-					v.remoteFlush()
-				})
-				exit = true
-				return
-			}
-		case term.KeyArrowUp:
-			v.scheduleAfterBell(false, func() {
-				v.remote.keyArrowUp()
-				v.remoteFlush()
-			})
-			v.scheduleAfterBell(false, v.moveViToLastLineCharacter)
-			return
-		case term.KeyArrowDown:
-			v.scheduleAfterBell(false, func() {
-				v.remote.keyArrowDown()
-				v.remoteFlush()
-			})
-			v.scheduleAfterBell(false, v.moveViToLastLineCharacter)
-			return
-		default:
+		case ev.Ch == '.' && normal:
+			return k, false, false
+		case ev.Key == term.KeyEnter && !search:
+			k.kind = viKeyEnter
+			return k, true, true
+		case ev.Key == term.KeyArrowUp:
+			k.kind = viKeyUp
+			return k, false, true
+		case ev.Key == term.KeyArrowDown:
+			k.kind = viKeyDown
+			return k, false, true
 		}
 	case term.ModCtrl:
-		handled = true
 		switch ev.Ch {
 		case 'k':
-			v.scheduleAfterBell(false, func() {
-				v.remote.keyArrowUp()
-				v.remoteFlush()
-			})
-			v.scheduleAfterBell(false, v.moveViToLastLineCharacter)
-			return
+			k.kind = viKeyUp
+			return k, false, true
 		case 'j':
-			v.scheduleAfterBell(false, func() {
-				v.remote.keyArrowDown()
-				v.remoteFlush()
-			})
-			v.scheduleAfterBell(false, v.moveViToLastLineCharacter)
-			return
+			k.kind = viKeyDown
+			return k, false, true
 		case 'c':
-			exit = true
-			return
+			k.kind = viKeyExit
+			return k, true, true
 		}
 	}
 
-	// use a copy of vi to know if event would be handled, and if it would be an edit
 	v.edited = false
+	_, handled = vi.Handle(ev)
+	k.kind = viKeyRead
+	if v.edited {
+		k.kind = viKeyEdit
+	}
+	return k, false, handled
+}
+
+// reachesShell reports whether k needs the shell's cursor at the start of
+// its input.
+func (v *viHandler) reachesShell(k viKey) bool {
+	switch k.kind {
+	case viKeyRead, viKeyEndOfLine:
+		return false
+	case viKeyExit:
+		// leaving only moves the shell's cursor when the vi cursor was
+		// moved along its input
+		pos := v.sync.vi.CursorAtScroll()
+		from, to := v.lastPromptLine()
+		return pos != v.entry && pos.Y >= from.Y && pos.Y <= to.Y
+	}
+	return true
+}
+
+// read runs k, which must not reach the shell, on the vi alone.
+func (v *viHandler) read(k viKey) {
+	switch k.kind {
+	case viKeyRead:
+		v.reading = true
+		v.sync.vi.Handle(k.ev)
+		v.reading = false
+		v.keepInContent()
+	case viKeyEndOfLine:
+		// unlike remoteMoveToEndOfLine, which clamps to the start of the
+		// prompt, only known once the shell answered
+		v.viSetCursorAtScroll(v.lastValidLineColumn(v.sync.vi.CursorAtScroll().Y))
+	}
+}
+
+// keepInContent keeps the cursor off the blank rows below the content,
+// such as those under a shell's prompt, which a motion like G or j
+// reaches.
+func (v *viHandler) keepInContent() {
+	cells := v.sync.vi.CellView().RawCells()
+	last := len(cells) - 1
+	for last > 0 && blankRow(cells[last]) {
+		last--
+	}
+	if pos := v.sync.vi.CursorAtScroll(); pos.Y > last {
+		end := v.lastValidLineColumn(last)
+		v.viSetCursorAtScroll(term.Coordinates{Y: last, X: min(pos.X, end.X)})
+	}
+}
+
+func blankRow(row []term.Cell) bool {
+	for _, c := range row {
+		if c.Ch != vtescreen.DefaultChar && c.Ch != ' ' {
+			return false
+		}
+	}
+	return true
+}
+
+// send runs k once the shell answered the probe: whatever reaches it
+// waits for a bell, which puts its cursor at the start of its input.
+func (v *viHandler) send(k viKey) {
+	switch k.kind {
+	case viKeyEndOfLine:
+		// manage manually to avoid confusing shell blank cells
+		// with end of line.
+		v.scheduleAfterBell(false, v.remoteMoveToEndOfLine)
+	case viKeyExit:
+		v.scheduleAfterBell(false, func() {
+			pos := v.trimToLastValidColumn(v.sync.vi.CursorAtScroll())
+			v.log(log.TraceLevel, "call scheduled cleanup of vi position to comp: %+v", pos)
+			v.remoteMoveTo(pos)
+			v.remoteFlush()
+		})
+	case viKeyEnter:
+		v.scheduleAfterBell(false, func() {
+			v.remote.linefeed()
+			v.remoteFlush()
+		})
+	case viKeyUp:
+		v.scheduleAfterBell(false, func() {
+			v.remote.keyArrowUp()
+			v.remoteFlush()
+		})
+		v.scheduleAfterBell(false, v.moveViToLastLineCharacter)
+	case viKeyDown:
+		v.scheduleAfterBell(false, func() {
+			v.remote.keyArrowDown()
+			v.remoteFlush()
+		})
+		v.scheduleAfterBell(false, v.moveViToLastLineCharacter)
+	case viKeyRead, viKeyEdit:
+		// schedule any potential edits after finding the start of the prompt:
+		// this avoids race conditions when serializing handle with bell callbacks
+		// and also prevents the main loop goroutine to not deadlock with the vte parser
+		// goroutine. This cannot be performed during a call to Edit, because
+		// the cursor logic heavily depends on the correct return values of Edit.
+		v.scheduleAfterBell(k.kind == viKeyEdit, func() {
+			v.vteParserEdited = false
+			v.sync.vi.Handle(k.ev)
+		})
+
+		// correct cursor coordinates beyond last line so
+		// when moving through graphical windows doesn't
+		// leave cursor in an non-useful coordinate.
+		//
+		// After edits, content might have changed
+		// use bell to synchronize to the last state change
+		// and then move cursor to bounds.
+		//
+		// It's imperative that we serialize this with v.sync.vi.Handle
+		// or else moveViToBounds will use a buffer
+		// that has not been updated yet.
+		//
+		// This might put a lot of pressure on the event loop's
+		// event processing, so let's keep an eye on it for now.
+		v.scheduleAfterBell(false, v.moveViToBounds)
+	}
+}
+
+// probed runs on the event loop once the shell answered the probe's
+// bell, or did not in time.
+func (v *viHandler) probed(err error) {
+	v.sync.mu.Lock()
+	defer v.sync.mu.Unlock()
+
+	pending := v.pending
+	v.pending = nil
+	if err != nil {
+		v.log(log.WarnLevel, "modal mode is read-only: %v", err)
+		v.refuse(true)
+		// the copy ran the keys that waited, edits included: run again
+		// those that do not edit, from where the sync vi is
+		v.cancelCommand()
+		for _, k := range pending {
+			k, _, _ = v.classify(k.ev)
+			if k.kind == viKeyExit || !v.reachesShell(k) {
+				v.read(k)
+			} else {
+				v.cancelCommand()
+			}
+		}
+		return
+	}
+	v.probe = viSynced
+	if seq, running, _ := v.comp.shellCommand(); running {
+		v.syncedCommand = seq
+	}
+	// the bell left the shell's cursor at the start of its input: keep
+	// the vi cursor off the prompt before it, as entering always did
+	v.moveViToBounds()
+	v.bellAnswered = true
+	for _, k := range pending {
+		v.send(k)
+	}
+	v.bellAnswered = false
+}
+
+// refuse turns the session read-only. The user is told on the next
+// tick, since sync.mu is held.
+func (v *viHandler) refuse(probed bool) {
+	v.probe = viRefused
+	v.config.Sounds.Play(sounds.Error)
+	if v.refused != nil {
+		v.config.ScheduleNextTick(func() { v.refused(probed) })
+	}
+}
+
+// cancelCommand puts both vis in normal mode at the sync vi's cursor,
+// dropping what a refused key left pending on either.
+func (v *viHandler) cancelCommand() {
+	v.sync.vi.SetNormalMode()
 	v.copy.mu.Lock()
-	_, handled = v.copy.vi.Handle(ev)
+	v.copy.vi.SetNormalMode()
 	v.copy.mu.Unlock()
+	v.viSetCursorAtScroll(v.sync.vi.CursorAtScroll())
+}
 
-	// schedule any potential edits after finding the start of the prompt:
-	// this avoids race conditions when serializing handle with bell callbacks
-	// and also prevents the main loop goroutine to not deadlock with the vte parser
-	// goroutine. This cannot be performed during a call to Edit, because
-	// the cursor logic heavily depends on the correct return values of Edit.
-	v.scheduleAfterBell(v.edited, func() {
-		v.vteParserEdited = false
-		v.sync.vi.Handle(ev)
-	})
-
-	// correct cursor coordinates beyond last line so
-	// when moving through graphical windows doesn't
-	// leave cursor in an non-useful coordinate.
-	//
-	// After edits, content might have changed
-	// use bell to synchronize to the last state change
-	// and then move cursor to bounds.
-	//
-	// It's imperative that we serialize this with v.sync.vi.Handle
-	// or else moveViToBounds will use a buffer
-	// that has not been updated yet.
-	//
-	// This might put a lot of pressure on the event loop's
-	// event processing, so let's keep an eye on it for now.
-	v.scheduleAfterBell(false, func() {
-		v.moveViToBounds()
-	})
-	return
+// escReachesCommand reports whether a lone <esc> may go to the command
+// running at the shell's prompt: no probe succeeded in it, which proves
+// that a line editor reads the keys, where a lone <esc> is a Meta
+// prefix.
+func (v *viHandler) escReachesCommand() bool {
+	v.sync.mu.Lock()
+	defer v.sync.mu.Unlock()
+	seq, running, _ := v.comp.shellCommand()
+	return running && seq != v.syncedCommand
 }
 
 func (v *viHandler) enterViMode(pos term.Coordinates) {
@@ -575,7 +883,34 @@ func (v *viHandler) enterViMode(pos term.Coordinates) {
 	defer v.sync.mu.Unlock()
 	v.active = true
 	v.viSetCursorAtScroll(pos)
-	v.scheduleAfterBell(false, v.moveViToBounds)
+	v.entry = v.sync.vi.CursorAtScroll()
+	// a probe still waiting for its bell answers for this session too
+	if v.probe != viProbing {
+		v.probe = viUnprobed
+	}
+}
+
+// freeze enters modal mode over cells, a copy of the screen a full-screen
+// program draws on, with the cursor at pos, the program's. The copy
+// stays as it is until thaw, and no key reaches the program.
+func (v *viHandler) freeze(cells [][]term.Cell, pos term.Coordinates) {
+	v.sync.mu.Lock()
+	defer v.sync.mu.Unlock()
+	if len(cells) == 0 {
+		cells = [][]term.Cell{{}}
+	}
+	v.frozen.buf.ResetCells(cells)
+	v.frozen.scroll.SetOffset(term.Coordinates{})
+	v.frozen.scroll.Attributes = v.sync.vteScroll.Attributes
+	v.frozen.on = true
+	v.frozen.vi.SetCursorAtScroll(pos)
+}
+
+// thaw leaves the frozen screen, if modal mode is over one.
+func (v *viHandler) thaw() {
+	v.sync.mu.Lock()
+	defer v.sync.mu.Unlock()
+	v.frozen.on = false
 }
 
 // deactivate stops the vi cursor from following scrolled content. It must
@@ -621,6 +956,11 @@ func (v *viHandler) log(level log.Level, line string, params ...any) {
 }
 
 func (v *viHandler) scheduleAfterBell(forceSchedule bool, cb func()) {
+	if v.bellAnswered && v.comp.pendingCallbacks() == 0 {
+		v.bellAnswered = false
+		cb()
+		return
+	}
 	// if cursor is above prompt line, then we shouldn't need to synchronize via bell;
 	// the exception is if it would break callbacks execution order.
 	lastPromptLineStart, _ := v.lastPromptLine()
@@ -774,7 +1114,12 @@ func (v *viHandler) remoteMoveToEndOfLine() {
 }
 
 func (v *viHandler) lastValidLineColumn(y int) term.Coordinates {
-	cells := v.sync.vi.CellView().RawCells()
+	return lastValidColumn(v.sync.vi.CellView().RawCells(), y)
+}
+
+// lastValidColumn returns the last cell of row y that is not blank, or
+// its first one.
+func lastValidColumn(cells [][]term.Cell, y int) term.Coordinates {
 	if y >= len(cells) || len(cells[y]) == 0 {
 		return term.Coordinates{Y: y}
 	}
@@ -787,13 +1132,6 @@ func (v *viHandler) lastValidLineColumn(y int) term.Coordinates {
 	}
 
 	return term.Coordinates{Y: y}
-}
-
-func (v *viHandler) editCopy(ctx context.Context, start, end term.Coordinates, str string) {
-	v.copy.mu.Lock()
-	defer v.copy.mu.Unlock()
-
-	v.copy.vi.CellEditor().Edit(ctx, start, end, str)
 }
 
 func (v *viHandler) viSetCursorAtScroll(pos term.Coordinates) {
@@ -827,9 +1165,12 @@ func (v *viHandler) setDefaultAttributes(attr term.Attributes) {
 	v.copy.mu.Lock()
 	defer v.copy.mu.Unlock()
 	v.copy.vi.SetDefaultAttributes(attr)
+	v.frozen.vi.SetDefaultAttributes(attr)
 }
 
-// used to know before calling v.sync.vi's Handle whether change is going
+// copyEditor is the copy vi's editor. It only records that the key being
+// run would edit, before v.sync.vi runs it, and passes on the parser's
+// edits.
 type copyEditor struct {
 	v *viHandler
 }
@@ -837,6 +1178,22 @@ type copyEditor struct {
 func (v copyEditor) Edit(ctx context.Context, start, end term.Coordinates, str string) (
 	from, to term.Coordinates, old string,
 ) {
+	if vtescreen.IsScreenContext(ctx) {
+		return v.v.sync.editor.Edit(ctx, start, end, str)
+	}
 	v.v.edited = true
-	return v.v.copy.editor.Edit(ctx, start, end, str)
+	return start, start, ""
+}
+
+// frozenEditor is the frozen screen's editor, which edits nothing: like
+// copyEditor, it records that the key being run would.
+type frozenEditor struct {
+	v *viHandler
+}
+
+func (v frozenEditor) Edit(_ context.Context, start, _ term.Coordinates, _ string) (
+	from, to term.Coordinates, old string,
+) {
+	v.v.edited = true
+	return start, start, ""
 }

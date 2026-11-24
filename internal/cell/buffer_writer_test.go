@@ -377,6 +377,165 @@ type cellsOnly struct{ *BufferWriter }
 
 func (cellsOnly) DrawImage(term.Image) bool { return false }
 
+func TestBufferWriterCellsKeepingTheBackgroundKeepPlacements(t *testing.T) {
+	const width, height = 12, 4
+	grid := image.Rect(0, 0, width, height)
+	placement := image.Rect(2, 0, 10, 3)
+	window := image.Rect(4, 1, 7, 3)
+	dot := term.NewCell('.', 1, term.Attributes{})
+	ex := term.NewCell('x', 1, term.Attributes{})
+	keep := term.NewCell(' ', 1, term.Attributes{Attrs: term.AttrKeepBackground})
+	place := func(w term.Writer, r image.Rectangle, layer term.ImageLayer) {
+		w.DrawImage(term.Image{
+			ID: term.NewImageID(), Pos: term.Coordinates{X: r.Min.X, Y: r.Min.Y},
+			Width: r.Dx(), Height: r.Dy(), Layer: layer,
+		})
+	}
+	type shown struct {
+		cells image.Rectangle
+		layer term.ImageLayer
+	}
+	around := func(layer term.ImageLayer) []shown {
+		return []shown{
+			{image.Rect(2, 0, 10, 1), layer},
+			{image.Rect(2, 1, 4, 3), layer},
+			{image.Rect(7, 1, 10, 3), layer},
+		}
+	}
+
+	tests := []struct {
+		name string
+		draw func(w term.Writer)
+		want []shown
+	}{
+		{
+			name: "a placement above the text goes under the kept cells' text",
+			draw: func(w term.Writer) {
+				fillRect(w, grid, dot)
+				place(w, placement, term.ImageLayerAboveText)
+				fillRect(w, window, keep)
+			},
+			want: append(around(term.ImageLayerAboveText), shown{window, term.ImageLayerBelowText}),
+		},
+		{
+			name: "a placement under the text keeps its layer",
+			draw: func(w term.Writer) {
+				fillRect(w, grid, dot)
+				place(w, placement, term.ImageLayerBelowText)
+				fillRect(w, window, keep)
+			},
+			want: []shown{{placement, term.ImageLayerBelowText}},
+		},
+		{
+			name: "a placement under the background keeps its layer",
+			draw: func(w term.Writer) {
+				fillRect(w, grid, dot)
+				place(w, placement, term.ImageLayerBelowBackground)
+				fillRect(w, window, keep)
+			},
+			want: []shown{{placement, term.ImageLayerBelowBackground}},
+		},
+		{
+			name: "a placement under the background drawn after one that goes under the text stays over it",
+			draw: func(w term.Writer) {
+				fillRect(w, grid, dot)
+				place(w, placement, term.ImageLayerAboveText)
+				place(w, image.Rect(4, 0, 7, 3), term.ImageLayerBelowBackground)
+				fillRect(w, window, keep)
+			},
+			want: append(around(term.ImageLayerAboveText),
+				shown{window, term.ImageLayerBelowText},
+				shown{image.Rect(4, 0, 7, 1), term.ImageLayerBelowBackground},
+				shown{window, term.ImageLayerBelowText}),
+		},
+		{
+			name: "a placement under the background drawn before one that goes under the text keeps its layer",
+			draw: func(w term.Writer) {
+				fillRect(w, grid, dot)
+				place(w, window, term.ImageLayerBelowBackground)
+				place(w, placement, term.ImageLayerAboveText)
+				fillRect(w, window, keep)
+			},
+			want: append([]shown{{window, term.ImageLayerBelowBackground}},
+				append(around(term.ImageLayerAboveText), shown{window, term.ImageLayerBelowText})...),
+		},
+		{
+			name: "a placement under the background drawn after the kept cells goes over the one under their text",
+			draw: func(w term.Writer) {
+				fillRect(w, grid, dot)
+				place(w, placement, term.ImageLayerAboveText)
+				fillRect(w, window, keep)
+				place(w, image.Rect(4, 0, 7, 3), term.ImageLayerBelowBackground)
+			},
+			want: append(around(term.ImageLayerAboveText),
+				shown{window, term.ImageLayerBelowText},
+				shown{image.Rect(4, 0, 7, 1), term.ImageLayerBelowBackground},
+				shown{window, term.ImageLayerBelowText}),
+		},
+		{
+			name: "a placement under the text drawn after one under the background the kept cells lifted goes over it",
+			draw: func(w term.Writer) {
+				fillRect(w, grid, dot)
+				place(w, placement, term.ImageLayerAboveText)
+				fillRect(w, window, keep)
+				place(w, image.Rect(4, 0, 7, 3), term.ImageLayerBelowBackground)
+				place(w, window, term.ImageLayerBelowText)
+			},
+			want: append(around(term.ImageLayerAboveText),
+				shown{window, term.ImageLayerBelowText},
+				shown{image.Rect(4, 0, 7, 1), term.ImageLayerBelowBackground},
+				shown{window, term.ImageLayerBelowText},
+				shown{window, term.ImageLayerBelowText}),
+		},
+		{
+			name: "a placement drawn after the kept cells stays above their text",
+			draw: func(w term.Writer) {
+				fillRect(w, grid, dot)
+				place(w, placement, term.ImageLayerAboveText)
+				fillRect(w, window, keep)
+				place(w, window, term.ImageLayerAboveText)
+			},
+			want: append(around(term.ImageLayerAboveText),
+				shown{window, term.ImageLayerBelowText}, shown{window, term.ImageLayerAboveText}),
+		},
+		{
+			name: "a cell written over the kept cells covers the placement",
+			draw: func(w term.Writer) {
+				fillRect(w, grid, dot)
+				place(w, placement, term.ImageLayerAboveText)
+				fillRect(w, window, keep)
+				fillRect(w, window, ex)
+			},
+			want: around(term.ImageLayerAboveText),
+		},
+		{
+			name: "kept cells over cells that cover the placement leave it covered",
+			draw: func(w term.Writer) {
+				fillRect(w, grid, dot)
+				place(w, placement, term.ImageLayerAboveText)
+				fillRect(w, window, ex)
+				fillRect(w, window, keep)
+			},
+			want: around(term.ImageLayerAboveText),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := NewBufferWriter(context.Background(), width, height)
+			tt.draw(w)
+			var got []shown
+			for _, img := range w.Images() {
+				got = append(got, shown{img.Visible(), img.Layer})
+			}
+			assert.Equal(t, tt.want, got)
+
+			plain := cellsOnly{NewBufferWriter(context.Background(), width, height)}
+			tt.draw(plain)
+			assert.Equal(t, plain.RawCells(), w.RawCells(), "cells read back as written")
+		})
+	}
+}
+
 func TestBufferWriterImagesMovedByPixels(t *testing.T) {
 	const cols, rows = 16, 10
 	const cw, ch = 10, 20

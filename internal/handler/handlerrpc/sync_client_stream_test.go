@@ -159,6 +159,47 @@ func TestSyncClientStreamWithoutGraphics(t *testing.T) {
 	assert.Equal(t, []bool{false}, h.Shown())
 }
 
+// focusRecorder is an extension's handler that records the window focus
+// its draws are told.
+type focusRecorder struct {
+	*sdkhandler.TestHandler
+	mu    sync.Mutex
+	draws []string
+}
+
+func (r *focusRecorder) Draw(w term.Writer) {
+	focused, ok := term.WindowFocusFromContext(w.Context())
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch {
+	case !ok:
+		r.draws = append(r.draws, "unspecified")
+	case focused:
+		r.draws = append(r.draws, "focused")
+	default:
+		r.draws = append(r.draws, "unfocused")
+	}
+	r.TestHandler.Draw(w)
+}
+
+func (r *focusRecorder) Close() error { return nil }
+
+func TestSyncClientStreamSendsTheWindowFocus(t *testing.T) {
+	h := &focusRecorder{TestHandler: sdkhandler.NewTestHandler()}
+	client := newSyncExtension(t, h)
+	client.Resize(4, 2)
+	for _, ctx := range []context.Context{
+		term.ContextWithWindowFocus(context.Background(), true),
+		term.ContextWithWindowFocus(context.Background(), false),
+		context.Background(),
+	} {
+		client.Draw(&handlerrpctest.ImageRecorder{Ctx: ctx})
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	assert.Equal(t, []string{"focused", "unfocused", "unspecified"}, h.draws)
+}
+
 // mouseRecorder is an extension's handler that records the mouse events
 // it is sent.
 type mouseRecorder struct {

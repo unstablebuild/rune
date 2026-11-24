@@ -1259,10 +1259,26 @@ func (c *Component) SetDim(to bool) bool {
 	return c.wm.SetDim(to)
 }
 
+// SetFocusStyle turns the focus window's focus style on or off, as
+// handler.WindowManager.SetFocusStyle does, and returns whether it was
+// on. The tab of the focus window keeps its own style.
+func (c *Component) SetFocusStyle(on bool) bool {
+	return c.wm.SetFocusStyle(on)
+}
+
 // SetDefaultAttr forwards the live theme default attributes to the window
 // manager so grayscale dimming resolves a ColorDefault foreground.
 func (c *Component) SetDefaultAttr(attr term.Attributes) {
 	c.wm.SetDefaultAttr(attr)
+}
+
+// SetBackgrounds sets the window backgrounds as
+// handler.WindowManager.SetBackgrounds does, as a Restyle with them
+// would. The rest of the style stays as it is.
+func (c *Component) SetBackgrounds(bg tcomponent.WindowBackground, focus *tcomponent.WindowBackground) {
+	c.config.WindowManagerConfig.Background = bg
+	c.config.WindowManagerConfig.FocusBackground = focus
+	c.wm.SetBackgrounds(bg, focus)
 }
 
 // WindowManagerPosition returns the offset from the top left corner
@@ -2127,7 +2143,8 @@ func (c *Component) findWindow(winID uint64) (*browserWindow, bool) {
 func (c *Component) overwriteFocusWindowUnion(w term.Writer) {
 	// Without union junctions, the window manager drew these corners
 	// already, along with any frame images that rewriting them would hide.
-	if !c.union.Frame || c.focusWindow == (thandler.Window{}) || c.wm.SizeTiles() == 1 {
+	if !c.union.Frame || c.focusWindow == (thandler.Window{}) || c.wm.SizeTiles() == 1 ||
+		!c.wm.FocusStyle() {
 		return
 	}
 	topleft := c.focusWindow.Position()
@@ -2136,6 +2153,11 @@ func (c *Component) overwriteFocusWindowUnion(w term.Writer) {
 	mainHeight := c.union.MainHeight()
 	attr := c.config.WindowManagerConfig.FocusFrameAttr
 	cs := c.config.WindowManagerConfig.FocusFrameCharSet
+	// The corners keep the background the window manager gave them,
+	// such as the focused window's.
+	if attr.Bg == term.ColorDefault {
+		attr.Attrs |= term.AttrKeepBackground
+	}
 
 	if topleft == (term.Coordinates{}) {
 		cell := term.NewCell(cs.TopLeft, 1, attr)
@@ -2171,7 +2193,20 @@ func (c *Component) overwriteFocusWindowUnion(w term.Writer) {
 }
 
 func (c *Component) wallpaper() browserapi.Handler {
-	wallpaper := c.config.Wallpaper
+	w := &wallpaper{normal: newWallpaperComponent(c.config.Wallpaper)}
+	if focus := c.config.Wallpaper.Focus; focus != nil {
+		w.focused = newWallpaperComponent(*focus)
+	}
+	return &browserContent{
+		Handler:   w,
+		c:         c,
+		wallpaper: true,
+	}
+}
+
+// newWallpaperComponent returns a new component of wallpaper, on its
+// BackgroundAttr.
+func newWallpaperComponent(wallpaper Wallpaper) tui.Component {
 	if wallpaper.NewComponent == nil {
 		wallpaper.NewComponent = component.Nop
 	}
@@ -2191,15 +2226,66 @@ func (c *Component) wallpaper() browserapi.Handler {
 				term.NewCell(nonZeroCh, 0, wallpaper.BackgroundAttr))
 		}
 	}
-	// make wallpaper satisfy Floating to avoid browserContent panic
-	// if wallpaper is being set as a default on a floating window
-	floating := component.StaticFloating(instance, 80, 40)
-	return &browserContent{
-		Handler:   NopFloatingHandler(handler.NopFloatingFromComponent(floating)),
-		c:         c,
-		wallpaper: true,
+	return instance
+}
+
+// wallpaper is the content of a window with nothing else to show. It
+// draws focused, if any, in a window holding the window manager's focus
+// style, and normal in any other. It ignores input. As the content of a
+// floating window, it asks for the size its components need, or keeps
+// the size it was given when they don't know it.
+type wallpaper struct {
+	normal, focused tui.Component
+	width, height   int
+}
+
+var _ browserapi.Floating = (*wallpaper)(nil)
+
+// Resize satisfies tui.Component.
+func (w *wallpaper) Resize(width, height int) {
+	w.width, w.height = width, height
+	w.normal.Resize(width, height)
+	if w.focused != nil {
+		w.focused.Resize(width, height)
 	}
 }
+
+// Draw satisfies tui.Component.
+func (w *wallpaper) Draw(wr term.Writer) {
+	if focused, _ := term.WindowFocusFromContext(wr.Context()); focused && w.focused != nil {
+		w.focused.Draw(wr)
+		return
+	}
+	w.normal.Draw(wr)
+}
+
+// Dimensions satisfies component.Floating.
+func (w *wallpaper) Dimensions() (width, height int) {
+	f, ok := w.normal.(component.Floating)
+	if !ok {
+		return w.width, w.height
+	}
+	width, height = f.Dimensions()
+	if f, ok := w.focused.(component.Floating); ok {
+		fw, fh := f.Dimensions()
+		width, height = max(width, fw), max(height, fh)
+	}
+	return width, height
+}
+
+// Handle satisfies tui.Handler.
+func (*wallpaper) Handle(term.Event) (exit, handled bool) { return false, false }
+
+// Cursor satisfies tui.Handler.
+func (*wallpaper) Cursor() (c term.Coordinates, s term.CursorStyle, show bool) {
+	return c, s, false
+}
+
+// Selection satisfies tui.Handler.
+func (*wallpaper) Selection() (string, bool) { return "", false }
+
+// Close satisfies browserapi.Handler.
+func (*wallpaper) Close() error { return nil }
 
 func isWallpaper(h browserapi.Handler) bool {
 	bc, ok := h.(*browserContent)

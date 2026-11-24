@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
@@ -443,6 +444,28 @@ func TestConstructors(t *testing.T) {
 		hx.Resize(80, 20)
 		assert.True(t, hx.IsNormalMode())
 	})
+
+	t.Run("initial folds keep the event loop free", func(t *testing.T) {
+		loop := handlertest.NewEventLoop(t)
+		buf := cell.NewBuffer()
+		buf.ReadFrom(strings.NewReader("a\nb\nc\nd\ne\nf\ng\n"))
+		fs := &initialFoldsView{initialFolds: handlertest.LoopGatedIterator(loop,
+			[]term.Range{{Start: term.Coordinates{Y: 0}, End: term.Coordinates{Y: 2}}},
+			[]term.Range{{Start: term.Coordinates{Y: 3}, End: term.Coordinates{Y: 5}}})}
+		fs.View = buf.WithView(fs)
+
+		var hx *Helix
+		loop.Run(func() {
+			hx = New(buf, resource, WithHideInitialFolds(true), WithScheduleNextTick(loop.Schedule))
+			hx.Resize(80, 20)
+		})
+		scroll := hx.less.Scroll()
+		loop.Eventually(func() bool {
+			_, first := scroll.HiddenBlockAt(0)
+			_, second := scroll.HiddenBlockAt(3)
+			return first && second
+		}, "both initial folds must be hidden")
+	})
 }
 
 func TestUndoRedo(t *testing.T) {
@@ -565,4 +588,23 @@ func TestSelectionBoundsAndPaste(t *testing.T) {
 		hx.ShowCommandBar(true)
 		hx.SetMessage("hello")
 	})
+}
+
+// initialFoldsView is a buffer view whose folds service only answers the
+// initial folds.
+type initialFoldsView struct {
+	cell.View
+	initialFolds iterator.Iterator[term.Range]
+}
+
+func (f *initialFoldsView) Folds() (iterator.Iterator[term.Range], bool) {
+	return nil, false
+}
+
+func (f *initialFoldsView) FoldsFrom(term.Coordinates) (iterator.Iterator[term.Range], bool) {
+	return nil, false
+}
+
+func (f *initialFoldsView) InitialFolds() (iterator.Iterator[term.Range], bool) {
+	return f.initialFolds, true
 }

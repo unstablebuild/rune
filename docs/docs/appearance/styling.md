@@ -322,6 +322,11 @@ The scroll bar works the same way, with `top_char`, `middle_char`,
 `bottom_char` and their `hover_` versions under
 `scroll_bar_charset.graphics`, and an `outset` with `left`, in cells.
 
+A theme can mark the focused window with a background image instead of a
+brighter frame: `focus_background_graphics` draws a panel behind it, and
+`focus_scroll_bar_charset`, the status bars, the inbox and the agent chat
+take images painted for that panel. See [Focus styles](#focus-styles).
+
 ### Tabs
 
 `browser.tab_images` draws every tab with a `left`, `middle` and `right`
@@ -589,8 +594,12 @@ be cleared. Removing a field from a partial table restores inheritance.
 
 Violet Ledger draws notifications as rounded cards with
 `notifications.frame_charset.graphics`, and draws the progress bar with
-`notifications.progress_format.graphics` in `overlay` mode: its images are
-transparent where the bar is, so the level's color shows through:
+`notifications.progress_format.graphics` in `overlay` mode. Its images leave
+a clear channel where the bar is, closed in by the card's face above and its
+shadow below, and `overlay` fills that channel with the level's color.
+Transparent pixels that reach the card's outer edge, such as the corners
+outside the rounded cap or a translucent shadow, show what is under the
+notification:
 
 ```yaml tab
 notifications:
@@ -772,19 +781,20 @@ theme's surroundings.
 | Surface | Key | Images | `outset` |
 | --- | --- | --- | --- |
 | Window frames | `browser.window_manager.frame_charset.graphics`, `focus_frame_charset.graphics` | The eight frame slots. | |
+| Window backgrounds | `browser.window_manager.background_graphics`, `focus_background_graphics` | The eight frame slots and `center`, with `fit`. | |
 | Floating-only frames | `browser.window_manager.floating_frame_charset.graphics`, `focus_floating_frame_charset.graphics` | The eight frame slots; tiled frames stay unchanged. | |
-| Scroll bar | `browser.window_manager.scroll_bar_charset.graphics` | `top_char`, `middle_char`, `bottom_char` and their `hover_` versions. | `left` |
+| Scroll bar | `browser.window_manager.scroll_bar_charset.graphics`, `focus_scroll_bar_charset.graphics` | `top_char`, `middle_char`, `bottom_char` and their `hover_` versions. | `left` |
 | Floating window bar | `browser.window_manager.window_bar_charset.graphics`, `focus_window_bar_charset.graphics` | `left`, `horizontal` and `right`. | `top`, `bottom`, `sides`, `inward`, `horizontal_top` |
 | Tabs | `browser.tab_images`, `workspace.tab_images` | `left`, `middle` and `right` for `focus`, `focus_window`, `non_focus`, `hover` and `pressed`. | `top`, `bottom`, `sides` |
 | Tab highlight | `browser.focus_tab_highlight_graphics`, `workspace.focus_tab_highlight_graphics` | `left`, `horizontal` and `right`. | |
 | Command prompt | `command.frame_charset.graphics`, `command.separator_charset.graphics` | The eight frame slots; the separator's `left`, `horizontal` and `right`. | separator: `top`, `bottom`, `inward` |
 | Dialog buttons | `browser.prompt.images` | `left`, `middle` and `right` for `idle`, `selected`, `hover` and `pressed`. | `top`, `bottom`, `sides` |
 | Notifications | `notifications.frame_charset.graphics`, `notifications.progress_format.graphics` | The eight frame slots; the progress bar's five. | |
-| Program status inbox | `program_status.images`, `divider_charset.graphics`, `progress_bar_graphics`, `marker_graphics` | See [Program status inbox](#program-status-inbox). | entries: `top`, `bottom`, `sides` |
-| Status bars | `{{ .Image }}` in `editor.status_bar.layout` and the agent's `status_bar.layout` | An image of any size, placed in the layout. | |
-| Agent composer | `extensions.rune-agent.config.input_box_frame_charset.graphics` | The eight frame slots. | |
+| Program status inbox | `program_status.images`, `divider_charset.graphics`, `progress_bar_graphics`, `marker_graphics`, and the same under `program_status.focus` | See [Program status inbox](#program-status-inbox). | entries: `top`, `bottom`, `sides` |
+| Status bars | `{{ .Image }}` in `editor.status_bar.layout` and the agent's `status_bar.layout`, and in their `focus` blocks | An image of any size, placed in the layout. | |
+| Agent composer | `extensions.rune-agent.config.input_box_frame_charset.graphics`, and the same under `focus` | The eight frame slots. | |
 | Quick menu | `gui.quick_menu[].sprite` | `idle`, `hover` and `pressed`. | |
-| Wallpaper, app icon | `workspace.wallpaper_image`, `gui.app_icon` | One image each. | |
+| Wallpaper, app icon | `workspace.wallpaper_image`, `focus_wallpaper_image`, `gui.app_icon` | One image each. | |
 
 ### Tips from Violet Ledger
 
@@ -1167,6 +1177,8 @@ config["browser"]["window_manager"]["frame"] = False
 `browser.window_manager.dim` fades the windows that are not in focus, so your
 eye lands on the one that is. It has no effect with a single window, and the
 images of a [graphical theme](#graphical-themes) are never dimmed.
+To mark the focused window with a background of its own instead, see
+[Focus styles](#focus-styles).
 
 <Shot name="dim-true" alt="The left window dimmed next to the focused right window">`dim: true`, the default.</Shot>
 
@@ -1270,6 +1282,205 @@ config["browser"]["window_manager"]["window_bar"] = False
 ```
 
 <Shot name="wbar-off" alt="The same floating window with a plain frame and no bar" />
+
+## Focus styles
+
+The window in focus can stand out by more than its frame. It can have its own
+background color, a background image, and its own scroll bar, status bars,
+program status inbox, agent chat and wallpaper. With those, a frame can be
+blank or turned off, and the background marks the focused window instead.
+
+As with `focus_frame_attr`, the focus style applies only when there is more
+than one window, and only the window focus counts: switching to another app
+restyles nothing.
+
+While the command prompt is open, it takes the colors of the focus
+background, without the image, and every window under it draws the normal
+style. Without a focus background, the prompt draws no window background.
+
+Every `focus_` key follows the same rules:
+
+- Without the key, the focused window draws the normal style.
+- A key that is there takes what it leaves out from the normal key, slot by
+  slot.
+- `""` clears an image slot.
+
+### Background
+
+These keys live under `browser.window_manager`:
+
+| Key | Styles |
+| --- | --- |
+| `background_attr` | Every window: `bg` fills the cells drawn in the default background, and `fg` replaces the default foreground, for light backgrounds. |
+| `focus_background_attr` | The window in focus. |
+| `background_graphics` | An image behind every window, in nine slices. |
+| `focus_background_graphics` | The image behind the window in focus. |
+| `focus_scroll_bar_charset` | The focused window's scroll bar, with the keys of `scroll_bar_charset`, `hover_` ones included. |
+
+A cell with a background of its own keeps it: the selection, the cursor
+line, status bars and `terminal.default_attr`. A frame whose `bg` is unset
+takes the window's background, so leave `focus_frame_attr.bg` unset for the
+frame to blend in.
+
+A theme can name a focus background color of its own, its
+[`focus_background`](./themes.md#what-a-theme-overrides), as `pike` and
+`ritchie` do. The window in focus takes it, with the image and `fg` of
+`background_graphics` and `background_attr`, while neither
+`focus_background_attr` nor `focus_background_graphics` is set. It follows
+`guitheme` as you switch themes. Set `focus_background_attr: {}` to turn it
+off.
+
+### Frame images over a background
+
+A frame image draws its line through the middle of a cell, and a cell has a
+single background, so one color would show on both sides of the line. Rune
+paints each side in its own color instead:
+
+- Inside the line, toward the content, the transparent pixels show the
+  content's color.
+- Outside the line, they show what is under the frame: the theme's
+  background, or the window under a floating window or the command prompt.
+
+For this, draw each frame image as a line with transparent pixels on both
+sides, unbroken from one edge of the cell to the other. Rune finds the inside
+from the line itself, so a gap in it, or an image with no line across the
+cell, takes one color on both sides. So does an opaque image, which keeps the
+colors painted into it.
+
+Only images one cell in size get the inside color. An image that reaches
+into the next cell through an outset, such as a command separator junction
+with `inward: 1`, shows what is under the frame on both sides of its line.
+Draw junctions one cell wide, with no outset, for their inside to take the
+prompt's color.
+
+The same goes for every framed surface:
+
+| Surface | Inside the line |
+| --- | --- |
+| Window frames | The window's `background_attr` color, or in focus, the `focus_background_attr` color, or else the theme's `focus_background`. |
+| Command prompt | The `bg` of `command.element_attr`, or else the focus background's. |
+| Agent compose box | `input_background_color`. |
+| Notifications | The `bg` of `notifications.background_attr`, or else of `notifications.attr`. |
+
+The compose box frame keeps the chat's background under its images, unless
+`input_box_frame_attr` sets a `bg` of its own. A frame of characters still
+takes `input_background_color`.
+
+This marks the focused window with a background alone. Frames of spaces stay
+as a cell of padding around each window, in its background, and keep the
+scroll bar and edge dragging:
+
+```yaml tab
+browser:
+  union_frames: false
+  window_manager:
+    frame_charset: &blank
+      topleft: " "
+      topright: " "
+      bottomleft: " "
+      bottomright: " "
+      horizontaltop: " "
+      horizontalbottom: " "
+      verticalleft: " "
+      verticalright: " "
+    focus_frame_charset: *blank
+    focus_background_attr: {bg: "#1b1f2a"}
+```
+
+```python tab
+blank = {s: " " for s in [
+    "topleft", "topright", "bottomleft", "bottomright",
+    "horizontaltop", "horizontalbottom", "verticalleft", "verticalright",
+]}
+config["browser"]["union_frames"] = False
+wm = config["browser"]["window_manager"]
+wm["frame_charset"] = blank
+wm["focus_frame_charset"] = blank
+wm["focus_background_attr"] = {"bg": "#1b1f2a"}
+```
+
+`union_frames: false` keeps the tab bar's junctions from drawing lines where
+it meets the blank frames. A frame `bg` of its own paints a ring around the
+window instead. With `frame: false` the background still marks the focused
+window, but without the padding, scroll bar or edge dragging.
+
+### Background image
+
+`background_graphics` and `focus_background_graphics` draw an image behind a
+window in the GUI, cut in nine slices: the eight frame slots, `topleft`
+through `verticalright`, and `center`. Each corner takes one cell, each edge
+is one cell thick, and `center` covers the rest. `fit: fill`, the default,
+stretches each slice over its cells, and `fit: tile` repeats it one cell at a
+time.
+
+```yaml tab
+browser:
+  window_manager:
+    focus_background_attr: {bg: "#1b1f2a"}
+    focus_background_graphics:
+      center: file://$RUNE_DATADIR/hud/x/panel/focused/center.png
+      topleft: file://$RUNE_DATADIR/hud/x/panel/focused/topleft.png
+      # ...the other corners and edges
+```
+
+```python tab
+wm = config["browser"]["window_manager"]
+wm["focus_background_attr"] = {"bg": "#1b1f2a"}
+wm["focus_background_graphics"] = {
+    "center": "file://$RUNE_DATADIR/hud/x/panel/focused/center.png",
+    "topleft": "file://$RUNE_DATADIR/hud/x/panel/focused/topleft.png",
+}
+```
+
+- The image goes under every cell background and character. Text,
+  selections and frame images draw over it, and the transparent pixels of
+  frame images show it.
+- Where a slice doesn't draw, the color of `focus_background_attr` shows:
+  in a terminal, while the image loads, and when it fails to.
+- A floating window covers the image of the tile under it.
+- The tab bar's joins to the window frames cut the image where they are
+  drawn. Set `browser.union_frames: false` to keep it whole.
+
+### Status bars, inbox and chat
+
+The editor status bar, the program status inbox and Rune Agent's chats take
+a `focus` block, which is laid over their section key by key. It changes any
+style key the section has, without repeating the others:
+
+| Block | Keys it changes |
+| --- | --- |
+| `editor.status_bar.focus` | `layout`, `background_attr` and `foreground_error_attr`. |
+| `program_status.focus` | Any style key, such as `divider_charset`, `divider_attr`, `images`, `marker_graphics` and `progress_bar_graphics`. |
+| `extensions.rune-agent.config.focus` | `status_bar`, `input_box_frame_charset`, `input_box_frame_attr`, `input_box_attr`, `input_background_color` and `background_attr`. ACP chats share it. |
+
+```yaml tab
+editor:
+  status_bar:
+    background_attr: {bg: "#20232b"}
+    focus:
+      background_attr: {bg: "#262b38"}
+```
+
+```python tab
+config["editor"]["status_bar"]["background_attr"] = {"bg": "#20232b"}
+config["editor"]["status_bar"]["focus"] = {"background_attr": {"bg": "#262b38"}}
+```
+
+A chat whose `background_attr` sets a color keeps it over the window's
+background. Its `focus` block's `background_attr` replaces that color in
+every cell the chat draws with it.
+
+### Wallpaper
+
+An empty window in focus shows the focused wallpaper. Its keys live under
+`workspace` and take the same forms as the [wallpaper](./wallpaper.md) keys:
+`focus_wallpaper_image`, `focus_wallpaper_image_ascii`,
+`focus_wallpaper_ascii`, `focus_wallpaper_attr`,
+`focus_wallpaper_background_attr` and `focus_wallpaper_density_characters`.
+Without any of them, a focused window shows the normal wallpaper. The
+focused wallpaper keeps the normal picture, art or text unless one of the
+first three is set, and takes each attribute, and the density characters, the
+focus keys leave out from the normal ones.
 
 ## Tab bar
 
@@ -1831,7 +2042,7 @@ Its keys live under `status_bar`:
 
 | Key | Styles |
 | --- | --- |
-| `layout` | What the bar shows, as a template like the [editor's](#editor-status-bar): `{{ .Spinner }}`, `{{ .Status }}`, `{{ .Model }}`, `{{ .Effort }}`, `{{ .Conversation }}`, `{{ .Elapsed }}`, `{{ .Cache }}`, `{{ .ContextGauge }}`, `{{ .CacheGauge }}`, `{{ .Image }}` and more. |
+| `layout` | What the bar shows, as a template like the [editor's](#editor-status-bar): `{{ .Spinner }}`, `{{ .Status }}`, `{{ .Model }}`, `{{ .Effort }}`, `{{ .Speed }}`, `{{ .Conversation }}`, `{{ .Elapsed }}`, `{{ .Cache }}`, `{{ .ContextGauge }}`, `{{ .CacheGauge }}`, `{{ .Image }}` and more. |
 | `background_attr` | The bar. Its `fg` is the color of every element that names none. |
 | `status.<PHASE>.attr` | The spinner and the status in that phase. |
 | `status.<PHASE>.animation` | The spinner in that phase: `ch` lists its frames, one character each, and `attr` colors it alone. |

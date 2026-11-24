@@ -336,6 +336,37 @@ func TestWindowDraw(t *testing.T) {
 	}
 }
 
+func TestComponentSetFocusStyle(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Dim = false
+	cfg.Frame = true
+	cfg.FrameUnion = true
+	normal := term.Attributes{Fg: term.ColorBlue}
+	focus := term.Attributes{Fg: term.ColorYellow}
+	cfg.FrameAttr, cfg.FocusFrameAttr = normal, focus
+	b := NewComponent(cfg)
+	b.Split(browserapi.OrientationRight, b.Focus(), newTestHandler())
+	const width, height = 20, 8
+	b.Resize(width, height)
+	corner := func() term.Color {
+		t.Helper()
+		w := term.NewStringWriter(width, height)
+		b.Draw(w)
+		require.NoError(t, w.Flush())
+		pos := b.union.MainPosition()
+		if b.focusWindow.Position().X != 0 {
+			pos.X += b.union.MainWidth() - 1
+		}
+		return w.Cells()[pos.Y*width+pos.X].Fg
+	}
+	require.Equal(t, focus.Fg, corner(), "the focus window's union corner")
+
+	assert.True(t, b.SetFocusStyle(false))
+	assert.Equal(t, normal.Fg, corner(), "the corner without the focus style")
+	assert.False(t, b.SetFocusStyle(true))
+	assert.Equal(t, focus.Fg, corner())
+}
+
 func TestWindowFocusTabIconCueFollowsFocus(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Frame = false
@@ -4126,6 +4157,81 @@ func TestComponentWallpaperOnABackgroundKeepsItsPictures(t *testing.T) {
 	assert.Equal(t, background.Bg, united.Bg, "the wallpaper is united on the background")
 	assert.Equal(t, background.Bg, cells[mark.Y][mark.X+2].Bg,
 		"the background fills what the wallpaper does not draw")
+}
+
+func TestComponentFocusWallpaper(t *testing.T) {
+	text := func(s string) Wallpaper {
+		return Wallpaper{NewComponent: func() tui.Component {
+			return component.NewStringWithConfig(s, component.StringConfig{
+				Alignment: component.AlignmentCentered,
+			})
+		}}
+	}
+	cfg := DefaultConfig()
+	cfg.Wallpaper = text("N")
+	focus := text("F")
+	focus.BackgroundAttr = term.Attributes{Bg: term.ColorNavy}
+	cfg.Wallpaper.Focus = &focus
+	b := NewComponent(cfg)
+	b.Resize(20, 8)
+	// halves returns the wallpaper letters drawn in the left and right
+	// halves of b.
+	halves := func() (left, right string) {
+		t.Helper()
+		w := term.NewStringWriter(20, 8)
+		b.Draw(w)
+		require.NoError(t, w.Flush())
+		for i, c := range w.Cells() {
+			if c.Ch != 'N' && c.Ch != 'F' {
+				continue
+			}
+			if i%20 < 10 {
+				left += string(c.Ch)
+			} else {
+				right += string(c.Ch)
+			}
+		}
+		return left, right
+	}
+	left, right := halves()
+	assert.Equal(t, "N", left+right, "a single window shows the normal wallpaper")
+
+	leftWin := b.Focus()
+	_, ok := b.Split(browserapi.OrientationRight, leftWin, nil)
+	require.True(t, ok)
+	left, right = halves()
+	assert.Equal(t, []string{"N", "F"}, []string{left, right},
+		"the focused window shows the focus wallpaper")
+
+	b.SetFocus(leftWin)
+	left, right = halves()
+	assert.Equal(t, []string{"F", "N"}, []string{left, right})
+
+	b.Restyle(Style{WindowManager: cfg.WindowManagerConfig, Wallpaper: text("N")})
+	left, right = halves()
+	assert.Equal(t, []string{"N", "N"}, []string{left, right},
+		"without a focus wallpaper both show the normal one")
+}
+
+func TestWallpaperDimensions(t *testing.T) {
+	str := func(s string) tui.Component { return component.NewString(s) }
+	tests := []struct {
+		name            string
+		normal, focused tui.Component
+		width, height   int
+	}{
+		{name: "keeps its size without floating components", normal: component.Nop(), width: 30, height: 9},
+		{name: "asks for the size of its component", normal: str("abc"), width: 3, height: 9},
+		{name: "asks for the size of the larger component", normal: str("a"), focused: str("abc"), width: 3, height: 9},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &wallpaper{normal: tt.normal, focused: tt.focused}
+			w.Resize(30, 9)
+			width, height := w.Dimensions()
+			assert.Equal(t, []int{tt.width, tt.height}, []int{width, height})
+		})
+	}
 }
 
 // newPointerLess returns a less over more lines than any test size, some

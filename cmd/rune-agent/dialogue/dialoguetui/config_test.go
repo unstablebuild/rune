@@ -60,6 +60,7 @@ func TestReadConfig(t *testing.T) {
 				require.NotNil(t, got.Editor, "editor.mode defaults to vim")
 				assert.True(t, got.EditorModal)
 				assert.True(t, got.ModalStartInsert)
+				assert.Nil(t, got.Focus)
 			},
 		},
 		{
@@ -121,6 +122,56 @@ func TestReadConfig(t *testing.T) {
 				assert.Equal(t, term.ColorBlue, got.InputBackgroundColor)
 			},
 		},
+		{
+			name: "a focus block over the chat's look",
+			own: map[string]any{
+				"background_attr":         map[string]any{"bg": "navy"},
+				"input_box_frame_attr":    map[string]any{"fg": "aqua"},
+				"input_box_frame_charset": map[string]any{"topleft": "╔"},
+				"status_bar":              map[string]any{"layout": "{{ .Model }}"},
+				"focus": map[string]any{
+					"background_attr":         map[string]any{"bg": "blue"},
+					"input_box_attr":          map[string]any{"bg": "red"},
+					"input_box_frame_charset": map[string]any{"topright": "╗"},
+					"status_bar":              map[string]any{"enabled": false},
+				},
+			},
+			check: func(t *testing.T, got ComponentConfig) {
+				assert.Equal(t, term.ColorNavy, got.BackgroundColor)
+				assert.True(t, got.StatusBar.Enabled)
+				require.NotNil(t, got.Focus)
+				f := got.Focus
+				assert.Equal(t, term.ColorBlue, f.BackgroundColor)
+				assert.Equal(t, term.Attributes{Fg: term.ColorAqua}, f.FrameAttr, "the focus block inherits what it leaves out")
+				assert.Equal(t, term.Attributes{Bg: term.ColorRed}, f.ContentAttr)
+				assert.Equal(t, term.ColorRed, f.InputBackgroundColor)
+				assert.EqualValues(t, '╔', f.FrameCharSet.TopLeft)
+				assert.EqualValues(t, '╗', f.FrameCharSet.TopRight)
+				require.NotNil(t, f.StatusBar)
+				assert.False(t, f.StatusBar.Enabled)
+				assert.Equal(t, got.StatusBar.Layout, f.StatusBar.Layout, "the focus bar inherits the layout")
+			},
+		},
+		{
+			name: "a focus block without a status bar keeps the chat's",
+			own: map[string]any{
+				"status_bar": map[string]any{"layout": "{{ .Model }}"},
+				"focus":      map[string]any{"background_attr": map[string]any{"bg": "blue"}},
+			},
+			check: func(t *testing.T, got ComponentConfig) {
+				require.NotNil(t, got.Focus)
+				assert.Nil(t, got.Focus.StatusBar)
+				assert.Equal(t, term.Attributes{Bg: term.ColorBlue}, got.Focus.FrameAttr,
+					"the frame takes the focus background as the chat's takes its own")
+			},
+		},
+		{
+			name: "a focus value that isn't a table",
+			own:  map[string]any{"focus": "blue"},
+			check: func(t *testing.T, got ComponentConfig) {
+				assert.Nil(t, got.Focus)
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -168,6 +219,23 @@ func TestReadStyle(t *testing.T) {
 	assert.Equal(t, frameStorage, got.InputBox.GraphicsStorage)
 	require.Contains(t, frameImages, corner)
 	assert.Equal(t, cfg.SendMessageIcon, got.SendMessageIcon, "only the bar and the frame change")
+	assert.Nil(t, got.Focus)
+
+	focused := config.MapConfig(map[string]any{
+		"status_bar": map[string]any{"layout": "{{ .Model }}"},
+		"focus": map[string]any{
+			"status_bar":              map[string]any{"layout": `{{ .Image | src "` + corner + `" }}`},
+			"input_box_frame_charset": map[string]any{"graphics": map[string]any{"topright": corner, "topleft": ""}},
+		},
+	})
+	got, frameImages = ReadStyle(context.Background(), cfg, focused, config.NopConfig(), nopNotifications{})
+	require.NotNil(t, got.Focus)
+	require.NotNil(t, got.Focus.StatusBar)
+	assert.Equal(t, barStorage, got.Focus.StatusBar.Storage)
+	assert.Equal(t, time.Second, got.Focus.StatusBar.DurationPrecision)
+	assert.Contains(t, got.Focus.StatusBar.Images, corner, "the focus bar's images are read again")
+	assert.Equal(t, corner, got.Focus.FrameCharSet.Graphics.TopRight)
+	assert.Contains(t, frameImages, corner, "and so are those of the focus frame")
 
 	cfg.InputBox.GraphicsStorage = nil
 	_, frameImages = ReadStyle(context.Background(), cfg, own, config.NopConfig(), nopNotifications{})

@@ -264,10 +264,31 @@ type ComponentConfig struct {
 	// zero value leaves the bar disabled and the layout unchanged.
 	StatusBar StatusBarConfig
 
+	// Focus is the chat's look while the writer's context tells it its
+	// window holds the focus, as term.WindowFocusFromContext reads it.
+	// Nil keeps its look.
+	Focus *ChatStyle
+
 	// OnLinkClick is called when a markdown link is clicked in the messages area.
 	// Returning true marks the click as handled and suppresses text selection.
 	// A nil callback ignores clicks.
 	OnLinkClick func(*url.URL) bool
+}
+
+// ChatStyle is what of a chat's look ComponentConfig.Focus replaces.
+type ChatStyle struct {
+	// StatusBar replaces ComponentConfig.StatusBar, whose Storage it takes
+	// when it has none. Nil keeps the chat's status bar.
+	StatusBar *StatusBarConfig
+	// FrameCharSet, FrameAttr and ContentAttr replace those of
+	// ComponentConfig.InputBox.
+	FrameCharSet           component.FrameCharSet
+	FrameAttr, ContentAttr term.Attributes
+	// InputBackgroundColor replaces ComponentConfig.InputBackgroundColor.
+	InputBackgroundColor term.Color
+	// BackgroundColor replaces ComponentConfig.BackgroundColor, in every
+	// cell the chat draws with that background as well.
+	BackgroundColor term.Color
 }
 
 // DefaultPinnedMessageMaxRows keeps the pinned message to a glimpse of
@@ -586,17 +607,19 @@ func ReadConfig(
 	} else if !errors.Is(err, config.ErrNotFound) {
 		slog.Warn("get 'editor_modal_start_insert' from config", "error", err)
 	}
+	ret.Focus = readFocusStyle(own, host, noti, ret.DurationPrecision)
 	return ret
 }
 
-// ReadStyle returns cfg with the status bar, the compose box frame and
-// the compose box colours ReadConfig reads from own and host, and the
-// images of that frame. They are what of a chat's look
-// Component.SetStatusBarConfig, Component.SetInputBoxFrameCharSet and
-// Component.SetInputBoxColors change while it is open. Their images are
-// read again rather than taken from the copies cfg's storage caches, so
-// an image overwritten in place shows; an image that does not load is
-// left out.
+// ReadStyle returns cfg with the status bar, the compose box frame, the
+// compose box colours and the focus style ReadConfig reads from own and
+// host, and the images of the frames of the compose box. They are what of
+// a chat's look Component.SetStatusBarConfig,
+// Component.SetInputBoxFrameCharSet, Component.SetInputBoxColors and
+// Component.SetFocusStyle change while it is open. Their images are read
+// again rather than taken from the copies cfg's storage caches, so an
+// image overwritten in place shows; an image that does not load is left
+// out.
 func ReadStyle(
 	ctx context.Context, cfg ComponentConfig, own, host config.Config, noti browserapi.Notifications,
 ) (ComponentConfig, map[string]stdimage.Image) {
@@ -608,11 +631,46 @@ func ReadStyle(
 	cfg.InputBox.FrameCharSet = inputBoxFrameCharSet(own)
 	cfg.InputBox.FrameAttr, cfg.InputBox.ContentAttr, cfg.InputBackgroundColor = inputBoxColors(
 		own, readBackgroundAttr(own).Bg)
+	cfg.Focus = readFocusStyle(own, host, noti, cfg.DurationPrecision)
+	frames := []component.FrameCharSetGraphics{cfg.InputBox.FrameCharSet.Graphics}
+	if cfg.Focus != nil {
+		frames = append(frames, cfg.Focus.FrameCharSet.Graphics)
+		if focusBar := cfg.Focus.StatusBar; focusBar != nil {
+			focusBar.Storage = bar.Storage
+			focusBar.Images = refreshStatusBarImages(ctx, focusBar.Layout, bar.Storage)
+		}
+	}
 	var frameImages map[string]stdimage.Image
 	if cfg.InputBox.GraphicsStorage != nil {
-		frameImages = refreshFrameImages(ctx, cfg.InputBox.FrameCharSet.Graphics, cfg.InputBox.GraphicsStorage)
+		frameImages = refreshFrameImages(ctx, cfg.InputBox.GraphicsStorage, frames...)
 	}
 	return cfg, frameImages
+}
+
+// readFocusStyle reads the focus block of own over own, which is the
+// chat's look while its window holds the focus, or nil when own has no
+// focus block. Its status bar is nil unless the block has a status_bar.
+func readFocusStyle(
+	own, host config.Config, noti browserapi.Notifications, precision time.Duration,
+) *ChatStyle {
+	focus, err := tconfig.FocusOverlay(own, "focus")
+	if err != nil {
+		if !errors.Is(err, config.ErrNotFound) {
+			slog.Warn("get 'focus' from extension config", "error", err)
+		}
+		return nil
+	}
+	bg := readBackgroundAttr(focus).Bg
+	ret := &ChatStyle{FrameCharSet: inputBoxFrameCharSet(focus), BackgroundColor: bg}
+	ret.FrameAttr, ret.ContentAttr, ret.InputBackgroundColor = inputBoxColors(focus, bg)
+	// The overlay holds the table, as it would not have parsed otherwise.
+	block, _ := own.GetConfig("focus")
+	if _, err := block.GetMap("status_bar"); !errors.Is(err, config.ErrNotFound) {
+		bar := statusBarConfig(focus, host, noti)
+		bar.DurationPrecision = precision
+		ret.StatusBar = &bar
+	}
+	return ret
 }
 
 // readBackgroundAttr reads background_attr from own, which is zero when
@@ -667,28 +725,30 @@ func inputBoxFrameCharSet(own config.Config) component.FrameCharSet {
 	return cs
 }
 
-// refreshFrameImages reads the images g names again, dropping the copies
+// refreshFrameImages reads the images gs name again, dropping the copies
 // storage caches, and returns them by URI. An image that does not load
 // is left out.
 func refreshFrameImages(
-	ctx context.Context, g component.FrameCharSetGraphics, storage storageapi.Service,
+	ctx context.Context, storage storageapi.Service, gs ...component.FrameCharSetGraphics,
 ) map[string]stdimage.Image {
 	images := make(map[string]stdimage.Image)
 	tried := make(map[string]struct{})
-	for _, uri := range []string{
-		g.TopLeft, g.TopRight, g.BottomLeft, g.BottomRight,
-		g.HorizontalTop, g.HorizontalBottom, g.VerticalLeft, g.VerticalRight,
-	} {
-		if _, ok := tried[uri]; ok || uri == "" {
-			continue
+	for _, g := range gs {
+		for _, uri := range []string{
+			g.TopLeft, g.TopRight, g.BottomLeft, g.BottomRight,
+			g.HorizontalTop, g.HorizontalBottom, g.VerticalLeft, g.VerticalRight,
+		} {
+			if _, ok := tried[uri]; ok || uri == "" {
+				continue
+			}
+			tried[uri] = struct{}{}
+			img, err := imageuri.Refresh(ctx, uri, template.DefaultImageTTL, storage)
+			if err != nil {
+				slog.Warn("reload frame image", "error", err)
+				continue
+			}
+			images[uri] = img
 		}
-		tried[uri] = struct{}{}
-		img, err := imageuri.Refresh(ctx, uri, template.DefaultImageTTL, storage)
-		if err != nil {
-			slog.Warn("reload frame image", "error", err)
-			continue
-		}
-		images[uri] = img
 	}
 	return images
 }

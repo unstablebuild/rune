@@ -170,6 +170,7 @@ func (c Config) OpenAIClientConfig() openai.Config {
 		ReasoningSummary:  c.ReasoningSummary,
 		ForceResponsesAPI: true,
 		DebugHTTP:         c.DebugHTTP,
+		SupportsSpeed:     openai.SupportsSpeed,
 	}
 }
 
@@ -199,6 +200,7 @@ func (c Config) CodexClientConfig() openai.Config {
 		ReasoningSummary:  c.ReasoningSummary,
 		ForceResponsesAPI: true,
 		DebugHTTP:         c.DebugHTTP,
+		SupportsSpeed:     codex.SupportsSpeed,
 		// ChatGPT Codex backend specifics: it is stateless and
 		// rejects parallel tool calls and client-set output limits.
 		Store:                    boolPtr(false),

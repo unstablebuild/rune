@@ -135,11 +135,12 @@ type Store struct {
 	player   sounds.Player
 	style    InboxStyle
 	graphics *tcomponent.FrameGraphics
-	// images are the images of style.Images, taken from graphics.
-	images      *component.ButtonImages
-	interrupter term.Interrupter
-	schedule    func(func()) bool
-	sources     map[statusKey]*statusSource
+	// images are the images of style.Images, and focusImages those of
+	// style.Focus.Images, taken from graphics.
+	images, focusImages *component.ButtonImages
+	interrupter         term.Interrupter
+	schedule            func(func()) bool
+	sources             map[statusKey]*statusSource
 	// pendingNotify holds the sequence number of the deferred state
 	// notification of each source, for a superseded one to drop itself.
 	pendingNotify map[statusKey]uint64
@@ -192,6 +193,10 @@ func (s *Store) SetNotifyConfig(notify NotifyConfig) {
 func (s *Store) SetStyle(style InboxStyle) {
 	s.style = style
 	s.images = style.Images.ButtonImages(s.graphics)
+	s.focusImages = nil
+	if style.Focus != nil {
+		s.focusImages = style.Focus.Images.ButtonImages(s.graphics)
+	}
 }
 
 // SetTabStatus applies report, made by the program behind uri in the

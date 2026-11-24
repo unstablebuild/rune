@@ -165,23 +165,25 @@ func TestResolveBear(t *testing.T) {
 	ctx := context.Background()
 	notInstalled := &langexttest.Installer{Err: fmt.Errorf("ccpp: %w", pkgapi.ErrNotInstalled)}
 
-	t.Run("on PATH it is named plainly without a package lookup", func(t *testing.T) {
-		inst := &langexttest.Installer{Files: []string{"/data/bin/bear"}}
+	t.Run("the packaged one wins over PATH", func(t *testing.T) {
+		inst := &langexttest.Installer{Files: []string{"/data/bin/clangd", "/data/bin/bear"}}
 		ex := newFakeExecutor().onPath("bear", "/opt/homebrew/bin/bear")
-		assert.Equal(t, "bear", resolveBear(ctx, newFakeNotifications(), ex, ccppTools(t, inst)))
-		assert.Zero(t, inst.Lookups())
+		assert.Equal(t, "/data/bin/bear", resolveBear(ctx, newFakeNotifications(), ex, ccppTools(t, inst)))
 		assert.Empty(t, ex.callsSnapshot(), "looking bear up must not run a command the user is asked to approve")
 	})
-	t.Run("the packaged one is named by path", func(t *testing.T) {
-		inst := &langexttest.Installer{Files: []string{"/data/bin/clangd", "/data/bin/bear"}}
-		assert.Equal(t, "/data/bin/bear", resolveBear(ctx, newFakeNotifications(), newFakeExecutor(), ccppTools(t, inst)))
-	})
-	t.Run("a package without bear warns", func(t *testing.T) {
+	t.Run("a package without bear warns and falls back to PATH", func(t *testing.T) {
 		notify := newFakeNotifications()
 		inst := &langexttest.Installer{Files: []string{"/data/bin/clangd"}}
-		assert.Empty(t, resolveBear(ctx, notify, newFakeExecutor(), ccppTools(t, inst)))
+		ex := newFakeExecutor().onPath("bear", "/opt/homebrew/bin/bear")
+		assert.Equal(t, "/opt/homebrew/bin/bear", resolveBear(ctx, notify, ex, ccppTools(t, inst)))
 		assert.Equal(t, []string{"Could not find bear in the ccpp package: " +
 			"ccpp/bin/bear: langext: tool not shipped by package"}, notify.notifMessages())
+	})
+	t.Run("without the package PATH is used quietly", func(t *testing.T) {
+		notify := newFakeNotifications()
+		ex := newFakeExecutor().onPath("bear", "/usr/bin/bear")
+		assert.Equal(t, "/usr/bin/bear", resolveBear(ctx, notify, ex, ccppTools(t, notInstalled)))
+		assert.Empty(t, notify.notifMessages(), "Rune has already explained the missing package")
 	})
 	t.Run("no package and no PATH entry resolves empty quietly", func(t *testing.T) {
 		notify := newFakeNotifications()

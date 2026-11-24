@@ -93,6 +93,9 @@ type Component struct {
 	// exited is closed once exitErr is final, which may be after done.
 	exited     chan struct{}
 	exitedOnce sync.Once
+	// bellProbeTimeout is how long systemCanDispatchBell waits for the
+	// shell's bell.
+	bellProbeTimeout time.Duration
 }
 
 // syncOutputTimeout is how long a synchronized update may hold the
@@ -126,6 +129,7 @@ func (t *Component) Init(
 	t.executor = e
 	t.cfg = cfg
 	t.syncTimeout = syncOutputTimeout
+	t.bellProbeTimeout = 3 * time.Second
 	// Start at 1 so the zero value (0) means "never observed" for
 	// consumers comparing Version across calls.
 	t.version.Store(1)
@@ -769,6 +773,23 @@ func (t *Component) ShellMark() vteparser.ShellMark {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.parserHandler.shellMark
+}
+
+// ShellCommand tells whether the command the user ran at the shell's
+// prompt is still running, from the OSC 133 marks: seq tells one
+// command from the next, and reportedStatus is whether its program
+// reported a status over OSC 7501. It is zero while the shell sent no
+// marks.
+func (t *Component) ShellCommand() (seq uint64, running, reportedStatus bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.shellCommand()
+}
+
+// shellCommand is ShellCommand for callers that hold t.mu.
+func (t *Component) shellCommand() (seq uint64, running, reportedStatus bool) {
+	p := t.parserHandler
+	return p.commandSeq, p.shellMark == vteparser.ShellMarkCommandStart, p.commandStatus
 }
 
 // ForegroundProcessGroup returns the process group in the foreground of
@@ -1417,9 +1438,8 @@ func (t *Component) scheduleBellCallback(callback func()) (ok bool) {
 }
 
 func (t *Component) systemCanDispatchBell(callback func(error)) {
-	const systemCanDispatchBellTimeout = 3 * time.Second
 	ctx := context.Background()
-	ctx, cancel := context.WithTimeout(ctx, systemCanDispatchBellTimeout)
+	ctx, cancel := context.WithTimeout(ctx, t.bellProbeTimeout)
 
 	var called atomic.Bool
 	t.waitParserHandler.scheduleBellCallback(func() {
@@ -1435,6 +1455,10 @@ func (t *Component) systemCanDispatchBell(callback func(error)) {
 		defer cancel()
 		<-ctx.Done()
 		if called.CompareAndSwap(false, true) {
+			// the probe is still at the head of the queue: whatever the
+			// next session schedules would wait behind it, and a bell
+			// that arrives late would run stale callbacks
+			t.waitParserHandler.drop()
 			t.cfg.ScheduleNextTick(func() {
 				callback(fmt.Errorf("timeout waiting for bell: %w", ctx.Err()))
 			})

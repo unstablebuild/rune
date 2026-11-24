@@ -34,7 +34,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
-	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/cmd/rune/ide/apiclient"
 	"unstable.build/rune/cmd/rune/loginshell"
 	"unstable.build/rune/internal/debug"
@@ -332,10 +331,7 @@ func subscribeGUICommands(
 				}
 				theme, err := g.SetTheme(cmd.Args[0])
 				if err == nil {
-					i.SetDefaultAttributes(term.Attributes{
-						Fg: term.FromTcellColor(theme.Foreground),
-						Bg: term.FromTcellColor(theme.Background),
-					})
+					i.SetThemeColors(themeColors(theme))
 				}
 				return
 			},

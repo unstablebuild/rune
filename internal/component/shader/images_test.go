@@ -141,6 +141,10 @@ func TestCopyImagesCopiesThePixelsShown(t *testing.T) {
 	src.Pix[0] = 99
 	assert.Zero(t, got[0].Src.(*image.RGBA).Pix[0], "copies are left as they were")
 	assert.Nil(t, copyImages(nil))
+
+	fill := term.Image{Fill: true, FillColor: term.ColorRed, Width: 2, Height: 1}
+	assert.Equal(t, []term.Image{fill}, copyImages([]term.Image{fill}),
+		"a fill without pixels has nothing to copy")
 }
 
 func TestDesaturatePixels(t *testing.T) {
@@ -240,6 +244,12 @@ func TestPaintPictures(t *testing.T) {
 	wide := screen(text)
 	wide[1][0] = term.NewCell('世', 2, text)
 	wide[1][1] = term.Cell{Fg: term.ColorWhite}
+	filled := func(img term.Image, c term.Color) term.Image {
+		img.Fill, img.FillColor = true, c
+		return img
+	}
+	solid := filled(term.Image{Pos: term.Coordinates{X: 1}, Width: 2, Height: 1}, rgb(green))
+	masked := filled(picture(pixels(2, 1, red, color.RGBA{}), image.Rect(0, 0, 2, 1)), rgb(blue))
 	tests := []struct {
 		name   string
 		cells  [][]term.Cell
@@ -403,6 +413,24 @@ func TestPaintPictures(t *testing.T) {
 			name:   "skips pictures without pixels",
 			cells:  screen(text),
 			images: []term.Image{{Width: 2, Height: 2}, picture(pixels(0, 0), image.Rect(0, 0, 2, 2))},
+			want:   screen(text),
+		},
+		{
+			name:   "paints a fill's colour over its cells",
+			cells:  screen(text),
+			images: []term.Image{layered(solid, term.ImageLayerBelowText)},
+			want:   under(screen(text), rgb(green), image.Pt(1, 0), image.Pt(2, 0)),
+		},
+		{
+			name:   "paints a fill's colour where its mask covers",
+			cells:  screen(text),
+			images: []term.Image{layered(masked, term.ImageLayerBelowText)},
+			want:   under(screen(text), rgb(blue), image.Pt(0, 0)),
+		},
+		{
+			name:   "leaves the cells under a fill of the default background",
+			cells:  screen(text),
+			images: []term.Image{filled(solid, term.ColorDefault)},
 			want:   screen(text),
 		},
 	}

@@ -21,6 +21,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -98,6 +99,11 @@ type ptyGather struct {
 // remote workspace or a test fake), in which case the caller must read
 // the master directly.
 func newPtyGather(ctx context.Context, master workspaceapi.File) (*ptyGather, bool) {
+	// Only a host file owns the descriptor number it reports; a scheme
+	// that numbers its own files could name a host tty by accident.
+	if _, ok := master.(syscall.Conn); !ok {
+		return nil, false
+	}
 	fd := int(master.Fd())
 	if fd <= 2 {
 		return nil, false

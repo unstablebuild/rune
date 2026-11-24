@@ -26,10 +26,30 @@ motions and operators on this page work everywhere:
 - **The agent dialogue.** In [Rune Agent](../agent/intro.md), the dialogue
   prompt becomes a helix editor.
 - **Terminals.** Terminals gain a modal mode: enter it to edit the prompt
-  line, and treat the whole scrollback as a navigable buffer.
+  line, and treat the whole scrollback as a navigable buffer. See [Modal mode
+  in terminals](#modal-mode-in-terminals).
 - **Task and command output.** When a [task](./terminal/tasks.md) finishes, or a
   one-shot plugin command (`! command`) completes, its output opens in a
   helix editor so you can scroll and navigate the results.
+
+### Modal mode in terminals
+
+Press `<esc>` to enter a terminal's modal mode, whatever runs in it. Moving
+around, searching, selecting and copying work on what the terminal shows and
+never reach the program. Full-screen programs, such as helix itself, keep
+`<esc>` for their own: press `<shift-esc>` to enter modal mode over them. It
+shows a copy of their screen to move around, search and copy in, and nothing
+reaches the program until you leave with `i`. `rune --tui` cannot tell
+`<shift-esc>` from `<esc>`, so it is only available in the GUI.
+
+Editing the input, `<enter>` and the history keys need the shell to answer
+Rune first. When the program does not answer, or reports its status the way
+Claude Code does, modal mode stays read-only until you leave it, and tells you
+so.
+
+While a command runs, `<esc>` again right after the one that entered modal
+mode sends `<esc>` to the command, to interrupt it or close its dialog. Rune
+knows a command runs in the zsh, bash and fish shells it sets up.
 
 ## Selections come first
 

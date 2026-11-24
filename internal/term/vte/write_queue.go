@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"syscall"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
@@ -54,6 +55,9 @@ type ptyWriteQueue struct {
 }
 
 func newPtyWriteQueue(ctx context.Context, master workspaceapi.File) (*ptyWriteQueue, bool) {
+	if _, ok := master.(syscall.Conn); !ok {
+		return nil, false
+	}
 	fd := int(master.Fd())
 	if fd <= 2 {
 		return nil, false

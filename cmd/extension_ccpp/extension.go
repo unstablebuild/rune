@@ -49,8 +49,8 @@ var ccppExtensions = []string{
 }
 
 // ccppToolNames are the executables the ccpp package ships: clangd for
-// the server and Bear, which `ccpp status` recommends for recording a
-// Make or Autotools build into a compilation database.
+// the server and Bear, which turns a Make or Autotools build into a
+// compilation database for `ccpp compdb generate`.
 var ccppToolNames = []string{"clangd", "bear"}
 
 func newExtension() (extensionapi.WorkspaceExtension, extensionapi.Metadata) {
@@ -92,6 +92,7 @@ func (e *ccppExtension) ExtendWorkspace(
 		w.LSP(ctx),
 		w.Editor(ctx),
 		w.WindowManager(ctx),
+		w.Prompter(ctx),
 		w.ResourceOpener(ctx),
 		w.Storage(ctx),
 		w,
@@ -109,6 +110,7 @@ func (e *ccppExtension) extendWorkspaceWith(
 	lsp semanticapi.LSP,
 	editor textapi.Editor,
 	wm browserapi.WindowManager,
+	prompter browserapi.Prompter,
 	opener browserapi.ResourceOpener,
 	storage storageapi.Service,
 	inst langext.Installer,
@@ -145,6 +147,31 @@ func (e *ccppExtension) extendWorkspaceWith(
 		return fmt.Errorf("subscribe ccpp open events: %w", err)
 	}
 
+	gen := &compdbGenerator{
+		fs:      fs,
+		exec:    exec,
+		notify:  notify,
+		state:   state,
+		restart: init.Reinitialize,
+		bear: func(ctx context.Context) string {
+			return resolveBear(ctx, notify, exec, init.Tools())
+		},
+	}
+	offer := &compdbOffer{
+		baseCtx:    ctx,
+		fs:         fs,
+		cfg:        cfg,
+		notify:     notify,
+		prompter:   prompter,
+		compdb:     compdb,
+		gen:        gen,
+		wsDir:      wsRoot.Dir,
+		considered: map[string]bool{},
+	}
+	if err := editor.SubscribeEvents([]textapi.EventType{textapi.EventTypeOpen}, offer); err != nil {
+		return fmt.Errorf("subscribe ccpp compile_commands.json offer: %w", err)
+	}
+
 	focus := &focusTracker{wsDir: wsRoot.Dir}
 	if err := editor.SubscribeEvents([]textapi.EventType{textapi.EventTypeFocus}, focus); err != nil {
 		return fmt.Errorf("subscribe ccpp focus events: %w", err)
@@ -158,11 +185,9 @@ func (e *ccppExtension) extendWorkspaceWith(
 		focus:  focus,
 		compdb: compdb,
 		state:  state,
+		gen:    gen,
 		clangd: func(ctx context.Context) string {
 			return resolveClangd(ctx, cfg, notify, fs, exec, init.Tools())
-		},
-		bear: func(ctx context.Context) string {
-			return resolveBear(ctx, notify, exec, init.Tools())
 		},
 		restart: init.Reinitialize,
 	})

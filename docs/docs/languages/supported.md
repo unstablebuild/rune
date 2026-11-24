@@ -40,6 +40,18 @@ Working in a repository with several projects side by side? See the
 [Monorepos](./monorepo.md) guide for how Rune discovers each project and
 keeps search fast at scale.
 
+## Tier 2 languages
+
+| Language | Notes |
+| --- | --- |
+| Svelte | The [symbol index](./symbol-index.md) reads each component's `<script>` block and markup expressions as TypeScript or JavaScript, so `Counter.increment` finds the function declared in `Counter.svelte`. Highlighting, folding and indentation inside `<script>` and `<style>` blocks come from the embedded language's grammar. |
+
+Tier 2 languages have no language server. Go to definition, find
+references, workspace and document symbols, by-name navigation, command
+completion and Rune Agent's symbol tools are answered from syntax and the
+index; hover, rename, diagnostics and formatting need a Tier 1 language
+server.
+
 ## Tier 3 language packages
 
 Rune offers Tier 3 support for over 300 additional languages through
@@ -48,6 +60,11 @@ a set of query files, giving Rune a real parse tree for the file instead of
 plain text. That parse tree powers [syntax
 highlighting](../appearance/syntax-highlighting.md), code folding,
 indentation, and (most usefully) [structural search and navigation](../learn/search.md).
+Packages whose grammar marks embedded languages, such as `html`, `vue`,
+`astro` and `markdown`, highlight, fold and indent those regions with the
+embedded language's package: a Markdown code block with the language named
+after its opening backticks, and its paragraphs, headings and table cells
+with `markdown_inline`.
 
 | | | | |
 | --- | --- | --- | --- |
@@ -136,7 +153,9 @@ indentation, and (most usefully) [structural search and navigation](../learn/sea
 You do not install these ahead of time. When you open a file in a
 language whose package is not yet installed, Rune offers to download and
 install it, so the right grammar is always ready when you open the
-matching file type. This is governed by the `updates.auto_install`
+matching file type. The same applies to a language embedded in the file,
+such as the TypeScript of a Svelte component's `<script lang="ts">` block or
+the CSS of an HTML `<style>` block. This is governed by the `updates.auto_install`
 setting, which is `False` by default: Rune prompts before installing.
 During first-run onboarding, Rune installs packages without prompting
 regardless of this setting.

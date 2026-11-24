@@ -89,12 +89,6 @@ func TestFuzzySearchTutorialFlow(t *testing.T) {
 	waitNextActive(t, tut, "wait_command", time.Second)
 	tut.ObserveCommand("searchtext", "searchtext", nil, nil)
 
-	waitNextActive(t, tut, "wait_command", time.Second)
-	tut.ObserveCommand("searchfunc", "searchast", nil, nil)
-
-	waitNextActive(t, tut, "wait_command", time.Second)
-	tut.ObserveCommand("searchtype", "searchast", nil, nil)
-
 	waitFinished(t, tut, time.Second)
 	assert.True(t, tut.Completed())
 	assert.True(t, notis.containsSubstring("Happy searching"),

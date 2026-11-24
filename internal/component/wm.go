@@ -43,6 +43,13 @@ type WindowManagerConfig struct {
 	// Nil keeps FrameCharSet; a non-nil value is used without merging empty slots.
 	FloatingFrameCharSet *component.FrameCharSet
 	NoMaxSize            bool
+	// FloatingOwnBorder tells that floating windows without the frame
+	// Frame gives them draw a border of their own around their content:
+	// a window at least 3 cells wide and tall leaves the cells under its
+	// outermost ring as they are, for the transparent pixels of that
+	// border's images to show them, and its background treats the ring
+	// as a border.
+	FloatingOwnBorder bool
 
 	// WindowBar replaces the top frame line of floating windows with a
 	// solid bar drawn with WindowBarCharSet, and displays CloseIcon at
@@ -52,10 +59,15 @@ type WindowManagerConfig struct {
 	CloseIcon        rune
 	CloseIconAttr    term.Attributes
 
+	// Background is the background of every window that
+	// Window.SetBackground gives none of its own.
+	Background WindowBackground
+
 	// FrameGraphicsStorage caches the images of FrameCharSet.Graphics,
-	// ScrollBarCharSet.Graphics and WindowBarCharSet.Graphics. Without
-	// it, or without Interrupter, frames and window bars draw their
-	// runes only.
+	// ScrollBarCharSet.Graphics, WindowBarCharSet.Graphics and the
+	// windows' background graphics. Without it, or without Interrupter,
+	// frames and window bars draw their runes only, and backgrounds their
+	// colour only.
 	FrameGraphicsStorage storageapi.Service
 	// Interrupter is signalled each time an image of the frames'
 	// graphics loads, so the host repaints with it.
@@ -106,6 +118,23 @@ type WindowBarOutset struct {
 	Top, Bottom, Sides, Inward, HorizontalTop int
 }
 
+// WindowBackground is what a window shows wherever its content, frame,
+// scroll bar and window bar leave the default background. Graphics'
+// images show through those cells, and the cells of the slices that
+// show no image take Attr.Bg. Attr.Fg replaces the default foreground of
+// those cells, image or not. A cell with AttrReverse keeps its colours.
+// Attr's other attributes are ignored.
+type WindowBackground struct {
+	Attr     term.Attributes
+	Graphics BackgroundGraphics
+}
+
+// Empty reports whether b leaves its window as the window draws itself.
+func (b WindowBackground) Empty() bool {
+	return b.Attr.Fg == term.ColorDefault && b.Attr.Bg == term.ColorDefault &&
+		b.Graphics.Empty()
+}
+
 // WindowBarCloseIconX is the bar-local X offset at which the close
 // icon is rendered on a floating window's bar.
 const WindowBarCloseIconX = 1
@@ -126,6 +155,15 @@ type WindowManager struct {
 	minimizedPos    map[uint64]windowPos
 
 	graphics *FrameGraphics
+
+	// bgWriter and bgBare are kept to draw backgrounds without
+	// allocating.
+	bgWriter backgroundWriter
+	bgBare   []image.Rectangle
+	masks    FrameMasks
+	// barText are the images under the text of the window bar being
+	// drawn, which drawWindowBar leaves to drawBarText.
+	barText []deferredImage
 }
 
 // Draw satisfies tui.Component
@@ -265,17 +303,418 @@ func closeTileLayoutContent(c tui.Component) {
 
 // DrawWindow can be used to arbitrarily draw floating windows returned
 // by FloatingWindows. If win is not a floating window, this method will panic.
+// A window with a background, or a floating window with images in its
+// border, is cleared first and draws it last.
 func (wm *WindowManager) DrawWindow(win Window, w term.Writer) {
 	if wm.minimizedDirty {
 		wm.Resize(wm.width, wm.height)
 	}
 
-	nonMinimizedW := component.VirtualWriter{
-		Writer: w,
-		Offset: wm.minimizedOffset,
-		Height: wm.minimizedHeight,
-		Width:  wm.minimizedWidth,
+	t, ok := wm.backgroundTarget(win)
+	if !ok {
+		wm.drawWindow(win, w)
+		wm.drawBarText(w)
+		return
 	}
+	wm.bgWriter.begin(w, t, &wm.masks)
+	wm.drawWindow(win, &wm.bgWriter)
+	wm.drawBackground(t)
+}
+
+// backgroundTarget is where a window draws its background, in cells of
+// the window manager's writer.
+type backgroundTarget struct {
+	bg WindowBackground
+	// area is the cells the window covers, and interior those of them
+	// it clears, which leaves the cells under a floating window's border
+	// showing through its images.
+	area, interior image.Rectangle
+	// framed reports that a border takes the outermost ring of area.
+	framed bool
+	// under reports that the cells under the border show what is under
+	// the window, as those of a floating window do.
+	under bool
+}
+
+// backgroundTarget returns where win draws its background, or false if
+// it has none to draw: no background, and no images in a border over
+// what is under it, whose lines take the default background inside.
+func (wm *WindowManager) backgroundTarget(win Window) (backgroundTarget, bool) {
+	t := backgroundTarget{bg: win.Background()}
+	switch n := win.node.(type) {
+	case *floatingNode:
+		if n.minimized != 0 {
+			return backgroundTarget{}, false
+		}
+		t.area = image.Rect(0, 0, n.realWidth, n.realHeight).Add(
+			image.Pt(n.realOffset.X, n.realOffset.Y))
+		t.interior = t.area
+		if frame, ok := n.bordered(); ok {
+			pos := frame.ContentPosition()
+			w, h := frame.ContentSize()
+			t.interior = image.Rect(pos.X, pos.Y, pos.X+w, pos.Y+h).Add(t.area.Min)
+			t.framed, t.under = true, true
+		} else if inner, ok := n.ownBorderInterior(); ok {
+			t.interior, t.framed, t.under = inner, true, true
+		}
+	case *TileNode:
+		pos := n.Position()
+		t.area = image.Rect(pos.X, pos.Y, pos.X+n.width, pos.Y+n.height)
+		t.interior = t.area
+		t.framed = wm.config.Frame
+	}
+	if t.bg.Empty() && (!t.under || wm.graphics == nil) {
+		return backgroundTarget{}, false
+	}
+	screen := image.Rect(0, 0, wm.minimizedWidth, wm.minimizedHeight)
+	offset := image.Pt(wm.minimizedOffset.X, wm.minimizedOffset.Y)
+	t.area = t.area.Intersect(screen).Add(offset)
+	t.interior = t.interior.Intersect(screen).Add(offset)
+	return t, !t.area.Empty()
+}
+
+// drawBackground draws t.bg over t.area of the writer wm.bgWriter
+// recorded a window on: its images under every cell's background, and
+// its colours over the cells left with the default ones, under the gaps
+// shifted cells leave and inside the lines of its border's images. The
+// images under the window bar's text go over its images.
+func (wm *WindowManager) drawBackground(t backgroundTarget) {
+	bg, area := t.bg, t.area
+	w := wm.bgWriter.Writer
+	bare := wm.bgBare[:0]
+	if wm.graphics != nil && !bg.Graphics.Empty() {
+		bare = wm.graphics.DrawBackground(w, bg.Graphics, area, bare)
+	} else {
+		bare = append(bare, area)
+	}
+	wm.bgBare = bare
+	// The bar's text keeps what is under the window, which a writer
+	// shows under the text along with the images drawn over it after.
+	wm.drawBarText(&wm.bgWriter)
+	// The default background is what a tile's border shows outside its
+	// lines already.
+	if bg.Attr.Bg != term.ColorDefault || t.under {
+		wm.fillBorderInsides(bg.Attr.Bg, area, bare)
+		wm.fillSpills(area, bare)
+	}
+	if bg.Attr.Fg == term.ColorDefault && bg.Attr.Bg == term.ColorDefault {
+		return
+	}
+	if bg.Attr.Bg != term.ColorDefault {
+		wm.fillShiftedGaps(bg.Attr.Bg, area, bare)
+	}
+	for y := area.Min.Y; y < area.Max.Y; y++ {
+		for x := area.Min.X; x < area.Max.X; x++ {
+			d := wm.bgWriter.cells[(y-area.Min.Y)*area.Dx()+x-area.Min.X]
+			if d&cellDefaultBg == 0 || d&(cellSprite|cellMasked) == cellSprite|cellMasked {
+				continue
+			}
+			var attr term.Attributes
+			if d&cellDefaultFg != 0 {
+				attr.Fg = bg.Attr.Fg
+			}
+			p := image.Pt(x, y)
+			if slices.ContainsFunc(bare, p.In) {
+				attr.Bg = bg.Attr.Bg
+			}
+			if attr != (term.Attributes{}) {
+				w.UnionAttributes(term.Coordinates{X: x, Y: y}, attr)
+			}
+		}
+	}
+}
+
+// fillBorderInsides paints c inside the lines the images of the border
+// draw through the cells of area in bare. The cells under them are left
+// out of the window's colour, so that the side of each line away from
+// the window shows what is under it.
+func (wm *WindowManager) fillBorderInsides(c term.Color, area image.Rectangle, bare []image.Rectangle) {
+	w := &wm.bgWriter
+	for i, sprite := range w.sprites {
+		if w.cells[i]&(cellSprite|cellMasked) != cellSprite {
+			continue
+		}
+		p := image.Pt(area.Min.X+i%area.Dx(), area.Min.Y+i/area.Dx())
+		if !slices.ContainsFunc(bare, p.In) {
+			continue
+		}
+		sides := RingSides(p, area)
+		fill, ok := wm.masks.Inside(sprite, sides, c)
+		if !ok || !w.Writer.DrawImage(fill) {
+			continue
+		}
+		w.cells[i] |= cellMasked
+	}
+}
+
+// fillSpills paints again the background of the window's own cells that
+// the renderer moves half a cell into the top or bottom row of area,
+// where what goes under the text covers every cell's background: the
+// insides fillBorderInsides paints, and the window's background images
+// over the cells that keep what is under the window, which go under the
+// text over the pictures those cells keep. The background stays on top,
+// as the moved cells' text does.
+func (wm *WindowManager) fillSpills(area image.Rectangle, bare []image.Rectangle) {
+	w := &wm.bgWriter
+	for y := area.Min.Y; y < area.Max.Y; y += max(1, area.Dy()-1) {
+		for x := area.Min.X; x < area.Max.X; x++ {
+			p := image.Pt(x, y)
+			i, _ := w.index(term.Coordinates{X: x, Y: y})
+			if w.cells[i]&cellMasked == 0 &&
+				(w.cells[i]&cellKept == 0 || slices.ContainsFunc(bare, p.In)) {
+				continue
+			}
+			sides := RingSides(p, area)
+			n, ok := w.spill(i, sides)
+			if !ok || w.cells[n]&cellDefaultBg != 0 || w.bg[n] == term.ColorDefault {
+				continue
+			}
+			w.Writer.DrawImage(term.Image{
+				Fill: true, FillColor: w.bg[n],
+				Pos:   term.Coordinates{X: area.Min.X + n%area.Dx(), Y: area.Min.Y + n/area.Dx()},
+				Width: 1, Height: 1,
+				Layer:                        term.ImageLayerBelowText,
+				VerticalRenderOffset:         sides == SideBottom,
+				NegativeVerticalRenderOffset: sides == SideTop,
+			})
+		}
+	}
+}
+
+// fillShiftedGaps paints c under the runs of cells of area in bare that
+// the renderer moves half a cell up or down. Moving a cell moves its
+// background with it, and the part of its row it leaves would show the
+// writer's default background rather than the window's. The fill goes
+// under every background, so it only shows in that gap.
+func (wm *WindowManager) fillShiftedGaps(c term.Color, area image.Rectangle, bare []image.Rectangle) {
+	w := wm.bgWriter.Writer
+	for y := area.Min.Y; y < area.Max.Y; y++ {
+		start := -1
+		for x := area.Min.X; x <= area.Max.X; x++ {
+			var d cellDefaults
+			if x < area.Max.X {
+				d = wm.bgWriter.cells[(y-area.Min.Y)*area.Dx()+x-area.Min.X]
+			}
+			shifted := d&(cellShifted|cellFilled) == cellShifted &&
+				slices.ContainsFunc(bare, image.Pt(x, y).In)
+			switch {
+			case shifted && start < 0:
+				start = x
+			case !shifted && start >= 0:
+				w.DrawImage(term.Image{
+					Fill: true, FillColor: c,
+					Pos:   term.Coordinates{X: start, Y: y},
+					Width: x - start, Height: 1,
+					Layer: term.ImageLayerBelowBackground,
+				})
+				start = -1
+			}
+		}
+	}
+}
+
+// cellDefaults records which of a cell's colours are the default, and
+// whether the renderer moves the cell and which way, its content fills
+// under it, or an image of the border covers it, whether a fill paints
+// the inside of that image's line, whether the cell still shows what is
+// under the window, untouched, and whether it keeps it under a cell
+// written with AttrKeepBackground.
+type cellDefaults uint16
+
+const (
+	cellDefaultBg cellDefaults = 1 << iota
+	cellDefaultFg
+	cellShifted
+	// cellShiftedUp is set along with cellShifted for a cell moved up.
+	cellShiftedUp
+	cellFilled
+	cellSprite
+	cellMasked
+	cellUnder
+	cellKept
+)
+
+// shiftFlags returns how the renderer moves a cell that was moved as
+// prev records and now carries attrs: down when attrs moves it down, as
+// that wins over moving up for a cell that carries both.
+func shiftFlags(prev cellDefaults, attrs term.AttrMask) cellDefaults {
+	prev &= cellShifted | cellShiftedUp
+	switch {
+	case attrs&term.AttrVerticalRenderOffset != 0:
+		return cellShifted
+	case attrs&term.AttrNegativeVerticalRenderOffset != 0 && prev != cellShifted:
+		return cellShifted | cellShiftedUp
+	}
+	return prev
+}
+
+// backgroundWriter forwards everything to Writer, and records, for each
+// cell of area, which of its colours were last left the default and its
+// background, and the images over the cells of its outermost ring when a
+// border takes it.
+type backgroundWriter struct {
+	term.Writer
+	area    image.Rectangle
+	cells   []cellDefaults
+	bg      []term.Color
+	framed  bool
+	sprites map[int]term.Image
+	masks   *FrameMasks
+}
+
+// begin records t.area of dst from now on, after clearing t.interior to
+// blank cells with the default colours. The cells of t.area outside it
+// are recorded with the default colours and left as they are, showing
+// what is under the window when t.under says they do. masks derive the
+// inside of the lines of the border's images.
+func (w *backgroundWriter) begin(dst term.Writer, t backgroundTarget, masks *FrameMasks) {
+	w.Writer, w.area, w.framed, w.masks = dst, t.area, t.framed, masks
+	n := t.area.Dx() * t.area.Dy()
+	w.cells = slices.Grow(w.cells[:0], n)[:n]
+	w.bg = slices.Grow(w.bg[:0], n)[:n]
+	clear(w.bg)
+	clear(w.sprites)
+	ring := cellDefaultBg | cellDefaultFg
+	if t.under {
+		ring |= cellUnder
+	}
+	for y := t.area.Min.Y; y < t.area.Max.Y; y++ {
+		for x := t.area.Min.X; x < t.area.Max.X; x++ {
+			if image.Pt(x, y).In(t.interior) {
+				w.SetCell(term.Coordinates{X: x, Y: y}, term.Cell{})
+				continue
+			}
+			i, _ := w.index(term.Coordinates{X: x, Y: y})
+			w.cells[i] = ring
+		}
+	}
+}
+
+func (w *backgroundWriter) index(pos term.Coordinates) (int, bool) {
+	if !image.Pt(pos.X, pos.Y).In(w.area) {
+		return 0, false
+	}
+	return (pos.Y-w.area.Min.Y)*w.area.Dx() + pos.X - w.area.Min.X, true
+}
+
+// spill returns the cell next to the cell at i of the outermost ring,
+// whose sides face away from area, that the renderer moves half a cell
+// into it: the one above a cell of the bottom row moved down, or the one
+// below a cell of the top row moved up.
+func (w *backgroundWriter) spill(i int, sides Sides) (int, bool) {
+	switch sides {
+	case SideBottom:
+		n := i - w.area.Dx()
+		return n, w.cells[n]&(cellShifted|cellShiftedUp) == cellShifted
+	case SideTop:
+		n := i + w.area.Dx()
+		return n, w.cells[n]&(cellShifted|cellShiftedUp) == cellShifted|cellShiftedUp
+	}
+	return 0, false
+}
+
+// SetCell satisfies term.Writer. A cell with AttrKeepBackground keeps
+// what was recorded of the background it keeps.
+func (w *backgroundWriter) SetCell(pos term.Coordinates, c term.Cell) {
+	if i, ok := w.index(pos); ok {
+		d := w.cells[i] & cellDefaultBg
+		if c.Attrs&term.AttrKeepBackground != 0 {
+			if w.cells[i]&(cellUnder|cellKept) != 0 {
+				d |= cellKept
+			}
+		} else {
+			d = 0
+			if c.Bg == term.ColorDefault {
+				d = cellDefaultBg
+			}
+			w.bg[i] = c.Bg
+		}
+		if c.Fg == term.ColorDefault {
+			d |= cellDefaultFg
+		}
+		if c.Attrs&term.AttrReverse != 0 {
+			d = 0
+			w.bg[i] = c.Fg
+		}
+		w.cells[i] = d | shiftFlags(0, c.Attrs)
+	}
+	w.Writer.SetCell(pos, c)
+}
+
+// UnionAttributes satisfies term.Writer.
+func (w *backgroundWriter) UnionAttributes(pos term.Coordinates, attr term.Attributes) {
+	if i, ok := w.index(pos); ok {
+		if attr.Bg != term.ColorDefault {
+			w.cells[i] &^= cellDefaultBg
+			w.bg[i] = attr.Bg
+		}
+		if attr.Fg != term.ColorDefault {
+			w.cells[i] &^= cellDefaultFg
+		}
+		if attr.Attrs&term.AttrReverse != 0 {
+			// The background is now the foreground, which is not recorded.
+			w.cells[i] &= cellShifted | cellShiftedUp | cellUnder
+			w.bg[i] = term.ColorDefault
+		}
+		w.cells[i] = w.cells[i]&^(cellShifted|cellShiftedUp) | shiftFlags(w.cells[i], attr.Attrs)
+	}
+	w.Writer.UnionAttributes(pos, attr)
+}
+
+// DrawImage satisfies term.Writer. It records the cells a fill under
+// every background covers, which already paints the gap a shifted cell
+// leaves, and the images of a border over a cell of the outermost ring,
+// along with the fills the window draws inside their lines itself.
+// Before an image of the border whose line has an inside, over a cell
+// that still shows what is under the window, it blanks the cell, keeping
+// its background and the pictures under it: the text and the pictures
+// above it under the window would otherwise go over the inside of the
+// line and any of the window's content moved into the cell.
+func (w *backgroundWriter) DrawImage(img term.Image) bool {
+	var ring Sides
+	if w.framed && img.Width == 1 && img.Height == 1 {
+		ring = RingSides(image.Pt(img.Pos.X, img.Pos.Y), w.area)
+	}
+	if ring != 0 && !img.Fill && img.Layer == term.ImageLayerAboveText {
+		if i, _ := w.index(img.Pos); w.cells[i]&cellUnder != 0 {
+			if _, ok := w.masks.Inside(img, ring, term.ColorDefault); ok {
+				w.SetCell(img.Pos, term.NewCell(' ', 1, term.Attributes{Attrs: term.AttrKeepBackground}))
+			}
+		}
+	}
+	ok := w.Writer.DrawImage(img)
+	if !ok {
+		return ok
+	}
+	if ring != 0 {
+		i, _ := w.index(img.Pos)
+		switch {
+		case !img.Fill && img.Layer == term.ImageLayerAboveText:
+			w.cells[i] |= cellSprite
+			if w.sprites == nil {
+				w.sprites = make(map[int]term.Image)
+			}
+			w.sprites[i] = img
+		case img.Fill && img.Src != nil && img.Layer == term.ImageLayerBelowText &&
+			w.cells[i]&cellSprite != 0:
+			w.cells[i] |= cellMasked
+		}
+	}
+	if !img.Fill || img.Layer != term.ImageLayerBelowBackground {
+		return ok
+	}
+	covered := img.Visible().Intersect(w.area)
+	for y := covered.Min.Y; y < covered.Max.Y; y++ {
+		for x := covered.Min.X; x < covered.Max.X; x++ {
+			i, _ := w.index(term.Coordinates{X: x, Y: y})
+			w.cells[i] |= cellFilled
+		}
+	}
+	return ok
+}
+
+func (wm *WindowManager) drawWindow(win Window, w term.Writer) {
+	nonMinimizedW := wm.nonMinimized(w)
 
 	f, ok := win.node.(*floatingNode)
 	if !ok {
@@ -314,6 +753,17 @@ func (wm *WindowManager) DrawWindow(win Window, w term.Writer) {
 		wm.drawMinimizedLeft(w, f, pos, length)
 	case component.AlignmentRight:
 		wm.drawMinimizedRight(w, f, pos, length)
+	}
+}
+
+// nonMinimized returns a writer over the part of w that the windows
+// minimized at its edges leave to the others.
+func (wm *WindowManager) nonMinimized(w term.Writer) component.VirtualWriter {
+	return component.VirtualWriter{
+		Writer: w,
+		Offset: wm.minimizedOffset,
+		Height: wm.minimizedHeight,
+		Width:  wm.minimizedWidth,
 	}
 }
 
@@ -738,6 +1188,13 @@ func (wm *WindowManager) normalFrameCharSet(w Window) component.FrameCharSet {
 	return wm.config.FrameCharSet
 }
 
+// SetBackground draws every window without a background of its own, as
+// Window.SetBackground gives one, with bg from the next Draw on, as
+// Restyle does with a config of it.
+func (wm *WindowManager) SetBackground(bg WindowBackground) {
+	wm.config.Background = bg
+}
+
 // SetFrameAttr sets the default and focus window border attributes. Note that
 // this has no effect if WindowManager was initialized with border == false.
 func (wm *WindowManager) SetFrameAttr(attr term.Attributes) {
@@ -786,10 +1243,11 @@ func (wm *WindowManager) FloatingWindow(
 }
 
 // Restyled returns c with the style of s: its frame, scroll bar and
-// window bar attributes and charsets, ScrollBarOutset, close icon and
-// whether floating windows draw the window bar, which takes their top
-// frame row either way. What changes the layout or how images load,
-// Frame, NoMaxSize, FrameGraphicsStorage and Interrupter, stays c's.
+// window bar attributes and charsets, ScrollBarOutset, close icon,
+// Background and whether floating windows draw the window bar, which
+// takes their top frame row either way. What changes the layout or how
+// images load, Frame, NoMaxSize, FrameGraphicsStorage and Interrupter,
+// stays c's.
 func (c WindowManagerConfig) Restyled(s WindowManagerConfig) WindowManagerConfig {
 	c.FrameAttr = s.FrameAttr
 	c.FrameCharSet = s.FrameCharSet
@@ -801,6 +1259,7 @@ func (c WindowManagerConfig) Restyled(s WindowManagerConfig) WindowManagerConfig
 	c.WindowBarCharSet = s.WindowBarCharSet
 	c.CloseIcon = s.CloseIcon
 	c.CloseIconAttr = s.CloseIconAttr
+	c.Background = s.Background
 	return c
 }
 
@@ -883,7 +1342,8 @@ func (wm *WindowManager) hasWindowBar(f *floatingNode) bool {
 // drawWindowBar draws a floating window's bar over the top row of its
 // frame, which drawFloatingBorder leaves to it: the close icon and the
 // window title over the bar's images, and each other cell's image over
-// whatever is drawn under the window, or its rune.
+// whatever is drawn under the window, or its rune. It leaves the images
+// under the text to drawBarText.
 func (wm *WindowManager) drawWindowBar(f *floatingNode, w term.Writer) {
 	if !wm.hasWindowBar(f) || f.realWidth < 3 || f.realHeight < 3 {
 		return
@@ -903,7 +1363,7 @@ func (wm *WindowManager) drawWindowBar(f *floatingNode, w term.Writer) {
 		cell := term.NewCell(ch, 1, frame.Attributes)
 		i := slices.IndexFunc(text, func(c windowBarCell) bool { return c.x == x })
 		if uri != "" && cw == nil {
-			cw = &cellImageWriter{Writer: w}
+			cw = &cellImageWriter{Writer: w, deferred: &wm.barText}
 		}
 		switch {
 		case uri == "" && i >= 0:
@@ -943,6 +1403,20 @@ func (wm *WindowManager) drawWindowBar(f *floatingNode, w term.Writer) {
 	sides, inward := max(0, o.Sides), max(0, o.Inward)
 	draw(gr.Left, frame.TopLeft, 0, image.Rect(-sides, -top, 1+inward, 1+bottom))
 	draw(gr.Right, frame.TopRight, limitX, image.Rect(-inward, -top, 1+sides, 1+bottom))
+}
+
+// drawBarText draws through w the images drawWindowBar left under the
+// text of a bar, and the cells they replace where w draws no image.
+func (wm *WindowManager) drawBarText(w term.Writer) {
+	vw := wm.nonMinimized(w)
+	for _, d := range wm.barText {
+		if !vw.DrawImage(d.img) {
+			vw.SetCell(d.at, d.fallback)
+		}
+	}
+	// Drop the Src references along with the placements.
+	clear(wm.barText)
+	wm.barText = wm.barText[:0]
 }
 
 // windowBarCell is a cell of a window bar's close icon or title, x cells

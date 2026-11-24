@@ -148,7 +148,8 @@ func TestNewLoadedImageElement(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			el, err := template.NewLoadedImageElement(imageSpec(t, tt.spec), src, "ab%scd",
+			spec := imageSpec(t, tt.spec)
+			el, err := template.NewLoadedImageElement(spec, src, "ab%scd",
 				term.Attributes{}, term.ColorDefault)
 			if tt.wantErr != "" {
 				assert.ErrorContains(t, err, tt.wantErr)
@@ -165,6 +166,9 @@ func TestNewLoadedImageElement(t *testing.T) {
 			el.DrawImage(rec, false)
 			require.Len(t, rec.images, 1)
 			assert.Same(t, src, rec.images[0].Src)
+			uri, loaded := el.Loaded()
+			assert.Equal(t, spec.URI, uri)
+			assert.Same(t, src, loaded)
 		})
 	}
 }

@@ -76,10 +76,15 @@ func Resolve(
 }
 
 // resolveSpec runs the resolution phases for a single language spec.
+// Host specs yield nothing: their symbols live in injected regions that
+// only the per-file extraction batch can address.
 func resolveSpec(
 	ctx context.Context, parser Searcher, spec *Spec, qc QualifierContext,
 	name string, progress syntaxapi.Progress,
 ) ([]syntaxapi.Match, error) {
+	if spec.isHost() {
+		return nil, nil
+	}
 	report := func(msg string, found int, step, total int64) {
 		if progress != nil {
 			progress.Report(msg, found, step, total)
@@ -944,6 +949,9 @@ func listSpecReferences(
 	ctx context.Context, parser Searcher, spec *Spec, qc QualifierContext,
 	ch chan<- string,
 ) error {
+	if spec.isHost() {
+		return nil
+	}
 	imports, err := ImportedAliases(ctx, parser, spec)
 	if err != nil {
 		return err

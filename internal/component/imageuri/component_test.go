@@ -671,6 +671,7 @@ func TestNewLoaded(t *testing.T) {
 			size, settled := c.Size()
 			assert.Equal(t, image.Pt(194, 179), size)
 			assert.True(t, settled)
+			assert.Same(t, img, c.Loaded())
 			c.Start()
 			w := asciiart.NewStringWriter(40, 10, asciiart.DefaultConfig())
 			comptest.TestComponent(t, c, w, []comptest.TestCase{

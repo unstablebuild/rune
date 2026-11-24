@@ -56,10 +56,10 @@ func findClangdBin(t *testing.T) string {
 	return ""
 }
 
-// setupWorkspace copies the testdata project into a fresh temp
+// setupWorkspace copies the testdata project at src into a fresh temp
 // directory, templating the compilation databases with its path since
 // clangd needs absolute entries, and returns the path.
-func setupWorkspace(t *testing.T) string {
+func setupWorkspace(t *testing.T, src string) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "ccpp-ext-e2e-")
 	require.NoError(t, err)
@@ -68,7 +68,6 @@ func setupWorkspace(t *testing.T) string {
 	dir, err = filepath.EvalSymlinks(dir)
 	require.NoError(t, err)
 
-	src := "testdata/e2e"
 	require.NoError(t, filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err

@@ -3098,6 +3098,42 @@ func (c ideConfig) windowScrollBarCharsets() (
 		}
 		return
 	}
+	if !c.scrollBarCharsets(sub, "window_manager.scroll_bar_charset", &cs, &hover) {
+		return
+	}
+	c.graphicsOutset(sub, "graphics", "window_manager.scroll_bar_charset",
+		outsetSide{&outset, "left"},
+	)
+	return
+}
+
+// focusScrollBarCharsets reads window_manager.focus_scroll_bar_charset
+// as windowScrollBarCharsets reads scroll_bar_charset, over cs and hover,
+// which keep what it leaves out. ok reports whether it is set.
+func (c ideConfig) focusScrollBarCharsets(cs, hover component.ScrollBarCharSet) (
+	focus, focusHover component.ScrollBarCharSet, ok bool,
+) {
+	cfg, ok := c.windowManager()
+	if !ok {
+		return cs, hover, false
+	}
+	sub, err := cfg.GetConfig("focus_scroll_bar_charset")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors["window_manager.focus_scroll_bar_charset"] = err
+		}
+		return cs, hover, false
+	}
+	c.scrollBarCharsets(sub, "window_manager.focus_scroll_bar_charset", &cs, &hover)
+	return cs, hover, true
+}
+
+// scrollBarCharsets reads the runes and graphics of the scroll bar
+// charset sub into cs and hover, reporting errors under name. It reports
+// whether the graphics were valid.
+func (c ideConfig) scrollBarCharsets(
+	sub config.Config, name string, cs, hover *component.ScrollBarCharSet,
+) bool {
 	for _, f := range []struct {
 		key string
 		dst *rune
@@ -3112,7 +3148,7 @@ func (c ideConfig) windowScrollBarCharsets() (
 		r, err := sub.GetRune(f.key)
 		if err != nil {
 			if err != config.ErrNotFound {
-				c.errors["window_manager.scroll_bar_charset."+f.key] = err
+				c.errors[name+"."+f.key] = err
 			}
 			continue
 		}
@@ -3128,15 +3164,86 @@ func (c ideConfig) windowScrollBarCharsets() (
 		tconfig.GraphicsSlot{Key: "hover_middle_char", URI: &hg.Middle},
 		tconfig.GraphicsSlot{Key: "hover_bottom_char", URI: &hg.Bottom},
 	); err != nil {
-		c.errors["window_manager.scroll_bar_charset"] = err
-		return
+		c.errors[name] = err
+		return false
 	}
 	hg.Overlay = g.Overlay
 	cs.Graphics, hover.Graphics = g, hg
-	c.graphicsOutset(sub, "graphics", "window_manager.scroll_bar_charset",
-		outsetSide{&outset, "left"},
-	)
-	return
+	return true
+}
+
+// backgroundFits are the fits of window_manager.background_graphics.
+var backgroundFits = map[string]term.ImageFit{
+	"fill": term.ImageFitFill,
+	"tile": term.ImageFitTile,
+}
+
+// windowBackground reads window_manager's prefix+"background_attr" and
+// prefix+"background_graphics" over def, which keeps what they leave
+// out: an attribute's default colour, a graphics slot or fit. An empty
+// URI clears a slot. Attributes other than fg and bg are ignored. ok
+// reports whether either key is set.
+func (c ideConfig) windowBackground(prefix string, def tcomponent.WindowBackground) (
+	bg tcomponent.WindowBackground, ok bool,
+) {
+	bg = def
+	cfg, found := c.windowManager()
+	if !found {
+		return bg, false
+	}
+	attrKey, graphicsKey := prefix+"background_attr", prefix+"background_graphics"
+	switch attr, err := config.GetAttributes(cfg, attrKey); {
+	case errors.Is(err, config.ErrNotFound):
+	case err != nil:
+		c.errors["window_manager."+attrKey] = err
+	default:
+		ok = true
+		if attr.Fg != term.ColorDefault {
+			bg.Attr.Fg = attr.Fg
+		}
+		if attr.Bg != term.ColorDefault {
+			bg.Attr.Bg = attr.Bg
+		}
+	}
+	bg.Attr = term.Attributes{Fg: bg.Attr.Fg, Bg: bg.Attr.Bg}
+
+	sub, err := cfg.GetConfig(graphicsKey)
+	if err != nil {
+		if !errors.Is(err, config.ErrNotFound) {
+			c.errors["window_manager."+graphicsKey] = err
+		}
+		return bg, ok
+	}
+	ok = true
+	g := &bg.Graphics
+	if err := tconfig.GetGraphics(cfg, graphicsKey, nil,
+		tconfig.GraphicsSlot{Key: "topleft", URI: &g.TopLeft},
+		tconfig.GraphicsSlot{Key: "topright", URI: &g.TopRight},
+		tconfig.GraphicsSlot{Key: "bottomleft", URI: &g.BottomLeft},
+		tconfig.GraphicsSlot{Key: "bottomright", URI: &g.BottomRight},
+		tconfig.GraphicsSlot{Key: "horizontaltop", URI: &g.HorizontalTop},
+		tconfig.GraphicsSlot{Key: "horizontalbottom", URI: &g.HorizontalBottom},
+		tconfig.GraphicsSlot{Key: "verticalleft", URI: &g.VerticalLeft},
+		tconfig.GraphicsSlot{Key: "verticalright", URI: &g.VerticalRight},
+		tconfig.GraphicsSlot{Key: "center", URI: &g.Center},
+	); err != nil {
+		c.errors["window_manager."+graphicsKey] = err
+	}
+	name, err := sub.GetString("fit")
+	switch {
+	case errors.Is(err, config.ErrNotFound):
+	case err != nil:
+		c.errors["window_manager."+graphicsKey+".fit"] = err
+	default:
+		fit, known := backgroundFits[name]
+		if !known {
+			c.errors["window_manager."+graphicsKey+".fit"] = fmt.Errorf(
+				`expected "fill" or "tile", got %q`, name)
+			break
+		}
+		g.Fit = fit
+	}
+	return bg, ok
 }
 
 func (c ideConfig) windowNoMaxSize() (ret bool) {
@@ -3470,6 +3577,13 @@ func (c ideConfig) windowManagerConfig() handler.WindowManagerConfig {
 	ret.FocusFloatingFrameCharSet = c.optionalWindowCharset("focus_floating_frame_charset", ret.FocusFrameCharSet)
 	if cs, ok := c.windowBarCharsetWithDefault("focus_window_bar_charset", ret.WindowBarCharSet); ok {
 		ret.FocusWindowBarCharSet = &cs
+	}
+	ret.Background, _ = c.windowBackground("", tcomponent.WindowBackground{})
+	if bg, ok := c.windowBackground("focus_", ret.Background); ok {
+		ret.FocusBackground = &bg
+	}
+	if cs, hover, ok := c.focusScrollBarCharsets(scrollBar, scrollBarHover); ok {
+		ret.FocusScrollBarCharSet, ret.FocusScrollBarHoverCharSet = &cs, &hover
 	}
 	if c.storage != nil {
 		ret.FrameGraphicsStorage = storageapi.WithPartition(c.storage, frameImagesPartition)
@@ -4296,6 +4410,7 @@ func (c ideConfig) statusBarConfig(
 		ErrorColor:       style.ErrorColor,
 		GitService:       svc,
 		Layout:           style.Layout,
+		Focus:            style.Focus,
 	}
 	if c.storage != nil {
 		ret.Storage = storageapi.WithPartition(c.storage, statusBarImagesPartition)
@@ -4304,12 +4419,30 @@ func (c ideConfig) statusBarConfig(
 }
 
 // statusBarStyle reads the keys of editor.status_bar that a HUD reload
-// restyles open status bars with.
+// restyles open status bars with, and its focus block over them.
 func (c ideConfig) statusBarStyle() text.StatusBarStyle {
+	cfg, ok := c.statusBar()
+	if !ok {
+		return text.StatusBarStyle{}
+	}
+	const path = "editor.status_bar"
+	style := c.statusBarStyleOf(cfg, path)
+	switch focus, err := tconfig.FocusOverlay(cfg, "focus"); {
+	case err == nil:
+		focused := c.statusBarStyleOf(focus, path+".focus")
+		style.Focus = &focused
+	case !errors.Is(err, config.ErrNotFound):
+		c.errors[path+".focus"] = err
+	}
+	return style
+}
+
+// statusBarStyleOf reads the style of the status bar section cfg at path.
+func (c ideConfig) statusBarStyleOf(cfg config.Config, path string) text.StatusBarStyle {
 	return text.StatusBarStyle{
-		Layout:          c.statusBarLayout(),
-		BackgroundColor: c.statusBarAttr("background_attr", term.Attributes{}).Bg,
-		ErrorColor:      c.statusBarAttr("foreground_error_attr", term.Attributes{}).Fg,
+		Layout:          c.statusBarLayout(cfg, path),
+		BackgroundColor: c.statusBarAttr(cfg, path, "background_attr").Bg,
+		ErrorColor:      c.statusBarAttr(cfg, path, "foreground_error_attr").Fg,
 	}
 }
 
@@ -4351,16 +4484,11 @@ func (c ideConfig) auxiliaryBarAttr(key string) term.Attributes {
 	return attrs
 }
 
-func (c ideConfig) statusBarAttr(key string, def term.Attributes) (ret term.Attributes) {
-	ret = def
-	cfg, ok := c.statusBar()
-	if !ok {
-		return
-	}
+func (c ideConfig) statusBarAttr(cfg config.Config, path, key string) (ret term.Attributes) {
 	attrs, err := config.GetAttributes(cfg, key)
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors[fmt.Sprintf("editor.status_bar.%s", key)] = err
+			c.errors[path+"."+key] = err
 		}
 	} else {
 		ret = attrs
@@ -4368,23 +4496,19 @@ func (c ideConfig) statusBarAttr(key string, def term.Attributes) (ret term.Attr
 	return
 }
 
-func (c ideConfig) statusBarLayout() (ret []text.StatusBarComponent) {
+func (c ideConfig) statusBarLayout(cfg config.Config, path string) (ret []text.StatusBarComponent) {
 	ret = nil // nil delegates default config to StatusBar
-	cfg, ok := c.statusBar()
-	if !ok {
-		return
-	}
 	val, err := cfg.GetString("layout")
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["editor.status_bar.layout"] = err
+			c.errors[path+".layout"] = err
 		}
 		return
 	}
 	ret, err = text.ParseStatusBarLayout(val)
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["editor.status_bar.layout"] = err
+			c.errors[path+".layout"] = err
 		}
 		return
 	}
@@ -4945,23 +5069,57 @@ func (c ideConfig) intro() initShaderConfig {
 // workspace.wallpaper_image_ascii, else the text of workspace.wallpaper_ascii,
 // else the built-in logo, which it returns too. An empty value turns its
 // wallpaper off, as the defaults do, so the logo shows when all three are
-// empty.
+// empty. Its Focus is the wallpaper the focus_ keys resolve to the same way,
+// or nil when none is set. The focus wallpaper takes its picture, art or
+// text from the normal keys unless a focus_ one of them is set, and each
+// attribute and the density characters a focus_ key leaves out from the
+// normal key.
 func (c ideConfig) resolveWallpaper() (browser.Wallpaper, Logo) {
+	wallpaper, logo := c.resolveWallpaperKeys("", "")
+	if c.cfg == nil {
+		return wallpaper, logo
+	}
+	cfg := c.workspace()
+	has := func(keys ...string) bool {
+		return slices.ContainsFunc(keys, func(key string) bool {
+			_, err := cfg.GetString("focus_" + key)
+			return !errors.Is(err, config.ErrNotFound)
+		})
+	}
+	content := []string{"wallpaper_image", "wallpaper_image_ascii", "wallpaper_ascii"}
+	style := []string{"wallpaper_attr", "wallpaper_background_attr", "wallpaper_density_characters"}
+	if !has(content...) && !has(style...) {
+		return wallpaper, logo
+	}
+	contentPrefix := ""
+	if has(content...) {
+		contentPrefix = "focus_"
+	}
+	focus, _ := c.resolveWallpaperKeys(contentPrefix, "focus_")
+	wallpaper.Focus = &focus
+	return wallpaper, logo
+}
+
+// resolveWallpaperKeys resolves a wallpaper as resolveWallpaper does, from
+// the picture, art and text keys named with content before them, and the
+// attribute and density keys named with style before them, or without it
+// when those are not set.
+func (c ideConfig) resolveWallpaperKeys(content, style string) (browser.Wallpaper, Logo) {
 	wallpaper := browser.NopWallpaper()
 	var logo Logo
 	if c.cfg != nil {
 		cfg := c.workspace()
-		if w, ok := c.wallpaperImage(cfg); ok {
+		if w, ok := c.wallpaperImage(cfg, content, style); ok {
 			wallpaper = w
-		} else if w, ok := c.wallpaperImageASCII(cfg); ok {
+		} else if w, ok := c.wallpaperImageASCII(cfg, content, style); ok {
 			wallpaper = w
-		} else if w, ok := c.wallpaperText(cfg); ok {
+		} else if w, ok := c.wallpaperText(cfg, content, style); ok {
 			wallpaper = w
 		} else if c.logo != nil {
 			wallpaper, logo = c.logo.Wallpaper, *c.logo
 		}
 	}
-	wallpaper.BackgroundAttr = c.workspaceWallpaperBackgroundAttr()
+	wallpaper.BackgroundAttr = c.wallpaperStyleAttr(style, "wallpaper_background_attr")
 	return wallpaper, logo
 }
 
@@ -4983,29 +5141,31 @@ var wallpaperImageFits = map[string]imagecomp.Fit{
 // workspace.wallpaper_image, as the GUI cannot draw larger pictures.
 const maxWallpaperImageSize = 8192
 
-// wallpaperImage returns the picture of workspace.wallpaper_image: the path
-// of an image, or a section with the path and how the picture is sized,
-// which a path alone leaves at [defaultWallpaperImage].
-func (c ideConfig) wallpaperImage(cfg config.Config) (browser.Wallpaper, bool) {
+// wallpaperImage returns the picture of workspace.wallpaper_image, named with
+// prefix before it: the path of an image, or a section with the path and how
+// the picture is sized, which a path alone leaves at [defaultWallpaperImage].
+// Its ASCII art takes the density characters of style.
+func (c ideConfig) wallpaperImage(cfg config.Config, prefix, style string) (browser.Wallpaper, bool) {
+	key := prefix + "wallpaper_image"
 	pcfg := defaultWallpaperImage
-	path, err := cfg.GetString("wallpaper_image")
+	path, err := cfg.GetString(key)
 	if err == config.ErrInvalidType {
 		var section config.Config
-		if section, err = cfg.GetConfig("wallpaper_image"); err != nil {
-			c.errors["workspace.wallpaper_image"] = errors.New(
+		if section, err = cfg.GetConfig(key); err != nil {
+			c.errors["workspace."+key] = errors.New(
 				"must be the path of an image or a section with its path")
 			return browser.Wallpaper{}, false
 		}
-		pcfg = c.wallpaperImageConfig(section)
+		pcfg = c.wallpaperImageConfig(section, key)
 		if path, err = section.GetString("path"); err != nil {
 			if err != config.ErrNotFound {
-				c.errors["workspace.wallpaper_image.path"] = err
+				c.errors["workspace."+key+".path"] = err
 			}
 			return browser.Wallpaper{}, false
 		}
 	} else if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["workspace.wallpaper_image"] = err
+			c.errors["workspace."+key] = err
 		}
 		return browser.Wallpaper{}, false
 	}
@@ -5014,15 +5174,15 @@ func (c ideConfig) wallpaperImage(cfg config.Config) (browser.Wallpaper, bool) {
 	}
 	img, err := openImage(os.ExpandEnv(path))
 	if err != nil {
-		c.errors["workspace.wallpaper_image"] = err
+		c.errors["workspace."+key] = err
 		return browser.Wallpaper{}, false
 	}
 	if size := img.Bounds().Size(); size.X > maxWallpaperImageSize || size.Y > maxWallpaperImageSize {
-		c.errors["workspace.wallpaper_image"] = fmt.Errorf("image is %dx%d, larger than %dx%d",
+		c.errors["workspace."+key] = fmt.Errorf("image is %dx%d, larger than %dx%d",
 			size.X, size.Y, maxWallpaperImageSize, maxWallpaperImageSize)
 		return browser.Wallpaper{}, false
 	}
-	pcfg.ASCII = c.wallpaperImageASCIIConfig(cfg)
+	pcfg.ASCII = c.wallpaperImageASCIIConfig(cfg, style)
 	// Shared by every window, so the screen keeps one copy of the pixels.
 	id := term.NewImageID()
 	return browser.Wallpaper{
@@ -5030,20 +5190,22 @@ func (c ideConfig) wallpaperImage(cfg config.Config) (browser.Wallpaper, bool) {
 	}, true
 }
 
-func (c ideConfig) wallpaperImageConfig(section config.Config) imagecomp.Config {
+// wallpaperImageConfig returns how the section of the workspace key sizes
+// its picture.
+func (c ideConfig) wallpaperImageConfig(section config.Config, key string) imagecomp.Config {
 	pcfg := defaultWallpaperImage
-	pcfg.Width = c.wallpaperImageLength(section, "width", pcfg.Width)
-	pcfg.Height = c.wallpaperImageLength(section, "height", pcfg.Height)
+	pcfg.Width = c.wallpaperImageLength(section, key, "width", pcfg.Width)
+	pcfg.Height = c.wallpaperImageLength(section, key, "height", pcfg.Height)
 	name, err := section.GetString("fit")
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["workspace.wallpaper_image.fit"] = err
+			c.errors["workspace."+key+".fit"] = err
 		}
 		return pcfg
 	}
 	fit, ok := wallpaperImageFits[name]
 	if !ok {
-		c.errors["workspace.wallpaper_image.fit"] = fmt.Errorf(
+		c.errors["workspace."+key+".fit"] = fmt.Errorf(
 			"unknown fit %q, expected one of: %s", name,
 			strings.Join(slices.Sorted(maps.Keys(wallpaperImageFits)), ", "))
 		return pcfg
@@ -5052,12 +5214,13 @@ func (c ideConfig) wallpaperImageConfig(section config.Config) imagecomp.Config 
 	return pcfg
 }
 
-// wallpaperImageLength returns the length key sets in section: a number of
-// cells, or a percentage of the window such as "100%".
+// wallpaperImageLength returns the length key sets in section, the section
+// of the workspace image key: a number of cells, or a percentage of the
+// window such as "100%".
 func (c ideConfig) wallpaperImageLength(
-	section config.Config, key string, def imagecomp.Length,
+	section config.Config, image, key string, def imagecomp.Length,
 ) imagecomp.Length {
-	errKey := "workspace.wallpaper_image." + key
+	errKey := "workspace." + image + "." + key
 	n, err := section.GetInt(key)
 	if err == config.ErrNotFound {
 		return def
@@ -5081,12 +5244,14 @@ func (c ideConfig) wallpaperImageLength(
 }
 
 // wallpaperImageASCII returns the ASCII art of the image of
-// workspace.wallpaper_image_ascii.
-func (c ideConfig) wallpaperImageASCII(cfg config.Config) (browser.Wallpaper, bool) {
-	path, err := cfg.GetString("wallpaper_image_ascii")
+// workspace.wallpaper_image_ascii, named with prefix before it, in the
+// density characters of style.
+func (c ideConfig) wallpaperImageASCII(cfg config.Config, prefix, style string) (browser.Wallpaper, bool) {
+	key := prefix + "wallpaper_image_ascii"
+	path, err := cfg.GetString(key)
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["workspace.wallpaper_image_ascii"] = err
+			c.errors["workspace."+key] = err
 		}
 		return browser.Wallpaper{}, false
 	}
@@ -5095,10 +5260,10 @@ func (c ideConfig) wallpaperImageASCII(cfg config.Config) (browser.Wallpaper, bo
 	}
 	img, err := openImage(os.ExpandEnv(path))
 	if err != nil {
-		c.errors["workspace.wallpaper_image_ascii"] = err
+		c.errors["workspace."+key] = err
 		return browser.Wallpaper{}, false
 	}
-	ascii := c.wallpaperImageASCIIConfig(cfg)
+	ascii := c.wallpaperImageASCIIConfig(cfg, style)
 	return browser.Wallpaper{
 		NewComponent: func() tui.Component {
 			return component.NewSpan(asciiart.NewComponent(img, ascii), component.SpanConfig{
@@ -5111,15 +5276,20 @@ func (c ideConfig) wallpaperImageASCII(cfg config.Config) (browser.Wallpaper, bo
 }
 
 // wallpaperImageASCIIConfig returns how the image wallpapers are encoded as
-// ASCII art, with the characters of workspace.wallpaper_density_characters.
-func (c ideConfig) wallpaperImageASCIIConfig(cfg config.Config) asciiart.Config {
-	densityChars, err := cfg.GetString("wallpaper_density_characters")
+// ASCII art, with the characters of workspace.wallpaper_density_characters,
+// named with style before it unless that is not set.
+func (c ideConfig) wallpaperImageASCIIConfig(cfg config.Config, style string) asciiart.Config {
+	key := "wallpaper_density_characters"
+	if _, err := cfg.GetString(style + key); !errors.Is(err, config.ErrNotFound) {
+		key = style + key
+	}
+	densityChars, err := cfg.GetString(key)
 	if err == nil && densityChars == "" {
 		err = errors.New("must not be empty")
 	}
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors["workspace.wallpaper_density_characters"] = err
+			c.errors["workspace."+key] = err
 		}
 		densityChars = " ▓▓▓▓"
 	}
@@ -5149,12 +5319,17 @@ func openImage(imagePath string) (image.Image, error) {
 	return img, nil
 }
 
-// wallpaperText returns the text art of wallpaper_ascii, else of its
-// deprecated name wallpaper, which configs written before the rename still
-// set and the defaults leave out.
-func (c ideConfig) wallpaperText(cfg config.Config) (browser.Wallpaper, bool) {
+// wallpaperText returns the text art of wallpaper_ascii, named with prefix
+// before it, else of its deprecated name wallpaper, which configs written
+// before the rename still set and the defaults leave out, in the
+// attributes of style.
+func (c ideConfig) wallpaperText(cfg config.Config, prefix, style string) (browser.Wallpaper, bool) {
+	keys := []string{prefix + "wallpaper_ascii"}
+	if prefix == "" {
+		keys = append(keys, "wallpaper")
+	}
 	var cfgText string
-	for _, key := range []string{"wallpaper_ascii", "wallpaper"} {
+	for _, key := range keys {
 		text, err := cfg.GetString(key)
 		if err != nil {
 			if err != config.ErrNotFound {
@@ -5171,8 +5346,8 @@ func (c ideConfig) wallpaperText(cfg config.Config) (browser.Wallpaper, bool) {
 		return browser.Wallpaper{}, false
 	}
 	strcfg := component.StringConfig{
-		Attributes:           c.workspaceWallpaperAttr(),
-		BackgroundAttributes: c.workspaceWallpaperBackgroundAttr(),
+		Attributes:           c.wallpaperStyleAttr(style, "wallpaper_attr"),
+		BackgroundAttributes: c.wallpaperStyleAttr(style, "wallpaper_background_attr"),
 		Alignment:            component.AlignmentCentered,
 	}
 	return browser.Wallpaper{
@@ -5386,11 +5561,6 @@ func (c ideConfig) workspace() config.Config {
 	return config.NopConfig()
 }
 
-func (c ideConfig) workspaceWallpaperAttr() term.Attributes {
-	return c.getConfigAttr("workspace", "wallpaper_attr",
-		term.Attributes{})
-}
-
 // workspaceHome returns the configured home workspace path with
 // environment variables expanded. It defaults to "~" when unset;
 // callers are responsible for expanding the "~" shortcut against the
@@ -5409,20 +5579,6 @@ func (c ideConfig) workspaceHome() string {
 		return "~"
 	}
 	return home
-}
-
-// workspaceSymbolDB reports whether the persistent per-workspace
-// symbol database is enabled. Defaults to false when unset.
-func (c ideConfig) workspaceSymbolDB() bool {
-	ws := c.workspace()
-	enabled, err := ws.GetBool("symboldb")
-	if err != nil {
-		if err != config.ErrNotFound {
-			c.errors["workspace.symboldb"] = err
-		}
-		return false
-	}
-	return enabled
 }
 
 // workspaceSearch reports whether workspaces get a semantic search index.
@@ -5444,9 +5600,29 @@ func (c ideConfig) workspaceRegexSearch() bool {
 	return enabled
 }
 
-func (c ideConfig) workspaceWallpaperBackgroundAttr() term.Attributes {
-	return c.getConfigAttr("workspace", "wallpaper_background_attr",
-		term.Attributes{})
+// workspaceSymbolsSearch defaults to true; disabling it keeps no symbol
+// index: lookups by name scan the workspace, and searchfunc, searchvar
+// and searchtype parse files directly.
+func (c ideConfig) workspaceSymbolsSearch() bool {
+	enabled := true
+	if c.cfg == nil {
+		return enabled
+	}
+	if search, ok := c.getConfig(config.MapConfig(c.cfg), "search"); ok {
+		overrideBool(search, "symbols_enabled", &enabled)
+	}
+	return enabled
+}
+
+// wallpaperStyleAttr returns the workspace attributes of key named with
+// style before it, or of key when that is not set.
+func (c ideConfig) wallpaperStyleAttr(style, key string) term.Attributes {
+	if style != "" {
+		if _, err := c.workspace().GetString(style + key); !errors.Is(err, config.ErrNotFound) {
+			key = style + key
+		}
+	}
+	return c.getConfigAttr("workspace", key, term.Attributes{})
 }
 
 func (c ideConfig) workspaceNotice() (path, literal, show string) {
@@ -5857,20 +6033,39 @@ func (c ideConfig) terminalStatus() (config.Config, bool) {
 // Its marker takes what program_status.marker_attr leaves unset of the
 // marker of the focused tab, browser.focus_tab_highlight_attr, but its
 // background, which is the selection's, and its divider the window
-// frame's left edge.
+// frame's left edge. Its focus block, over it, styles the inbox while
+// its window holds the focus.
 func (c ideConfig) statusInboxStyle() idestatus.InboxStyle {
+	const name = "program_status"
+	var cfg config.Config
+	if c.cfg != nil {
+		cfg, _ = c.getConfig(config.MapConfig(c.cfg), name)
+	}
+	ret := c.statusInboxStyleOf(cfg, name)
+	if cfg == nil {
+		return ret
+	}
+	switch focus, err := tconfig.FocusOverlay(cfg, "focus"); {
+	case err == nil:
+		focused := c.statusInboxStyleOf(focus, name+".focus")
+		ret.Focus = &focused
+	case !errors.Is(err, config.ErrNotFound):
+		c.errors[name+".focus"] = err
+	}
+	return ret
+}
+
+// statusInboxStyleOf reads the inbox style of cfg, a program_status
+// section, which is nil when there is none, reporting errors under name.
+func (c ideConfig) statusInboxStyleOf(cfg config.Config, name string) idestatus.InboxStyle {
 	ret := idestatus.DefaultInboxStyle()
 	ret.MarkerAttr = c.highlightTabAttr()
 	ret.MarkerAttr.Bg = term.ColorDefault
-	ret.Divider = c.statusDividerCharset(ret.Divider)
-	if c.cfg == nil {
+	ret.Divider = c.statusDividerCharset(cfg, name, ret.Divider)
+	if cfg == nil {
 		return ret
 	}
-	cfg, ok := c.getConfig(config.MapConfig(c.cfg), "program_status")
-	if !ok {
-		return ret
-	}
-	const prefix = "program_status."
+	prefix := name + "."
 	if marker, err := cfg.GetRune("marker"); err == nil {
 		ret.Marker = marker
 	} else if err != config.ErrNotFound {
@@ -5919,14 +6114,14 @@ func (c ideConfig) statusInboxStyle() idestatus.InboxStyle {
 		c.errors[prefix+"progress_bar"] = err
 	}
 	var images browser.PromptImages
-	if c.buttonImages(cfg, "images", "program_status", &images.Outset,
+	if c.buttonImages(cfg, "images", name, &images.Outset,
 		buttonImageSlot{&images.Idle, "idle"},
 		buttonImageSlot{&images.Selected, "selected"},
 		buttonImageSlot{&images.Hover, "hover"},
 	) {
 		ret.Images = images
 	}
-	ret.MarkerGraphics = c.lineGraphics(cfg, "marker_graphics", "program_status", "top", "vertical", "bottom")
+	ret.MarkerGraphics = c.lineGraphics(cfg, "marker_graphics", name, "top", "vertical", "bottom")
 	var bar idestatus.ProgressBarGraphics
 	if err := tconfig.GetGraphics(cfg, "progress_bar_graphics", &bar.Overlay,
 		tconfig.GraphicsSlot{Key: "left", URI: &bar.Left},
@@ -5941,12 +6136,15 @@ func (c ideConfig) statusInboxStyle() idestatus.InboxStyle {
 	return ret
 }
 
-// statusDividerCharset reads program_status.divider_charset over def.
-// Its vertical rune and image, and the image's mode, default to those
-// of the window frame's left edge, and its vertical_top and
-// vertical_bottom to its vertical rune.
-func (c ideConfig) statusDividerCharset(def tcomponent.DividerCharSet) (out tcomponent.DividerCharSet) {
-	const name = "program_status.divider_charset"
+// statusDividerCharset reads the divider_charset of status, the
+// program_status section at statusName or nil, over def. Its vertical
+// rune and image, and the image's mode, default to those of the window
+// frame's left edge, and its vertical_top and vertical_bottom to its
+// vertical rune.
+func (c ideConfig) statusDividerCharset(
+	status config.Config, statusName string, def tcomponent.DividerCharSet,
+) (out tcomponent.DividerCharSet) {
+	name := statusName + ".divider_charset"
 	frame := c.windowFrameCharset()
 	out = def
 	out.VerticalTop, out.Vertical, out.VerticalBottom = 0, frame.VerticalLeft, 0
@@ -5960,11 +6158,7 @@ func (c ideConfig) statusDividerCharset(def tcomponent.DividerCharSet) (out tcom
 			out.VerticalBottom = out.Vertical
 		}
 	}()
-	if c.cfg == nil {
-		return out
-	}
-	status, ok := c.getConfig(config.MapConfig(c.cfg), "program_status")
-	if !ok {
+	if status == nil {
 		return out
 	}
 	cfg, err := status.GetConfig("divider_charset")

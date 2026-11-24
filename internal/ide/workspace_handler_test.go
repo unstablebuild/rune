@@ -2099,7 +2099,7 @@ func TestCommandProgramStatusPreviewsWindowedTerminal(t *testing.T) {
 	preview, ok := statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, pty)
 	require.True(t, ok, "a terminal outside of a tab is previewed in its window")
 	assert.Same(t, tv, preview.Content)
-	assert.Nil(t, preview.Fit, "a terminal shown in a window is never resized")
+	assert.Nil(t, preview.Open, "a terminal the workspace does not own is borrowed from its window")
 	tvW, tvH := b.ContentSize(termWin)
 	require.NotZero(t, tvW)
 	assert.Equal(t, []int{tvW, tvH}, []int{preview.Width, preview.Height})
@@ -2194,7 +2194,7 @@ func TestCommandProgramStatusPreviewsDetachedPrograms(t *testing.T) {
 	preview, ok := statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, cmd)
 	require.True(t, ok, "a floating command is previewed in its window")
 	assert.Same(t, ph, preview.Content)
-	assert.False(t, preview.Hidden)
+	assert.Nil(t, preview.Open, "it is borrowed from its window")
 	b.SetFocus(tiled)
 	require.NoError(t, m.focusStatusEntry(w.uri, cmd))
 	assert.Equal(t, win.WindowID(), b.Focus().WindowID(), "choosing it focuses its window")
@@ -2208,16 +2208,18 @@ func TestCommandProgramStatusPreviewsDetachedPrograms(t *testing.T) {
 	report(shell)
 	preview, ok = statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, shell)
 	require.True(t, ok, "a hidden companion terminal is previewed")
-	assert.Same(t, tv, preview.Content)
-	assert.True(t, preview.Hidden, "the inbox sizes what is shown nowhere")
-	assert.NotNil(t, preview.Fit)
+	require.NotNil(t, preview.Open, "what is shown nowhere is the inbox's to size")
+	lent, closeLent := preview.Open(20, 5)
+	assert.Same(t, tv, lent, "it is lent to the inbox")
+	assert.Nil(t, closeLent, "which has nothing to close")
 	b.SetFocus(tiled)
 	require.NoError(t, m.focusStatusEntry(w.uri, shell))
 	require.NotNil(t, e.companionTerminalWin, "choosing it shows it")
 	assert.Equal(t, e.companionTerminalWin.WindowID(), b.Focus().WindowID())
 	preview, ok = statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, shell)
 	require.True(t, ok)
-	assert.False(t, preview.Hidden, "shown, it is previewed in its window")
+	assert.Nil(t, preview.Open, "shown, it is borrowed from its window")
+	assert.NotNil(t, preview.Content)
 }
 
 func TestCommandProgramStatusDetachedTerminals(t *testing.T) {
@@ -2269,10 +2271,15 @@ func TestCommandProgramStatusDetachedTerminals(t *testing.T) {
 		assert.Equal(t, programstatus.Working, sum.State)
 		preview, ok := statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, uri)
 		require.True(t, ok, "a detached terminal is previewed")
-		assert.True(t, preview.Hidden, "the inbox sizes what is shown nowhere")
-		again, _ := statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, uri)
-		assert.Same(t, preview.Content, again.Content, "every draw previews the same view")
+		require.NotNil(t, preview.Open, "in a view of its own")
+		assert.Equal(t, []int{0, 0}, []int{preview.Width, preview.Height}, "which asks for no size")
+		v, closePreview := preview.Open(40, 10)
+		require.NotNil(t, v)
+		info, ok := e.terminals.info(av.ID())
+		require.True(t, ok)
+		assert.Equal(t, []int{40, 10}, []int{info.Width, info.Height}, "the sole view of it sizes it")
 		assert.Equal(t, 0, attachments(), "previewing leaves it detached")
+		closePreview()
 
 		require.NoError(t, m.focusStatusEntry(w.uri, uri))
 	})
@@ -2294,6 +2301,146 @@ func TestCommandProgramStatusDetachedTerminals(t *testing.T) {
 	})
 	m.quiesce()
 	m.locked(func() { assert.Equal(t, -1, attachments(), "closing it from the inbox ends it") })
+}
+
+func TestCommandProgramStatusPreviewsTerminalTab(t *testing.T) {
+	ctx := context.Background()
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	var (
+		e   *ex
+		ws  workspaceapi.URI
+		exe *fgPtyExecutor
+		av  *asyncVTE
+	)
+	m.locked(func() {
+		w := m.workspaces[slot]
+		e, ws = w.ex, w.uri
+		e.Resize(60, 30)
+		exe = useTestVTEs(t, e)
+		require.NoError(t, e.terminalnewtab(ctx))
+	})
+	m.quiesce()
+	p := <-exe.Started()
+	for i := range 40 {
+		p.Print(fmt.Sprintf("line %02d of the scrollback\r\n", i))
+	}
+	var info vte.Info
+	m.locked(func() {
+		h, ok := e.terminalInFocus()
+		require.True(t, ok)
+		av = h.(*asyncVTE)
+		info, ok = e.terminals.info(av.ID())
+		require.True(t, ok)
+	})
+	require.Greater(t, info.Height, 5)
+	require.Greater(t, info.Width, 12)
+
+	var (
+		v            tui.Component
+		closePreview func()
+	)
+	m.locked(func() {
+		preview, ok := statusWorkspaces{m.workspaceManagerHandler}.Preview(ws, av.URI())
+		require.True(t, ok)
+		require.NotNil(t, preview.Open, "a terminal tab is previewed in a view of its own")
+		assert.Equal(t, []int{info.Width, info.Height}, []int{preview.Width, preview.Height},
+			"which asks for room for the grid")
+		v, closePreview = preview.Open(12, 5)
+		require.NotNil(t, v)
+	})
+	t.Cleanup(func() { m.locked(closePreview) })
+	drawn := func() string {
+		var ret string
+		m.locked(func() {
+			w := term.NewStringWriter(12, 5)
+			v.Draw(w)
+			_ = w.Flush()
+			ret = w.String()
+		})
+		return ret
+	}
+	require.Eventually(t, func() bool { return strings.Contains(drawn(), "line 39 of t") },
+		5*time.Second, 5*time.Millisecond, "it shows the bottom-left of the grid:\n%s", drawn())
+	assert.NotContains(t, drawn(), "line 30", "the top rows are cut")
+	m.locked(func() {
+		now, ok := e.terminals.info(av.ID())
+		require.True(t, ok)
+		assert.Equal(t, []int{info.Width, info.Height}, []int{now.Width, now.Height},
+			"the tab keeps sizing the terminal")
+		assert.Equal(t, 1, now.Attachments, "the preview is none of its attachments")
+	})
+}
+
+func TestCommandProgramStatusPreviewsExtensionChat(t *testing.T) {
+	m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+	t.Cleanup(func() { _ = m.Close() })
+	shown := mustURI(t, "rune-agent://model/agent?view=2")
+	away := mustURI(t, "rune-agent://model/away")
+	pending := mustURI(t, "rune-agent://model/pending")
+	closed := make(chan struct{})
+	view := browsertest.NewTestHandler()
+	view.CloseCallback = func() error { close(closed); return nil }
+	opener := &recordingOpener{h: view}
+	var (
+		e            *ex
+		ws           workspaceapi.URI
+		v            tui.Component
+		closePreview func()
+	)
+	m.locked(func() {
+		w := m.workspaces[slot]
+		e, ws = w.ex, w.uri
+		require.NoError(t, e.comp.RegisterResourceOpener("rune-agent", opener))
+		_, err := e.comp.Tab(shown, 'x', "agent", browsertest.NewTestHandler())
+		require.NoError(t, err)
+		preview, ok := statusWorkspaces{m.workspaceManagerHandler}.Preview(ws, shown)
+		require.True(t, ok)
+		require.NotNil(t, preview.Open, "a chat is previewed in a view of its own")
+		v, closePreview = preview.Open(20, 5)
+		require.NotNil(t, v)
+	})
+	drawn := func() string {
+		var ret string
+		m.locked(func() {
+			w := term.NewStringWriter(20, 5)
+			v.Draw(w)
+			_ = w.Flush()
+			ret = w.String()
+		})
+		return ret
+	}
+	want := strings.TrimSuffix(strings.Repeat(strings.Repeat("A", 20)+"\n", 5), "\n")
+	require.Eventually(t, func() bool {
+		m.quiesce()
+		return drawn() == want
+	}, 5*time.Second, 5*time.Millisecond, "the extension's view fills the preview:\n%s", drawn())
+	assert.Equal(t, []string{"rune-agent://model/agent?" + text.PreviewQuery + "=&view=2"}, opener.snapshot(),
+		"the extension is asked for a preview of the chat")
+	m.locked(func() {
+		tab, ok := e.comp.Browser().Tab(shown)
+		require.True(t, ok)
+		w, h := tab.ContentSize()
+		assert.Equal(t, []int{0, 0}, []int{w, h}, "the chat's tab is left alone")
+		closePreview()
+	})
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "closing the preview closes the extension's view")
+	}
+
+	m.locked(func() {
+		m.status.SetTabStatus(ws, &e.comp, away, programstatus.Report{State: programstatus.Working, Progress: -1})
+		preview, ok := statusWorkspaces{m.workspaceManagerHandler}.Preview(ws, away)
+		require.True(t, ok, "a chat no tab shows is previewed")
+		assert.NotNil(t, preview.Open)
+
+		e.comp.PendingTabs().Open(pending, 'x', "pending")
+		preview, ok = statusWorkspaces{m.workspaceManagerHandler}.Preview(ws, pending)
+		require.True(t, ok)
+		assert.Nil(t, preview.Open, "a tab waiting for its extension shows what it waits for")
+	})
 }
 
 type statusTestPluginHandler struct {
@@ -5806,28 +5953,32 @@ func TestWorkspaceManagerRestoresOpenTerminalSessions(t *testing.T) {
 		m := newTestWorkspaceManagerHandlerWithDir(t, cfg, dir, nopShutdownShaderConfig())
 
 		ex1 := m.exHandler(m.focusHandler())
-		fileURI, err := ex1.workspace.URI("restored-with-floating.txt")
-		require.NoError(t, err)
-		_, err = ex1.editFileURI(fileURI, ex1.invokeWindow(), false)
-		require.NoError(t, err)
-		_, err = ex1.comp.Floating(
-			browser.NopFloatingHandler(handler.StaticFloating(handler.Nop(), 10, 4)),
-			browserapi.FloatingConfig{Alignment: component.AlignmentCentered},
-		)
-		require.NoError(t, err)
-		require.Equal(t, 1, ex1.comp.Browser().FloatingWindows())
+		m.locked(func() {
+			fileURI, err := ex1.workspace.URI("restored-with-floating.txt")
+			require.NoError(t, err)
+			_, err = ex1.editFileURI(fileURI, ex1.invokeWindow(), false)
+			require.NoError(t, err)
+			_, err = ex1.comp.Floating(
+				browser.NopFloatingHandler(handler.StaticFloating(handler.Nop(), 10, 4)),
+				browserapi.FloatingConfig{Alignment: component.AlignmentCentered},
+			)
+			require.NoError(t, err)
+			require.Equal(t, 1, ex1.comp.Browser().FloatingWindows())
+		})
 
 		m.mu.Lock()
 		err = m.commandReloadWorkspace()
 		m.mu.Unlock()
 		require.NoError(t, err)
 		m.quiesce()
-		m.Resize(80, 24)
-		ex2 := m.exHandler(m.focusHandler())
-		require.Equal(t, 0, ex2.comp.Browser().FloatingWindows())
-		tabs := ex2.comp.Tabs()
-		require.Len(t, tabs, 1)
-		require.Equal(t, "restored-with-floating.txt", tabs[0].URI().Name())
+		m.locked(func() {
+			m.Resize(80, 24)
+			ex2 := m.exHandler(m.focusHandler())
+			require.Equal(t, 0, ex2.comp.Browser().FloatingWindows())
+			tabs := ex2.comp.Tabs()
+			require.Len(t, tabs, 1)
+			require.Equal(t, "restored-with-floating.txt", tabs[0].URI().Name())
+		})
 
 		require.NoError(t, m.Close())
 	})
@@ -8209,6 +8360,14 @@ func (t *testWorkspaceManagerHandler) locked(fn func()) {
 	fn()
 }
 
+// openFile shadows the embedded handler method to take the event-loop
+// lock first, as addOrCreateWorkspace does: opening a file touches the
+// tabs the fs-watcher goroutine reads under mu.
+func (t *testWorkspaceManagerHandler) openFile(file string, focus bool) (err error) {
+	t.locked(func() { err = t.workspaceManagerHandler.openFile(file, focus) })
+	return err
+}
+
 // addOrCreateWorkspace shadows the embedded handler method to take
 // the event-loop lock first. Production only invokes it from the
 // event loop with mu held, and the test scheduler runs Phase C
@@ -8267,7 +8426,7 @@ func defaultCfg() ideConfig {
 		},
 		// keep goldens deterministic: indexing runs in the background and
 		// posts its progress whenever it gets to it.
-		"search": map[string]any{"regex_enabled": false, "semantic_enabled": false},
+		"search": map[string]any{"regex_enabled": false, "semantic_enabled": false, "symbols_enabled": false},
 	},
 		configPath: "not-empty",
 		sounds:     sounds.Silent,
@@ -11871,6 +12030,37 @@ func TestWorkspaceNewResolvesRelativeAgainstHome(t *testing.T) {
 	m.quiesce()
 }
 
+func TestWorkspaceOpenKeepsTheRootOfASchemeURI(t *testing.T) {
+	dir := t.TempDir()
+	m := newTestWorkspaceManagerHandlerWithDir(t,
+		defaultConfigWithWrap(false), dir, nopShutdownShaderConfig())
+	t.Cleanup(func() { _ = m.Close() })
+	m.quiesce()
+
+	// Directory completion marks candidates with a trailing "/", which
+	// workspaceopen strips; the root of a scheme has nothing but it.
+	m.mu.Lock()
+	require.NoError(t, m.commandAddWorkspace("memory:///"))
+	require.NotNil(t, m.lastReservedPending)
+	pending := m.lastReservedPending
+	got := pending.uri
+	m.mu.Unlock()
+
+	assert.Equal(t, "memory:///", got.String())
+	assert.Equal(t, "/", got.Path(),
+		"a relative workspace path makes every relative path the shell "+
+			"resolves against it parse as a host")
+
+	m.mu.Lock()
+	pending.canceled.Store(true)
+	pending.cancelCtx()
+	delete(m.pending, got.String())
+	m.lastReservedPending = nil
+	m.mu.Unlock()
+
+	m.quiesce()
+}
+
 func TestRegisterREPLCommand(t *testing.T) {
 	if ci := os.Getenv("CI"); ci == "true" {
 		t.SkipNow()
@@ -12898,7 +13088,7 @@ func TestWorkspaceNotificationsTakeItsConfig(t *testing.T) {
 		"workspace:\n  home: "+home+"\n  wallpaper_ascii: wallpaper\n"+
 		"notifications:\n  progress_bar: false\n"+
 		// Indexing would post notifications of its own.
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"), 0o644))
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"), 0o644))
 	i, mu := newHUDTestIDE(t, ws, configPath, WithTrustedWorkspaceConfig(overlay))
 	mu.Lock()
 	defer mu.Unlock()
@@ -12971,7 +13161,7 @@ func TestTabBarGraphicsIntegration(t *testing.T) {
 		"  focus_tab_highlight_char: \"\"\n"+
 		"  tab_images:\n    focus:\n"+slices(wsFocus)+"    non_focus:\n"+slices(wsIdle)+
 		"  focus_tab_highlight_graphics:\n    horizontal: "+wsHighlight+"\n"+
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"+
 		"browser:\n"+
 		"  tab_images:\n    focus:\n"+slices(focus)+
 		"  focus_tab_highlight_graphics:\n    horizontal: "+highlight+"\n"), 0o644))
@@ -13066,7 +13256,7 @@ func TestTabBarHoverIntegration(t *testing.T) {
 		"workspace:\n  home: "+home+"\n  wallpaper_ascii: wallpaper\n"+
 		"  focus_tab_highlight_char: \"\"\n"+images+
 		"  tab_sounds:\n    hover: ws-hover\n    click: ws-click\n"+
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"+
 		"browser:\n  focus_tab_highlight_char: \"\"\n"+images+
 		"  tab_sounds:\n    hover: tab-hover\n    click: tab-click\n"), 0o644))
 	var soundsMu sync.Mutex
@@ -13172,7 +13362,7 @@ func TestStatusInboxGraphicsIntegration(t *testing.T) {
 	configPath := filepath.Join(home, "rune.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
 		"workspace:\n  home: "+home+"\n"+
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"+
 		"program_status:\n  images:\n    selected:\n      middle: file://"+selected+"\n"), 0o644))
 	i, mu := newHUDTestIDE(t, ws, configPath)
 	agent := mustURI(t, "rune-agent://model/agent")
@@ -13181,6 +13371,9 @@ func TestStatusInboxGraphicsIntegration(t *testing.T) {
 	focused := h.focusEx()
 	_, err = focused.comp.Tab(agent, 'x', "agent", browsertest.NewTestHandler())
 	require.NoError(t, err)
+	// The chat's extension opens it a view of its own for the inbox.
+	require.NoError(t, focused.comp.RegisterResourceOpener("rune-agent",
+		&recordingOpener{h: browsertest.NewTestHandler()}))
 	require.NoError(t, focused.comp.SetTabStatus(agent, programstatus.Report{
 		State: programstatus.Blocked, Progress: -1,
 	}))
@@ -13232,7 +13425,7 @@ func TestStatusInboxDividerIntegration(t *testing.T) {
 	configPath := filepath.Join(home, "rune.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
 		"workspace:\n  home: "+home+"\n"+
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"+
 		"program_status:\n  divider_charset:\n"+
 		"    top: T\n    vertical_top: t\n    vertical: v\n    vertical_bottom: b\n    bottom: B\n"+
 		"    graphics:\n      bottom: file://"+bottom+"\n"), 0o644))
@@ -13243,6 +13436,9 @@ func TestStatusInboxDividerIntegration(t *testing.T) {
 	focused := h.focusEx()
 	_, err = focused.comp.Tab(agent, 'x', "agent", browsertest.NewTestHandler())
 	require.NoError(t, err)
+	// The chat's extension opens it a view of its own for the inbox.
+	require.NoError(t, focused.comp.RegisterResourceOpener("rune-agent",
+		&recordingOpener{h: browsertest.NewTestHandler()}))
 	require.NoError(t, focused.comp.SetTabStatus(agent, programstatus.Report{
 		State: programstatus.Blocked, Progress: -1,
 	}))
@@ -13409,6 +13605,10 @@ func TestApplyHUD(t *testing.T) {
 	base.notifyStatus = idestatus.NotifyConfig{
 		Sounds: map[programstatus.State]string{programstatus.Working: "tick"},
 	}
+	base.browser.WindowManager.FocusBackground = &tcomponent.WindowBackground{
+		Attr: term.Attributes{Bg: term.ColorNavy},
+	}
+	base.statusBar.Focus = &text.StatusBarStyle{BackgroundColor: term.ColorBlue}
 	hud := &HUD{
 		load:       2,
 		base:       base,
@@ -13429,6 +13629,11 @@ func TestApplyHUD(t *testing.T) {
 	assert.True(t, m.empty.config.CommandOverlay.ShowManual)
 	assert.True(t, focused.ex.config.CommandOverlay.ShowManual)
 	assert.False(t, skipped.ex.config.CommandOverlay.ShowManual)
+	assert.Equal(t, base.browser.WindowManager.FocusBackground, m.empty.config.FocusBackground,
+		"the home workspace's focused window takes the focus background")
+	assert.Nil(t, focused.ex.config.FocusBackground, "an overlay without one draws none")
+	assert.Equal(t, base.statusBar, m.empty.statusBars.Current(),
+		"editor status bars take the focus style")
 
 	chat, err := workspaceapi.ParseURI("rune-agent://model/hud")
 	require.NoError(t, err)

@@ -70,19 +70,13 @@ func TestBundledConfigStar(t *testing.T) {
 			} else {
 				assert.Equal(t, "searchfile", kb["<m-p>"])
 				assert.Equal(t, "searchtext", kb["<m-\\\\>"])
-				assert.Equal(t, "searchfunc", kb["<a-s-f>"])
-				assert.Equal(t, "searchvar", kb["<a-s-v>"])
-				assert.Equal(t, "searchtype", kb["<a-s-s>"])
+			}
+			for _, key := range []string{"<a-s-f>", "<a-s-v>", "<a-s-s>"} {
+				assert.NotContains(t, kb, key,
+					"the definitions searches are built in and bound by the presets")
 			}
 
-			// Aliases present in all modes.
-			aliases := cmd["aliases"].(map[string]any)
-			assert.Contains(t, aliases, "searchfunc")
-			assert.Contains(t, aliases, "searchvar")
-			assert.Contains(t, aliases, "searchtype")
-
-			assert.NotContains(t, aliases, "tabsearch")
-			assert.NotContains(t, aliases, "workspacesearch")
+			assert.NotContains(t, cmd, "aliases", "the package defines no aliases")
 
 			// <s-m-f>: searchtext is the only standard-specific override
 			// (Sublime-style project search); modal must NOT bind it. The

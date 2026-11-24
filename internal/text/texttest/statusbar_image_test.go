@@ -795,11 +795,20 @@ func TestStatusBarImageMovesWithTheBar(t *testing.T) {
 type placementRecorder struct {
 	comptest.StringerWriter
 	images []term.Image
+	// ctx, when set, is the writer's context.
+	ctx context.Context
 }
 
 func (w *placementRecorder) DrawImage(img term.Image) bool {
 	w.images = append(w.images, img)
 	return w.StringerWriter.DrawImage(img)
+}
+
+func (w *placementRecorder) Context() context.Context {
+	if w.ctx != nil {
+		return w.ctx
+	}
+	return w.StringerWriter.Context()
 }
 
 func TestStatusBarImageOffset(t *testing.T) {
@@ -1025,6 +1034,47 @@ func TestStatusBarRestyleImage(t *testing.T) {
 			assert.Same(t, loaded, rec.images[0].Src)
 		})
 	}
+}
+
+func TestStatusBarFocusImages(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	layout := func(gray uint8) []text.StatusBarComponent {
+		path := filepath.Join(t.TempDir(), "a.png")
+		require.NoError(t, os.WriteFile(path, encodePNG(t, solid(4, 4, gray)), 0o600))
+		uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+		components, err := text.ParseStatusBarLayout(fmt.Sprintf(
+			`{{ .Status }}{{ .Image | src %q | width 4 }}`, uri))
+		require.NoError(t, err)
+		return components
+	}
+	normal, focus := layout(128), layout(255)
+	bar := newStyledImageBar(t, text.NewStatusBarStyles(text.StatusBarStyle{
+		Layout: normal, Focus: &text.StatusBarStyle{Layout: focus},
+	}))
+	// draw returns the image the bar draws once it has loaded.
+	draw := func(focused bool) image.Image {
+		t.Helper()
+		deadline := time.Now().Add(imageBarTimeout)
+		for {
+			rec := &placementRecorder{
+				StringerWriter: imageBarWriter(imageBarWidth, imageBarHeight, true),
+				ctx:            term.ContextWithWindowFocus(context.Background(), focused),
+			}
+			bar.Draw(rec)
+			if len(rec.images) > 0 {
+				require.Len(t, rec.images, 1)
+				return rec.images[0].Src
+			}
+			require.True(t, time.Now().Before(deadline), "timed out waiting for the image to load")
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	unfocused, focused := draw(false), draw(true)
+	assert.Equal(t, color.RGBA{R: 128, G: 128, B: 128, A: 255}, color.RGBAModel.Convert(unfocused.At(0, 0)))
+	assert.Equal(t, color.RGBA{R: 255, G: 255, B: 255, A: 255}, color.RGBAModel.Convert(focused.At(0, 0)))
+	assert.Same(t, unfocused, draw(false), "switching back must not fetch the image again")
+	assert.Same(t, focused, draw(true))
 }
 
 // newStyledImageBar returns an imageBarWidth x imageBarHeight status bar

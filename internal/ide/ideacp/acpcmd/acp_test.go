@@ -36,6 +36,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/cmd/rune-agent/dialogue/dialoguetui"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/term/programstatus"
@@ -433,6 +434,101 @@ func TestHandlerViews(t *testing.T) {
 	shows("the walrus says hi and bye")
 }
 
+func TestHandlerPreview(t *testing.T) {
+	t.Parallel()
+	const status = "acp://claude/brave-fox/session"
+	say := func(log *acpapi.Log, text string) {
+		log.Update(acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+			Content: acp.TextBlock(text),
+		}})
+	}
+	shows := func(t *testing.T, c tui.Component, width, height int, text string) {
+		t.Helper()
+		screen := func() string {
+			w := term.NewStringWriter(width, height)
+			c.Draw(w)
+			_ = w.Flush()
+			return w.String()
+		}
+		require.Eventually(t, func() bool { return strings.Contains(screen(), text) },
+			10*time.Second, 10*time.Millisecond, "the preview shows %q:\n%s", text, screen())
+	}
+	open := func(t *testing.T, h *Handler) {
+		t.Helper()
+		require.NoError(t, h.HandleCommand(context.Background(), textapi.Command{
+			Name: Name, Args: []string{"open", "brave-fox"}, Window: window(1),
+		}))
+	}
+
+	t.Run("a chat of its own on a tab's session", func(t *testing.T) {
+		t.Parallel()
+		m := newFakeManager([]string{"claude"})
+		s := m.live(t, "brave-fox")
+		say(s.log, "the walrus says hi")
+		h, wm := newTestHandler(t, m)
+		open(t, h)
+		shown := wm.shownIn(window(1))
+		preview, ok := h.Preview(shown.uri)
+		require.True(t, ok)
+		c, closePreview := preview(70, 12)
+		shows(t, c, 70, 12, "the walrus says hi")
+		say(s.log, " and bye")
+		shows(t, c, 70, 12, "the walrus says hi and bye")
+		h.mu.Lock()
+		assert.Len(t, h.tabs, 1, "it is none of the session's chats")
+		h.mu.Unlock()
+
+		require.NoError(t, wm.closeTab(shown.uri))
+		require.Eventually(t, func() bool { return s.snapshot().closed },
+			10*time.Second, 10*time.Millisecond, "it keeps no idle session from ending with its last tab")
+		closePreview()
+	})
+
+	t.Run("closing it leaves the session be", func(t *testing.T) {
+		t.Parallel()
+		m := newFakeManager([]string{"claude"})
+		s := m.live(t, "brave-fox")
+		h, wm := newTestHandler(t, m)
+		open(t, h)
+		preview, ok := h.Preview(wm.shownIn(window(1)).uri)
+		require.True(t, ok)
+		_, closePreview := preview(40, 12)
+		closePreview()
+		_, followed := h.awayAt(mustURI(t, status))
+		assert.False(t, followed)
+		assert.False(t, s.snapshot().closed)
+		assert.NotNil(t, wm.shownIn(window(1)), "the tab stays")
+	})
+
+	t.Run("a session whose last tab closed mid-turn", func(t *testing.T) {
+		t.Parallel()
+		m := newFakeManager([]string{"claude"})
+		s := m.live(t, "brave-fox")
+		say(s.log, "the walrus works")
+		require.NoError(t, s.log.Prompt(nil))
+		h, wm := newTestHandler(t, m)
+		open(t, h)
+		require.NoError(t, wm.closeTab(wm.shownIn(window(1)).uri))
+		wm.status.waitReports(t, status, programstatus.Report{
+			State: programstatus.Working, Progress: -1, App: "brave-fox",
+		})
+		preview, ok := h.Preview(mustURI(t, status))
+		require.True(t, ok)
+		c, closePreview := preview(50, 12)
+		shows(t, c, 50, 12, "the walrus works")
+		closePreview()
+		_, followed := h.awayAt(mustURI(t, status))
+		assert.True(t, followed, "it is still followed")
+	})
+
+	t.Run("no session", func(t *testing.T) {
+		t.Parallel()
+		h, _ := newTestHandler(t, newFakeManager([]string{"claude"}))
+		_, ok := h.Preview(mustURI(t, "acp://claude/brave-fox"))
+		assert.False(t, ok)
+	})
+}
+
 func TestHandlerCloseTab(t *testing.T) {
 	t.Parallel()
 	const status = "acp://claude/brave-fox/session"
@@ -656,12 +752,15 @@ func TestHandlerRestyle(t *testing.T) {
 		shown.Resize(width, height)
 		return shown
 	}
-	screen := func(tb *tab) string {
+	screenIn := func(tb *tab, ctx context.Context) string {
 		w := term.NewStringWriter(width, height)
+		w.SetContext = ctx
 		tb.Draw(w)
 		_ = w.Flush()
 		return w.String()
 	}
+	screen := func(tb *tab) string { return screenIn(tb, nil) }
+	focused := term.ContextWithWindowFocus(context.Background(), true)
 	inputBg := func(tb *tab, bg term.Color) bool {
 		w := term.NewStringWriter(width, height)
 		tb.Draw(w)
@@ -676,6 +775,9 @@ func TestHandlerRestyle(t *testing.T) {
 		return config.MapConfig(map[string]any{
 			"status_bar":             map[string]any{"layout": "{{ .Conversation }} " + marker},
 			"input_background_color": bg,
+			"focus": map[string]any{
+				"status_bar": map[string]any{"layout": "{{ .Conversation }} focus " + marker},
+			},
 		})
 	}
 	open := newChat("open", window(1))
@@ -687,9 +789,11 @@ func TestHandlerRestyle(t *testing.T) {
 	require.Eventually(t, func() bool { return strings.Contains(screen(open), "open ##") },
 		10*time.Second, 10*time.Millisecond, "the open chat takes the last style:\n%s", screen(open))
 	assert.True(t, inputBg(open, term.ColorBlue), "the open chat's compose box")
+	assert.Contains(t, screenIn(open, focused), "open focus ##", "the open chat in focus")
 	next := newChat("next", window(3))
 	assert.Contains(t, screen(next), "next ##", "a chat opened next")
 	assert.True(t, inputBg(next, term.ColorBlue), "a chat opened next: compose box")
+	assert.Contains(t, screenIn(next, focused), "next focus ##", "a chat opened next in focus")
 }
 
 func TestHandlerClose(t *testing.T) {

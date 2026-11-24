@@ -77,6 +77,7 @@ func TestRouteChatCommandDelivers(t *testing.T) {
 	}{
 		{"model", commandModel, []string{"openai/gpt-5"}, "model", []string{"openai/gpt-5"}},
 		{"effort", commandEffort, []string{"high"}, "effort", []string{"high"}},
+		{"speed", commandSpeed, []string{"fast"}, "speed", []string{"fast"}},
 		{"maxtokens", commandMaxTokens, []string{"4096"}, "max_tokens", []string{"4096"}},
 		{"skill", commandSkill, []string{"review", "foo"}, "review", []string{"foo"}},
 		{"clear", commandClear, nil, "clear", nil},
@@ -182,6 +183,10 @@ func TestCompleteChatPromptCommands(t *testing.T) {
 		assert.Equal(t, []string{
 			"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 		}, got)
+	})
+	t.Run("speed", func(t *testing.T) {
+		got := completeToSlice(t, ctx, h, commandSpeed)
+		assert.Equal(t, []string{"standard", "fast", "ultrafast"}, got)
 	})
 	t.Run("skill", func(t *testing.T) {
 		got := completeToSlice(t, ctx, h, commandSkill)

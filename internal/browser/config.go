@@ -285,6 +285,10 @@ func (i PromptButtonImage) image(g *tcomponent.FrameGraphics) component.ButtonIm
 type Wallpaper struct {
 	BackgroundAttr term.Attributes
 	NewComponent   func() tui.Component
+	// Focus is the wallpaper of the window holding the window manager's
+	// focus style. Nil shows this one there too. Its own Focus is
+	// ignored.
+	Focus *Wallpaper
 }
 
 // NopWallpaper is a Wallpaper of component.Nop.

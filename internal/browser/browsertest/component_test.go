@@ -1859,10 +1859,28 @@ func TestComponentRestyle(t *testing.T) {
 	require.NoError(t, err)
 	assert.Same(t, tab, content, "the tab window keeps its tab")
 
+	style.WindowManager.FocusBackground = &tcomponent.WindowBackground{
+		Attr: term.Attributes{Bg: term.ColorNavy},
+	}
+	c.Restyle(style)
+	w := term.NewStringWriter(20, 8)
+	c.Draw(w)
+	require.NoError(t, w.Flush())
+	for y := 2; y < 8; y++ {
+		for x := range 20 {
+			want := term.ColorDefault
+			if x < 10 {
+				want = term.ColorNavy
+			}
+			assert.Equal(t, want, w.Cells()[y*20+x].Bg,
+				"the focused window's cells, corners and junctions take its background at %d,%d", x, y)
+		}
+	}
+
 	assert.NotNil(t, c.ButtonImages(), "prompts get the new images")
 	c.Prompt(browserapi.PromptConfig{Message: "Proceed?", Options: []string{"Yes", "No"}},
 		handler.NopPromptHandler())
-	w := term.NewStringWriter(20, 8)
+	w = term.NewStringWriter(20, 8)
 	c.Draw(w)
 	require.NoError(t, w.Flush())
 	var yes term.Attributes

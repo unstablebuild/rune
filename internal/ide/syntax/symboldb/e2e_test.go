@@ -53,13 +53,19 @@ type e2eEnv struct {
 	p       *Parser
 }
 
-// stubPkgManager serves fixed tree-sitter artifact paths, matching the
-// symbolresolve test harness.
-type stubPkgManager struct{ files []string }
+// stubPkgManager serves fixed tree-sitter artifact paths for one
+// language, matching the symbolresolve test harness.
+type stubPkgManager struct {
+	lang  string
+	files []string
+}
 
 func (s *stubPkgManager) LibDir(
-	context.Context, string,
+	_ context.Context, lang string,
 ) (iterator.Iterator[string], error) {
+	if lang != s.lang {
+		return nil, fmt.Errorf("language %q not installed", lang)
+	}
 	return iterator.FromSlice(s.files), nil
 }
 
@@ -79,16 +85,40 @@ func fixtureDir(t testing.TB, rel string) string {
 	return dir
 }
 
+// pkgManagerFor installs the language whose fixtures are in the folder
+// fixtures, named after it.
 func pkgManagerFor(t testing.TB, fixtures string) syntax.PkgManager {
 	t.Helper()
 	dir := fixtureDir(t, fixtures)
-	return &stubPkgManager{files: []string{
+	return &stubPkgManager{lang: filepath.Base(fixtures), files: []string{
 		grammarfixture.ParserPath(t, dir),
 		filepath.Join(dir, "locals.scm"),
 		filepath.Join(dir, "highlights.scm"),
 		filepath.Join(dir, "indents.scm"),
 		filepath.Join(dir, "folds.scm"),
 	}}
+}
+
+// multiStubPkgManager serves a different fixture directory per language
+// id, for workspaces whose files inject one grammar into another; a
+// language it does not list reads as not installed.
+type multiStubPkgManager map[string][]string
+
+func (m multiStubPkgManager) LibDir(
+	_ context.Context, langID string,
+) (iterator.Iterator[string], error) {
+	return iterator.FromSlice(m[langID]), nil
+}
+
+func multiPkgManagerFor(t testing.TB, fixtures map[string]string) multiStubPkgManager {
+	t.Helper()
+	m := make(multiStubPkgManager, len(fixtures))
+	for langID, rel := range fixtures {
+		wd, err := os.Getwd()
+		require.NoError(t, err)
+		m[langID] = grammarfixture.LibDir(t, filepath.Join(wd, rel))
+	}
+	return m
 }
 
 func copyDir(t *testing.T, src, dst string) {
@@ -114,6 +144,11 @@ func copyDir(t *testing.T, src, dst string) {
 // for the initial scan.
 func setupE2E(t *testing.T, testdata, fixtures string) *e2eEnv {
 	t.Helper()
+	return setupE2EWith(t, testdata, pkgManagerFor(t, fixtures))
+}
+
+func setupE2EWith(t *testing.T, testdata string, pkg syntax.PkgManager) *e2eEnv {
+	t.Helper()
 	root := t.TempDir()
 	copyDir(t, testdata, root)
 
@@ -124,9 +159,11 @@ func setupE2E(t *testing.T, testdata, fixtures string) *e2eEnv {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = scheme.Close() })
 
-	backing := treesitter.NewParser(scheme, pkgManagerFor(t, fixtures), rootURI)
-	p, err := New(backing, scheme, rootURI, storagestub.NewInMemoryService(),
-		&recordingNotifications{}, syncTick)
+	backing := treesitter.NewParser(scheme, pkg, rootURI)
+	p, err := New(Config{
+		Root: rootURI, FS: scheme, Backing: backing, Indexer: backing,
+		DB: storagestub.NewInMemoryService(),
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = p.Close() })
 	require.NoError(t, p.Wait(context.Background()))
@@ -462,6 +499,65 @@ func TestZigE2E(t *testing.T) {
 	})
 }
 
+func TestSvelteE2E(t *testing.T) {
+	t.Parallel()
+	env := setupE2EWith(t, svelteTestdata, multiPkgManagerFor(t, map[string]string{
+		"svelte": svelteFixtures, "typescript": tsFixtures, "javascript": jsFixtures,
+	}))
+
+	t.Run("script declarations resolve to the component", func(t *testing.T) {
+		for name, rel := range map[string]string{
+			"Counter.increment":    "src/Counter.svelte",
+			"Counter.Store":        "src/Counter.svelte",
+			"Counter.Store.reset":  "src/Counter.svelte",
+			"Badge.emphasize":      "src/Badge.svelte",
+			"Badge.Palette.swatch": "src/Badge.svelte",
+			"Settings.load":        "src/Settings.svelte",
+			"Settings.toggle":      "src/Settings.svelte",
+			"Broken.stable":        "src/Broken.svelte",
+		} {
+			assert.Equalf(t, []string{env.uri(t, rel)}, resolveURIs(t, env.p, name), "resolve %q", name)
+		}
+	})
+
+	t.Run("references with no workspace definition resolve to the use site", func(t *testing.T) {
+		assert.Equal(t, []string{env.uri(t, "src/Counter.svelte")},
+			resolveURIs(t, env.p, "motion.tweened"))
+	})
+
+	t.Run("match positions are component coordinates", func(t *testing.T) {
+		it, err := env.p.ResolveSymbol(context.Background(), "Counter.increment", nil)
+		require.NoError(t, err)
+		matches, err := iterator.ToSlice(context.Background(), it)
+		require.NoError(t, err)
+		require.Len(t, matches, 1)
+		assert.Equal(t, 21, matches[0].Pos.Y)
+		assert.Equal(t, 18, matches[0].Pos.X)
+	})
+
+	t.Run("modules imported by components keep their own spec", func(t *testing.T) {
+		// The TypeScript spec claims geometry.ts, so its definition is
+		// preferred over the component's reference.
+		assert.Equal(t, []string{env.uri(t, "src/lib/geometry.ts")},
+			resolveURIs(t, env.p, "geometry.area"))
+	})
+
+	t.Run("listed symbols include component names", func(t *testing.T) {
+		got := listSet(t, env.p)
+		for _, name := range []string{
+			"Counter.increment", "Counter.Store.reset", "Badge.emphasize",
+			"Settings.load", "motion.tweened", "geometry.describe", "format.percent",
+		} {
+			assert.Truef(t, got[name], "expected %q to be listed", name)
+		}
+		assert.False(t, got["Plain.h1"], "markup must not be indexed")
+	})
+
+	t.Run("an unindexed name is a miss, not a fallback", func(t *testing.T) {
+		assert.Empty(t, resolveURIs(t, env.p, "Counter.missing"))
+	})
+}
+
 func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 	const (
 		tsxFile = "Home.tsx"
@@ -494,6 +590,8 @@ func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 		// install sets up the packages the first scan runs under; change
 		// alters them before the workspace is reopened.
 		install, change func(t *testing.T, pkgs *grammarfixture.Packages)
+		// firstExtracted are the files the first scan reads; nil for all.
+		firstExtracted  []string
 		wantReextracted []string
 		wantListed      []string
 	}{
@@ -571,8 +669,9 @@ func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 			wantListed:      []string{"Home.Hero", "geometry.Area"},
 		},
 		{
-			name:    "grammar installed after the first scan",
-			install: func(*testing.T, *grammarfixture.Packages) {},
+			name:           "grammar installed after the first scan",
+			install:        func(*testing.T, *grammarfixture.Packages) {},
+			firstExtracted: []string{goFile},
 			change: func(t *testing.T, pkgs *grammarfixture.Packages) {
 				pkgs.Install(t, "tsx", "1", tsx)
 			},
@@ -580,10 +679,11 @@ func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 			wantListed:      []string{"Home.Agent", "Home.Hero", "geometry.Area"},
 		},
 		{
-			name:       "grammar still not installed",
-			install:    func(*testing.T, *grammarfixture.Packages) {},
-			change:     func(*testing.T, *grammarfixture.Packages) {},
-			wantListed: []string{"geometry.Area"},
+			name:           "grammar still not installed",
+			install:        func(*testing.T, *grammarfixture.Packages) {},
+			change:         func(*testing.T, *grammarfixture.Packages) {},
+			firstExtracted: []string{goFile},
+			wantListed:     []string{"geometry.Area"},
 		},
 		{
 			name: "grammar uninstalled",
@@ -593,8 +693,7 @@ func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 			change: func(t *testing.T, pkgs *grammarfixture.Packages) {
 				pkgs.Uninstall(t, "tsx", "1")
 			},
-			wantReextracted: []string{tsxFile},
-			wantListed:      []string{"geometry.Area"},
+			wantListed: []string{"geometry.Area"},
 		},
 	}
 	for _, tt := range tests {
@@ -627,13 +726,14 @@ func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 				require.NoError(t, err)
 				defer func() { require.NoError(t, db.Close()) }()
 				backing := &extractionCounter{
-					Backing: treesitter.NewParser(scheme, pkgs, rootURI),
-					root:    rootURI,
+					Parser: treesitter.NewParser(scheme, pkgs, rootURI),
+					root:   rootURI,
 				}
-				p, err := New(backing, scheme, rootURI,
-					storageapi.WithPartition(
+				p, err := New(Config{
+					Root: rootURI, FS: scheme, Backing: backing, Indexer: backing,
+					DB: storageapi.WithPartition(
 						storageapi.WithPartition(db, PartitionName), rootURI.String()),
-					&recordingNotifications{}, syncTick)
+				})
 				require.NoError(t, err)
 				defer func() { require.NoError(t, p.Close()) }()
 				require.NoError(t, p.Wait(context.Background()))
@@ -648,7 +748,11 @@ func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 			}
 
 			first, _ := open(t)
-			assertReextracted(t, first, slices.Collect(maps.Keys(sources)))
+			firstExtracted := tt.firstExtracted
+			if firstExtracted == nil {
+				firstExtracted = slices.Collect(maps.Keys(sources))
+			}
+			assertReextracted(t, first, firstExtracted)
 
 			tt.change(t, pkgs)
 			second, listed := open(t)
@@ -665,7 +769,7 @@ func TestGrammarChangesReextractUnchangedFilesOnDisk(t *testing.T) {
 // extractionCounter counts the files a real backing parser extracts,
 // keyed by workspace-relative path.
 type extractionCounter struct {
-	Backing
+	treesitter.Parser
 	root workspaceapi.URI
 
 	mu    sync.Mutex
@@ -673,7 +777,7 @@ type extractionCounter struct {
 }
 
 func (c *extractionCounter) NewQuerySession() symbolresolve.QuerySession {
-	return &countingQuerySession{QuerySession: c.Backing.NewQuerySession(), c: c}
+	return &countingQuerySession{QuerySession: c.Parser.NewQuerySession(), c: c}
 }
 
 func (c *extractionCounter) extractions() map[string]int {
@@ -702,17 +806,21 @@ func (s *countingQuerySession) QueryMulti(
 // Paths to the committed testdata modules and tree-sitter fixtures,
 // relative to this package's directory.
 const (
-	goTestdata    = "../../idelsp/symbolresolve/testdata"
-	pyTestdata    = "../../idelsp/symbolresolve/testdata_py"
-	pyPkgTestdata = "../../idelsp/symbolresolve/testdata_py_pkg"
-	rsTestdata    = "../../idelsp/symbolresolve/testdata_rs"
-	zigTestdata   = "../../idelsp/symbolresolve/testdata_zig"
+	goTestdata     = "../../idelsp/symbolresolve/testdata"
+	pyTestdata     = "../../idelsp/symbolresolve/testdata_py"
+	pyPkgTestdata  = "../../idelsp/symbolresolve/testdata_py_pkg"
+	rsTestdata     = "../../idelsp/symbolresolve/testdata_rs"
+	zigTestdata    = "../../idelsp/symbolresolve/testdata_zig"
+	svelteTestdata = "../../idelsp/symbolresolve/testdata_svelte"
 
-	goFixtures  = "../../idelsp/symbolresolve/go"
-	pyFixtures  = "../syntaxtest/python"
-	rsFixtures  = "../syntaxtest/rust"
-	tsxFixtures = "../syntaxtest/tsx"
-	zigFixtures = "../syntaxtest/zig"
+	goFixtures     = "../../idelsp/symbolresolve/go"
+	pyFixtures     = "../syntaxtest/python"
+	rsFixtures     = "../syntaxtest/rust"
+	tsxFixtures    = "../syntaxtest/tsx"
+	tsFixtures     = "../syntaxtest/typescript"
+	jsFixtures     = "../syntaxtest/javascript"
+	svelteFixtures = "../syntaxtest/svelte"
+	zigFixtures    = "../syntaxtest/zig"
 )
 
 // benchWorkspace generates a workspace of Go files whose shared-name
@@ -782,9 +890,10 @@ func BenchmarkInitialScan(b *testing.B) {
 			b.Run("db=stub", func(b *testing.B) {
 				b.ResetTimer()
 				for range b.N {
-					p, err := New(backing, scheme, rootURI,
-						storagestub.NewInMemoryService(),
-						&recordingNotifications{}, syncTick)
+					p, err := New(Config{
+						Root: rootURI, FS: scheme, Backing: backing, Indexer: backing,
+						DB: storagestub.NewInMemoryService(),
+					})
 					require.NoError(b, err)
 					require.NoError(b, p.Wait(context.Background()))
 					require.NoError(b, p.Close())
@@ -800,8 +909,9 @@ func BenchmarkInitialScan(b *testing.B) {
 				for i := range b.N {
 					iter, err := db.Partition(fmt.Sprintf("iter%d", i))
 					require.NoError(b, err)
-					p, err := New(backing, scheme, rootURI, iter,
-						&recordingNotifications{}, syncTick)
+					p, err := New(Config{
+						Root: rootURI, FS: scheme, Backing: backing, Indexer: backing, DB: iter,
+					})
 					require.NoError(b, err)
 					require.NoError(b, p.Wait(context.Background()))
 					require.NoError(b, p.Close())

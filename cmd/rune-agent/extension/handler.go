@@ -88,6 +88,7 @@ const (
 	newViewFlag = "--new"
 
 	commandEffort        = "chateffort"
+	commandSpeed         = "chatspeed"
 	commandMaxTokens     = "chatmaxtokens"
 	commandSkill         = "chatskill"
 	commandModel         = "chatmodel"
@@ -1070,6 +1071,7 @@ func (h *aiEditorHandler) reloadStyle(ctx context.Context, host config.Config) e
 	h.cfg.InputBox.FrameAttr = cfg.InputBox.FrameAttr
 	h.cfg.InputBox.ContentAttr = cfg.InputBox.ContentAttr
 	h.cfg.InputBackgroundColor = cfg.InputBackgroundColor
+	h.cfg.Focus = cfg.Focus
 	h.statusBarMu.Unlock()
 	h.openChats.Range(func(_, v any) bool {
 		// Chats still opening hold no component yet; they read the
@@ -1148,7 +1150,7 @@ func (h *aiEditorHandler) HandleCommand(
 		return h.handleQuery(cmd)
 	case commandChat:
 		return h.handleChat(cmd)
-	case commandModel, commandEffort, commandMaxTokens, commandSkill,
+	case commandModel, commandEffort, commandSpeed, commandMaxTokens, commandSkill,
 		commandClear, commandCompact, commandFork, commandReviewChanges,
 		commandReviewAll, commandExport, commandLog:
 		return h.routeChatCommand(cmd)
@@ -1180,13 +1182,21 @@ func dialogueIDFromURI(uri workspaceapi.URI) (string, bool) {
 // OpenResource satisfies textapi.ResourceOpenHandler. It returns the chat
 // uri identifies, resumed with the model the dialogue was stored with when
 // that model is still available and the default model otherwise. A chat
-// that is running gets a new view, shown at uri.
+// that is running gets a new view, shown at uri, or a preview when uri
+// carries text.PreviewQuery, which a chat that does not run cannot have.
 func (h *aiEditorHandler) OpenResource(
 	ctx context.Context, uri workspaceapi.URI,
 ) (browserapi.Handler, error) {
 	id, ok := dialogueIDFromURI(uri)
 	if !ok {
 		return nil, fmt.Errorf("%s is not an agent chat", uri)
+	}
+	if previewRequested(uri) {
+		s, ok := h.runningChat(id)
+		if !ok {
+			return nil, fmt.Errorf("agent chat %q is not running", id)
+		}
+		return s.preview()
 	}
 	args := []string{id}
 	// The URI host is a lossy encoding of the model (see getModelUri), so
@@ -1201,6 +1211,13 @@ func (h *aiEditorHandler) OpenResource(
 		return nil, err
 	}
 	return c.content, nil
+}
+
+// previewRequested reports whether uri asks for a preview of what it
+// names.
+func previewRequested(uri workspaceapi.URI) bool {
+	u, err := url.Parse(uri.String())
+	return err == nil && u.Query().Has(text.PreviewQuery)
 }
 
 // CompleteResource satisfies textapi.ResourceOpenHandler. It yields the URIs
@@ -1326,6 +1343,8 @@ func (h *aiEditorHandler) routeChatCommand(cmd textapi.Command) error {
 		name = "model"
 	case commandEffort:
 		name = "effort"
+	case commandSpeed:
+		name = "speed"
 	case commandClear:
 		if err := rejectPositionalID("clear", cmd.Args); err != nil {
 			return err
@@ -1419,6 +1438,12 @@ func (h *aiEditorHandler) Complete(ctx context.Context, name string, args []stri
 			levels[i] = string(l)
 		}
 		return iterator.FromSlice(levels), nil
+	case commandSpeed:
+		speeds := make([]string, len(validSpeeds))
+		for i, s := range validSpeeds {
+			speeds[i] = string(s)
+		}
+		return iterator.FromSlice(speeds), nil
 	case commandSkill:
 		skills := h.skillRegistry.List()
 		names := make([]string, len(skills))

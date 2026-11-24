@@ -147,6 +147,12 @@ func (c *client) CreateCompletion(
 		})
 	}
 
+	// The chat keeps its speed across model switches, so a speed this model
+	// lacks is an expected state rather than a mistake worth a warning.
+	if !SupportsSpeed(model.Name, request.Speed) {
+		request.Speed = ""
+	}
+
 	// Build request parameters.
 	params := anthropicParamsFromRequest(model.Name, request, c.config)
 

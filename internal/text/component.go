@@ -1689,6 +1689,12 @@ func (c *Component) SetDim(to bool) bool {
 	return c.comp.SetDim(to)
 }
 
+// SetFocusStyle turns the focus window's focus style on or off, as
+// browser.Component.SetFocusStyle does, and returns whether it was on.
+func (c *Component) SetFocusStyle(on bool) bool {
+	return c.comp.SetFocusStyle(on)
+}
+
 // WindowManagerPosition returns the offset from the top left corner
 // where the underlying window manager starts.
 func (c *Component) WindowManagerPosition() term.Coordinates {

@@ -2,7 +2,10 @@
 name: rune-hud
 description: >
   Update Rune's configuration and generate sprites to refine its UI:
-  window frames, floating-only frames and focused headers, scroll bars, command prompts, editor
+  window frames, floating-only frames and focused headers, window backgrounds
+  and focus styles (including marking the focused window by its background
+  instead of a frame, for a smoother or more modern look), scroll bars,
+  command prompts, editor
   and agent status-bar layouts, the quick menu, prompt buttons, wallpaper, the
   app icon and sounds. Discover the configuration, edit it, run runectl
   screenshot and inspect the result yourself. This is configuration and asset
@@ -37,6 +40,11 @@ or provide screenshots you can capture yourself.
 - Floating-only shadows and distinct focused headers are supported config
   surfaces. Use the optional charsets below, not core changes or shared tiled
   frame edits, when the request concerns only floating windows.
+- Marking the focused window by its background instead of its frame is a
+  supported config surface: blank frame charsets for padding plus
+  `focus_background_attr`, or the theme's `focus_background`. Follow
+  "Frameless focus" below, also when the user only asks for a smoother,
+  cleaner or more modern design.
 
 ## Checking your work
 Take a baseline screenshot before editing. Run `runectl screenshot` yourself,
@@ -50,7 +58,9 @@ these keys to every open workspace:
 - `browser.window_manager`: `frame_attr`, `focus_frame_attr`, `frame_charset`,
   `focus_frame_charset`, `floating_frame_charset`, `focus_floating_frame_charset`,
   `focus_window_bar_charset`, `scroll_bar_attr`, `scroll_bar_charset`,
-  `scroll_bar_char`, `scroll_bar_hover_char`, `window_bar`, `window_bar_charset`,
+  `focus_scroll_bar_charset`, `scroll_bar_char`, `scroll_bar_hover_char`,
+  `background_attr`, `focus_background_attr`, `background_graphics`,
+  `focus_background_graphics`, `window_bar`, `window_bar_charset`,
   `close_icon` and `close_icon_attr`;
 - `browser.frameunion_charset`;
 - `browser`: `focus_tab_attr`, `non_focus_tab_attr`, `focus_tab_icon_attr`,
@@ -61,9 +71,11 @@ these keys to every open workspace:
   `clicked_attr`, `background_attr` and `images`;
 - `command.frame_charset`, `command.separator_charset` and
   `command.show_manual`;
-- `editor.status_bar`: `layout`, `background_attr` and `foreground_error_attr`;
-- `extensions.rune-agent.config.status_bar`, every key, and
-  `extensions.rune-agent.config.input_box_frame_charset`;
+- `editor.status_bar`: `layout`, `background_attr`, `foreground_error_attr`
+  and `focus`;
+- `extensions.rune-agent.config.status_bar`, every key,
+  `extensions.rune-agent.config.input_box_frame_charset`, the compose box
+  colours and `extensions.rune-agent.config.focus`;
 - `gui`: `quick_menu`, `quick_menu_sounds`, `themes`, `default_theme`,
   `sound_volume` and `app_icon`;
 - `notifications`: `attr`, `background_attr`, `frame_charset`, `padding`,
@@ -72,7 +84,8 @@ these keys to every open workspace:
 - `terminal.bell`;
 - `workspace`: `wallpaper_image`, `wallpaper_image_ascii`, `wallpaper_ascii`,
   `wallpaper`, `wallpaper_attr`, `wallpaper_background_attr`,
-  `wallpaper_density_characters`, `focus_tab_highlight_char`, `tab_images`,
+  `wallpaper_density_characters`, the `focus_` version of each of those
+  wallpaper keys, `focus_tab_highlight_char`, `tab_images`,
   `focus_tab_highlight_graphics` and `tab_sounds`;
 - `sounds`.
 
@@ -143,10 +156,13 @@ hud/<theme>/
   sounds/<cue>.wav
   v<N>/icon.png
   v<N>/frame/{normal,focused,prompt}/<slot>.png
+  v<N>/panel/{normal,focused}/<slot>.png      (the 8 frame slots and center)
   v<N>/scroll/{top,middle,bottom,hover-top,hover-middle,hover-bottom}.png
+  v<N>/scroll/focused-{top,middle,bottom,hover-top,hover-middle,hover-bottom}.png
   v<N>/window-bar/{left,middle,right}.png
   v<N>/separator/{left,horizontal,right}.png
-  v<N>/status/<name>.png
+  v<N>/status/{normal,focused}/<name>.png
+  v<N>/inbox/{normal,focused}/<name>.png
   v<N>/quickmenu/{idle,hover,pressed}/<button>.png
   v<N>/button/{idle,selected,hover,pressed}/{left,middle,right}.png
 ```
@@ -170,12 +186,26 @@ would need percent-encoding in a `file://` URI.
    for the wallpaper, which must be a PNG. Each side is at most 8192 px.
 4. **Images are drawn as they are.** Attrs, dimming, b&w and the theme do not
    tint them, so bake the colours in.
-   - Ship separate normal and focused frame sets.
-   - Transparent pixels show the cell background behind them (for tiled
-     frames, the background of `frame_attr` or `focus_frame_attr`). On a
-     floating window's frame and window bar they show whatever is under the
-     window, including its text: make those sprites opaque inside the window
-     and transparent only outside it, such as beyond a rounded corner.
+   - A theme is two matched states, normal and focused. Each has one
+     background, a colour and optionally a panel image, and every sprite set
+     of that state is painted against it: frames, scroll bar, status bars,
+     inbox and compose box. Ship a normal and a focused set of each sprite
+     whose surroundings differ between the states. When a theme gains a
+     focus background, run the audit in "Adding a focus background to a
+     theme" first.
+   - Frame sprites are lines on transparent pixels. Window frames, floating
+     frames, the command prompt frame, the compose box frame and
+     notification frames all work the same way: Rune paints the transparent
+     pixels on the content's side of the line in the content's colour, and
+     the ones on the other side show what is under the frame. Never paint
+     either side in: a baked side is right in one state only. See "One
+     colour on each side of a line".
+   - Every other image's transparent pixels show the background of the cell
+     it's drawn in, and a cell has exactly one background. "Which colour a
+     transparent pixel shows" lists it for each surface.
+   - On a floating window's bar, transparent pixels show whatever is under
+     the window, including its text: make bar sprites opaque inside the bar
+     and transparent only outside it, such as beyond a rounded end.
      The close icon and title over bar sprites keep that background too, so
      `close_icon_attr`'s background only applies to a bar drawn with
      characters; pick the icon and title colours to read over the sprites.
@@ -207,6 +237,7 @@ principles.
 3. **One continuous surface.** The theme background is the canvas (see
    Colour continuity). Any fill meant to read as background is transparent or
    exactly that colour, never a near-black of your own.
+   The focused window's background is the canvas of the focused state.
 4. **Ornament budget by surface:**
    - Wallpaper and status-bar end ornaments: the only places for figures
      (creatures, skulls, statues, scenes). They are painted art, see below.
@@ -262,17 +293,32 @@ whatever is underneath: usually the theme background, but also status colours,
 text or other images. Use that intentionally for status-bar ornaments.
 - Read `gui.default_theme`, then its `background`: from `gui.themes.<name>` in
   the user's config when it's defined there, otherwise from the built-in list
-  below. Record it in the manifest.
+  below. Read its `focus_background` too, the focused canvas while
+  `focus_background_attr` and `focus_background_graphics` are unset. Record
+  both in the manifest.
 - Built-in backgrounds: furman `#202020`, romero `#000000`, carmack `#080808`,
   reynolds `#121212`, brevik `#080808`, thompson `#0f1114`, pike `#ffffea`,
   hopper `#000000`, kernighan `#0c0c0c`, wozniak `#120F1D`, auge `#270d06`,
   ritchie `#f8f8f8`, kelleher `#000000`, sanfilippo `#000000`, frost
   `#000000`, mullen `#0d0d1b`.
+- Built-in focus backgrounds: pike `#fffff3`, ritchie `#ffffff`. The other
+  built-in themes set none, so their focused window keeps the theme
+  background unless the config sets one.
 - The wallpaper's own background must be that colour, not a nearby one, and
   its edges must fade to it exactly. With `contain` the image's edges sit
   inside the window, so any step shows as a rectangle.
 - Leave `workspace.wallpaper_background_attr` unset, or give it the same `bg`.
 - Opaque fills in frames, bars and buttons follow the same rule.
+- The focused state has its own canvas: the `bg` of
+  `browser.window_manager.focus_background_attr`, or else the theme's
+  `focus_background`, and the panel of `focus_background_graphics` drawn over
+  it. Opaque fills in focused sprites,
+  the focused wallpaper and the `focus` blocks' backgrounds must match it
+  exactly, and the panel's own fill must be that `bg`, so a slice that hasn't
+  loaded leaves no step.
+- A pixel painted in a canvas colour is right only where that canvas is
+  behind it in every state it's drawn in. A sprite shared by both states
+  can't bake either canvas into a pixel the pane shows around.
 - If the art can't be matched, the alternative is a custom theme whose
   `background` is the art's colour (`gui.themes.<name>`, then
   `gui.default_theme`). Ask first: it changes every window.
@@ -343,6 +389,11 @@ Abbreviations:
 | Window frame | `browser.window_manager.frame_charset.graphics` | `topleft` `topright` `bottomleft` `bottomright` | 1 × 1 | fill |
 | | | `horizontaltop` `horizontalbottom` (tiles →), `verticalleft` `verticalright` (tiles ↓) | 1 × 1 | fill |
 | Focused frame | `browser.window_manager.focus_frame_charset.graphics` | same 8 | 1 × 1 | fill |
+| Window background | `browser.window_manager.background_graphics` | `topleft` `topright` `bottomleft` `bottomright` | 1 × 1 | `fit`: fill (default) or tile |
+| | | `horizontaltop` `horizontalbottom` | (w−2) × 1 | `fit` |
+| | | `verticalleft` `verticalright` | 1 × (h−2) | `fit` |
+| | | `center` | (w−2) × (h−2) | `fit` |
+| Focused window background | `browser.window_manager.focus_background_graphics` | same 9 | same as above | `fit` |
 | Floating-only frame | `browser.window_manager.floating_frame_charset.graphics` | same 8 | 1 × 1 | fill |
 | Focused floating-only frame | `browser.window_manager.focus_floating_frame_charset.graphics` | same 8 | 1 × 1 | fill |
 | Command prompt frame | `command.frame_charset.graphics` | same 8 | 1 × 1 | fill |
@@ -352,7 +403,9 @@ Abbreviations:
 | Notification progress bar | `notifications.progress_format.graphics` | `start`, `current_tip`, `end` | 1 × 1 | fill |
 | | | `current` `remain` (tiles →) | 1 × 1 | fill |
 | Agent compose box frame | `extensions.rune-agent.config.input_box_frame_charset.graphics` | same 8 | 1 × 1 | fill |
+| Focused agent compose box frame | `extensions.rune-agent.config.focus.input_box_frame_charset.graphics` | same 8 | 1 × 1 | fill |
 | Scroll bar | `browser.window_manager.scroll_bar_charset.graphics` | `top_char`, `middle_char` (tiles ↓), `bottom_char`, and the `hover_` version of each | (1+L) × 1 | fill |
+| Focused scroll bar | `browser.window_manager.focus_scroll_bar_charset.graphics` | same as the scroll bar | (1+L) × 1 | fill |
 | Floating window bar | `browser.window_manager.window_bar_charset.graphics` | `left` | (S+1+I) × (T+1+B) | fill |
 | | | `right` | (I+1+S) × (T+1+B) | fill |
 | | | `horizontal` (tiles →) | 1 × (H+1) | fill |
@@ -379,10 +432,14 @@ Abbreviations:
 | | | `vertical` (tiles ↓) | 1 × 1 | fill |
 | Inbox progress bar | `program_status.progress_bar_graphics` | `left`, `right` | 1 × 1 | fill |
 | | | `filled`, `empty` (tiles →) | 1 × 1 | fill |
+| Focused inbox | `program_status.focus.<images\|marker_graphics\|divider_charset.graphics\|progress_bar_graphics>` | same as the inbox rows above | same | fill |
 | Editor status bar | `editor.status_bar.layout` | `.Image` elements | `width` × `height` | contain, or `fit "fill"` |
+| Focused editor status bar | `editor.status_bar.focus.layout` | `.Image` elements | `width` × `height` | contain, or `fit "fill"` |
 | Agent status bar | `extensions.rune-agent.config.status_bar.layout` | `.Image` elements | `width` × `height` | contain, or `fit "fill"` |
+| Focused agent status bar | `extensions.rune-agent.config.focus.status_bar.layout` | `.Image` elements | `width` × `height` | contain, or `fit "fill"` |
 | Quick menu | `gui.quick_menu[i].sprite` | `idle` `hover` `pressed` | square, each side as wide as 4 text columns | contain |
 | Wallpaper | `workspace.wallpaper_image` | a path, or `{path, width, height, fit}` | `width`/`height` in cells or `N%`, default 60% | `contain` (default), `cover` or `fill` |
+| Focused wallpaper | `workspace.focus_wallpaper_image` | same as the wallpaper | same | same |
 | App icon | `gui.app_icon` | a path | none: a square image, 256 px or larger | `contain`, centered on a transparent square |
 
 ### Floating-only styling
@@ -433,9 +490,257 @@ restores inheritance, while `""` explicitly clears it. Inspect focused and
 unfocused floats, check shadows and header joins, and confirm tiled frames
 remain unchanged. Do not claim a focus state was verified unless visible.
 
+### Focus styles
+
+The focused window can stand out by its background rather than its frame: a
+background colour, optionally a panel image, and focused sprites. It applies
+only with more than one window, and only window focus counts: a single window,
+or Rune out of focus, shows the normal style.
+
+#### Frameless focus: remove the frame lines, mark focus with the background
+
+Use this technique when the user asks for it outright:
+
+- "Remove the window lines and use the background to show what's in focus."
+- "No borders", "borderless windows", "get rid of the frames".
+- "Highlight the active pane", "make the focused window stand out" without
+  asking for a frame colour.
+
+Also use it when the request is vague about the look: "smoother", "more
+modern", "cleaner", "minimal", "less busy", "flatter", or "like VS Code" or
+"like Zed". Make it the first change, before new colours or sprites. Frame
+lines are the heaviest structure on screen, and box-drawing outlines read as
+a classic terminal UI. Users who ask for a modern look generally expect panes
+split by spacing and surface tone, with the focused pane a shade apart, as in
+current editors. In your reply, say that focus is now shown by the background
+and that the frame lines can come back.
+
+Don't use it, unless asked, when the user wants frames, or a framed, retro or
+pixel-art theme, or when the theme's frame sprites are its identity. Style
+the frames' focus with `focus_frame_attr` and `focus_frame_charset` instead.
+
+To apply it, do all of the following:
+
+1. **Blank the frames; don't turn them off.** Keep
+   `browser.window_manager.frame: true` and set `frame_charset` and
+   `focus_frame_charset` to a space in all eight slots. The frame stays as one
+   cell of padding around each window, which takes the window's background,
+   and keeps the scroll bar, which draws in its right edge, and edge dragging.
+   `frame: false` loses all three and puts neighbouring windows' text side by
+   side. Use it only when the user asks for no padding.
+2. **Drop the frame images.** Spaces don't hide `graphics`, and slots left
+   out inherit. Remove the `graphics` tables from both charsets, or set their
+   slots to `""`. Do the same for `floating_frame_charset` and
+   `focus_floating_frame_charset` unless the user wants to keep float shadows.
+3. **Keep the padding transparent.** Set the `bg` of `frame_attr` and
+   `focus_frame_attr` to `default`, or leave it out. An explicit `bg` paints a
+   ring of that colour instead of the window's background.
+4. **Set the background attrs.** `focus_background_attr.bg` fills every cell
+   of the focused window drawn in the default background: the padding, the
+   text area and the empty space. `background_attr.bg` does the same for every
+   window, a single window included; left out, every window keeps the theme
+   background until one takes the focus style. Both work in the terminal UI
+   too.
+   - **Check the theme first.** When the active theme has a
+     `focus_background` (see Colour continuity), it already colours the
+     focused window: leave `focus_background_attr` unset, so the colour
+     follows the theme when the user switches with `guitheme`. Set
+     `focus_background_attr` only to override it; the theme's is then
+     ignored, and `{}` turns it off. When the theme has none and is defined
+     in the user's config (`gui.themes.<name>`), add `focus_background` to
+     the theme instead of `focus_background_attr`, for the same reason. Use
+     `focus_background_attr` for built-in themes without one, and when the
+     terminal UI must show the focus too: it ignores the theme's.
+   - Derive the focused colour from the theme background (see Colour
+     continuity). It must look like the theme background highlighted, not
+     a different colour: a small step brighter, on dark and light themes
+     alike. Never darker: the focused pane is the lit one. On a dark theme,
+     mix it about 6-8% toward white: furman `#202020` becomes `#2e2e2e`. On a
+     light theme, raise each channel by up to about 10 toward 255, leaving
+     channels already at 255, as the built-in light themes do: ritchie
+     `#f8f8f8` becomes `#ffffff`, pike `#ffffea` becomes `#fffff3`. Don't jump
+     a tinted background straight to white (pike to `#ffffff`): that drops
+     its tint and reads as another colour. A background already at `#ffffff`
+     has no room: give every window a slightly darker `background_attr` and
+     set `focus_background_attr` to the theme background. A tint of the
+     accent is fine only when the user asks for colour.
+   - The step must read at a glance in a screenshot, yet stay small: syntax
+     and terminal colours are tuned for the theme background and lose
+     contrast on a far-off one. If the focused tile doesn't stand out, raise
+     the step a little rather than adding an outline back.
+5. **Let content follow.** Cells with a background of their own keep it.
+   Leave `terminal.default_attr.bg` and `workspace.wallpaper_background_attr.bg`
+   at `default`, and leave the agent's `background_attr.bg` at `default` or
+   give it a focused value in `extensions.rune-agent.config.focus`. Status bars
+   keep their own background unless the user wants them to follow too: then
+   set it in `editor.status_bar.focus` and the agent's `focus.status_bar`.
+6. **Turn off union frames.** Set `browser.union_frames: false`, or its
+   junction glyphs draw lines where the tab bar meets the blank frames.
+7. **Verify with two windows.** Split, so two tiles show: the focused one's
+   colour fills its padding and text area, and the other stays on the normal
+   background. A single-window screenshot can't show the focus style.
+
+For the furman theme (`#202020`):
+
+```yaml
+browser:
+  union_frames: false
+  window_manager:
+    frame: true
+    frame_attr: {fg: gray, bg: default}
+    focus_frame_attr: {fg: silver, bg: default}
+    frame_charset: &blank {topleft: " ", topright: " ", bottomleft: " ", bottomright: " ",
+                           horizontaltop: " ", horizontalbottom: " ", verticalleft: " ", verticalright: " "}
+    focus_frame_charset: *blank
+    focus_background_attr: {bg: "#2e2e2e"}    # the focus cue: 6-8% lighter
+    # background_attr: {bg: "#1a1a1a"}        # optional: every window, even a single one
+editor:
+  status_bar:
+    focus: {background_attr: {bg: "#3a3a3a"}} # optional: focused bar follows
+extensions:
+  rune-agent:
+    config:
+      focus: {background_attr: {bg: "#2e2e2e"}} # only if background_attr.bg is set
+```
+
+#### Panels, sprites and inheritance
+
+- `focus_` keys inherit like the floating ones: an absent key keeps the
+  normal style, a present key takes the slots it leaves out from the normal
+  key, and `""` clears an image slot.
+- `background_attr.bg` fills the cells drawn in the default background, and
+  `fg` replaces the default foreground, for light panels. Cells with a
+  background of their own keep it: selections, the cursor line, status bar
+  backgrounds, `terminal.default_attr`, and the agent's `background_attr`.
+- The panel goes under every cell background and character. Where a slice
+  doesn't draw (the terminal UI, loading, failed) the colour shows instead.
+- Leave `focus_frame_attr.bg` unset so the frame takes the focused colour and
+  panel. That's all blank frames need. Over frame sprites, Rune paints the
+  focused colour inside each line and leaves the theme background outside
+  it: see "One colour on each side of a line".
+- `editor.status_bar.focus`, `program_status.focus` and
+  `extensions.rune-agent.config.focus` are laid over their section key by
+  key. Put only the keys that change in them: the focused layout and
+  background, the focused inbox images, or the focused compose box frame,
+  colours, `background_attr` and `status_bar`.
+- The tab bar's joins to the frames cut the panel. Set
+  `browser.union_frames: false` for themes with a panel.
+
+A panel on top of the borderless setup, with a focused scroll bar sprite:
+
+```yaml
+browser:
+  window_manager:
+    focus_background_graphics:
+      fit: fill
+      center: file://$RUNE_DATADIR/hud/custom/v1/panel/focused/center.png
+      topleft: file://$RUNE_DATADIR/hud/custom/v1/panel/focused/topleft.png
+      # ...the other corners and edges
+    focus_scroll_bar_charset:
+      graphics: {middle_char: file://$RUNE_DATADIR/hud/custom/v1/scroll/focused-middle.png}
+```
+
+#### Adding a focus background to a theme
+
+A theme's sprites and colours were painted for one canvas. A focus background
+adds a second, and whatever assumed the first shows on it: dark bands around
+the compose box, a halo and square corners outside the frame line, a status
+bar that disappears, gray text that fades. Reusing the existing sprites
+unchanged causes all of these, so never report the reuse as a saving.
+A GUI theme with a `focus_background`, such as pike or ritchie, adds that
+second canvas by itself: run this audit when a HUD is used with one, too.
+
+Before the first screenshot, audit the theme and fix every finding:
+
+1. **Record both canvases** in the manifest: the normal one (the theme
+   background, or `background_attr.bg`) and the focused one
+   (`focus_background_attr.bg`, or else the theme's `focus_background`).
+2. **Find pixels painted in the normal canvas colour.** Check every sprite
+   drawn inside or on the edge of a window: tiled frames, the compose box
+   frame, status bar and inbox images, the scroll bar. Count each PNG's
+   pixels by colour and alpha with a short script. Opaque pixels in exactly
+   the normal canvas colour are masks painted for the unfocused pane. On the
+   focused pane they show as bands, notches or rectangles.
+3. **Find frame sprites with a painted side.** Frame, prompt, compose box and
+   notification sprites must be lines on transparent pixels: Rune paints
+   each side for the state it's drawn in. Opaque fills on either side of the
+   line, such as an inside fill or an outside painted in the canvas colour,
+   are right in one state only. Also find lines with gaps: Rune can't tell
+   the sides of a broken line apart, and its cell takes one colour.
+4. **Find explicit backgrounds in the normal canvas colour** on surfaces
+   inside windows: `scroll_bar_attr`, the agent's `background_attr`,
+   `input_box_attr`, `input_box_frame_attr`, `terminal.default_attr`,
+   `workspace.wallpaper_background_attr`, `browser.prompt.background_attr`
+   and the `program_status` attrs. Set them to `default` so they follow the
+   pane, or give the focused value in the section's `focus` block. Prompts
+   such as the close-dirty-tabs prompt are floating windows with no `focus`
+   block, so theirs must be `default`. Tabs, the command prompt and
+   notifications sit outside windows and keep theirs.
+5. **Find backgrounds already in the focused colour.** A status bar, compose
+   fill or rail sprite in that colour merges into the focused pane and stands
+   out on the others. Pick another focused colour, or give those surfaces a
+   focused shade in their `focus` block.
+6. **Check secondary text.** Gray accents and placeholders were picked for
+   the normal canvas, and `dim` text is drawn translucent, so it takes on the
+   background under it. On the focused colour, keep secondary text at 3:1
+   contrast or more and body text at 4.5:1 or more. Set brighter focused
+   colours, or make the step smaller.
+
+Then fix the outlines: drop them ("Frameless focus"), or keep them as line
+sprites ("One colour on each side of a line").
+
+#### Which colour a transparent pixel shows
+
+| Surface | Inside the line | Elsewhere |
+| --- | --- | --- |
+| Tiled frame | The window's colour in its state: the focused canvas (`focus_background_attr.bg`, else the theme's `focus_background`) or `background_attr.bg`. | The frame's `bg`; at `default`, the theme background. A panel slice drawn on the cell shows on both sides. |
+| Floating frame, prompts included | The window's colour in its state: the focused canvas or `background_attr.bg`, else the theme background. Never the content's own background, so content with one of its own shows a strip of the window's colour along the line. | Whatever is under the window. A panel slice drawn on the cell shows on both sides. |
+| Window bar | No inside. | Whatever is under the window. |
+| Command prompt frame | `command.element_attr.bg`, else the focused canvas, else the theme background. | Whatever is under the prompt. |
+| Compose box frame | `input_background_color`, when set. | `input_box_frame_attr.bg`, else the agent's `background_attr.bg`, else the pane. |
+| Notification frame | `notifications.background_attr.bg`, else `notifications.attr.bg`. | Whatever is under the notification. |
+| Status bar images | No inside. | The bar's `background_attr.bg`; at `default`, the pane. |
+| Scroll bar | No inside. | `scroll_bar_attr.bg`; at `default`, the pane. |
+
+#### One colour on each side of a line
+
+A frame sprite draws its line through the middle of a cell, which has one
+background. Rune gives each side its own colour (table above): it finds the
+side of the line that faces the content, from the transparent pixels the line
+encloses, and paints them in the content's colour under the sprite. The
+other side keeps the cell's background, which shows what is under the frame.
+One set of sprites then works in both states, over any pane and under any
+floating window. For that, every frame sprite (window frames, floating
+frames, the command prompt, its separator junctions, the compose box and
+notifications):
+
+- Draws its line with transparent pixels on both sides. Paint neither side:
+  no inside fill, no exterior in a canvas colour.
+- Runs the line unbroken across its cell: an edge from one end to the
+  other, a corner from one side to the adjacent one. Through a gap, both
+  sides connect and the cell takes one colour on both. Pixels under about
+  50% alpha count as transparent, so antialias freely.
+- Keeps ornaments on the line or outside it. Transparent pixels a closed
+  ornament encloses show the outside colour. A corner sprite also needs its
+  innermost pixel, in the corner that faces the content, transparent.
+
+The inside colour applies to images at one cell only: outsets and
+multi-cell junctions keep the cell's background on both sides. A panel slice
+that draws on a frame cell replaces the inside colour there.
+
+Status bar rails aren't frames, and Rune paints no inside for them:
+
+- **Status bar rails.** A rail's rounded ends sit on the bar's
+  `background_attr.bg`. To use one rail in both states, set that `bg` to
+  `default` and drop `bg` from the `status` attrs: the ends then show the
+  pane, and the opaque rail colours the bar. The terminal UI then draws the
+  bar without a fill. Otherwise, ship a focused rail with its ends painted in
+  the focused colour, in `focus.status_bar.layout`.
+
 ### Requirements
 - Frame and scroll bar images are drawn only while
   `browser.window_manager.frame` is true.
+- Window backgrounds and their panels are drawn with frames on or off.
 - Command separator images require `browser.window_manager.frame` and a
   visible manual/list separator: enable `command.show_manual` and open a
   command with manual content and enough prompt space to display it.
@@ -446,7 +751,12 @@ remain unchanged. Do not claim a focus state was verified unless visible.
   `bottomright` images are not drawn, and `progress_format.graphics` draws there
   instead, `start` and `end` at the corners, `current` up to `current_tip`, then
   `remain`. Images are not tinted by notification level; use `overlay` and leave
-  the progress characters' channel transparent to keep the level colours.
+  a clear (alpha under 0x20) channel closed in by opaque or translucent pixels,
+  such as the face above and a shadow below, and Rune fills it with the level
+  colour. Clear pixels that reach the outer edge (the bottom, or the outer side
+  of `start` and `end`) show what is under the notification, so a channel open
+  to the edge stays uncoloured. Keep the exterior transparent and the shadow
+  translucent rather than painting the canvas colour into them.
 - Quick menu sprites move the bar from the native macOS bar to one Rune draws,
   on every platform. Set `sprite` on every button or on none; `symbol` isn't
   needed with one. Keep each button's `title` (its tooltip) and `command`.
@@ -490,6 +800,18 @@ Line up rails and seams across slices at these positions.
   characters sit, so content keeps its spacing.
 - Corners must meet both edges at the cell boundary.
 
+**Window background panel:**
+- The panel covers the whole window, frame cells included. Corners are one
+  cell, edges one cell thick, and `center` covers the interior; a window
+  narrower or shorter than 2 cells shows only `center`.
+- Corners share the frame corner's shape: make them transparent where the
+  frame corner is transparent, such as beyond a rounded curve, so the panel
+  doesn't square the corner off.
+- With `fit: tile` the edges and `center` repeat once per cell and must tile
+  seamlessly; with `fit: fill` they stretch, so keep them flat along the
+  edge.
+- The panel is drawn as it is: keep its fill exactly the focused `bg`.
+
 **Scroll bar:**
 - The bar's own cell is the image's rightmost column.
 - `top_char` and `bottom_char` are used only when the thumb spans 2 cells or
@@ -520,7 +842,6 @@ Line up rails and seams across slices at these positions.
   icon. Keep I at 0, or leave those cells transparent. Colour the icon from
   the palette with `close_icon_attr`, and check it in a capture with a
   floating window open.
-- Focused and unfocused windows share these images.
 
 **Agent compose box frame:**
 - Centre each rail in its cell: halfway across the cell's width at the sides,
@@ -1212,6 +1533,19 @@ Run `runectl screenshot` yourself and inspect the result after each revision.
 For the keys under Checking your work, this also applies the change; do not
 ask the user to reload them. Do not restart Rune or reload the agent's own
 workspace automatically: that can interrupt the conversation and running work.
+For focus styles, capture with two tiles and a floating window open, so the
+focused and unfocused states, and a float over the panel, show in one
+screenshot. Capture once more with the command prompt open, and once with one
+of Rune's standard prompts open, such as the close-dirty-tabs prompt: ask the
+user to open it if you can't, and never answer it yourself. Crop and enlarge
+(4x or more) the seam between the two tiles, a frame corner, the compose box's
+corners and bottom edge, the command prompt's corners and separator, the
+standard prompt's message and edges, and both ends of each status bar, in
+both states. On each side of every line, sample the pixel colour: outside
+must be the theme background, inside the pane colour of that state. Behind
+the standard prompt's text and along the inside of its frame, the colour must
+be the same as the rest of its interior. A band, halo, notch, square corner
+or lighter rectangle in any crop means the work isn't done.
 
 | Change | Takes effect |
 |---|---|

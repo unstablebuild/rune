@@ -1342,6 +1342,11 @@ func TestTrimPartialCandidateSuffix(t *testing.T) {
 		{"name with a space", "my dir/", "my dir"},
 		{"filesystem root", "/", "/"},
 		{"host separator root", string(filepath.Separator), string(filepath.Separator)},
+		{"scheme root", "docs:///", "docs:///"},
+		{"scheme root with a host", "ssh://host/", "ssh://host/"},
+		{"scheme without a path", "ssh://host", "ssh://host"},
+		{"scheme path", "docs:///learn/", "docs:///learn"},
+		{"scheme path with a host", "ssh://host/a/b/", "ssh://host/a/b"},
 		{"empty", "", ""},
 	}
 

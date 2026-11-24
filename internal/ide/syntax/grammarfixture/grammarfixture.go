@@ -61,7 +61,7 @@ func LibDir(t testing.TB, langDir string) []string {
 	files := []string{ParserPath(t, langDir)}
 	for _, q := range []string{
 		treesitter.LocalsFilename, treesitter.HighlightsFilename,
-		treesitter.IndentsFilename, treesitter.FoldsFilename,
+		treesitter.IndentsFilename, treesitter.FoldsFilename, treesitter.InjectionsFilename,
 	} {
 		p := filepath.Join(langDir, q)
 		if _, err := os.Stat(p); err == nil {

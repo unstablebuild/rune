@@ -51,6 +51,16 @@ type imageMark struct {
 	// Placements before it were written over and re-marked since, and
 	// none shows at coveredFrom.
 	first int32
+	// under is the pending placement from which those above the text
+	// show above the cell's text. The ones before it were drawn before a
+	// cell that keeps the background was written over them, and show
+	// under its text.
+	under int32
+	// lifted is whether a placement resolved so far shows under the
+	// cell's text instead of its own layer. Placements resolve in the
+	// order they were drawn, so those it saw were drawn before the one
+	// being resolved.
+	lifted bool
 }
 
 // markedArea is the area DrawImage marks for a placement visible in r:
@@ -66,6 +76,11 @@ func markedArea(r image.Rectangle) image.Rectangle {
 // a placement cover it, as they would had it been drawn in order. A
 // placement moved by pixels covers the cells it lands on when the
 // writer's context carries a PixelSize, and its own cells otherwise.
+// A cell written with AttrKeepBackground keeps the placements under it
+// as part of the background it keeps: they stay, under its text, in the
+// order they were drawn. One under the background drawn over the cell
+// after one that goes under its text goes there too, over it, rather
+// than under it, whether it was drawn before the cell or after.
 type BufferWriter struct {
 	width, height int
 	Cursor        term.Coordinates
@@ -109,7 +124,10 @@ func (w *BufferWriter) Init(ctx context.Context, width, height int) {
 	w.open, w.next = nil, nil
 }
 
-// SetCell satisfies term.Writer
+// SetCell satisfies term.Writer. A cell with AttrKeepBackground keeps
+// the background colour of the cell it replaces, and the placements
+// that cell shows, moving those above the text under the new cell's,
+// along with those under the background drawn over it after them.
 func (w *BufferWriter) SetCell(pos term.Coordinates, c term.Cell) {
 	if pos.Y < 0 || pos.Y >= len(w.cells) {
 		return
@@ -121,6 +139,13 @@ func (w *BufferWriter) SetCell(pos term.Coordinates, c term.Cell) {
 	if c.Attrs&term.AttrKeepBackground != 0 {
 		c.Bg = row[pos.X].Bg
 		c.Attrs &^= term.AttrKeepBackground
+		if row[pos.X].Width == imageMarkWidth {
+			// The cell stays marked, so the placements it shows are
+			// not covered.
+			mark := &w.marks[pos.Y*w.width+pos.X]
+			mark.width, mark.under = c.Width, int32(len(w.pending))
+			c.Width = imageMarkWidth
+		}
 	}
 	row[pos.X] = c
 }
@@ -266,12 +291,30 @@ func (w *BufferWriter) resolve() {
 }
 
 // appendUncovered appends pending placement i to images, clipped to the
-// cells that still show it, and resolves the marks in its area. Each
-// row's visible runs are merged with the rectangle above them when their
-// columns match, so a placement with a window over it splits into a
-// handful of rectangles rather than one per row.
+// cells that still show it, and resolves the marks in its area. The
+// cells that show it under their text get a copy of it under the text,
+// after the rest of it.
 func (w *BufferWriter) appendUncovered(p pendingImage, i int32) {
-	img, r := p.img, p.covered
+	if !w.appendRuns(p, i, p.img, false) {
+		return
+	}
+	under := p.img
+	under.Layer = term.ImageLayerBelowText
+	w.appendRuns(p, i, under, true)
+}
+
+// appendRuns appends img, pending placement i or a copy of it, to images,
+// clipped to the cells that still show placement i in its own layer, or
+// under their text when under is set, and resolves the marks in its area.
+// It reports whether any cell shows placement i under its text where it
+// would be in another layer. Each row's runs are merged with the
+// rectangle above them when their columns match, so a placement with a
+// window over it splits into a handful of rectangles rather than one per
+// row.
+func (w *BufferWriter) appendRuns(p pendingImage, i int32, img term.Image, under bool) (moved bool) {
+	r := p.covered
+	above := p.img.Layer == term.ImageLayerAboveText
+	belowBackground := p.img.Layer == term.ImageLayerBelowBackground
 	m := markedArea(r)
 	open := w.open[:0]
 	for y := r.Min.Y; y < r.Max.Y; y++ {
@@ -296,7 +339,13 @@ func (w *BufferWriter) appendUncovered(p pendingImage, i int32) {
 				// does the rest of its glyph when it is wide.
 				coveredTo = max(coveredTo, x+max(1, int(c.Width)))
 			}
-			if x >= coveredTo {
+			// A placement under the background stays over the ones
+			// drawn before it that the cell lifted under its text.
+			cellUnder := above && mark.under > i || belowBackground && mark.lifted
+			if x >= coveredTo && cellUnder {
+				moved, mark.lifted = true, true
+			}
+			if x >= coveredTo && cellUnder == under {
 				if start < 0 {
 					start = x
 				}
@@ -320,6 +369,7 @@ func (w *BufferWriter) appendUncovered(p pendingImage, i int32) {
 		w.images = append(w.images, clippedTo(img, rect))
 	}
 	w.open = open
+	return moved
 }
 
 // endRun adds run, a row's visible run, to next: it extends the

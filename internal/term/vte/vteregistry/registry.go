@@ -265,6 +265,8 @@ func (r *Registry) previewVTE(id vte.ID) (*attachment, error) {
 		return nil, vte.ErrNotFound
 	}
 	a := &attachment{c: c, preview: true}
+	c.attachSeq++
+	a.seq = c.attachSeq
 	c.previews[a] = struct{}{}
 	if c.resizeOwner == nil {
 		c.resizeOwner = a

@@ -132,6 +132,7 @@ func (m *localPkgManager) init(
 		idepkg.WithAfterConfigWrite(func(pkgID string) {
 			wh.configChanged("package " + pkgID)
 		}),
+		idepkg.WithAfterInstall(func(string) { wh.packageInstalled() }),
 	}
 	m.pkg = idepkg.NewManager(n, composed, storage, trust, scheme, dataDir,
 		configPath, prompter, scheduleNextTick, interrupter,
@@ -141,6 +142,17 @@ func (m *localPkgManager) init(
 	m.pkgManager = newPkgManager(m.pkg, "", nil, n, storage, wh,
 		scheduleNextTick, interrupter, autoInstall)
 	m.uc.Start(context.Background())
+}
+
+// installedPackages is a syntax.PkgManager of the packages installed on
+// the machine Rune runs on. Unlike pkgManager, it never offers to install
+// a missing one.
+type installedPackages struct {
+	m *idepkg.Manager
+}
+
+func (p installedPackages) LibDir(ctx context.Context, pkgID string) (sdkiterator.Iterator[string], error) {
+	return p.m.LibDir(ctx, pkgID)
 }
 
 func (m *localPkgManager) Close() error {

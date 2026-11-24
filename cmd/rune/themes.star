@@ -1,9 +1,12 @@
 # Themes available to the `guitheme` command and the `gui.default_theme`
 # property. A theme consists of color-name overrides for Rune's GUI.
 #
-# There are three special keys: `foreground`, `background`, and `cursor`.
-# The remaining keys override W3C color names. Run the `colorPalette`
-# command for a full list of named colors.
+# There are four special keys: `foreground`, `background`, `cursor`, and
+# `focus_background`, the background of the window in focus while more
+# than one is open, used unless browser.window_manager sets a
+# focus_background_attr or focus_background_graphics. The remaining keys
+# override W3C color names. Run the `colorPalette` command for a full list
+# of named colors.
 GUI_THEMES = {
     "furman": {
         "foreground": "#a9b7c5", "background": "#202020", "black": "#1d1f21",
@@ -66,7 +69,7 @@ GUI_THEMES = {
         "silver": "#3a3a5c", "gray": "#9d9dc2", "red": "#ca7c5e",
         "lime": "limegreen", "yellow": "#080877", "blue": "#003366",
         "cyan": "#6e6e9e", "magenta": "#6e6e9e", "white": "#ffffea",
-        "cursor": "red",
+        "cursor": "red", "focus_background": "#fffff3",
     },
     "hopper": {
         "foreground": "#c1c1c1", "background": "#000000", "black": "#000000",
@@ -111,7 +114,7 @@ GUI_THEMES = {
         "silver": "#3a3a3a", "gray": "#c6c6c6", "red": "#de3d35",
         "lime": "#3e953a", "yellow": "#d2b67b", "blue": "#2f5af3",
         "magenta": "#a00095", "cyan": "#3e953a", "white": "#ffffff",
-        "cursor": "#3e953a",
+        "cursor": "#3e953a", "focus_background": "#ffffff",
     },
     "kelleher": {
         "foreground": "#ffffff", "background": "#000000", "black": "#1a1a1a",

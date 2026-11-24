@@ -14,8 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//go:build e2e
-
 package vte
 
 import (
@@ -24,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -34,13 +31,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
-	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/term/programstatus"
+	"unstable.build/rune/internal/term/vsh"
+	"unstable.build/rune/internal/term/vsh/vshtest"
 	"unstable.build/rune/internal/term/vte/vtetest"
-	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacetest"
 )
 
@@ -49,28 +48,6 @@ import (
 // assertions can run. The slower the host of the tests, the longer
 // this timeout should be.
 var defaultWaitForIdleVte = 100 * time.Millisecond
-
-func TestMain(m *testing.M) {
-	tmp, err := os.MkdirTemp("", "vte-home")
-	if err != nil {
-		panic(err)
-	}
-	prev, hadPrev := os.LookupEnv("HOME")
-	if err := os.Setenv("HOME", tmp); err != nil {
-		panic(err)
-	}
-	if err := os.Setenv("PS1", "$ "); err != nil {
-		panic(err)
-	}
-	code := m.Run()
-	if hadPrev {
-		_ = os.Setenv("HOME", prev)
-	} else {
-		_ = os.Unsetenv("HOME")
-	}
-	_ = os.RemoveAll(tmp)
-	os.Exit(code)
-}
 
 func TestHandlerIntegration(t *testing.T) {
 	t.Parallel()
@@ -108,36 +85,10 @@ $ ▐
                     
                     
                     `},
-		{"vi>ihello",
-			`hello▐              
-~                   
-~                   
-~                   
-~                   
-~                   
-~                   
-~                   
-~                   
--- INSERT --        `},
-		{"<:quit!>",
-			`$ echo bla          
-bla                 
-$ vi                
-$ ▐                 
-                    
-                    
-                    
-                    
-                    
-                    `},
 	}
 
 	cfg := DefaultConfig()
-
-	// vi needs quite a bit of tiem to exit
-	waitForIdleVte := defaultWaitForIdleVte * 4
-
-	testSequence(t, cfg, waitForIdleVte, cases)
+	testSequence(t, cfg, defaultWaitForIdleVte, cases)
 }
 
 func TestHandlerEnvIntegration(t *testing.T) {
@@ -167,12 +118,9 @@ $ ▐
                     `},
 	}
 
-	os.Setenv("MYENV", "hello")
-	defer os.Setenv("MYENV", "")
 	cfg := DefaultConfig()
-
-	waitForIdleVte := defaultWaitForIdleVte * 4
-	testSequence(t, cfg, waitForIdleVte, cases)
+	testSequenceVsh(t, cfg, defaultWaitForIdleVte,
+		vshtest.Options{Env: []string{"MYENV=hello"}}, []string{"sh"}, cases)
 }
 
 func TestHandlerCloseExit(t *testing.T) {
@@ -180,7 +128,7 @@ func TestHandlerCloseExit(t *testing.T) {
 	cases := []vtetest.Case{
 		{"exit>",
 			`$ exit              
-exit                
+                    
                     
                     
                     
@@ -232,22 +180,14 @@ func TestIsNormalPtyExit(t *testing.T) {
 
 func TestHandlerPublishesEventOnPtyExit(t *testing.T) {
 	t.Parallel()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	uri, err := workspaceapi.CurrentUserHostURI(os.TempDir())
-	require.NoError(t, err)
-	scheme, err := workspace.NewFileScheme(ctx, config.NopConfig(), uri)
-	require.NoError(t, err)
-	t.Cleanup(func() { scheme.Close() })
+	f := vshtest.New(t, vshtest.Options{})
 
 	pub := &exitWakePublisher{}
 	cfg := DefaultConfig()
 	cfg.WidthHint = 20
 	cfg.HeightHint = 10
 	cfg.CommandAndArgs = []string{"sh"}
-	handler, err := NewHandler(pub, nopNotifications{}, scheme, scheme, nopTabManager{}, cfg)
+	handler, err := NewHandler(pub, nopNotifications{}, f.Exec, f.Exec, nopTabManager{}, cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { handler.Close() })
 
@@ -268,15 +208,7 @@ func TestHandlerPublishesEventOnPtyExit(t *testing.T) {
 
 func TestHandlerCallsTabExiterOnPtyExit(t *testing.T) {
 	t.Parallel()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	uri, err := workspaceapi.CurrentUserHostURI(os.TempDir())
-	require.NoError(t, err)
-	scheme, err := workspace.NewFileScheme(ctx, config.NopConfig(), uri)
-	require.NoError(t, err)
-	t.Cleanup(func() { scheme.Close() })
+	f := vshtest.New(t, vshtest.Options{})
 
 	tm := &tabExiterRecorder{}
 	cfg := DefaultConfig()
@@ -284,7 +216,7 @@ func TestHandlerCallsTabExiterOnPtyExit(t *testing.T) {
 	cfg.HeightHint = 10
 	cfg.CommandAndArgs = []string{"sh"}
 
-	handler, err := NewHandler(&exitWakePublisher{}, nopNotifications{}, scheme, scheme, tm, cfg)
+	handler, err := NewHandler(&exitWakePublisher{}, nopNotifications{}, f.Exec, f.Exec, tm, cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { handler.Close() })
 
@@ -441,12 +373,14 @@ $ ▐
 	t.Run("on modal mode", func(t *testing.T) {
 		t.Parallel()
 		cases := []vtetest.Case{
+			// entering vi mode moves the cursor back a column, onto the
+			// prompt: its start is only known once the shell answers
 			{"echo bla>echo bla><",
 				`$ echo bla          
 bla                 
 $ echo bla          
 bla                 
-$ ▐                 
+$▐                  
                     
                     
                     
@@ -461,7 +395,8 @@ $ ▐
 		time.Sleep(defaultWaitForIdleVte)
 
 		cases = []vtetest.Case{
-			{"echo XXX><kv0yjP",
+			// l moves off the prompt's space, where entering left the cursor
+			{"echo XXX><klv0yjP",
 				`                    
 $ echo XXX          
 XXX                 
@@ -530,48 +465,51 @@ $ ▐                 `},
 	vtetest.TestCases(t, handler, 20, 10, defaultWaitForIdleVte, ch, cases)
 }
 
+// testSequence plays cases on a 20x10 terminal running the Rune
+// shell on an empty memory workspace, the hermetic stand-in for a
+// shell in a pty.
 func testSequence(t *testing.T, cfg Config, timeout time.Duration, cases []vtetest.Case) (
 	*Handler, chan struct{},
 ) {
-	shell := "sh" // all systems were this runs should have sh
-	return testSequenceShell(t, cfg, timeout, shell, cases)
+	return testSequenceVsh(t, cfg, timeout, vshtest.Options{}, []string{"sh"}, cases)
 }
 
-func testSequenceShell(t *testing.T, cfg Config, timeout time.Duration, shell string, cases []vtetest.Case) (
-	*Handler, chan struct{},
-) {
-	return testSequenceCommand(t, cfg, timeout, []string{shell}, cases)
-}
-
-func testSequenceCommand(
-	t *testing.T, cfg Config, timeout time.Duration, commandAndArgs []string, cases []vtetest.Case,
+// testSequenceVsh plays cases on a terminal running commandAndArgs on
+// the Rune shell's executor over a memory workspace built from opts.
+func testSequenceVsh(
+	t *testing.T, cfg Config, timeout time.Duration, opts vshtest.Options,
+	commandAndArgs []string, cases []vtetest.Case,
 ) (*Handler, chan struct{}) {
-	ctx := context.Background()
-	ctx, cancel := context.WithCancel(context.Background())
-	temp := os.TempDir()
+	f := vshtest.New(t, opts)
+	return newTestSequence(t, cfg, timeout, f.Exec, f.Exec, commandAndArgs, cases)
+}
 
-	uri, err := workspaceapi.CurrentUserHostURI(temp)
-	require.NoError(t, err)
+// newTestSequence builds a 20x10 Handler running commandAndArgs on
+// terminal and executor, plays cases on it and returns it with the
+// channel its events arrive on.
+func newTestSequence(
+	t *testing.T, cfg Config, timeout time.Duration,
+	terminal schemeapi.Terminal, executor schemeapi.Executor,
+	commandAndArgs []string, cases []vtetest.Case,
+) (*Handler, chan struct{}) {
+	return newTestSequenceTabs(t, cfg, timeout, terminal, executor, nopTabManager{}, commandAndArgs, cases)
+}
 
-	dataDir := t.TempDir()
-	shellRCDir, err := workspace.InstallShellRC(dataDir)
-	require.NoError(t, err)
-	scheme, err := workspace.NewFileSchemeFunc(dataDir, shellRCDir)(ctx, config.NopConfig(), uri)
-	require.NoError(t, err)
-
+// newTestSequenceTabs is newTestSequence with the tab manager the
+// Handler reports exits and program statuses to.
+func newTestSequenceTabs(
+	t *testing.T, cfg Config, timeout time.Duration,
+	terminal schemeapi.Terminal, executor schemeapi.Executor, tm browser.TabManager,
+	commandAndArgs []string, cases []vtetest.Case,
+) (*Handler, chan struct{}) {
 	ch := make(chan struct{}, 50 /* big enough for the max length sequence of events */)
 	cfg.WidthHint = 20
 	cfg.HeightHint = 10
 	cfg.CommandAndArgs = commandAndArgs
 	handler, err := NewHandler(chanEventPublisher{ch}, nopNotifications{},
-		scheme, scheme, nopTabManager{}, cfg)
+		terminal, executor, tm, cfg)
 	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		handler.Close()
-		scheme.Close()
-		cancel()
-	})
+	t.Cleanup(func() { handler.Close() })
 
 	vtetest.TestSequence(t, handler, cfg.WidthHint, cfg.HeightHint,
 		timeout, ch, cases)
@@ -606,27 +544,6 @@ func (f *recordingPtyFile) Write(data []byte) (int, error) {
 		f.writes <- struct{}{}
 	}
 	return len(data), nil
-}
-
-type recordingNotifications struct {
-	nopNotifications
-	mu       sync.Mutex
-	messages []string
-}
-
-func (n *recordingNotifications) Notify(
-	level browserapi.NotificationLevel, msg string, args ...any,
-) (string, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.messages = append(n.messages, fmt.Sprintf(msg, args...))
-	return "", nil
-}
-
-func (n *recordingNotifications) Messages() []string {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return slices.Clone(n.messages)
 }
 
 func newHandleTestHandler(master workspaceapi.File) *Handler {
@@ -974,26 +891,439 @@ func TestHandlerCtrlCInterruptsForegroundProgram(t *testing.T) {
 }
 
 func TestHandlerAnswersQueriesInSynchronizedUpdate(t *testing.T) {
+	t.Parallel()
 	// crossterm's cursor::position does this inside ratatui's first
 	// frame, and gives up after 2s without a reply.
-	const script = `stty raw -echo
-printf '\033[?2026h\033[6n'
-reply=$(dd bs=1 count=6 2>/dev/null)
-printf '\033[?2026l'
-stty sane
-printf 'reply:%s\n' "$(printf '%s' "$reply" | tr '\033' E)"
-sleep 60`
-	path := t.TempDir() + "/sync_query.sh"
-	require.NoError(t, os.WriteFile(path, []byte(script), 0o600))
-	handler, ch := testSequenceCommand(t, DefaultConfig(), defaultWaitForIdleVte,
-		[]string{"sh", path}, nil)
-	drain(ch)
+	f := vshtest.New(t, vshtest.Options{Files: map[string]string{
+		"sync_query.sh": "printf '\\033[?2026h\\033[6n'\nsleep 60\n",
+	}})
+	rec := &recordingTerminal{Executor: f.Exec}
+	newTestSequence(t, DefaultConfig(), defaultWaitForIdleVte, rec, f.Exec,
+		[]string{"sh", "/sync_query.sh"}, nil)
 
-	w := term.NewStringWriter(20, 10)
 	require.Eventually(t, func() bool {
-		require.NoError(t, w.Clear(term.Attributes{}))
+		return strings.Contains(rec.written(), "\x1b[1;1R")
+	}, 5*time.Second, 20*time.Millisecond,
+		"the cursor position report must not wait for the synchronized update to end; the program read %q", rec.written())
+}
+
+// recordingTerminal serves the Executor's ptys with a master that
+// records what the terminal writes to the program.
+type recordingTerminal struct {
+	*vsh.Executor
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (r *recordingTerminal) NewPty(ctx context.Context) (workspaceapi.Pty, error) {
+	pt, err := r.Executor.NewPty(ctx)
+	if err != nil {
+		return pt, err
+	}
+	pt.Master = &recordingMaster{File: pt.Master, rec: r}
+	return pt, nil
+}
+
+func (r *recordingTerminal) SetPtySize(pt workspaceapi.Pty, size workspaceapi.PtySize) error {
+	if m, ok := pt.Master.(*recordingMaster); ok {
+		pt.Master = m.File
+	}
+	return r.Executor.SetPtySize(pt, size)
+}
+
+func (r *recordingTerminal) written() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.buf.String()
+}
+
+type recordingMaster struct {
+	workspaceapi.File
+	rec *recordingTerminal
+}
+
+func (m *recordingMaster) Write(b []byte) (int, error) {
+	m.rec.mu.Lock()
+	m.rec.buf.Write(b)
+	m.rec.mu.Unlock()
+	return m.File.Write(b)
+}
+
+// blank is an empty 20-column screen row.
+const blank = "                    "
+
+// screen joins rows into a 20x10 screen, padding each row to 20
+// columns and the screen to 10 rows.
+func screen(rows ...string) string {
+	var b strings.Builder
+	for i := range 10 {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		row := blank
+		if i < len(rows) {
+			row = rows[i]
+		}
+		b.WriteString(row)
+		b.WriteString(blank[:max(0, 20-len([]rune(row)))])
+	}
+	return b.String()
+}
+
+func TestHandlerVshPrompt(t *testing.T) {
+	t.Parallel()
+	t.Run("ctrl-l clears the screen and redraws the line", func(t *testing.T) {
+		t.Parallel()
+		testSequence(t, DefaultConfig(), defaultWaitForIdleVte, []vtetest.Case{
+			{InputSequence: "echo a>echo b", Expected: screen("$ echo a", "a", "$ echo b▐")},
+			{InputSequence: "$", Expected: screen("$ echo b▐")},
+			{InputSequence: ">", Expected: screen("$ echo b", "b", "$ ▐")},
+		})
+	})
+	t.Run("a long line wraps and the cursor follows", func(t *testing.T) {
+		t.Parallel()
+		as := strings.Repeat("a", 30)
+		testSequence(t, DefaultConfig(), defaultWaitForIdleVte, []vtetest.Case{
+			{InputSequence: "echo " + as, Expected: screen("$ echo "+as[:13], as[13:]+"▐")},
+			{InputSequence: "^^^^^^^^^^^", Expected: screen("$ echo "+as[:13], as[13:19]+"▐")},
+			{InputSequence: ">", Expected: screen("$ echo "+as[:13], as[13:19], as[:19], "$ ▐")},
+		})
+	})
+	t.Run("a line that fills the row wraps without a blank line", func(t *testing.T) {
+		t.Parallel()
+		testSequence(t, DefaultConfig(), defaultWaitForIdleVte, []vtetest.Case{
+			{InputSequence: "echo 0123456789abc", Expected: screen("$ echo 0123456789ab▐")},
+			{InputSequence: ">", Expected: screen("$ echo 0123456789abc", "0123456789abc", "$ ▐")},
+		})
+	})
+}
+
+func TestHandlerVshCommands(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		opts  vshtest.Options
+		cases []vtetest.Case
+	}{
+		{name: "ls lists the seeded files",
+			opts: vshtest.Options{Files: map[string]string{"src/a.txt": "", "src/b.txt": ""}},
+			cases: []vtetest.Case{
+				{InputSequence: "ls src>", Expected: screen("$ ls src", "a.txt  b.txt", "$ ▐")},
+			}},
+		{name: "a pipeline",
+			opts: vshtest.Options{Files: map[string]string{"src/a.txt": "", "src/b.txt": ""}},
+			cases: []vtetest.Case{
+				{InputSequence: "ls src | wc -l>", Expected: screen("$ ls src | wc -l", "2", "$ ▐")},
+			}},
+		{name: "redirections write workspace files",
+			cases: []vtetest.Case{
+				{InputSequence: "echo one \\> f>echo two \\>\\> f>cat f>",
+					Expected: screen("$ echo one > f", "$ echo two >> f", "$ cat f", "one", "two", "$ ▐")},
+			}},
+		{name: "cd changes the directory PS1 shows",
+			opts: vshtest.Options{Files: map[string]string{"src/a.txt": ""}, Env: []string{"PS1=$PWD $ "}},
+			cases: []vtetest.Case{
+				{InputSequence: "", Expected: screen("/ $ ▐")},
+				{InputSequence: "cd src>", Expected: screen("/ $ cd src", "/src $ ▐")},
+				{InputSequence: "cd>", Expected: screen("/ $ cd src", "/src $ cd", "/ $ ▐")},
+			}},
+		{name: "variables and functions persist across lines",
+			cases: []vtetest.Case{
+				{InputSequence: "x=5>f() { echo f:\\$x; }>f>",
+					Expected: screen("$ x=5", "$ f() { echo f:$x; }", "$ f", "f:5", "$ ▐")},
+			}},
+		{name: "a for loop",
+			cases: []vtetest.Case{
+				{InputSequence: "for i in 1 2; do echo \\$i; done>",
+					Expected: screen("$ for i in 1 2; do e", "cho $i; done", "1", "2", "$ ▐")},
+			}},
+		{name: "the continuation prompt",
+			cases: []vtetest.Case{
+				{InputSequence: "for i in 1 2; do>", Expected: screen("$ for i in 1 2; do", "> ▐")},
+				{InputSequence: "echo \\$i>done>",
+					Expected: screen("$ for i in 1 2; do", "> echo $i", "> done", "1", "2", "$ ▐")},
+			}},
+		{name: "a syntax error is reported and the shell recovers",
+			cases: []vtetest.Case{
+				{InputSequence: "echo )>echo ok>",
+					Expected: screen("$ echo )", "sh: 1:6: a command c", "an only contain word", "s and redirects; enc",
+						"ountered `)`", "$ echo ok", "ok", "$ ▐")},
+			}},
+		{name: "an unknown command exits 127",
+			cases: []vtetest.Case{
+				{InputSequence: "nope>echo \\$?>",
+					Expected: screen("$ nope", "sh: nope: command no", "t found", "$ echo $?", "127", "$ ▐")},
+			}},
+		{name: "help names the shell",
+			cases: []vtetest.Case{
+				{InputSequence: "help | head -1>", Expected: screen("$ help | head -1", "Rune built-in shell", "$ ▐")},
+			}},
+		{name: "Tab completes a path",
+			opts: vshtest.Options{Files: map[string]string{"src/a.txt": "A\n"}},
+			cases: []vtetest.Case{
+				{InputSequence: "cat s✌", Expected: screen("$ cat src/▐")},
+				{InputSequence: "a✌", Expected: screen("$ cat src/a.txt ▐")},
+				{InputSequence: ">", Expected: screen("$ cat src/a.txt", "A", "$ ▐")},
+			}},
+		{name: "Tab lists what it cannot choose between",
+			opts: vshtest.Options{Files: map[string]string{"src/a.txt": "", "src/b.txt": ""}},
+			cases: []vtetest.Case{
+				{InputSequence: "ls src/✌", Expected: screen("$ ls src/", "a.txt  b.txt", "$ ls src/▐")},
+				{InputSequence: "b✌>", Expected: screen("$ ls src/", "a.txt  b.txt", "$ ls src/b.txt", "src/b.txt", "$ ▐")},
+			}},
+		{name: "Tab completes a command name",
+			cases: []vtetest.Case{
+				{InputSequence: "ech✌hi>", Expected: screen("$ echo hi", "hi", "$ ▐")},
+			}},
+		{name: "Tab escapes a name with a space",
+			opts: vshtest.Options{Files: map[string]string{"my notes.md": "N\n"}},
+			cases: []vtetest.Case{
+				{InputSequence: "cat m✌>", Expected: screen("$ cat my\\ notes.md", "N", "$ ▐")},
+			}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			testSequenceVsh(t, DefaultConfig(), defaultWaitForIdleVte, tc.opts, []string{"sh"}, tc.cases)
+		})
+	}
+}
+
+// ctrlD is the EOF key as the GUI input layer produces it.
+var ctrlD = term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'd', Raw: []byte{0x04}}
+
+func TestHandlerVshInputToPrograms(t *testing.T) {
+	t.Parallel()
+	t.Run("cat echoes cooked lines until ^D", func(t *testing.T) {
+		t.Parallel()
+		handler, ch := testSequence(t, DefaultConfig(), defaultWaitForIdleVte, []vtetest.Case{
+			{InputSequence: "cat>hel^llo>", Expected: screen("$ cat", "hello", "hello", "▐")},
+		})
+		_, handled := handler.Handle(ctrlD)
+		require.True(t, handled)
+		vtetest.TestCases(t, handler, 20, 10, defaultWaitForIdleVte, ch, []vtetest.Case{
+			{InputSequence: "", Expected: screen("$ cat", "hello", "hello", "$ ▐")},
+		})
+	})
+	t.Run("read takes a line", func(t *testing.T) {
+		t.Parallel()
+		testSequence(t, DefaultConfig(), defaultWaitForIdleVte, []vtetest.Case{
+			{InputSequence: "read x>value>echo got \\$x>",
+				Expected: screen("$ read x", "value", "$ echo got $x", "got value", "$ ▐")},
+		})
+	})
+}
+
+// ctrlC is the interrupt key with the raw ETX byte the GUI input layer
+// produces.
+var ctrlC = term.Event{Type: term.EventKey, Mod: term.ModCtrl, Ch: 'c', Raw: []byte{0x03}}
+
+func TestHandlerVshInterrupt(t *testing.T) {
+	t.Parallel()
+	t.Run("^C at the prompt drops the line", func(t *testing.T) {
+		t.Parallel()
+		handler, ch := testSequence(t, DefaultConfig(), defaultWaitForIdleVte, []vtetest.Case{
+			{InputSequence: "echo abc", Expected: screen("$ echo abc▐")},
+		})
+		_, handled := handler.Handle(ctrlC)
+		require.True(t, handled)
+		vtetest.TestCases(t, handler, 20, 10, defaultWaitForIdleVte, ch, []vtetest.Case{
+			{InputSequence: "", Expected: screen("$ echo abc^C", "$ ▐")},
+			{InputSequence: "echo \\$?>", Expected: screen("$ echo abc^C", "$ echo $?", "130", "$ ▐")},
+		})
+	})
+	t.Run("^C during sleep prints ^C and a new prompt", func(t *testing.T) {
+		t.Parallel()
+		handler, ch := testSequence(t, DefaultConfig(), defaultWaitForIdleVte, []vtetest.Case{
+			{InputSequence: "sleep 30>", Expected: screen("$ sleep 30", "▐")},
+		})
+		_, handled := handler.Handle(ctrlC)
+		require.True(t, handled)
+		vtetest.TestCases(t, handler, 20, 10, defaultWaitForIdleVte, ch, []vtetest.Case{
+			{InputSequence: "", Expected: screen("$ sleep 30", "^C", "$ ▐")},
+			{InputSequence: "echo \\$?>", Expected: screen("$ sleep 30", "^C", "$ echo $?", "130", "$ ▐")},
+		})
+	})
+	t.Run("typeahead during sleep runs after it", func(t *testing.T) {
+		t.Parallel()
+		testSequence(t, DefaultConfig(), defaultWaitForIdleVte, []vtetest.Case{
+			{InputSequence: "sleep 1>echo x>", Expected: screen("$ sleep 1", "echo x", "$ echo x", "x", "$ ▐")},
+		})
+	})
+}
+
+func TestHandlerVshExit(t *testing.T) {
+	t.Parallel()
+	t.Run("^D exits the shell", func(t *testing.T) {
+		t.Parallel()
+		f := vshtest.New(t, vshtest.Options{})
+		tm := &tabExiterRecorder{}
+		pub := &exitWakePublisher{}
+		cfg := DefaultConfig()
+		cfg.WidthHint, cfg.HeightHint = 20, 10
+		cfg.CommandAndArgs = []string{"sh"}
+		handler, err := NewHandler(pub, nopNotifications{}, f.Exec, f.Exec, tm, cfg)
+		require.NoError(t, err)
+		t.Cleanup(func() { handler.Close() })
+		handler.Resize(20, 10)
+
+		_, handled := handler.Handle(ctrlD)
+		require.True(t, handled)
+		require.Eventually(t, func() bool { return len(tm.ExitedURIs()) == 1 && pub.SawEventNone() },
+			5*time.Second, 10*time.Millisecond)
+		assert.NoError(t, handler.ExitErr())
+		exit, _ := handler.Handle(term.Event{})
+		assert.True(t, exit)
+
+		w := term.NewStringWriter(20, 10)
 		handler.Draw(w)
 		require.NoError(t, w.Flush())
-		return strings.Contains(w.String(), "reply:E[1;1R")
-	}, 5*time.Second, 20*time.Millisecond, "screen was:\n%s", w.String())
+		assert.Equal(t, screen("$ exit"), w.String(), "^D echoes exit like bash")
+	})
+	t.Run("the exit status is reported", func(t *testing.T) {
+		t.Parallel()
+		handler, _ := testSequence(t, DefaultConfig(), defaultWaitForIdleVte, []vtetest.Case{
+			{InputSequence: "exit 3>", Expected: screen("$ exit 3")},
+		})
+		var exitErr *vsh.ExitError
+		require.Eventually(t, func() bool {
+			exit, _ := handler.Handle(term.Event{})
+			return exit
+		}, 5*time.Second, 10*time.Millisecond)
+		require.ErrorAs(t, handler.ExitErr(), &exitErr)
+		assert.Equal(t, 3, exitErr.ExitCode())
+	})
+}
+
+func TestHandlerVshResize(t *testing.T) {
+	t.Parallel()
+	t.Run("a resize at the prompt keeps the line", func(t *testing.T) {
+		t.Parallel()
+		handler, ch := testSequence(t, DefaultConfig(), defaultWaitForIdleVte, []vtetest.Case{
+			{InputSequence: "echo a>echo bc", Expected: screen("$ echo a", "a", "$ echo bc▐")},
+		})
+		handler.Resize(10, 5)
+		vtetest.TestCases(t, handler, 10, 5, defaultWaitForIdleVte, ch, []vtetest.Case{
+			{InputSequence: ">", Expected: "$ echo a  \na         \n$ echo bc \nbc        \n$ ▐       "},
+		})
+	})
+	t.Run("commands lay out in the new width", func(t *testing.T) {
+		t.Parallel()
+		handler, ch := testSequence(t, DefaultConfig(), defaultWaitForIdleVte, []vtetest.Case{
+			{InputSequence: "", Expected: screen("$ ▐")},
+		})
+		handler.Resize(40, 10)
+		vtetest.TestCases(t, handler, 40, 10, defaultWaitForIdleVte, ch, []vtetest.Case{
+			{InputSequence: "ls /bin>", Expected: "[         env       mv        test      \n" +
+				"basename  false     printf    touch     \n" +
+				"bash      fish      pwd       true      \n" +
+				"cat       grep      rm        wc        \n" +
+				"clear     head      rmdir     which     \n" +
+				"cp        help      sh        zsh       \n" +
+				"dash      ksh       sleep               \n" +
+				"dirname   ls        tail                \n" +
+				"echo      mkdir     tee                 \n" +
+				"$ ▐                                     "},
+		})
+	})
+}
+
+func TestHandlerVshScrollback(t *testing.T) {
+	t.Parallel()
+	var lines strings.Builder
+	for i := 1; i <= 30; i++ {
+		fmt.Fprintf(&lines, "line%d\n", i)
+	}
+	handler, _ := testSequenceVsh(t, DefaultConfig(), defaultWaitForIdleVte,
+		vshtest.Options{Files: map[string]string{"lines": lines.String()}}, []string{"sh"}, []vtetest.Case{
+			{InputSequence: "cat lines>", Expected: screen("line22", "line23", "line24", "line25", "line26",
+				"line27", "line28", "line29", "line30", "$ ▐")},
+		})
+
+	require.True(t, handler.Component().ScrollUp(5))
+	w := term.NewStringWriter(20, 10)
+	handler.Draw(w)
+	require.NoError(t, w.Flush())
+	assert.Equal(t, screen("line17", "line18", "line19", "line20", "line21", "line22", "line23", "line24",
+		"line25", "line26"), w.String())
+
+	for _, ev := range []term.Event{
+		{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 0, MouseY: 2},
+		{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 5, MouseY: 2},
+		{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 5, MouseY: 2},
+	} {
+		handler.Handle(ev)
+	}
+	sel, ok := handler.Selection()
+	require.True(t, ok)
+	assert.Equal(t, "line19", sel)
+}
+
+// statusRecorder records the program statuses a Handler reports.
+type statusRecorder struct {
+	nopTabManager
+	mu      sync.Mutex
+	reports []programstatus.Report
+	ended   int
+}
+
+func (r *statusRecorder) SetTabStatus(_ workspaceapi.URI, report programstatus.Report) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reports = append(r.reports, report)
+	return nil
+}
+
+func (r *statusRecorder) EndTabStatus(workspaceapi.URI) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ended++
+	return nil
+}
+
+func (r *statusRecorder) snapshot() ([]programstatus.Report, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.reports), r.ended
+}
+
+func TestHandlerVshShellIntegration(t *testing.T) {
+	t.Parallel()
+	f := vshtest.New(t, vshtest.Options{Files: map[string]string{
+		"work.sh": "printf '\\033]7501;state=working\\033\\\\'\nsleep 60\n",
+	}})
+	tm := &statusRecorder{}
+	// A program reports it is working; the prompt that follows its
+	// end withdraws the report, and neither sequence takes a cell.
+	handler, ch := newTestSequenceTabs(t, DefaultConfig(), defaultWaitForIdleVte, f.Exec, f.Exec, tm,
+		[]string{"sh"}, []vtetest.Case{
+			{InputSequence: "sh work.sh>", Expected: screen("$ sh work.sh", "▐")},
+		})
+	require.Eventually(t, func() bool {
+		reports, _ := tm.snapshot()
+		return len(reports) == 1 && reports[0].State == programstatus.Working
+	}, 5*time.Second, 10*time.Millisecond)
+
+	_, handled := handler.Handle(ctrlC)
+	require.True(t, handled)
+	vtetest.TestCases(t, handler, 20, 10, defaultWaitForIdleVte, ch, []vtetest.Case{
+		{InputSequence: "", Expected: screen("$ sh work.sh", "^C", "$ ▐")},
+	})
+	require.Eventually(t, func() bool {
+		_, ended := tm.snapshot()
+		return ended == 1
+	}, 5*time.Second, 10*time.Millisecond, "the next prompt ends the status")
+}
+
+func TestHandlerVshPasteRunsLineByLine(t *testing.T) {
+	t.Parallel()
+	handler, ch := testSequence(t, DefaultConfig(), defaultWaitForIdleVte, []vtetest.Case{
+		{InputSequence: "", Expected: screen("$ ▐")},
+	})
+	handler.Handle(term.Event{Type: term.EventPasteStart})
+	handler.Handle(term.Event{Type: term.EventKey, Ch: 'e', Raw: []byte("echo a\necho b\n")})
+	handler.Handle(term.Event{Type: term.EventPasteEnd})
+	vtetest.TestCases(t, handler, 20, 10, defaultWaitForIdleVte, ch, []vtetest.Case{
+		{InputSequence: "", Expected: screen("$ echo a", "echo b", "a", "$ echo b", "b", "$ ▐")},
+	})
 }

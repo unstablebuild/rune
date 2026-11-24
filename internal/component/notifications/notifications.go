@@ -17,7 +17,9 @@
 package notifications
 
 import (
+	"image"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/unstablebuild/rune-go-sdk/component"
@@ -45,6 +47,18 @@ type notificationComp struct {
 	progressCellCurrent    term.Cell
 	progressCellCurrentTip term.Cell
 	progressCellRemain     term.Cell
+	// bar holds the cells of the progress bar from left to right, and
+	// keep those of its cells under an image, as Draw last laid them out.
+	bar  []barCell
+	keep []term.Coordinates
+	// masks paints the inside of the lines of the frame's images.
+	masks tcomponent.FrameMasks
+}
+
+// barCell is a cell of the progress bar and the image that goes over it.
+type barCell struct {
+	cell term.Cell
+	uri  string
 }
 
 func newString(cfg Config, msg string) component.Responsive {
@@ -131,9 +145,15 @@ func (n *notificationComp) Resize(width, height int) {
 	n.Responsive.Resize(width, height)
 }
 
-func (n *notificationComp) Draw(w term.Writer) {
-	n.Responsive.Draw(w)
+// inside returns the colour inside the notification's frame.
+func (n *notificationComp) inside() term.Color {
+	if bg := n.cfg.BackgroundAttributes.Bg; bg != term.ColorDefault {
+		return bg
+	}
+	return n.cfg.Attributes.Bg
+}
 
+func (n *notificationComp) Draw(w term.Writer) {
 	var g *tcomponent.FrameGraphics
 	if n.cfg.Graphics != nil && n.cfg.hasGraphics() {
 		g = n.cfg.Graphics()
@@ -151,17 +171,62 @@ func (n *notificationComp) Draw(w term.Writer) {
 		frame.Graphics.BottomLeft = ""
 		frame.Graphics.HorizontalBottom = ""
 		frame.Graphics.BottomRight = ""
-		if n.width >= 3 && n.height >= 3 {
-			component.DrawFrame(w, n.cfg.FrameCharSet, frame.Attributes, n.width-1, n.height-1)
+	}
+	n.layoutBar()
+	// The images of the frame and of the progress bar go over what is
+	// under the notification, which their transparent pixels show
+	// outside their lines, and the notification's colour inside them.
+	cells := w
+	if g != nil {
+		n.keep = n.keep[:0]
+		for x, c := range n.bar {
+			if c.uri != "" {
+				n.keep = append(n.keep, term.Coordinates{X: x, Y: n.height - 1})
+			}
+		}
+		cells = &tcomponent.FrameUnderWriter{
+			Writer: w, Graphics: frame.Graphics, Width: n.width, Height: n.height,
+			Keep: n.keep,
 		}
 	}
-	if g != nil {
-		g.Draw(w, &frame, n.width, n.height)
+	n.Responsive.Draw(cells)
+	if n.cfg.ProgressBar && n.width >= 3 && n.height >= 3 {
+		component.DrawFrame(cells, n.cfg.FrameCharSet, frame.Attributes, n.width-1, n.height-1)
 	}
-	if !n.cfg.ProgressBar {
+	area := image.Rect(0, 0, n.width, n.height)
+	if g != nil {
+		g.DrawOver(&tcomponent.FrameInsideWriter{
+			Writer: w, Area: area, Inside: n.inside(), Masks: &n.masks,
+		}, &frame, n.width, n.height)
+	}
+	if len(n.bar) == 0 {
 		return
 	}
 
+	bar := &tcomponent.FrameInsideWriter{Writer: w, Area: area, Inside: n.inside(), Masks: &n.masks}
+	if n.cfg.ProgressRunes.Graphics.Overlay {
+		// The level's colour, which the runes would show through the
+		// images, fills what they enclose: their clear pixels open to
+		// the outside show what is under the notification instead.
+		bar.Inside, bar.Enclosed = n.progressCellStart.Fg, true
+	}
+	for x, c := range n.bar {
+		pos := term.Coordinates{X: x, Y: n.height - 1}
+		if g == nil || c.uri == "" {
+			w.SetCell(pos, c.cell)
+			continue
+		}
+		g.DrawCell(bar, c.uri, pos, c.cell)
+	}
+}
+
+// layoutBar lays the progress bar out in n.bar, which it leaves empty
+// when n shows none or its progress is past the end.
+func (n *notificationComp) layoutBar() {
+	n.bar = n.bar[:0]
+	if !n.cfg.ProgressBar || n.width <= 0 {
+		return
+	}
 	remaining := time.Until(n.end)
 	if !n.pausedAt.IsZero() {
 		remaining = n.end.Sub(n.pausedAt)
@@ -174,35 +239,24 @@ func (n *notificationComp) Draw(w term.Writer) {
 		current = n.manualProgress
 		total = n.manualProgressTotal
 	}
-	currCount := int(math.Ceil(
-		float64(current) / float64(total) * float64(size),
-	))
+	currCount := max(0, int(math.Ceil(
+		float64(current)/float64(total)*float64(size),
+	)))
 	if size < currCount {
 		return
 	}
-	remaCount := size - currCount
 
 	pg := n.cfg.ProgressRunes.Graphics
-	set := func(x int, cell term.Cell, uri string) {
-		pos := term.Coordinates{X: x, Y: n.height - 1}
-		w.SetCell(pos, cell)
-		if g != nil {
-			g.DrawCell(w, uri, pos, cell, pg.Overlay)
-		}
-	}
-
-	set(0, n.progressCellStart, pg.Start)
-
+	n.bar = slices.Grow(n.bar, size)[:size]
+	n.bar[0] = barCell{n.progressCellStart, pg.Start}
 	for x := 1; x < currCount; x++ {
-		set(x, n.progressCellCurrent, pg.Current)
+		n.bar[x] = barCell{n.progressCellCurrent, pg.Current}
 	}
-	if currCount != 0 {
-		set(currCount, n.progressCellCurrentTip, pg.CurrentTip)
+	if currCount != 0 && currCount < size {
+		n.bar[currCount] = barCell{n.progressCellCurrentTip, pg.CurrentTip}
 	}
-
-	for x := currCount + 1; x < currCount+remaCount-1; x++ {
-		set(x, n.progressCellRemain, pg.Remain)
+	for x := currCount + 1; x < size-1; x++ {
+		n.bar[x] = barCell{n.progressCellRemain, pg.Remain}
 	}
-
-	set(size-1, n.progressCellEnd, pg.End)
+	n.bar[size-1] = barCell{n.progressCellEnd, pg.End}
 }

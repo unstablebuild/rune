@@ -38,6 +38,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
 	tcomponent "unstable.build/rune/internal/component"
@@ -256,13 +257,15 @@ func (f *statusViewFixture) clear(path string) {
 	f.report(path, programstatus.Report{State: programstatus.Clear})
 }
 
-// tab opens a tab named name, never shown, that reports r.
+// tab opens a tab named name, never shown, that reports r. Like a chat,
+// it is previewed in a view of its own.
 func (f *statusViewFixture) tab(name string, r programstatus.Report) {
 	uri := f.uri(name)
 	h := &statusPreviewTestHandler{name: name}
 	tab := f.b.NewTab(uri, 'x', name, h, h)
 	key := statusKey{f.ws.String(), uri.String()}
 	f.host.names[key], f.host.tabs[key] = name, tab
+	f.host.previews[key] = (&statusTestOpener{name: name}).preview()
 	require.NoError(f.t, f.store.SetTabStatus(f.ws, statusStoreTestTabs{component: f.b}, uri, r))
 }
 
@@ -1100,10 +1103,9 @@ func TestStatusView(t *testing.T) {
 				f.preview("b", Preview{
 					Content: &statusPreviewTestHandler{name: "S", width: 4, height: 2}, Width: 4, Height: 2,
 				})
-				// Shown nowhere: fit to the preview.
+				// A view of its own: opened at the size of the preview.
 				f.report("c", statusTestReport(done, "hidden", -1))
-				hidden := &statusPreviewTestHandler{name: "H"}
-				f.preview("c", Preview{Content: hidden, Fit: hidden.Resize, Hidden: true})
+				f.preview("c", (&statusTestOpener{name: "H"}).preview())
 				// Its window closed.
 				f.report("d", statusTestReport(working, "gone", -1))
 			},
@@ -1592,17 +1594,21 @@ func TestStatusViewPreview(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, b.Close()) })
 	b.Resize(120, 60)
 	tabs := statusStoreTestTabs{component: b}
-	open := func(name string, state programstatus.State) (*browser.Tab, *statusPreviewTestHandler) {
+	open := func(name string, state programstatus.State) (statusKey, *browser.Tab, *statusPreviewTestHandler) {
 		uri := statusStoreTestURI(t, "rune-agent://model/"+name)
 		h := &statusPreviewTestHandler{name: name}
 		tab := b.NewTab(uri, 'x', name, h, h)
 		key := statusKey{ws.String(), uri.String()}
 		host.names[key], host.tabs[key] = name, tab
 		require.NoError(t, store.SetTabStatus(ws, tabs, uri, programstatus.Report{State: state, Progress: -1}))
-		return tab, h
+		return key, tab, h
 	}
-	freeTab, free := open("f", programstatus.Blocked)
-	boundTab, bound := open("b", programstatus.Working)
+	// A chat, previewed in a view of its own, and a tab whose content
+	// is borrowed.
+	chatKey, chatTab, chat := open("f", programstatus.Blocked)
+	views := &statusTestOpener{name: "f"}
+	host.previews[chatKey] = views.preview()
+	_, boundTab, bound := open("b", programstatus.Working)
 	require.True(t, b.SetContentToTab(b.Focus(), 1))
 	_, ok := boundTab.Window()
 	require.True(t, ok)
@@ -1626,7 +1632,8 @@ func TestStatusViewPreview(t *testing.T) {
 	const sideW = statusSidebarMin + statusDividerWidth
 	w, h := v.Dimensions()
 	assert.Equal(t, []int{sideW + statusPreviewWidth, max(statusPreviewHeight, statusMinHeight)}, []int{w, h},
-		"a tab never sized asks for the default size, and the view for no less than its least height")
+		"a view of its own asks for the default size, and the inbox for no less than its least height")
+	assert.Empty(t, views.views, "nothing opens before the inbox is sized")
 
 	const width, height = sideW + 30, 12
 	draw := func() []string {
@@ -1649,12 +1656,16 @@ func TestStatusViewPreview(t *testing.T) {
 	}
 	v.Resize(width, height)
 	assert.Equal(t, preview("f", 0, height, width-sideW), draw())
-	w, h = freeTab.ContentSize()
-	assert.Equal(t, []int{width - sideW, height}, []int{w, h}, "a tab never sized is fit to the preview")
+	require.Len(t, views.views, 1)
+	assert.Equal(t, []int{width - sideW, height}, []int{views.views[0].width, views.views[0].height},
+		"a view of its own opens at the size of the preview")
+	w, h = chatTab.ContentSize()
+	assert.Equal(t, []int{0, 0}, []int{w, h}, "the tab of a program previewed in a view of its own is left alone")
 
 	// Sorted by state then name: f (blocked), the two terminals (done),
 	// then b (working).
 	v.move(1)
+	assert.Equal(t, 1, views.closed, "moving on closes the view")
 	assert.Equal(t, preview("t", 0, 5, 20), draw(), "a terminal outside of a tab is previewed in its window")
 	w, h = v.Dimensions()
 	assert.Equal(t, []int{sideW + 20, statusMinHeight}, []int{w, h}, "the view keeps its least height over a short terminal")
@@ -1683,51 +1694,96 @@ func TestStatusViewPreview(t *testing.T) {
 	assert.Equal(t, []int{sideW + resizedW, max(resizedH, statusMinHeight)}, []int{w, h},
 		"the view follows the size of the tab")
 
-	assert.Zero(t, free.events, "the previewed tab receives no input")
+	assert.Zero(t, chat.events, "the previewed tab receives no input")
+	assert.Zero(t, views.views[0].events, "the view of its own receives no input")
 	assert.Zero(t, bound.events, "the previewed tab receives no input")
 	assert.Zero(t, term1.events, "the previewed terminal receives no input")
 }
 
-func TestStatusViewHiddenPreview(t *testing.T) {
+func TestStatusViewOpensPreview(t *testing.T) {
 	host, store, ws := newStatusStoreTest(t)
-	hidden, shown := statusStoreTestURI(t, "file:///hidden"), statusStoreTestURI(t, "file:///shown")
-	program := &statusPreviewTestHandler{name: "h", width: 3, height: 1}
-	fits := 0
-	host.previews[statusKey{ws.String(), hidden.String()}] = Preview{
-		Content: program, Hidden: true,
-		Fit: func(w, h int) { fits++; program.Resize(w, h) },
-	}
+	own, shown := statusStoreTestURI(t, "file:///own"), statusStoreTestURI(t, "file:///shown")
+	views := &statusTestOpener{name: "h"}
+	host.previews[statusKey{ws.String(), own.String()}] = views.preview()
 	other := &statusPreviewTestHandler{name: "s", width: 5, height: 2}
 	host.previews[statusKey{ws.String(), shown.String()}] = Preview{Content: other, Width: 5, Height: 2}
-	for _, uri := range []workspaceapi.URI{hidden, shown} {
+	for _, uri := range []workspaceapi.URI{own, shown} {
 		store.updateDetached(ws, uri, func(r *programstatus.Store) {
 			r.Apply(detachedTestReport(programstatus.Done, ""))
 		})
 	}
 	v := store.View(nil)
-	t.Cleanup(func() { require.NoError(t, v.Close()) })
-	require.Equal(t, hidden.String(), v.sel.uri)
+	require.Equal(t, own.String(), v.sel.uri)
 
 	const sideW = statusSidebarMin + statusDividerWidth
 	w, h := v.Dimensions()
 	assert.Equal(t, []int{sideW + statusPreviewWidth, max(statusPreviewHeight, statusMinHeight)}, []int{w, h},
-		"what is shown nowhere asks for the default size")
+		"a view of its own asks for the default size")
 	const width, height = sideW + 20, 6
 	v.Resize(width, height)
-	assert.Equal(t, []int{20, height}, []int{program.width, program.height}, "it is fit to the preview")
+	require.Len(t, views.views, 1)
+	view := views.views[0]
+	assert.Equal(t, []int{20, height}, []int{view.width, view.height}, "it opens at the size of the preview")
 	lines := strings.Split(handlertest.DrawHandler(v, width, height), "\n")
 	for y := range height {
 		assert.Equal(t, statusPreviewTestRow("h", y, 20), string([]rune(lines[y])[sideW:]), "it is drawn whole")
 	}
 	v.Resize(width, height)
-	assert.Equal(t, 1, fits, "it is only resized as the preview changes size")
+	assert.Zero(t, views.resizes, "it is only resized as the preview changes size")
+	v.Resize(width+4, height+1)
+	assert.Equal(t, 1, views.resizes)
+	assert.Equal(t, []int{24, height + 1}, []int{view.width, view.height}, "it follows the preview")
+	assert.Len(t, views.views, 1, "it is opened once")
 
-	program.Resize(3, 1)
 	v.move(1)
+	assert.Equal(t, 1, views.closed, "moving on closes it")
 	v.move(-1)
-	assert.Equal(t, 2, fits, "selected again, it is fit again")
-	assert.Equal(t, []int{20, height}, []int{program.width, program.height})
+	require.Len(t, views.views, 2, "selected again, another is opened")
+	assert.Equal(t, []int{24, height + 1}, []int{views.views[1].width, views.views[1].height})
 	assert.Equal(t, []int{5, 2}, []int{other.width, other.height}, "what is shown elsewhere is never resized")
+
+	require.NoError(t, v.Close())
+	assert.Equal(t, 2, views.closed, "closing the inbox closes it")
+}
+
+func TestStatusViewOpenedPreviewSize(t *testing.T) {
+	host, store, ws := newStatusStoreTest(t)
+	uri := statusStoreTestURI(t, "file:///terminal")
+	views := &statusTestOpener{name: "t", width: 30, height: 50}
+	host.previews[statusKey{ws.String(), uri.String()}] = views.preview()
+	store.updateDetached(ws, uri, func(r *programstatus.Store) {
+		r.Apply(detachedTestReport(programstatus.Done, ""))
+	})
+	v := store.View(nil)
+	t.Cleanup(func() { require.NoError(t, v.Close()) })
+	const sideW = statusSidebarMin + statusDividerWidth
+	w, h := v.Dimensions()
+	assert.Equal(t, []int{sideW + 30, 50}, []int{w, h}, "a view of its own may ask for a size")
+
+	// Given less, it crops itself.
+	v.Resize(sideW+10, 4)
+	require.Len(t, views.views, 1)
+	assert.Equal(t, []int{10, 4}, []int{views.views[0].width, views.views[0].height})
+}
+
+func TestStatusViewOpensNothing(t *testing.T) {
+	host, store, ws := newStatusStoreTest(t)
+	uri := statusStoreTestURI(t, "file:///gone")
+	opens := 0
+	host.previews[statusKey{ws.String(), uri.String()}] = Preview{
+		Open: func(int, int) (tui.Component, func()) { opens++; return nil, nil },
+	}
+	store.updateDetached(ws, uri, func(r *programstatus.Store) {
+		r.Apply(detachedTestReport(programstatus.Done, ""))
+	})
+	v := store.View(nil)
+	t.Cleanup(func() { require.NoError(t, v.Close()) })
+	const sideW = statusSidebarMin + statusDividerWidth
+	v.Resize(sideW+20, 6)
+	drawn := handlertest.DrawHandler(v, sideW+20, 6)
+	assert.Contains(t, drawn, statusPreviewNone, "a view that does not open shows no preview")
+	handlertest.DrawHandler(v, sideW+20, 6)
+	assert.Equal(t, 1, opens, "it is not opened again while selected")
 }
 
 func TestStatusViewStyle(t *testing.T) {
@@ -2255,6 +2311,71 @@ func TestViewStitchFrame(t *testing.T) {
 	}
 }
 
+func TestViewFocusStyle(t *testing.T) {
+	const width, height = statusSidebarMin + 8, 6
+	uris, pictures, _ := statusTestPictures(t)
+	selected := browser.PromptButtonImage{Middle: uris['6']}
+	focus := statusTestStyle()
+	focus.Divider.Vertical, focus.Divider.Top = 'F', 'G'
+	focus.Images = browser.PromptImages{Selected: selected}
+	tests := []struct {
+		name  string
+		focus *InboxStyle
+		ctx   context.Context
+		// wantDivider is the divider's character in the view, and
+		// wantJoin where it joins the frame's top row.
+		wantDivider, wantJoin rune
+		wantImages            bool
+	}{
+		{
+			name: "the focus style while its window holds the focus", focus: &focus,
+			ctx:         term.ContextWithWindowFocus(context.Background(), true),
+			wantDivider: 'F', wantJoin: 'G', wantImages: true,
+		},
+		{
+			name: "the normal style while it doesn't", focus: &focus,
+			ctx:         term.ContextWithWindowFocus(context.Background(), false),
+			wantDivider: '|', wantJoin: 'T',
+		},
+		{
+			name: "the normal style when the host doesn't tell", focus: &focus,
+			ctx: context.Background(), wantDivider: '|', wantJoin: 'T',
+		},
+		{
+			name:        "the normal style without a focus style",
+			ctx:         term.ContextWithWindowFocus(context.Background(), true),
+			wantDivider: '|', wantJoin: 'T',
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, store, ws := newStatusStoreTestWith(t, statusViewTestConfig(), nil)
+			store.updateDetached(ws, statusStoreTestURI(t, "file:///a"),
+				func(r *programstatus.Store) { r.Apply(detachedTestReport(programstatus.Done, "")) })
+			g := tcomponent.NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			g.Reload(pictures)
+			store.graphics = g
+			style := statusTestStyle()
+			style.Divider.Vertical, style.Divider.Top = '|', 'T'
+			style.Focus = tt.focus
+			store.SetStyle(style)
+			v := store.View(nil)
+			t.Cleanup(func() { require.NoError(t, v.Close()) })
+			f := component.NewFrame(v)
+			f.Resize(width+2, height+2)
+
+			w := cell.NewBufferWriter(tt.ctx, width+2, height+2)
+			f.Draw(w)
+			v.StitchFrame(w, f, g, width+2, height+2, false)
+			cells := w.RawCells()
+			assert.Equal(t, tt.wantDivider, cells[3][1+statusSidebarMin].Ch)
+			assert.Equal(t, tt.wantJoin, cells[0][1+statusSidebarMin].Ch)
+			assert.Equal(t, tt.wantImages, len(w.Images()) > 0)
+		})
+	}
+}
+
 func TestStatusViewSpinnerTurns(t *testing.T) {
 	interrupts := &statusTestInterrupter{}
 	cfg := browser.TabStatusConfig{Spinner: []rune("ab"), SpinnerFPS: 100}
@@ -2401,6 +2522,37 @@ func (h *statusPreviewTestHandler) Cursor() (term.Coordinates, term.CursorStyle,
 }
 func (h *statusPreviewTestHandler) Selection() (string, bool) { return "", false }
 func (h *statusPreviewTestHandler) Close() error              { return nil }
+
+// statusTestOpener previews a program in views of its own, named name,
+// as a chat is: it records the views it opens, how often they are
+// resized, and which are closed.
+type statusTestOpener struct {
+	name          string
+	width, height int
+	views         []*statusPreviewTestHandler
+	resizes       int
+	closed        int
+}
+
+func (o *statusTestOpener) preview() Preview {
+	return Preview{Open: o.open, Width: o.width, Height: o.height}
+}
+
+func (o *statusTestOpener) open(width, height int) (tui.Component, func()) {
+	h := &statusPreviewTestHandler{name: o.name, width: width, height: height}
+	o.views = append(o.views, h)
+	return statusTestResizeCounter{h, &o.resizes}, func() { o.closed++ }
+}
+
+type statusTestResizeCounter struct {
+	tui.Component
+	n *int
+}
+
+func (c statusTestResizeCounter) Resize(width, height int) {
+	*c.n++
+	c.Component.Resize(width, height)
+}
 
 // statusPreviewTestRow returns the first width cells of row y of the
 // handler named name: its name and the row, then the digit of each

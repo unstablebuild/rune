@@ -177,6 +177,9 @@ command:
     "<meta-s>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
     "<meta-x>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
     "<alt-s>o": searchtext           # two-key M-s o, not the M-? chord above
+    "<alt-s>f": searchfunc
+    "<alt-s>v": searchvar
+    "<alt-s>t": searchtype
     "<ctrl-alt-\\\\>": "lsp format"
     "<ctrl-alt-i>": "lsp complete"
     # <meta-l> steps diagnostics and <meta-e> opens their picker. The F-keys

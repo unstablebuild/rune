@@ -41,7 +41,9 @@ Rune's symbol index, implemented by `symboldb`, is a persistent, per-workspace
 index built from source syntax. It lets Rune find useful starting positions for
 qualified names such as `server.New`, `geometry.Shape`, or
 `orders.Order.total`. Rune can then navigate directly with its syntax support or
-ask a [language server](./intelligence.md) for a richer semantic answer.
+ask a [language server](./intelligence.md) for a richer semantic answer. The
+same index lists every definition of each file for the `searchfunc`,
+`searchvar` and `searchtype` [pickers](../learn/search.md#fuzzy-search-across-the-workspace).
 
 The index is enabled by default. It is especially useful in large or
 multi-language workspaces because it spans the whole workspace rather than one
@@ -82,18 +84,21 @@ flowchart LR
 ```
 
 :::note[Structural queries are different]
-Commands such as `searchfunc` and the agent's `list_symbols` and `query_ast`
+Commands such as `searchast` and the agent's `list_symbols` and `query_ast`
 tools run Tree-sitter queries directly. They do not search the persisted symbol
 records. The symbol index and structural queries share the same syntax
 foundation, but answer different questions: a structural query finds code with
 a particular shape, while the index finds candidate locations for a qualified
-name.
+name, and the definitions of each file.
 :::
 
 ## What the index powers
 
 The index supports several paths through Rune:
 
+- **Definition pickers.** `searchfunc`, `searchvar` and `searchtype` list the
+  functions, methods, variables and types of the whole workspace at once from
+  the definitions the index records for each file.
 - **By-name editor navigation.** The `lsp definition`, `lsp declaration`,
   `lsp type-definition`, `lsp implementation`, `lsp references`, and `lsp
   hover` commands accept a qualified name. The index finds positions from which
@@ -124,6 +129,7 @@ The segments are separated with dots:
 | Rust | `geometry.Shape`, `geometry.Shape.area` |
 | Zig | `geometry.Shape`, `geometry.Shape.area` |
 | TypeScript and JavaScript | `geometry.Shape`, `geometry.Shape.area`, `utils.slugify` for a re-export from `utils/index.ts` |
+| Svelte | `Counter.increment`, `Counter.Store.reset` for declarations in `Counter.svelte`'s `<script>` block |
 
 Private and unexported declarations are indexed like public ones, so internal
 helpers resolve and appear in completion by their qualified name.
@@ -150,17 +156,21 @@ name.
 
 ## How Rune builds the index
 
-Opening a workspace starts a background scan. Rune walks non-ignored source
-files for languages that have a registered symbol-resolution specification.
-Hidden directories and paths excluded by Git ignore rules are skipped. Rune
-currently has specifications for Go, Python, Rust, Zig, TypeScript, and
-JavaScript.
+Opening a workspace starts a background scan. Rune walks the files a workspace
+search covers whose language package is installed: hidden directories, paths
+excluded by Git ignore rules and `search.excluded_folders` are skipped. The scan
+reads only the grammars already installed; it never offers to install one, and
+installing a language package rescans the files of that language. Languages
+with a registered symbol-resolution specification also get qualified names.
+Rune currently has specifications for Go, Python, Rust, Zig, TypeScript,
+JavaScript, and Svelte; every other language contributes only its definitions.
 
 Each eligible file goes through one Tree-sitter parse. Rune runs several queries
 against that syntax tree as one batch:
 
 1. The language package's `locals.scm` identifies standard syntax roles. The
-   index currently uses its function and type definition captures.
+   index lists every function, method, type and variable definition it
+   captures, and qualifies the function and type definitions.
 2. A language-specific `symbolresolve.Spec` describes syntax that generic local
    captures cannot interpret across files: package or module qualifiers,
    imports and aliases, visibility, receiver types, methods, and re-exports.
@@ -179,8 +189,9 @@ The database has three main kinds of records:
 - **Symbol records** map a qualified name to candidate file positions and mark
   each position as a reference, definition, or method definition.
 - **File records** remember a file's modification time, the names it contributed,
-  and its import aliases. These records let Rune replace only that file's old
-  contribution after a change.
+  its import aliases and its definitions, packed. These records let Rune replace
+  only that file's old contribution after a change, and Rune keeps them in
+  memory so the definition pickers list a whole workspace at once.
 - **Name records** provide a lightweight stream of known qualified names for
   completion and workspace symbol search without loading every location.
 
@@ -257,22 +268,37 @@ language server a relevant position from which to answer semantic questions.
 
 ## Configuration
 
-The symbol database is enabled in Rune's default configuration:
+The symbol index is enabled in Rune's default configuration:
 
 ```yaml tab
-workspace:
-  symboldb: true
+search:
+  symbols_enabled: true
 ```
 
 ```python tab
-config["workspace"]["symboldb"] = True
+config["search"]["symbols_enabled"] = True
 ```
 
 There is normally no reason to disable it. If disabled, Tree-sitter highlighting
 and queries still work, and active language servers still provide semantic
 features. However, by-name resolution may need to scan the workspace on demand,
-and syntax-backed workspace symbol search is unavailable. Workspace settings are
-read when the workspace is created, so restart Rune after changing this option.
+syntax-backed workspace symbol search is unavailable, and `searchfunc`,
+`searchvar` and `searchtype` parse every file they search. Workspace settings
+are read when the workspace is created, so restart Rune after changing this
+option.
+
+The `search symbols` command of the [Rune console](../learn/console.md) manages
+the index of the workspace it runs in:
+
+```
+search symbols status    # files, definitions, grammars, and files that failed to parse
+search symbols reindex   # rebuild the index from scratch
+search symbols remove    # delete the index until the workspace opens again
+```
+
+`search symbols reindex` waits for the rebuild and shows its progress. If you
+stop it, the index, already emptied, is rebuilt in the background as when the
+workspace opens.
 
 ## Limits and trade-offs
 
@@ -280,23 +306,24 @@ Keep these boundaries in mind when interpreting results:
 
 - **The index is syntax-derived.** It recognizes patterns described by the
   grammar and Rune's language rules; it does not type-check the program.
-- **Only registered languages are indexed.** A Tree-sitter grammar is enough
-  for syntax highlighting and structural queries, but cross-file symbol indexing
-  additionally needs a core `symbolresolve.Spec`.
+- **Only registered languages get qualified names.** An installed Tree-sitter
+  grammar is enough for the definitions the pickers list, but cross-file
+  symbol indexing additionally needs a core `symbolresolve.Spec`.
 - **It covers workspace files.** Dependencies or standard-library sources
   outside the workspace are normally the language server's responsibility.
 - **It reads saved files.** Unsaved edits are not persisted in the index.
-- **It is selective.** Cross-file definitions focus on functions, types,
-  methods, and supported re-exports. Variables and constants are not generally
-  indexed as definitions.
+- **Qualified names are selective.** Cross-file definitions focus on functions,
+  types, methods, and supported re-exports. Variables and constants are listed
+  by `searchvar` but not indexed under a qualified name.
 - **Definitions are indexed regardless of visibility.** A language's visibility
   rules only decide whether a qualified use counts as a reference to a symbol
   in another package or module.
 - **It stores candidates, not a complete reference graph.** Repeated uses in one
   file are collapsed, and dynamic or ambiguous constructs may remain unresolved.
-- **Git-ignored paths and hidden directories are skipped.** This keeps dependency
-  caches and generated output out of the initial workspace scan, but also means
-  symbols in those paths are absent.
+- **Git-ignored paths, hidden directories and excluded folders are skipped.**
+  This keeps dependency caches and generated output out of the initial
+  workspace scan, but also means symbols in those paths are absent. A picker
+  given one of those folders with `-r` parses it all the same.
 
 When syntax cannot establish a relationship safely, Rune prefers no result over
 an incorrect jump. Use LSP-backed navigation when compiler-accurate behavior is
@@ -312,10 +339,11 @@ If a qualified lookup does not find a workspace symbol:
    module, or type prefix.
 3. **Check indexing progress.** A new workspace may still show the **Indexing
    workspace symbols** notification.
-4. **Check the path.** Git-ignored files and hidden directories are not part of
-   the scan.
+4. **Check the path.** Git-ignored files, hidden directories and
+   `search.excluded_folders` are not part of the scan.
 5. **Check the language tier.** The language needs symbol-index support, not
-   only a grammar package.
+   only a grammar package, and the package must be installed. `search symbols
+   status` lists the languages without one.
 6. **Separate discovery from semantics.** If Rune finds the candidate but hover,
    implementations, or exact references fail, troubleshoot the language server
    using the [Code Intelligence](./intelligence.md) guide.

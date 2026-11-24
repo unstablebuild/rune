@@ -196,18 +196,28 @@ func (i *IDE) InputMode() term.InputMode {
 	return i.ideConfig.inputMode()
 }
 
-// SetDefaultAttributes sets the default attributes to be used to fill the screen.
+// ThemeColors are the colours of the GUI's theme that Rune draws with.
+type ThemeColors struct {
+	// Default fills the screen.
+	Default term.Attributes
+	// FocusBackground is the background colour of the window holding the
+	// focus style where the config sets no focus background, or
+	// term.ColorDefault for none.
+	FocusBackground term.Color
+}
+
+// SetThemeColors sets the colours of the theme Rune draws with.
 //
 // It mutates state the event loop and the async workspace builds read,
 // so callers must hold the IDE locker (see WithLocker). Command
 // handlers already run under it; setup code running outside the loop
 // has to take it explicitly.
-func (i *IDE) SetDefaultAttributes(defAttr term.Attributes) {
-	i.root.defAttr = defAttr
+func (i *IDE) SetThemeColors(c ThemeColors) {
+	i.root.defAttr = c.Default
 	// Propagate to every workspace ex so grayscale dimming of unfocused
 	// windows and the command prompt resolves a ColorDefault foreground
 	// against the current theme rather than keeping its native hue.
-	i.workspaceHandler.setDefaultAttr(defAttr)
+	i.workspaceHandler.setThemeColors(c)
 }
 
 // Config returns the configuration loaded by this IDE.
@@ -777,15 +787,16 @@ func (i *IDE) init(
 	if op.commandDispatchHook != nil {
 		commandObserver.subscribe(funcCommandObserver(op.commandDispatchHook))
 	}
+	// The boot workspace build launched by workspaceHandler.init above
+	// reaches the event loop and the shader runner from its own goroutine
+	// under the locker (subscribeAllEvents, abortPendingBuild ->
+	// stopLoading). Subscribe to events and seed the root under the same
+	// locker so this init does not race those accesses.
+	i.locker.Lock()
 	_ = i.workspaceHandler.SubscribeEvents(
 		textapi.AllEvents(),
 		tutorialEventObserver(i.options.scheduleFn, i.tutorial.observeEvent),
 	)
-	// The boot workspace build launched by workspaceHandler.init above
-	// reaches the shader runner from its own goroutine (e.g.
-	// abortPendingBuild -> stopLoading) under the locker; take it here
-	// too so this init does not race that access.
-	i.locker.Lock()
 	i.root.init(&i.tutorial, i, i.ideConfig.defaultAttr(), shutdownShaderCfg,
 		loadingShaderCfg, openShaderCfg, i.ideConfig.windowFrameCharset())
 	// The screen Rune starts on is the home workspace's, whose wallpaper

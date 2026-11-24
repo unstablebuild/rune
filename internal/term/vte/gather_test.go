@@ -25,9 +25,41 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/pty"
+	"github.com/unstablebuild/rune-go-sdk/api/config"
+	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/workspace"
 	"unstable.build/rune/internal/workspace/workspacetest"
 )
+
+// fdFile is a workspaceapi.File that is not a syscall.Conn but reports
+// an arbitrary descriptor number, the way a scheme-allocated file
+// whose number collides with a host descriptor would.
+type fdFile struct {
+	workspaceapi.File
+	fd uintptr
+}
+
+func (f *fdFile) Fd() uintptr { return f.fd }
+
+// fileSchemePty returns a pty from the file scheme, the one a local
+// terminal runs on, so that the fast paths are checked against the
+// master the scheme hands out rather than a bare *os.File.
+func fileSchemePty(t *testing.T) workspaceapi.Pty {
+	t.Helper()
+	uri, err := workspaceapi.CurrentUserHostURI(t.TempDir())
+	require.NoError(t, err)
+	s, err := workspace.NewFileScheme(context.Background(), config.NopConfig(), uri)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+	p, err := s.NewPty(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = p.Master.Close()
+		_ = p.Slave.Close()
+	})
+	return p
+}
 
 func TestGatherBatchSize(t *testing.T) {
 	t.Parallel()
@@ -104,6 +136,22 @@ func TestPtyGather(t *testing.T) {
 		t.Parallel()
 		_, ok := newPtyGather(t.Context(), &workspacetest.File{})
 		assert.False(t, ok)
+	})
+
+	t.Run("rejects a non-local file whose descriptor number names a tty", func(t *testing.T) {
+		t.Parallel()
+		master, tty, err := pty.Open()
+		require.NoError(t, err)
+		defer master.Close()
+		defer tty.Close()
+		_, ok := newPtyGather(t.Context(), &fdFile{File: &workspacetest.File{}, fd: master.Fd()})
+		assert.False(t, ok)
+	})
+
+	t.Run("accepts a file scheme pty master", func(t *testing.T) {
+		t.Parallel()
+		_, ok := newPtyGather(t.Context(), fileSchemePty(t).Master)
+		assert.True(t, ok)
 	})
 
 	t.Run("preserves content across batches with a slow consumer", func(t *testing.T) {

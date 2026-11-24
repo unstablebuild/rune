@@ -213,6 +213,12 @@ var defaultCaptureNamesAttributes = map[string]term.Attributes{
 	"constant.builtin": {},
 	"comment":          {Fg: term.ColorBlue},
 
+	// Markup tag names and attributes, as emitted by html, svelte, jsx and
+	// css selectors. Their delimiters stay quiet like punctuation.
+	"tag":           {Fg: term.ColorAqua},
+	"tag.delimiter": {},
+	"attribute":     {Fg: term.ColorAqua},
+
 	"diff.plus":  {Fg: term.ColorGreen},
 	"diff.minus": {Fg: term.ColorRed},
 

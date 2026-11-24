@@ -505,9 +505,10 @@ func (p Parser) ListReferencedSymbols(
 }
 
 // GrammarFingerprint identifies the grammar and locals query installed
-// for langID: two fingerprints are equal exactly when both files are
-// byte-identical, wherever they are installed. It fails when the
-// language package or either file is not installed.
+// for langID, plus its injections query when it ships one: two
+// fingerprints are equal exactly when those files are byte-identical,
+// wherever they are installed. It fails when the language package, the
+// grammar or the locals query is not installed.
 func (p Parser) GrammarFingerprint(ctx context.Context, langID string) (string, error) {
 	it, err := p.pkg.LibDir(ctx, langID)
 	if err != nil {
@@ -518,17 +519,20 @@ func (p Parser) GrammarFingerprint(ctx context.Context, langID string) (string, 
 	if err != nil {
 		return "", fmt.Errorf("list files: %w", err)
 	}
-	paths := make(map[string]string, 2)
+	paths := make(map[string]string, 3)
 	for _, path := range files {
 		switch name := filepath.Base(path); name {
-		case ParserFilename, LocalsFilename:
+		case ParserFilename, LocalsFilename, InjectionsFilename:
 			paths[name] = path
 		}
 	}
 	h := sha256.New()
-	for _, name := range []string{ParserFilename, LocalsFilename} {
+	for _, name := range []string{ParserFilename, LocalsFilename, InjectionsFilename} {
 		path, ok := paths[name]
 		if !ok {
+			if name == InjectionsFilename {
+				continue
+			}
 			return "", errNotInstalled
 		}
 		f, err := os.Open(path)
@@ -1156,9 +1160,9 @@ func loadLanguage(
 		query = string(data)
 	}
 
-	lib, err := purego.Dlopen(langfile, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	lib, err := dlopenGrammar(langfile)
 	if err != nil {
-		return nil, "", fmt.Errorf("dlopen %q: %w", langfile, err)
+		return nil, "", err
 	}
 
 	parserID := fmt.Sprintf("tree_sitter_%s", langID)
@@ -1178,6 +1182,22 @@ func loadLanguage(
 		return nil, "", fmt.Errorf("set parser language: %v", err)
 	}
 	return &loadedLanguage{lib: lib, lang: language, parser: sitterParser}, query, nil
+}
+
+// dlopenGrammar loads the grammar at path through the file path resolves
+// to. A package in use under another version keeps the paths of its
+// files, and glibc's loader hands back the library it already loaded
+// under a path, so loading by that path would parse with the old grammar
+// for as long as anything holds it open.
+func dlopenGrammar(path string) (uintptr, error) {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	lib, err := purego.Dlopen(path, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	if err != nil {
+		return 0, fmt.Errorf("dlopen %q: %w", path, err)
+	}
+	return lib, nil
 }
 
 // compileQuery compiles a tree-sitter query against lang.

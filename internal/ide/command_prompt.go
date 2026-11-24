@@ -17,6 +17,8 @@
 package ide
 
 import (
+	"image"
+
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -97,6 +99,7 @@ func newCommandPromptHandler(
 		padded:    padded,
 		framed:    framed,
 		separator: e.commandPromptCfg.separator,
+		inside:    e.promptInside,
 	}
 	if !framed.Graphics.Empty() || !stitched.separator.Graphics.Empty() {
 		stitched.graphics = e.frameGraphics()
@@ -114,8 +117,14 @@ type promptStitcher struct {
 	// graphics is nil when neither the frame nor the separator names images.
 	graphics  *tcomponent.FrameGraphics
 	separator tcomponent.SeparatorCharSet
-	width     int
-	height    int
+	// inside returns the colour inside the frame, which the side of the
+	// frame's lines facing it takes, while the other side shows what is
+	// under the prompt. It follows the theme while the prompt is open,
+	// as a guitheme preview changes it.
+	inside func() term.Color
+	masks  tcomponent.FrameMasks
+	width  int
+	height int
 }
 
 var _ tui.Handler = (*promptStitcher)(nil)
@@ -126,36 +135,74 @@ func (s *promptStitcher) Resize(width, height int) {
 }
 
 func (s *promptStitcher) Draw(w term.Writer) {
-	s.framed.Draw(w)
-	if s.graphics != nil {
-		s.graphics.Draw(w, s.framed, s.width, s.height)
-	}
-	s.drawSeparator(w)
-}
-
-func (s *promptStitcher) drawSeparator(w term.Writer) {
-	if s.width < 3 || s.height < 3 {
+	if s.graphics == nil {
+		s.framed.Draw(w)
+		s.drawSeparator(w, w)
 		return
 	}
-	sepY, ok := s.cmd.SeparatorY()
+	cells := &tcomponent.FrameUnderWriter{
+		Writer: w, Graphics: s.framed.Graphics, Width: s.width, Height: s.height,
+		Keep: s.junctions(),
+	}
+	images := &tcomponent.FrameInsideWriter{
+		Writer: w, Area: image.Rect(0, 0, s.width, s.height), Inside: s.inside(), Masks: &s.masks,
+	}
+	s.framed.Draw(cells)
+	s.graphics.DrawOver(images, s.framed, s.width, s.height)
+	s.drawSeparator(cells, images)
+}
+
+// drawSeparator draws the separator's cells to cells and its images to
+// images.
+func (s *promptStitcher) drawSeparator(cells, images term.Writer) {
+	y, ok := s.separatorRow()
 	if !ok {
 		return
 	}
-	y := sepY + 1
-	if y <= 0 || y >= s.height-1 {
-		return
-	}
-	w.SetCell(term.Coordinates{X: 0, Y: y},
+	cells.SetCell(term.Coordinates{X: 0, Y: y},
 		term.NewCell(s.separator.Left, 0, s.framed.Attributes))
-	w.SetCell(term.Coordinates{X: 1, Y: y},
+	cells.SetCell(term.Coordinates{X: 1, Y: y},
 		term.NewCell(s.separator.HorizontalLeft, 0, s.framed.Attributes))
-	w.SetCell(term.Coordinates{X: s.width - 2, Y: y},
+	cells.SetCell(term.Coordinates{X: s.width - 2, Y: y},
 		term.NewCell(s.separator.HorizontalRight, 0, s.framed.Attributes))
-	w.SetCell(term.Coordinates{X: s.width - 1, Y: y},
+	cells.SetCell(term.Coordinates{X: s.width - 1, Y: y},
 		term.NewCell(s.separator.Right, 0, s.framed.Attributes))
 	if s.graphics != nil {
-		s.graphics.DrawSeparator(w, s.framed, s.separator, s.width, s.height, y)
+		// The junctions' images go over the background under the
+		// prompt, as the frame's do.
+		over := *s.framed
+		over.Attributes.Attrs |= term.AttrKeepBackground
+		s.graphics.DrawSeparator(images, &over, s.separator, s.width, s.height, y)
 	}
+}
+
+// separatorRow returns the row of the prompt the separator is drawn on,
+// or false when it draws none.
+func (s *promptStitcher) separatorRow() (int, bool) {
+	if s.width < 3 || s.height < 3 {
+		return 0, false
+	}
+	sepY, ok := s.cmd.SeparatorY()
+	y := sepY + 1
+	return y, ok && y > 0 && y < s.height-1
+}
+
+// junctions returns the cells of the separator's junctions that name an
+// image, which goes over what is under the prompt as the frame's do,
+// even where the frame's side names none.
+func (s *promptStitcher) junctions() []term.Coordinates {
+	y, ok := s.separatorRow()
+	if !ok {
+		return nil
+	}
+	var keep []term.Coordinates
+	if s.separator.Graphics.Left != "" {
+		keep = append(keep, term.Coordinates{X: 0, Y: y})
+	}
+	if s.separator.Graphics.Right != "" {
+		keep = append(keep, term.Coordinates{X: s.width - 1, Y: y})
+	}
+	return keep
 }
 
 func (s *promptStitcher) Handle(ev term.Event) (bool, bool) {

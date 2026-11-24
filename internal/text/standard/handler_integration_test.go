@@ -295,6 +295,28 @@ diff_buf_adjust(win_
 		pos := h.CursorAtScroll()
 		assert.Equal(t, pos, term.Coordinates{Y: 7})
 	})
+	t.Run("initial folds keep the event loop free", func(t *testing.T) {
+		loop := handlertest.NewEventLoop(t)
+		buf := cell.NewBuffer()
+		buf.WriteString(snippet)
+		fs := &testFoldsService{initialFolds: handlertest.LoopGatedIterator(loop,
+			[]term.Range{{Start: term.Coordinates{Y: 1}, End: term.Coordinates{Y: 4}}},
+			[]term.Range{{Start: term.Coordinates{Y: 7}, End: term.Coordinates{Y: 31}}})}
+		fs.view = buf.WithView(fs)
+
+		var h text.Handler
+		loop.Run(func() {
+			h = NewHandler(buf, uri, '\t', 0,
+				WithHideInitialFolds(true), WithScheduleNextTick(loop.Schedule))
+			h.Resize(20, 10)
+		})
+		scroll := h.(*standardHandler).less.Scroll()
+		loop.Eventually(func() bool {
+			_, first := scroll.HiddenBlockAt(1)
+			_, second := scroll.HiddenBlockAt(7)
+			return first && second
+		}, "both initial folds must be hidden")
+	})
 }
 
 func TestFindUsesStatusBarAcrossEditorChrome(t *testing.T) {
@@ -432,7 +454,8 @@ func newStatusFindIntegrationHandler(t *testing.T, content string) text.Handler 
 var _ = (foldsService)(testFoldsService{})
 
 type testFoldsService struct {
-	view cell.View
+	view         cell.View
+	initialFolds iterator.Iterator[term.Range]
 }
 
 func (f testFoldsService) Rows() int {
@@ -480,6 +503,9 @@ func (f testFoldsService) Folds() (iterator.Iterator[term.Range], bool) {
 }
 
 func (f testFoldsService) InitialFolds() (iterator.Iterator[term.Range], bool) {
+	if f.initialFolds != nil {
+		return f.initialFolds, true
+	}
 	return iterator.FromSlice([]term.Range{
 		{Start: term.Coordinates{Y: 1, X: 0}, End: term.Coordinates{Y: 4}},
 	}), true
