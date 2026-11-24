@@ -896,13 +896,15 @@ func TestSvelteCompositeParseInstallIntegration(t *testing.T) {
 	mu.Lock()
 	tree := parsed.Install(&recordingNotifications{}, term.NopInterrupter(), loc,
 		nopFlusherCloser{}, nil)
-	installed := len(published)
+	// The sections publish as they parse, so what Install published is
+	// read before the event loop is let go.
+	installed := slices.Clone(published)
 	sections := tree.(*multitree.Tree).Sections()
 	mu.Unlock()
 	t.Cleanup(func() { require.NoError(t, tree.Close()) })
 
-	require.GreaterOrEqual(t, installed, 1, "Install publishes the host's highlights")
-	assert.Contains(t, published[0], highlight(xy(1, 0), xy(7, 0), svelteTagAttr))
+	require.NotEmpty(t, installed, "Install publishes the host's highlights")
+	assert.Contains(t, installed[0], highlight(xy(1, 0), xy(7, 0), svelteTagAttr))
 	assert.Len(t, sections, 2, "Install creates the sections of the parsed host")
 	assert.Same(t, tree, buf.View())
 
