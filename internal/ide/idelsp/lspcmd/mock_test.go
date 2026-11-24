@@ -589,6 +589,11 @@ func (m *mockLSP) Implementation(
 	return semanticapi.LocationResult{}, nil
 }
 
+func (m *mockLSP) ReferenceLocations(ctx context.Context, params semanticapi.ReferenceParams) ([]semanticapi.Location, bool, error) {
+	locations, err := m.References(ctx, params)
+	return locations, false, err
+}
+
 func (m *mockLSP) References(
 	ctx context.Context,
 	params semanticapi.ReferenceParams,
