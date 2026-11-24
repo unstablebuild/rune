@@ -235,10 +235,20 @@ func (b *auxBar) Handle(ev term.Event) (quit, handled bool) {
 	// A parent that captures a drag keeps sending it, button held, once
 	// the pointer leaves the bar; that is a drag for the editor, not a
 	// click on a fold.
-	fold := b.foldsEnabled && ev.Type == term.EventMouse && ev.Key == term.MouseLeft &&
+	inFolds := b.foldsEnabled && b.barWidth > 0 && ev.Type == term.EventMouse &&
 		ev.MouseX >= b.linesWidth && ev.MouseX < b.linesWidth+foldsWidth &&
 		ev.MouseY >= 0 && ev.MouseY < b.height
-	if !fold {
+	posAtWindow := term.Coordinates{Y: ev.MouseY, X: ev.MouseX}
+	var folded, ok bool
+	if inFolds {
+		folded, ok = b.foldAt(posAtWindow)
+	}
+	if ok {
+		// Set after the editor's, which shows its text pointer over the
+		// bar too.
+		defer term.SetPointerShape(ev, term.PointerLink)
+	}
+	if !inFolds || ev.Key != term.MouseLeft {
 		quit, handled = b.vhandler.Handle(ev)
 		prevCursor := b.prevCursor
 		prevOffset := b.prevOffset
@@ -251,10 +261,8 @@ func (b *auxBar) Handle(ev term.Event) (quit, handled bool) {
 		return
 	}
 
-	posAtWindow := term.Coordinates{Y: ev.MouseY, X: ev.MouseX}
 	posAtScroll := b.scroll.WindowToScrollCoordinates(posAtWindow)
 	posAtScroll.X = 0
-	folded, ok := b.foldAt(posAtWindow)
 	b.log(log.TraceLevel, "received mouse click at bar,"+
 		" win pos: %+v, scroll pos: %+v, folded: %t, ok: %t",
 		posAtWindow, posAtScroll, folded, ok)
