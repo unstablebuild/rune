@@ -1324,7 +1324,9 @@ config = {
         # frame_charset are not drawn while it is on.
         "progress_bar": True,
         # A "graphics" table names an image for each of the five keys. The
-        # images are not tinted with the notification's level:
+        # images are not tinted with the notification's level, but in
+        # "overlay" mode the clear pixels each one closes in, away from the
+        # notification's edge, take the level's color:
         #
         #     "graphics": {
         #         "mode":        "overlay",

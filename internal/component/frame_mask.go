@@ -62,6 +62,11 @@ func RingSides(p image.Point, area image.Rectangle) Sides {
 // line rather than a pixel either side of it shows through.
 const maskOpaque = 0x80
 
+// maskClear is the alpha below which a sprite's pixel is clear: what is
+// behind it shows through it nearly unchanged, as it does not through a
+// translucent shadow.
+const maskClear = 0x20
+
 // maxFrameMasks bounds how many masks FrameMasks keeps. Frame sprites
 // are few and shared, so reaching it means the sprites were reloaded and
 // the masks of the old ones are no longer drawn.
@@ -78,10 +83,11 @@ type FrameMasks struct {
 }
 
 type frameMaskKey struct {
-	id      term.ImageID
-	version uint64
-	crop    image.Rectangle
-	outside Sides
+	id       term.ImageID
+	version  uint64
+	crop     image.Rectangle
+	outside  Sides
+	enclosed bool
 }
 
 // frameMask is the mask of a sprite, or a nil src when its line does not
@@ -101,6 +107,24 @@ type frameMask struct {
 // to an outside one, as those of a sprite that draws no line across its
 // cell do.
 func (m *FrameMasks) Inside(sprite term.Image, outside Sides, c term.Color) (term.Image, bool) {
+	return m.fill(sprite, outside, false, c)
+}
+
+// Enclosed returns a fill of c over the clear pixels of sprite, the image
+// of a frame cell whose outside sides face away from the frame, that no
+// clear pixel joins to an outside side, placed where sprite is and under
+// the text: those inside the frame's line, or between its face and a
+// translucent shadow outside it, such as the channel a progress bar's
+// image leaves for the bar. It reports false when sprite is not a
+// picture stretched over a single cell, when outside is empty and when
+// sprite encloses no clear pixel.
+func (m *FrameMasks) Enclosed(sprite term.Image, outside Sides, c term.Color) (term.Image, bool) {
+	return m.fill(sprite, outside, true, c)
+}
+
+// fill returns the fill of c over the mask of sprite that Inside, or
+// Enclosed when enclosed is set, derives.
+func (m *FrameMasks) fill(sprite term.Image, outside Sides, enclosed bool, c term.Color) (term.Image, bool) {
 	if sprite.Src == nil || sprite.Fill || sprite.Fit != term.ImageFitFill ||
 		sprite.Width != 1 || sprite.Height != 1 {
 		return term.Image{}, false
@@ -109,10 +133,14 @@ func (m *FrameMasks) Inside(sprite term.Image, outside Sides, c term.Color) (ter
 	if !sprite.Crop.Empty() {
 		crop = sprite.Crop.Intersect(crop)
 	}
-	key := frameMaskKey{id: sprite.ID, version: sprite.Version, crop: crop, outside: outside}
+	key := frameMaskKey{id: sprite.ID, version: sprite.Version, crop: crop, outside: outside, enclosed: enclosed}
 	mask, ok := m.masks[key]
 	if !ok || sprite.ID == 0 {
-		mask = frameMask{src: insideMask(sprite.Src, crop, outside)}
+		if enclosed {
+			mask = frameMask{src: enclosedMask(sprite.Src, crop, outside)}
+		} else {
+			mask = frameMask{src: insideMask(sprite.Src, crop, outside)}
+		}
 		if mask.src != nil {
 			mask.id = term.NewImageID()
 		}
@@ -134,12 +162,14 @@ func (m *FrameMasks) Inside(sprite term.Image, outside Sides, c term.Color) (ter
 // FrameInsideWriter forwards everything to Writer and, after each image
 // drawn over a cell of the outermost ring of Area, as those of a frame's
 // border are, a fill of Inside over the part of it on the frame's side
-// of its line, as FrameMasks.Inside derives it with Masks.
+// of its line, as FrameMasks.Inside derives it with Masks, or over the
+// clear pixels it encloses, as FrameMasks.Enclosed does, when Enclosed.
 type FrameInsideWriter struct {
 	term.Writer
-	Area   image.Rectangle
-	Inside term.Color
-	Masks  *FrameMasks
+	Area     image.Rectangle
+	Inside   term.Color
+	Masks    *FrameMasks
+	Enclosed bool
 }
 
 // DrawImage satisfies term.Writer.
@@ -154,7 +184,7 @@ func (w *FrameInsideWriter) DrawImage(img term.Image) bool {
 	if sides == 0 {
 		return true
 	}
-	if fill, ok := w.Masks.Inside(img, sides, w.Inside); ok {
+	if fill, ok := w.Masks.fill(img, sides, w.Enclosed, w.Inside); ok {
 		w.Writer.DrawImage(fill)
 	}
 	return true
@@ -219,22 +249,86 @@ func insideMask(src image.Image, crop image.Rectangle, outside Sides) *image.RGB
 		if onOutside(p) {
 			return nil
 		}
-		for _, n := range [4]image.Point{{p.X + 1, p.Y}, {p.X - 1, p.Y}, {p.X, p.Y + 1}, {p.X, p.Y - 1}} {
-			if n.X < 0 || n.Y < 0 || n.X >= w || n.Y >= h || inside[n.Y*w+n.X] || !transparent(n.X, n.Y) {
-				continue
-			}
-			inside[n.Y*w+n.X] = true
-			stack = append(stack, n)
+		stack = spread(stack, p, w, h, inside, transparent)
+	}
+	return dilatedMask(inside, w, h)
+}
+
+// enclosedMask returns the mask of the clear pixels of crop of src that
+// no clear pixel joins to an outside side, or nil if there are none. The
+// mask also takes the pixels around them, as insideMask's does.
+func enclosedMask(src image.Image, crop image.Rectangle, outside Sides) *image.RGBA {
+	w, h := crop.Dx(), crop.Dy()
+	if w <= 0 || h <= 0 || outside == 0 {
+		return nil
+	}
+	isClear := func(x, y int) bool {
+		_, _, _, a := src.At(crop.Min.X+x, crop.Min.Y+y).RGBA()
+		return a>>8 < maskClear
+	}
+	var seeds []image.Point
+	if outside&SideTop != 0 {
+		seeds = append(seeds, pixelRow(w, 0)...)
+	}
+	if outside&SideBottom != 0 {
+		seeds = append(seeds, pixelRow(w, h-1)...)
+	}
+	if outside&SideLeft != 0 {
+		seeds = append(seeds, pixelColumn(h, 0)...)
+	}
+	if outside&SideRight != 0 {
+		seeds = append(seeds, pixelColumn(h, w-1)...)
+	}
+	open := make([]bool, w*h)
+	var stack []image.Point
+	for _, p := range seeds {
+		if isClear(p.X, p.Y) && !open[p.Y*w+p.X] {
+			open[p.Y*w+p.X] = true
+			stack = append(stack, p)
 		}
 	}
+	for len(stack) > 0 {
+		p := stack[len(stack)-1]
+		stack = spread(stack[:len(stack)-1], p, w, h, open, isClear)
+	}
+	enclosed := make([]bool, w*h)
+	found := false
+	for y := range h {
+		for x := range w {
+			if isClear(x, y) && !open[y*w+x] {
+				enclosed[y*w+x], found = true, true
+			}
+		}
+	}
+	if !found {
+		return nil
+	}
+	return dilatedMask(enclosed, w, h)
+}
 
+// spread marks in marked the neighbours of p, in a picture w by h, that
+// pass reports and are not marked yet, and pushes them onto stack.
+func spread(stack []image.Point, p image.Point, w, h int, marked []bool, pass func(x, y int) bool) []image.Point {
+	for _, n := range [4]image.Point{{p.X + 1, p.Y}, {p.X - 1, p.Y}, {p.X, p.Y + 1}, {p.X, p.Y - 1}} {
+		if n.X < 0 || n.Y < 0 || n.X >= w || n.Y >= h || marked[n.Y*w+n.X] || !pass(n.X, n.Y) {
+			continue
+		}
+		marked[n.Y*w+n.X] = true
+		stack = append(stack, n)
+	}
+	return stack
+}
+
+// dilatedMask returns the mask of the pixels of a picture w by h that in
+// holds and of those next to them.
+func dilatedMask(in []bool, w, h int) *image.RGBA {
 	mask := image.NewRGBA(image.Rect(0, 0, w, h))
 	white := color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
 	for y := range h {
 		for x := range w {
-			if inside[y*w+x] ||
-				x > 0 && inside[y*w+x-1] || x < w-1 && inside[y*w+x+1] ||
-				y > 0 && inside[(y-1)*w+x] || y < h-1 && inside[(y+1)*w+x] {
+			if in[y*w+x] ||
+				x > 0 && in[y*w+x-1] || x < w-1 && in[y*w+x+1] ||
+				y > 0 && in[(y-1)*w+x] || y < h-1 && in[(y+1)*w+x] {
 				mask.SetRGBA(x, y, white)
 			}
 		}

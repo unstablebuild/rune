@@ -572,13 +572,14 @@ func (g *FrameGraphics) DrawScrollBar(
 	}
 }
 
-// DrawCell draws the image of uri over cell, which w shows at pos: over a
-// blank cell with cell's colors and attributes, or over cell itself when
-// overlay is set. The cell keeps its rune while the image is not loaded
-// yet, failed to load or w cannot draw it. It draws nothing when uri is
-// empty.
+// DrawCell draws the image of uri in place of cell at pos of w, over a
+// blank cell with cell's colors and attributes that keeps the background
+// of the cell under it, so that the image's transparent pixels show what
+// was drawn there before. The cell at pos takes cell itself while the
+// image is not loaded yet, failed to load or w cannot draw it. It draws
+// nothing when uri is empty.
 func (g *FrameGraphics) DrawCell(
-	w term.Writer, uri string, pos term.Coordinates, cell term.Cell, overlay bool,
+	w term.Writer, uri string, pos term.Coordinates, cell term.Cell,
 ) {
 	if uri == "" {
 		return
@@ -586,8 +587,11 @@ func (g *FrameGraphics) DrawCell(
 	under := cell
 	under.Ch = ' '
 	under.Extra = nil
-	cw := cellImageWriter{Writer: w, under: under, fallback: cell, keep: overlay}
-	g.drawCell(&cw, uri, pos)
+	under.Attrs |= term.AttrKeepBackground
+	cw := cellImageWriter{Writer: w, under: under, fallback: cell}
+	if !g.drawCell(&cw, uri, pos) {
+		w.SetCell(pos, cell)
+	}
 }
 
 // DrawLine draws the images of lg over the line of length cells that

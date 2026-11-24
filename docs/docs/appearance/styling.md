@@ -594,8 +594,12 @@ be cleared. Removing a field from a partial table restores inheritance.
 
 Violet Ledger draws notifications as rounded cards with
 `notifications.frame_charset.graphics`, and draws the progress bar with
-`notifications.progress_format.graphics` in `overlay` mode: its images are
-transparent where the bar is, so the level's color shows through:
+`notifications.progress_format.graphics` in `overlay` mode. Its images leave
+a clear channel where the bar is, closed in by the card's face above and its
+shadow below, and `overlay` fills that channel with the level's color.
+Transparent pixels that reach the card's outer edge, such as the corners
+outside the rounded cap or a translucent shadow, show what is under the
+notification:
 
 ```yaml tab
 notifications:

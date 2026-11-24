@@ -751,7 +751,12 @@ Status bar rails aren't frames, and Rune paints no inside for them:
   `bottomright` images are not drawn, and `progress_format.graphics` draws there
   instead, `start` and `end` at the corners, `current` up to `current_tip`, then
   `remain`. Images are not tinted by notification level; use `overlay` and leave
-  the progress characters' channel transparent to keep the level colours.
+  a clear (alpha under 0x20) channel closed in by opaque or translucent pixels,
+  such as the face above and a shadow below, and Rune fills it with the level
+  colour. Clear pixels that reach the outer edge (the bottom, or the outer side
+  of `start` and `end`) show what is under the notification, so a channel open
+  to the edge stays uncoloured. Keep the exterior transparent and the shadow
+  translucent rather than painting the canvas colour into them.
 - Quick menu sprites move the bar from the native macOS bar to one Rune draws,
   on every platform. Set `sprite` on every button or on none; `symbol` isn't
   needed with one. Keep each button's `title` (its tooltip) and `command`.

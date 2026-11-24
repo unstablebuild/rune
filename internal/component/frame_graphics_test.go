@@ -640,23 +640,21 @@ func TestFrameGraphicsBackgroundImages(t *testing.T) {
 
 func TestFrameGraphicsDrawCell(t *testing.T) {
 	pics := newFramePictures(t)
-	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
-	cell := term.NewCell('c', 1, attr)
+	under := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorTeal}
+	cell := term.NewCell('c', 1, term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack})
 	pos := term.Coordinates{X: 1}
 
 	tests := []struct {
 		name       string
 		uri        string
-		overlay    bool
 		noImages   bool
 		expected   string
 		underneath string
 	}{
-		{name: "an image replaces the cell", uri: "L", expected: "\n.L.", underneath: "\n. ."},
-		{name: "an overlay image keeps the cell under it", uri: "L", overlay: true, expected: "\n.L.", underneath: "\n.c."},
-		{name: "no image keeps the cell", expected: "\n.c."},
-		{name: "an image that fails to load keeps the cell", uri: "invalid", expected: "\n.c."},
-		{name: "a writer that cannot draw images keeps the cell", uri: "L", noImages: true, expected: "\n.c."},
+		{name: "an image goes over a blank cell keeping what is under it", uri: "L", expected: "\n.L.", underneath: "\n. ."},
+		{name: "no image draws nothing", expected: "\n.u."},
+		{name: "an image that fails to load writes the cell", uri: "invalid", expected: "\n.c."},
+		{name: "a writer that cannot draw images writes the cell", uri: "L", noImages: true, expected: "\n.c."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -667,11 +665,11 @@ func TestFrameGraphicsDrawCell(t *testing.T) {
 			s := newImageScreen(3, 1)
 			s.noImages = tt.noImages
 			for x := range 3 {
-				s.SetCell(term.Coordinates{X: x}, term.NewCell('.', 1, attr))
+				s.SetCell(term.Coordinates{X: x}, term.NewCell('.', 1, under))
 			}
-			s.SetCell(pos, cell)
-			g.DrawCell(s, pics.uris[tt.uri], pos, cell, tt.overlay)
-			assert.Equal(t, tt.expected, s.render(t, pics, attr, tt.overlay))
+			s.SetCell(pos, term.NewCell('u', 1, under))
+			g.DrawCell(s, pics.uris[tt.uri], pos, cell)
+			assert.Equal(t, tt.expected, s.render(t, pics, under, false))
 			if tt.underneath != "" {
 				assert.Equal(t, tt.underneath, "\n"+s.String())
 			}
