@@ -343,8 +343,8 @@ func TestRegistryCloseTellsWireMembers(t *testing.T) {
 		start := time.Now()
 		require.NoError(t, f.r.Close())
 		took := time.Since(start)
-		assert.GreaterOrEqual(t, took, dropGrace)
-		assert.Less(t, took, dropGrace+2*time.Second)
+		assert.GreaterOrEqual(t, took, defaultDropGrace)
+		assert.Less(t, took, defaultDropGrace+2*time.Second)
 	})
 }
 
@@ -356,7 +356,10 @@ func TestRegistryWireSlowMemberIsDropped(t *testing.T) {
 
 	t.Run("a member that resumes is told to resync", func(t *testing.T) {
 		t.Parallel()
-		f := newFixture(t)
+		// The member resumes once the terminal drew the flood, which a
+		// loaded host takes seconds to; a grace shorter than that closes
+		// the connection before the member reads why.
+		f := newFixture(t, func(cfg *Config) { cfg.DropGrace = time.Minute })
 		v, p := f.create(t, 20, 4)
 		m, _, _, err := f.dial(t, &vtewire.Hello{VTEID: string(v.ID()), Width: 20, Height: 4})
 		require.NoError(t, err)

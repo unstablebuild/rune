@@ -37,7 +37,10 @@ import (
 	"unstable.build/rune/internal/term/vte/vtewire"
 )
 
-const defaultPollInterval = time.Second
+const (
+	defaultPollInterval = time.Second
+	defaultDropGrace    = time.Second
+)
 
 // ErrClosed is returned by a Registry that was closed.
 var ErrClosed = errors.New("vteregistry: closed")
@@ -53,6 +56,11 @@ type Config struct {
 	// that prints nothing is checked for its shell's prompt. Zero is a
 	// second.
 	PollInterval time.Duration
+	// DropGrace is how long a wire member that fell behind, or whose
+	// terminal ended, is given to read why before its connection is
+	// closed under it. A member that is reading at all drains a socket in
+	// far less; one that is not is not waited on. Zero is a second.
+	DropGrace time.Duration
 }
 
 // Registry owns the terminals of a workspace: their emulators, ptys,
@@ -110,6 +118,9 @@ func New(
 	}
 	if cfg.PollInterval == 0 {
 		cfg.PollInterval = defaultPollInterval
+	}
+	if cfg.DropGrace == 0 {
+		cfg.DropGrace = defaultDropGrace
 	}
 	return &Registry{
 		publisher: publisher, notifications: n,
@@ -384,7 +395,7 @@ func (r *Registry) Close() error {
 		}
 		c.changed(vte.LivenessUnknown)
 	}
-	grace := time.After(dropGrace)
+	grace := time.After(r.cfg.DropGrace)
 	for _, done := range sessions {
 		select {
 		case <-done:
