@@ -4476,6 +4476,28 @@ func TestExRunsTheRuneShellInMemoryWorkspaces(t *testing.T) {
 		assert.Contains(t, frame, "│one ")
 	})
 
+	t.Run("modal mode keeps keys typed while leaving in order", func(t *testing.T) {
+		cfg := vte.DefaultConfig()
+		cfg.Modal = true
+		b := newMemoryShellEx(t, 0, cfg)
+		openTerminal(t, b, b.ex.terminalnewtab)
+		typeShell(b, "echo bla")
+		waitShellDrawn(t, b, width, height, "$ echo bla▐")
+		typeShell(b, "\x1b")
+		require.Eventually(t, func() bool {
+			b.flushScheduled()
+			_, style, _ := b.Cursor()
+			return style != term.CursorStyleSteadyBar
+		}, 10*time.Second, 5*time.Millisecond)
+
+		// typed before the shell can answer the bell that moves its
+		// cursor where i was pressed, and modal mode entered again
+		// before it either
+		typeShell(b, "hhiX\x1biY\n")
+		frame := waitShellDrawn(t, b, width, height, "│XYbla ")
+		assert.Contains(t, frame, "$ echo XYbla ")
+	})
+
 	t.Run("console", func(t *testing.T) {
 		b := newMemoryShellEx(t, 0, vte.DefaultConfig())
 		b.Resize(width, height)

@@ -202,6 +202,12 @@ func (h *modalHarness) probing() bool {
 	return h.vi.probe == viProbing
 }
 
+// held reports whether keys typed outside modal mode wait for a key that
+// left it to reach the program.
+func (h *modalHarness) held() bool {
+	return h.vi.typed.holding.Load()
+}
+
 func keyEv(key term.Key, mod term.Modifier) term.Event {
 	return term.Event{Type: term.EventKey, Key: key, Mod: mod}
 }
@@ -613,6 +619,11 @@ func TestHandlerShiftEsc(t *testing.T) {
 			output: altScreen,
 			steps:  []modalStep{{keys: "<s-esc>kk<c-c>"}},
 		},
+		{
+			name:   "a key pressed after leaving reaches the program at once",
+			output: altScreen,
+			steps:  []modalStep{{keys: "<s-esc>khiX", want: "X"}},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -634,6 +645,7 @@ func TestHandlerShiftEsc(t *testing.T) {
 				assert.Equal(t, tc.wantScreen, h.screen(t)[:len(tc.wantScreen)])
 			}
 			assert.Equal(t, tc.wantErrors, h.errorSounds())
+			assert.False(t, h.held(), "no key leaving the frozen screen reaches the program")
 			if tc.wantYanked != "" {
 				h.press(t, "yy")
 				data, err := h.vi.config.Clipboard.Paste(h.vi.config.ClipboardRegister)
@@ -645,14 +657,18 @@ func TestHandlerShiftEsc(t *testing.T) {
 	}
 }
 
-// modalStep handles events, presses keys, then the program prints
-// output, then, with timeout, the probe times out; want is what reached
-// the program.
+// modalStep, with full, fills the queue of callbacks waiting for a bell,
+// then handles events, presses keys, then the program prints output,
+// then, with timeout, the probe times out, and with drop, the callbacks
+// waiting for a bell are dropped, as when the program answers none for
+// long; want is what reached the program.
 type modalStep struct {
+	full    bool
 	events  []term.Event
 	keys    string
 	output  string
 	timeout bool
+	drop    bool
 	want    string
 }
 
@@ -686,6 +702,9 @@ func TestHandlerModalEsc(t *testing.T) {
 		wantNotes  int
 		// wantHint is whether the notes tell how to send <esc>.
 		wantHint bool
+		// wantHeld is whether the keys typed wait for a key that left
+		// modal mode to reach the program.
+		wantHeld bool
 	}{
 		{
 			name:       "esc enters at once",
@@ -746,8 +765,9 @@ func TestHandlerModalEsc(t *testing.T) {
 			steps: []modalStep{{keys: "<esc>i"}},
 		},
 		{
-			name:  "leaving at the start of the line probes",
-			steps: []modalStep{{keys: "<esc>0i", want: probe}},
+			name:     "leaving at the start of the line probes",
+			steps:    []modalStep{{keys: "<esc>0i", want: probe}},
+			wantHeld: true,
 		},
 		{
 			name: "leaving moves the shell's cursor to the vi cursor",
@@ -938,6 +958,220 @@ func TestHandlerModalEsc(t *testing.T) {
 			steps:      []modalStep{{keys: "<esc>vzhd"}},
 			wantViMode: true, wantCursor: &term.Coordinates{X: 7},
 		},
+		{
+			name: "a key pressed while leaving reaches the shell after its cursor moves",
+			steps: []modalStep{
+				{keys: "<esc>hhiX", want: probe},
+				{output: answer, want: strings.Repeat(right, 4) + "X"},
+			},
+		},
+		{
+			name: "a key pressed while enter runs the line reaches the shell after it",
+			steps: []modalStep{
+				{keys: "<esc><enter>ls", want: probe},
+				{output: answer, want: "\rls"},
+			},
+		},
+		{
+			name: "a key pressed while leaving behind a bell reaches the shell after its cursor moves",
+			steps: []modalStep{
+				{keys: "<esc>x", want: probe},
+				{output: answer, want: strings.Repeat(right, 6) + del + probe},
+				{output: "\a"},
+				{keys: "iX", want: probe},
+				{output: answer, want: strings.Repeat(right, 6) + "X"},
+			},
+		},
+		{
+			name:   "a key pressed while leaving above the prompt reaches the shell after its cursor moves",
+			output: secondPrompt,
+			steps: []modalStep{
+				{keys: "<esc>x", want: probe},
+				{output: answer, want: strings.Repeat(right, 2) + del + probe},
+				{output: "\a"},
+				{keys: "k", want: probe},
+				{output: answer, want: probe},
+				{output: "\a"},
+				{keys: "iX", want: endOfLine + "X"},
+			},
+		},
+		{
+			name: "keys pressed while leaving reach the shell before what modal mode sends after them",
+			steps: []modalStep{
+				{keys: "<esc><enter>ls<esc>x", want: probe},
+				{output: answer, want: "\rls" + probe},
+			},
+			wantViMode: true,
+		},
+		{
+			name: "a key pressed while leaving reaches a shell that does not answer",
+			steps: []modalStep{
+				{keys: "<esc>hhiX", want: probe},
+				{timeout: true, want: "X"},
+			},
+			wantErrors: 1, wantNotes: 1,
+		},
+		{
+			name: "a key pressed while leaving reaches the shell once its bells are given up",
+			steps: []modalStep{
+				{keys: "<esc>x", want: probe},
+				{output: answer, want: strings.Repeat(right, 6) + del + probe},
+				{output: "\a"},
+				{keys: "iX", want: probe},
+				{drop: true, want: "X"},
+			},
+		},
+		{
+			name: "entering again before the shell gets the key that left moves its cursor where the key was pressed",
+			steps: []modalStep{
+				{keys: "<esc>hhiX<esc>", want: probe},
+				{output: answer, want: strings.Repeat(right, 4) + "X"},
+			},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 6},
+		},
+		{
+			name: "keys pressed after entering again wait for the key that left",
+			steps: []modalStep{
+				{keys: "<esc>hhiX<esc>x", want: probe},
+				{output: answer, want: strings.Repeat(right, 4) + "X" + probe},
+				{output: answer, want: strings.Repeat(right, 4) + del + probe},
+			},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 6},
+		},
+		{
+			name: "keys pressed after entering again wait for the key that left behind a bell",
+			steps: []modalStep{
+				{keys: "<esc>x", want: probe},
+				{output: answer, want: strings.Repeat(right, 6) + del + probe},
+				{output: "\a"},
+				{keys: "iX<esc>h", want: probe},
+				{output: answer, want: strings.Repeat(right, 6) + "X" + probe},
+				{output: answer, want: probe},
+			},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 7},
+		},
+		{
+			name: "entering again once the key that left reached the shell writes nothing",
+			steps: []modalStep{
+				{keys: "<esc>hhiX", want: probe},
+				{output: answer, want: strings.Repeat(right, 4) + "X"},
+				// the shell inserted X before the cursor
+				{output: "\x1b[8G"},
+				{keys: "<esc>h"},
+			},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 5},
+		},
+		{
+			name: "leaving again without moving before the shell gets the key that left moves its cursor no more",
+			steps: []modalStep{
+				{keys: "<esc>hhiX<esc>iY", want: probe},
+				{output: answer, want: strings.Repeat(right, 4) + "XY"},
+			},
+		},
+		{
+			name: "leaving again without moving behind a bell moves the shell's cursor no more",
+			steps: []modalStep{
+				{keys: "<esc>x", want: probe},
+				{output: answer, want: strings.Repeat(right, 6) + del + probe},
+				{output: "\a"},
+				{keys: "hiX<esc>iY", want: probe},
+				// i waits for a bell of its own behind h
+				{output: answer, want: probe},
+				{output: answer, want: probe},
+				{output: answer, want: strings.Repeat(right, 5) + "XY"},
+			},
+		},
+		{
+			name: "leaving again without moving once the shell got the key that left moves its cursor no more",
+			steps: []modalStep{
+				{keys: "<esc>hhiX", want: probe},
+				{output: answer, want: strings.Repeat(right, 4) + "X"},
+				{output: "\x1b[8G"},
+				{keys: "<esc>iY", want: "Y"},
+			},
+		},
+		{
+			name: "ctrl-c leaving again without moving before the shell gets the key that left moves its cursor no more",
+			steps: []modalStep{
+				{keys: "<esc>hhiX<esc><c-c>Y", want: probe},
+				{output: answer, want: strings.Repeat(right, 4) + "XY"},
+			},
+		},
+		{
+			name: "keys typed after leaving again without moving reach a shell that does not answer",
+			steps: []modalStep{
+				{keys: "<esc>hhiX<esc>iY", want: probe},
+				{timeout: true, want: "XY"},
+			},
+			wantErrors: 1, wantNotes: 1,
+		},
+		{
+			name: "leaving again after a key that reached the shell moves its cursor",
+			steps: []modalStep{
+				{keys: "<esc>hhiX<esc>xiY", want: probe},
+				{output: answer, want: strings.Repeat(right, 4) + "X" + probe},
+				{output: answer, want: strings.Repeat(right, 4) + del + probe},
+				{output: answer, want: probe},
+				{output: answer, want: strings.Repeat(right, 4) + "Y"},
+			},
+		},
+		{
+			name: "a key pressed while ctrl-c leaves reaches the shell after its cursor moves",
+			steps: []modalStep{
+				{keys: "<esc>hh<c-c>X", want: probe},
+				{output: answer, want: strings.Repeat(right, 4) + "X"},
+			},
+		},
+		{
+			name:  "a key pressed after leaving without moving reaches the shell at once",
+			steps: []modalStep{{keys: "<esc>iX", want: "X"}},
+		},
+		{
+			name: "a key pressed after leaving a read-only session reaches the program at once",
+			steps: []modalStep{
+				{keys: "<esc>xh", want: probe},
+				{timeout: true},
+				{output: "\a"},
+				{keys: "iX", want: "X"},
+			},
+			wantErrors: 1, wantNotes: 1,
+		},
+		{
+			name:       "a key pressed after leaving a program that reported a status reaches it at once",
+			output:     command + working,
+			steps:      []modalStep{{keys: "<esc>hhiX", want: "X"}},
+			wantErrors: 1, wantNotes: 1, wantHint: true,
+		},
+		{
+			name:   "esc sent to a command waits for the key that left",
+			output: command,
+			steps: []modalStep{
+				{keys: "<esc>hhi<esc><esc>", want: probe},
+				{output: answer, want: strings.Repeat(right, 4) + "\x1b"},
+			},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 6},
+		},
+		{
+			name: "keys typed after each of two keys that left reach the shell after it",
+			steps: []modalStep{
+				{keys: "<esc>hhiX<esc>hiY", want: probe},
+				// the second i waits for a bell of its own behind h
+				{output: answer, want: strings.Repeat(right, 4) + "X" + probe},
+				{output: answer, want: probe},
+				{output: answer, want: probe},
+				{output: answer, want: strings.Repeat(right, 3) + "Y"},
+			},
+		},
+		{
+			name: "a key pressed while leaving reaches the shell when no bell can wait for its cursor move",
+			steps: []modalStep{
+				{keys: "<esc>x", want: probe},
+				{output: answer, want: strings.Repeat(right, 6) + del + probe},
+				{output: "\a"},
+				{full: true, want: probe},
+				{keys: "iX", want: "X"},
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -947,6 +1181,9 @@ func TestHandlerModalEsc(t *testing.T) {
 			h.written()
 			rows := h.rows()
 			for i, step := range tc.steps {
+				for step.full && h.comp.waitParserHandler.scheduleBellCallback(func() {}) {
+				}
+				h.drain()
 				for _, ev := range step.events {
 					h.Handle(ev)
 				}
@@ -956,12 +1193,17 @@ func TestHandlerModalEsc(t *testing.T) {
 				if step.timeout {
 					h.waitTick(t)
 				}
+				if step.drop {
+					h.comp.waitParserHandler.drop()
+					h.drain()
+				}
 				assert.Equal(t, step.want, h.written(), "step %d", i)
 			}
 			assert.Equal(t, tc.wantViMode, h.viMode)
 			if tc.wantCursor != nil {
 				assert.Equal(t, *tc.wantCursor, h.vi.cursorAtScroll())
 			}
+			assert.Equal(t, tc.wantHeld, h.held(), "whether typed keys wait for a key that left")
 			assert.Equal(t, rows, h.rows(), "only the program writes the rows")
 			assert.Equal(t, tc.wantErrors, h.errorSounds())
 			notes := h.notes.Messages()
@@ -1002,6 +1244,9 @@ func FuzzHandlerModalKeys(f *testing.F) {
 		answers = iota
 		silent
 		reportedStatus
+		// answersLate answers the bells it got every fourth key only, so
+		// keys are typed while those that left modal mode wait for theirs
+		answersLate
 		shells
 	)
 	alphabet := modalFuzzKey.FindAllString(modalFuzzKeys, -1)
@@ -1053,6 +1298,15 @@ func FuzzHandlerModalKeys(f *testing.F) {
 		{twoPrompts, answers, "Vkz"},
 		{twoPrompts, answers, "<c-v>khz"},
 		{fullScreen, answers, "kVjz"},
+		{promptOnly, answers, "hhiX<esc>hiY"},
+		{promptOnly, silent, "hhiX<esc>hiY"},
+		{promptOnly, answersLate, "hhiX<esc>hiY"},
+		{promptOnly, answersLate, "hhi<esc>xiXY"},
+		{promptOnly, answersLate, "h<c-c>X<esc><esc>hiY"},
+		{twoPrompts, answersLate, "<enter>ls<esc>khiX"},
+		{historyAbove, answersLate, "hhiX<esc>kkkiY"},
+		{promptOnly, answersLate, "hhiX<esc>iY<esc><c-c>Z"},
+		{promptOnly, silent, "hhiX<esc>iY"},
 	} {
 		f.Add(seed.layout, seed.shell, encode(seed.keys))
 	}
@@ -1084,30 +1338,45 @@ func FuzzHandlerModalKeys(f *testing.F) {
 		h.written()
 		rows := h.rows()
 
-		// press presses key and returns what reached the program, which
-		// only rings back when it answers probes
-		press := func(key string) string {
-			h.press(t, key)
+		var unanswered int
+		// answerBells answers the bells the program got, and those its
+		// answers ring, and returns what reached the program meanwhile
+		answerBells := func() string {
 			var written strings.Builder
-			for {
-				out := h.written()
-				written.WriteString(out)
-				bells := strings.Count(out, "\a")
-				if bells == 0 || shell != answers {
-					break
-				}
-				for range bells {
+			for unanswered > 0 {
+				for ; unanswered > 0; unanswered-- {
 					h.output(answer)
 					h.drain()
 				}
-			}
-			if h.probing() {
-				h.waitTick(t)
+				out := h.written()
+				written.WriteString(out)
+				unanswered = strings.Count(out, "\a")
 			}
 			return written.String()
 		}
-		press(enter)
-		var digits int
+		// press presses key number i and returns what reached the
+		// program, which only rings back when it answers probes
+		press := func(i int, key string) string {
+			h.press(t, key)
+			written := h.written()
+			if shell == answers || shell == answersLate {
+				unanswered += strings.Count(written, "\a")
+			}
+			if shell == answers || i%4 == 3 {
+				written += answerBells()
+			}
+			if h.probing() && shell != answersLate {
+				h.waitTick(t)
+			}
+			return written
+		}
+		press(-1, enter)
+		var (
+			digits int
+			// typed is the characters typed outside modal mode, and
+			// written what reached the program
+			typed, written []byte
+		)
 		for i, k := range keys[:min(len(keys), 64)] {
 			key := alphabet[int(k)%len(alphabet)]
 			// a count repeats what the shell refuses once for every
@@ -1119,20 +1388,33 @@ func FuzzHandlerModalKeys(f *testing.F) {
 			} else {
 				digits = 0
 			}
+			if !h.viMode && len(key) == 1 && key[0] > ' ' && key[0] < 0x7f {
+				typed = append(typed, key[0])
+			}
 			frozenBefore, wasFrozen := h.frozenRows()
-			written := press(key)
+			out := press(i, key)
+			written = append(written, out...)
 			frozenAfter, isFrozen := h.frozenRows()
 
 			require.Equal(t, rows, h.rows(), "key %d (%s): only the program writes the rows", i, key)
 			if wasFrozen && isFrozen {
 				require.Equal(t, frozenBefore, frozenAfter, "key %d (%s): the frozen screen stays", i, key)
-				require.Empty(t, written, "key %d (%s): no key reaches the program under the frozen screen", i, key)
+				require.Empty(t, out, "key %d (%s): no key reaches the program under the frozen screen", i, key)
 			}
 			pos := h.vi.cursorAtScroll()
 			require.False(t, pos.X < 0 || pos.Y < 0, "key %d (%s): the cursor left the content: %+v", i, key, pos)
 			h.screen(t)
 			h.Cursor()
 		}
+		written = append(written, answerBells()...)
+		require.False(t, h.held(), "keys typed wait for a key that left modal mode although the program answered every bell")
+		var reached int
+		for _, b := range written {
+			if reached < len(typed) && b == typed[reached] {
+				reached++
+			}
+		}
+		require.Equal(t, len(typed), reached, "keys typed outside modal mode were lost: typed %q, written %q", typed, written)
 	})
 }
 

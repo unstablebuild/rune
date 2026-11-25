@@ -174,6 +174,36 @@ func TestWaitParserHandler(t *testing.T) {
 		ph.Bell()
 		assert.True(t, ran)
 	})
+
+	t.Run("tells the owner of a callback dropped for want of a bell", func(t *testing.T) {
+		t.Parallel()
+		ph := newWaitParserHandler(t.Context(), newMockBellHandler())
+		ph.useTrigger(func() {})
+
+		var told atomic.Int32
+		require.True(t, ph.scheduleBellCallbackOrDrop(
+			func() { t.Error("ran a dropped callback") }, func() { told.Add(1) }))
+		require.Eventually(t, func() bool { return told.Load() == 1 }, 5*time.Second,
+			10*time.Millisecond, "the owner of the unanswered callback was not told")
+		ph.Bell()
+		assert.Equal(t, int32(1), told.Load())
+	})
+
+	t.Run("tells nobody of a callback it could not queue", func(t *testing.T) {
+		t.Parallel()
+		ph := newWaitParserHandler(t.Context(), newMockBellHandler())
+		ph.useTrigger(func() {})
+
+		var queued, told atomic.Int32
+		for ph.scheduleBellCallbackOrDrop(func() {}, func() { told.Add(1) }) {
+			queued.Add(1)
+		}
+		assert.False(t, ph.scheduleBellCallbackOrDrop(
+			func() { t.Error("ran a callback it could not queue") },
+			func() { t.Error("told of a callback it could not queue") }))
+		ph.drop()
+		assert.Equal(t, queued.Load(), told.Load(), "every queued callback's owner is told once")
+	})
 }
 
 func TestWaitParserHandlerDrop(t *testing.T) {
@@ -182,22 +212,25 @@ func TestWaitParserHandlerDrop(t *testing.T) {
 	var triggers int
 	ph.useTrigger(func() { triggers++ })
 
-	var dropped int
+	var dropped, told int
 	for range 3 {
 		ph.scheduleBellCallback(func() { dropped++ })
 	}
+	ph.scheduleBellCallbackOrDrop(func() { dropped++ }, func() { told++ })
 	assert.Equal(t, 1, triggers)
 	ph.drop()
 	assert.Zero(t, ph.pendingCallbacks())
+	assert.Equal(t, 1, told, "drop must tell the callback's owner")
 	ph.Bell()
 	assert.Zero(t, dropped, "a late bell ran a dropped callback")
 
 	var called bool
-	ph.scheduleBellCallback(func() { called = true })
+	ph.scheduleBellCallbackOrDrop(func() { called = true }, func() { told++ })
 	assert.Equal(t, 2, triggers, "the next callback must ring the shell again")
 	ph.Bell()
 	assert.True(t, called)
 	assert.Zero(t, dropped)
+	assert.Equal(t, 1, told, "a callback that ran was not dropped")
 }
 
 type mockBellHandler struct {

@@ -146,14 +146,37 @@ func handleTestCase(
 		h.Handle(ev)
 	}
 
-	var escapeNext bool
+	settle := func() {
+		timer := time.NewTimer(drawTimeout)
+		for {
+			select {
+			case <-timer.C:
+				return
+			case <-interruptChan:
+				if !timer.Stop() {
+					<-timer.C
+				}
+				timer.Reset(drawTimeout)
+			}
+		}
+	}
+
+	// after ⏩, the keys are pressed without the terminal settling
+	// between them, as a fast typist presses them
+	var escapeNext, burst bool
 	for _, r := range tcase.InputSequence {
 		if escapeNext {
 			escapeNext = false
 			callHandle(term.Event{Ch: r, Type: term.EventKey})
+			if !burst {
+				settle()
+			}
 			continue
 		}
 		switch r {
+		case '⏩':
+			burst = true
+			continue
 		case '^':
 			callHandle(term.Event{Key: term.KeyBackspace, Type: term.EventKey})
 		case '#':
@@ -176,23 +199,16 @@ func handleTestCase(
 			callHandle(term.Event{Key: term.KeyArrowUp, Type: term.EventKey})
 		case '\\':
 			escapeNext = true
+			continue
 		default:
 			callHandle(term.Event{Ch: r, Type: term.EventKey})
 		}
-
-		timer := time.NewTimer(drawTimeout)
-	loop:
-		for {
-			select {
-			case <-timer.C:
-				break loop
-			case <-interruptChan:
-				if !timer.Stop() {
-					<-timer.C
-				}
-				timer.Reset(drawTimeout)
-			}
+		if !burst {
+			settle()
 		}
+	}
+	if burst {
+		settle()
 	}
 
 	render := func() string {

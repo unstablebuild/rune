@@ -18,6 +18,7 @@ package vte
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -846,6 +847,19 @@ $ ech▐              `},
 				{InputSequence: "i>", Expected: screen("$ fullscreen", `read ""`, "$ ▐")},
 			})
 	})
+
+	t.Run("leave", func(t *testing.T) {
+		t.Parallel()
+		for _, sequence := range modalLeaveSequences {
+			t.Run(sequence.name, func(t *testing.T) {
+				t.Parallel()
+				cfg := DefaultConfig()
+				cfg.Modal = true
+				testSequenceVsh(t, cfg, defaultWaitForIdleVte,
+					vshtest.Options{Commands: vshCommands()}, []string{"sh"}, sequence.cases)
+			})
+		}
+	})
 }
 
 // modalAppendSequences press A in modal mode, which appends after the
@@ -921,6 +935,31 @@ var modalHideSequences = func() []struct {
 		}},
 	}
 }()
+
+// modalLeaveSequences type right after a key that leaves modal mode,
+// before the shell can have answered the bell that moves its cursor
+// there: what is typed reaches it after. They run on the Rune shell, and
+// on real ones in the e2e suite.
+var modalLeaveSequences = []struct {
+	name  string
+	cases []vtetest.Case
+}{
+	{name: "i", cases: []vtetest.Case{
+		{InputSequence: "echo bla<hh⏩iX", Expected: screen("$ echo X▐la")},
+	}},
+	{name: "ctrl-c", cases: []vtetest.Case{
+		{InputSequence: "echo bla<hh⏩#X", Expected: screen("$ echo X▐la")},
+	}},
+	// entering again, before or after the shell got the i, and leaving
+	// without moving, which leaves the shell's cursor where it was
+	{name: "i, then esc", cases: []vtetest.Case{
+		{InputSequence: "echo bla<hh⏩iX<iY>", Expected: screen("$ echo XYbla", "XYbla", "$ ▐")},
+	}},
+	{name: "i, then esc once the shell got it", cases: []vtetest.Case{
+		{InputSequence: "echo bla<hhiX", Expected: screen("$ echo X▐la")},
+		{InputSequence: "⏩<iY>", Expected: screen("$ echo XYbla", "XYbla", "$ ▐")},
+	}},
+}
 
 // modalLineJoinSequences press the keys that join two rows in modal mode,
 // which a shell's single line refuses: on the prompt or above it, on
@@ -1876,10 +1915,296 @@ func TestViRemoteMoveTo(t *testing.T) {
 	}
 }
 
+func TestViTypedKeys(t *testing.T) {
+	t.Parallel()
+	const (
+		// press presses a key of kind in modal mode.
+		press = iota
+		// typeKeys types keys outside modal mode, which send keys.
+		typeKeys
+		// reach tells that the key pressed number key, from 1, reached
+		// the program, or never will.
+		reach
+		// tick runs what was scheduled on the event loop.
+		tick
+	)
+	type step struct {
+		do   int
+		kind viKeyKind
+		keys string
+		key  int
+		// held is whether typeKeys held keys.
+		held bool
+		// want is what reached the program during the step.
+		want string
+	}
+	for _, tc := range []struct {
+		name string
+		// noTicks is whether the event loop takes no more ticks.
+		noTicks  bool
+		writeErr error
+		steps    []step
+	}{
+		{
+			name: "keys typed while no key left modal mode are not held",
+			steps: []step{
+				{do: typeKeys, keys: "a", want: "a"},
+			},
+		},
+		{
+			name: "a key that stays in modal mode holds nothing",
+			steps: []step{
+				{do: press, kind: viKeyRead},
+				{do: press, kind: viKeyEdit},
+				{do: press, kind: viKeyUp},
+				{do: typeKeys, keys: "a", want: "a"},
+			},
+		},
+		{
+			name: "keys typed after i wait for it to reach the program",
+			steps: []step{
+				{do: press, kind: viKeyExit},
+				{do: typeKeys, keys: "a", held: true},
+				{do: typeKeys, keys: "b", held: true},
+				{do: tick},
+				// what i sent is written on a tick scheduled before
+				{do: reach, key: 1},
+				{do: tick, want: "ab"},
+			},
+		},
+		{
+			name: "keys typed after enter wait for it to reach the program",
+			steps: []step{
+				{do: press, kind: viKeyEnter},
+				{do: typeKeys, keys: "ls", held: true},
+				{do: reach, key: 1},
+				{do: tick, want: "ls"},
+			},
+		},
+		{
+			name: "keys typed after each of two keys that left wait for both",
+			steps: []step{
+				{do: press, kind: viKeyExit},
+				{do: typeKeys, keys: "a", held: true},
+				{do: press, kind: viKeyEnter},
+				{do: typeKeys, keys: "b", held: true},
+				{do: reach, key: 2},
+				{do: tick},
+				{do: reach, key: 1},
+				{do: tick, want: "ab"},
+			},
+		},
+		{
+			name: "keys typed once an earlier key reached the program wait for a later one",
+			steps: []step{
+				{do: press, kind: viKeyExit},
+				{do: typeKeys, keys: "a", held: true},
+				{do: press, kind: viKeyEnter},
+				{do: reach, key: 1},
+				{do: tick, want: "a"},
+				{do: typeKeys, keys: "b", held: true},
+				{do: reach, key: 2},
+				{do: tick, want: "b"},
+			},
+		},
+		{
+			name: "keys are held no more once every key that left reached the program",
+			steps: []step{
+				{do: press, kind: viKeyExit},
+				{do: typeKeys, keys: "a", held: true},
+				{do: reach, key: 1},
+				{do: tick, want: "a"},
+				{do: typeKeys, keys: "b", want: "b"},
+			},
+		},
+		{
+			name: "a key that left with nothing typed after it writes nothing",
+			steps: []step{
+				{do: press, kind: viKeyExit},
+				{do: reach, key: 1},
+				{do: tick},
+				{do: typeKeys, keys: "a", want: "a"},
+			},
+		},
+		{
+			name:    "the keys typed are written at once when the event loop takes no tick",
+			noTicks: true,
+			steps: []step{
+				{do: press, kind: viKeyExit},
+				{do: typeKeys, keys: "a", held: true},
+				{do: reach, key: 1, want: "a"},
+				{do: typeKeys, keys: "b", want: "b"},
+			},
+		},
+		{
+			name:     "the program failing a write holds no keys typed after",
+			writeErr: errors.New("closed"),
+			steps: []step{
+				{do: press, kind: viKeyExit},
+				{do: typeKeys, keys: "a", held: true},
+				{do: press, kind: viKeyExit},
+				{do: typeKeys, keys: "b", held: true},
+				{do: reach, key: 1},
+				{do: reach, key: 2},
+				{do: tick, want: "ab"},
+				{do: typeKeys, keys: "c", want: "c"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			comp := newTestParentComponent("$ echo hi", term.Coordinates{X: 2})
+			comp.writeErr = tc.writeErr
+			var ticks []func()
+			cfg := DefaultConfig()
+			cfg.ScheduleNextTick = func(cb func()) bool {
+				if tc.noTicks {
+					return false
+				}
+				ticks = append(ticks, cb)
+				return true
+			}
+			var v viHandler
+			v.doInit(comp, cfg)
+
+			var pressed []viKey
+			for i, s := range tc.steps {
+				before := len(comp.written)
+				switch s.do {
+				case press:
+					pressed = append(pressed, v.leave(viKey{kind: s.kind}))
+				case typeKeys:
+					// as Handler.writeToPty does
+					held := v.hold([]byte(s.keys))
+					if !held {
+						_ = comp.WriteToPty([]byte(s.keys))
+					}
+					assert.Equal(t, s.held, held, "step %d: held", i)
+				case reach:
+					v.sent(pressed[s.key-1].typed)
+				case tick:
+					for len(ticks) > 0 {
+						cb := ticks[0]
+						ticks = ticks[1:]
+						cb()
+					}
+				}
+				assert.Equal(t, s.want, string(comp.written[before:]), "step %d", i)
+			}
+		})
+	}
+}
+
+func TestViEnterViMode(t *testing.T) {
+	t.Parallel()
+	// the shell's cursor is after "$ echo hi", and the session left the
+	// vi cursor on the e
+	var (
+		shell   = term.Coordinates{X: 9}
+		session = term.Coordinates{X: 2}
+		// entering puts the cursor on the character before the shell's
+		fresh = term.Coordinates{X: 8}
+	)
+	for _, tc := range []struct {
+		name  string
+		probe viProbe
+		// leaving is whether a key left modal mode, and reached is
+		// whether it reached the program since.
+		leaving, reached bool
+		wantCursor       term.Coordinates
+		wantProbe        viProbe
+		// wantResumed is whether leaving without moving sends nothing.
+		wantResumed bool
+	}{
+		{
+			name:       "a session starts at the shell's cursor",
+			probe:      viUnprobed,
+			wantCursor: fresh, wantProbe: viUnprobed,
+		},
+		{
+			name:       "a probe still waiting for its bell answers for the next session",
+			probe:      viProbing,
+			wantCursor: fresh, wantProbe: viProbing,
+		},
+		{
+			name:       "a session probes the shell again",
+			probe:      viSynced,
+			wantCursor: fresh, wantProbe: viUnprobed,
+		},
+		{
+			name:       "a session probes the shell again after one it refused",
+			probe:      viRefused,
+			wantCursor: fresh, wantProbe: viUnprobed,
+		},
+		{
+			name:  "a session goes on while the key that left waits for its probe",
+			probe: viProbing, leaving: true,
+			wantCursor: session, wantProbe: viProbing, wantResumed: true,
+		},
+		{
+			name:  "a session goes on while the key that left waits for its bell",
+			probe: viSynced, leaving: true,
+			wantCursor: session, wantProbe: viSynced, wantResumed: true,
+		},
+		{
+			name:  "a session starts at the shell's cursor once the key that left reached it",
+			probe: viSynced, leaving: true, reached: true,
+			wantCursor: fresh, wantProbe: viUnprobed,
+		},
+		{
+			// the keys typed after it are written on the next tick
+			name:  "a session starts at the shell's cursor once the shell refused the key that left",
+			probe: viRefused, leaving: true,
+			wantCursor: fresh, wantProbe: viUnprobed,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			comp := newTestParentComponent("$ echo hi", shell)
+			var ticks []func()
+			cfg := DefaultConfig()
+			cfg.ScheduleNextTick = func(cb func()) bool {
+				ticks = append(ticks, cb)
+				return true
+			}
+			var v viHandler
+			v.doInit(comp, cfg)
+			v.Resize(20, 4)
+			v.viSetCursorAtScroll(session)
+			v.probe = tc.probe
+			if tc.leaving {
+				k := v.leave(viKey{kind: viKeyExit})
+				if tc.reached {
+					v.sent(k.typed)
+					for _, cb := range ticks {
+						cb()
+					}
+				}
+			}
+			// whatever the last session left it at
+			v.resumed = !tc.wantResumed
+
+			v.enterViMode(shell)
+
+			assert.Equal(t, tc.wantCursor, v.cursorAtScroll())
+			assert.Equal(t, tc.wantCursor, v.entry, "leaving without moving must not reach the shell")
+			assert.Equal(t, tc.wantProbe, v.probe)
+			assert.Equal(t, tc.wantResumed, v.resumed)
+			v.copy.mu.Lock()
+			defer v.copy.mu.Unlock()
+			assert.Equal(t, tc.wantCursor, v.copy.vi.CursorAtScroll(), "the copy vi runs keys from the same cursor")
+		})
+	}
+}
+
 type testParentComponent struct {
 	scroll *component.Scroll
 	uri    workspaceapi.URI
 	cursor term.Coordinates
+	// written is what WriteToPty was given, and writeErr what it
+	// returns.
+	written  []byte
+	writeErr error
 }
 
 func newTestParentComponent(content string, cursorAtScroll term.Coordinates) *testParentComponent {
@@ -1918,7 +2243,7 @@ func (c *testParentComponent) pendingCallbacks() int {
 	return 0
 }
 
-func (c *testParentComponent) scheduleBellCallback(callback func()) bool {
+func (c *testParentComponent) scheduleBellCallback(callback, _ func()) bool {
 	callback()
 	return true
 }
@@ -1929,6 +2254,11 @@ func (c *testParentComponent) systemCanDispatchBell(callback func(error)) {
 
 func (c *testParentComponent) shellCommand() (uint64, bool, bool) {
 	return 0, false, false
+}
+
+func (c *testParentComponent) WriteToPty(data []byte) error {
+	c.written = append(c.written, data...)
+	return c.writeErr
 }
 
 type nopLocker struct {

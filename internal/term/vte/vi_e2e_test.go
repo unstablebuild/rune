@@ -262,6 +262,10 @@ func TestModalHide(t *testing.T) {
 	testModalSequencesOnShells(t, modalHideSequences)
 }
 
+func TestModalLeave(t *testing.T) {
+	testModalSequencesOnShells(t, modalLeaveSequences)
+}
+
 // testModalSequencesOnShells plays each sequence in modal mode on bash,
 // zsh and fish, those on PATH, with the prompt "$ ".
 func testModalSequencesOnShells(t *testing.T, sequences []struct {
