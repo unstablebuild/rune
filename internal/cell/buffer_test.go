@@ -1466,6 +1466,196 @@ func TestBufferVersion(t *testing.T) {
 	assert.Equal(t, 4, b.Version())
 }
 
+func TestBufferGeneration(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		performance bool
+		setup       func(b *Buffer)
+		change      func(b *Buffer)
+		unchanged   bool
+	}{
+		{name: "edit", change: func(b *Buffer) { b.InsertString(term.Coordinates{}, "x") }},
+		{
+			name:   "undo",
+			setup:  func(b *Buffer) { b.InsertString(term.Coordinates{}, "x") },
+			change: func(b *Buffer) { b.Undo() },
+		},
+		{
+			name: "redo",
+			setup: func(b *Buffer) {
+				b.InsertString(term.Coordinates{}, "x")
+				b.Undo()
+			},
+			change: func(b *Buffer) { b.Redo() },
+		},
+		{
+			name:   "read from",
+			change: func(b *Buffer) { _, _ = b.ReadFrom(strings.NewReader("x")) },
+		},
+		{
+			name:   "reset cells",
+			change: func(b *Buffer) { b.ResetCells(term.StringToCells("x")) },
+		},
+		{
+			name:   "reload contents",
+			change: func(b *Buffer) { b.ReloadContents(context.Background(), "x") },
+		},
+		{name: "with view", change: func(b *Buffer) { b.WithView(b.View()) }},
+		{
+			name: "to buffer",
+			change: func(b *Buffer) {
+				w := NewBufferWriter(context.Background(), 1, 1)
+				w.SetCell(term.Coordinates{}, term.NewCell('x', 1, term.Attributes{}))
+				w.ToBuffer(b)
+			},
+		},
+		{
+			name: "reads",
+			change: func(b *Buffer) {
+				_ = b.RawCells()
+				_ = b.Row(0)
+				_ = b.String()
+			},
+			unchanged: true,
+		},
+		{
+			name:        "performance reads",
+			performance: true,
+			setup:       func(b *Buffer) { b.RotateRows(0, b.Rows(), 1) },
+			change: func(b *Buffer) {
+				_ = b.RawCells()
+				_ = b.Row(0)
+				_ = b.CopyRows(nil)
+			},
+			unchanged: true,
+		},
+		{
+			name:        "performance edit",
+			performance: true,
+			change:      func(b *Buffer) { b.InsertString(term.Coordinates{}, "x") },
+		},
+		{
+			name:        "mutable row",
+			performance: true,
+			change:      func(b *Buffer) { b.MutableRow(0, 1)[0].Ch = 'x' },
+		},
+		{
+			name:        "set row",
+			performance: true,
+			change:      func(b *Buffer) { b.SetRow(0, term.StringToCells("x")[0]) },
+		},
+		{
+			name:        "reset performance",
+			performance: true,
+			change:      func(b *Buffer) { b.ResetPerformance() },
+		},
+		{
+			name:        "reset performance capacity",
+			performance: true,
+			change:      func(b *Buffer) { b.ResetPerformanceCapacity(1, 1) },
+		},
+		{
+			name:        "append blank rows",
+			performance: true,
+			change:      func(b *Buffer) { b.AppendBlankRows(1, 1) },
+		},
+		{
+			name:        "append blank rows bounded",
+			performance: true,
+			change:      func(b *Buffer) { b.AppendBlankRowsBounded(1, 1, 3) },
+		},
+		{
+			name:        "trim rows from end",
+			performance: true,
+			change:      func(b *Buffer) { b.TrimRowsFromEnd(1) },
+		},
+		{
+			name:        "trim rows from start",
+			performance: true,
+			change:      func(b *Buffer) { b.TrimRowsFromStart(1) },
+		},
+		{
+			name:        "extend row to width",
+			performance: true,
+			change:      func(b *Buffer) { b.ExtendRowToWidth(0, 10) },
+		},
+		{
+			name:        "reset row range",
+			performance: true,
+			change: func(b *Buffer) {
+				b.ResetRowRange(0, 0, 1, term.NewCell('x', 1, term.Attributes{}))
+			},
+		},
+		{
+			name:        "rotate rows",
+			performance: true,
+			change:      func(b *Buffer) { b.RotateRows(0, b.Rows(), 1) },
+		},
+		{
+			name:        "delete row range",
+			performance: true,
+			change:      func(b *Buffer) { b.DeleteRowRange(0, 0, 1) },
+		},
+		{
+			name:        "wrap row",
+			performance: true,
+			change:      func(b *Buffer) { b.WrapRow(0, 1) },
+		},
+		{
+			name:        "conflate row",
+			performance: true,
+			change:      func(b *Buffer) { b.ConflateRow(0) },
+		},
+		{
+			name:        "merge marked rows",
+			performance: true,
+			change: func(b *Buffer) {
+				b.MergeMarkedRows(b.Rows(),
+					func(c term.Cell) bool { return c.Ch == 'c' },
+					func(c *term.Cell) {})
+			},
+		},
+		{
+			name:        "split rows batch",
+			performance: true,
+			change: func(b *Buffer) {
+				b.SplitRowsBatch([]RowSplit{{Y: 0, Width: 1, Times: 1}})
+			},
+		},
+		{
+			name:        "split rows batch padded",
+			performance: true,
+			change: func(b *Buffer) {
+				b.SplitRowsBatchPadded([]RowSplit{{Y: 0, Width: 1, Times: 1}}, 2,
+					term.NewCell(' ', 1, term.Attributes{}))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := term.StringToCells("abc\ndef\nghi")
+			b := new(Buffer)
+			if tc.performance {
+				b.InitPerformance(len(rows), 8, ' ')
+			} else {
+				b.Init()
+			}
+			b.ResetCells(rows)
+			if tc.setup != nil {
+				tc.setup(b)
+			}
+			before := b.Generation()
+
+			tc.change(b)
+
+			if tc.unchanged {
+				assert.Equal(t, before, b.Generation())
+			} else {
+				assert.Greater(t, b.Generation(), before)
+			}
+		})
+	}
+}
+
 func TestBufferWriteStringRawCells(t *testing.T) {
 	b := NewBuffer()
 	b.WriteString("a\nb\nc")

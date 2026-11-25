@@ -53,6 +53,12 @@ type Scroll struct {
 	hiddenmeta    map[int]string
 	hiddensorted  []startEndBlock
 
+	// widest caches the columns of the widest row, as of the buffer
+	// generation widestGen, because measuring it walks every cell.
+	widest    int
+	widestGen uint64
+	widestOK  bool
+
 	onWillEditFrom term.Coordinates
 	onWillEditTo   term.Coordinates
 
@@ -94,6 +100,7 @@ func NewScroll(buf *cell.Buffer) (s *Scroll) {
 
 func (s *Scroll) initBuffer(buf *cell.Buffer) {
 	s.buf = buf
+	s.widestOK = false
 	s.searcher = cell.NewSimpleSearcher(s.buf)
 	s.searcher.Reset()
 }
@@ -134,6 +141,7 @@ func (s *Scroll) SetTabspaces(tabspaces int) {
 		tabspaces = 1 // 0, disabled, effectively is equivalent to 1
 	}
 	s.tabspaces = tabspaces
+	s.widestOK = false
 }
 
 // Tabspaces returns the tabspaces value.
@@ -526,15 +534,20 @@ func (s *Scroll) getMaxXOffset() (x int) {
 	if s.Wrap {
 		return
 	}
+	return max(0, s.widestColumns()-s.width)
+}
 
+func (s *Scroll) widestColumns() int {
+	gen := s.buf.Generation()
+	if s.widestOK && s.widestGen == gen {
+		return s.widest
+	}
 	var columns int
 	for i := 0; i < s.buf.Rows(); i++ {
-		if c := s.viewColumns(i); c > columns {
-			columns = c
-		}
+		columns = max(columns, s.viewColumns(i))
 	}
-	x = max(0, columns-s.width)
-	return
+	s.widest, s.widestGen, s.widestOK = columns, gen, true
+	return columns
 }
 
 func (s *Scroll) getMaxYOffset() (y int) {

@@ -1901,6 +1901,110 @@ func TestScrollGetMaxXOffsetWithTabs(t *testing.T) {
 	}
 }
 
+type rowReadCounter struct {
+	cell.View
+	reads *int
+}
+
+func (v rowReadCounter) RawCells() [][]term.Cell {
+	*v.reads++
+	return v.View.RawCells()
+}
+
+func TestScrollSeekRightMeasuresBufferOnce(t *testing.T) {
+	const width = 10
+	scroll := newScroll(4, false /*wrap*/, width, 4)
+	_, err := scroll.Buffer().ReadFrom(strings.NewReader(
+		strings.Repeat("x", 50) + "\nshort\nshorter\n"))
+	require.NoError(t, err)
+	var reads int
+	scroll.Buffer().WithView(rowReadCounter{View: scroll.Buffer().View(), reads: &reads})
+
+	for scroll.SeekRight() {
+	}
+
+	assert.Equal(t, 50-width, scroll.Offset().X)
+	assert.LessOrEqual(t, reads, scroll.Buffer().Rows(),
+		"seeking an unchanged buffer must not measure every row again")
+}
+
+func TestScrollMaxOffsetFollowsBufferChanges(t *testing.T) {
+	const width = 10
+	for _, tc := range []struct {
+		name   string
+		change func(t *testing.T, s *Scroll)
+		want   int
+	}{
+		{
+			name: "insert",
+			change: func(t *testing.T, s *Scroll) {
+				s.Buffer().InsertString(term.Coordinates{Y: 1}, strings.Repeat("y", 20))
+			},
+			want: 25 - width,
+		},
+		{
+			name: "delete",
+			change: func(t *testing.T, s *Scroll) {
+				s.Buffer().TruncateRowFrom(term.Coordinates{Y: 0, X: 12})
+			},
+			want: 12 - width,
+		},
+		{
+			name: "undo",
+			change: func(t *testing.T, s *Scroll) {
+				s.Buffer().InsertString(term.Coordinates{Y: 1}, strings.Repeat("y", 20))
+				require.Equal(t, 25-width, s.MaxOffset().X)
+				ok, _ := s.Buffer().Undo()
+				require.True(t, ok)
+			},
+			want: 20 - width,
+		},
+		{
+			name: "read from",
+			change: func(t *testing.T, s *Scroll) {
+				_, err := s.Buffer().ReadFrom(strings.NewReader(strings.Repeat("z", 30)))
+				require.NoError(t, err)
+			},
+			want: 30 - width,
+		},
+		{
+			name: "reset cells",
+			change: func(t *testing.T, s *Scroll) {
+				s.Buffer().ResetCells(term.StringToCells(strings.Repeat("z", 15)))
+			},
+			want: 15 - width,
+		},
+		{
+			name: "with view",
+			change: func(t *testing.T, s *Scroll) {
+				s.Buffer().WithView(cell.NewView(term.StringToCells(strings.Repeat("z", 35))))
+			},
+			want: 35 - width,
+		},
+		{
+			name: "tabspaces",
+			change: func(t *testing.T, s *Scroll) {
+				s.Buffer().InsertString(term.Coordinates{Y: 1}, "\t\t\t\t\t\t")
+				require.Equal(t, 6*4+5-width, s.MaxOffset().X)
+				s.SetTabspaces(8)
+			},
+			want: 6*8 + 5 - width,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scroll := newScroll(4, false /*wrap*/, width, 4)
+			_, err := scroll.Buffer().ReadFrom(strings.NewReader(
+				strings.Repeat("x", 20) + "\nshort\n"))
+			require.NoError(t, err)
+			require.Equal(t, 20-width, scroll.MaxOffset().X)
+
+			tc.change(t, scroll)
+
+			assert.Equal(t, tc.want, scroll.MaxOffset().X)
+		})
+	}
+}
+
 func BenchmarkScrollWrapDraw10(b *testing.B) {
 	benchmarkScrollWrapDraw(b, 10, 0)
 }
@@ -2352,6 +2456,23 @@ func assertScrollRingDraw(t *testing.T, scroll *Scroll, rows [][]term.Cell, stag
 		"%s: drawn cells",
 		stage,
 	)
+
+	if !scroll.Wrap {
+		var widest int
+		for _, row := range rows {
+			var columns int
+			for _, c := range row {
+				if c.Ch == '\t' {
+					columns += scroll.tabspaces
+				} else {
+					columns += int(c.Width)
+				}
+			}
+			widest = max(widest, columns)
+		}
+		assert.Equal(t, max(0, widest-scroll.width), scroll.MaxOffset().X,
+			"%s: max x offset", stage)
+	}
 }
 
 func drawScrollRingModel(

@@ -39,6 +39,9 @@ type Buffer struct {
 	rootPub  *syncPublisher
 	usagePub *syncPublisher
 	safew    safeEditor
+	// gen counts the changes Generation reports that cells does not:
+	// installed Views, and the changes of cells this Buffer replaced.
+	gen uint64
 
 	// effective View and Editor
 	view   View
@@ -565,6 +568,7 @@ func (b *Buffer) MutableRow(y, end int) []term.Cell {
 	if y < 0 || y >= b.cells.Rows() {
 		return nil
 	}
+	b.cells.gen++
 	b.cells.ensureRowMeta()
 	physical := b.cells.physicalRow(y)
 	b.cells.rowMeta[physical].occupied = max(b.cells.rowMeta[physical].occupied, end)
@@ -580,6 +584,7 @@ func (b *Buffer) SetRow(y int, row []term.Cell) {
 	if y < 0 || y >= b.cells.Rows() {
 		return
 	}
+	b.cells.gen++
 	b.cells.ensureRowMeta()
 	physical := b.cells.physicalRow(y)
 	b.cells.cells[physical] = row
@@ -822,6 +827,7 @@ func (b *Buffer) ReloadContents(ctx context.Context, str string) {
 // as subscribers won't be notified of this change, and it will break undo correctness.
 // It edits the stored rows directly: see Buffer.
 func (b *Buffer) ResetPerformance() {
+	b.cells.gen++
 	b.cells.linearize()
 	for y, row := range b.cells.cells {
 		b.cells.cells[y] = row[:0]
@@ -834,6 +840,16 @@ func (b *Buffer) Version() int {
 		return 0
 	}
 	return b.undoer.version
+}
+
+// Generation returns a number greater than any it returned before once
+// the rows read through View may have changed: after an edit, a method
+// that edits the stored rows directly, MutableRow, or WithView. Unlike
+// Version, Undo moves it forward too. Reads leave it as is, and so do
+// changes a View makes to the rows it reads on its own, without the
+// stored rows changing.
+func (b *Buffer) Generation() uint64 {
+	return b.gen + b.cells.gen
 }
 
 // ReadFrom reads data from r until EOF and appends it to the buffer, growing
@@ -1104,6 +1120,7 @@ func (b *Buffer) WithEditor(e Editor) (ret Editor) {
 }
 
 func (b *Buffer) setView(view View) {
+	b.gen++
 	b.view = view
 	b.safew.view = b.view
 	b.selector.view = b.view
@@ -1115,7 +1132,7 @@ func (b *Buffer) setEditor(ed Editor) {
 }
 
 func (b *Buffer) initWithCells(cells *rawCells) {
-	b.cells = cells
+	b.setCells(cells)
 	// setup the root publisher as the deepest Editor
 	b.rootPub = newPublisher(b.cells)
 	b.undoer = newUndoer(b.rootPub)
@@ -1127,11 +1144,21 @@ func (b *Buffer) initWithCells(cells *rawCells) {
 }
 
 func (b *Buffer) initPerformanceWithCells(cells *rawCells) {
-	b.cells = cells
+	b.setCells(cells)
 	b.cells.performance = true
 
 	b.setEditor(b.cells)
 	b.setView(b.cells)
+}
+
+func (b *Buffer) setCells(cells *rawCells) {
+	// cells counts its changes from wherever it was created, so carry
+	// over the count of the cells it replaces to keep Generation
+	// increasing.
+	if b.cells != nil {
+		b.gen += b.cells.gen
+	}
+	b.cells = cells
 }
 
 func (b *Buffer) truncateFromContextView(
