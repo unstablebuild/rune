@@ -140,7 +140,6 @@ func (s hudStyle) imageURIs() []string {
 	for _, inbox := range inboxes {
 		buttons(inbox.Images)
 		uris = append(uris, inbox.MarkerGraphics.URIs()...)
-		uris = append(uris, inbox.Divider.Graphics.URIs()...)
 		uris = append(uris, inbox.ProgressBarGraphics.URIs()...)
 	}
 	slices.Sort(uris)

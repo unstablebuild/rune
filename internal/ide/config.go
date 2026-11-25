@@ -3328,7 +3328,8 @@ func (c ideConfig) windowBarCharsetWithDefault(key string, def tcomponent.Window
 	return
 }
 
-// outsetSide is a side of a graphics outset, read from key into dst.
+// outsetSide is a side of a table of cells, such as a graphics outset,
+// read from key into dst.
 type outsetSide struct {
 	dst *int
 	key string
@@ -3344,22 +3345,29 @@ func (c ideConfig) graphicsOutset(
 	if err != nil {
 		return
 	}
-	o, err := g.GetConfig("outset")
+	c.cellSides(g, "outset", name+"."+graphics, sides...)
+}
+
+// cellSides reads into sides the table key of cfg, reporting its errors
+// under name. Each side is a number of cells, 0 or more; an invalid one
+// is left as it is.
+func (c ideConfig) cellSides(cfg config.Config, key, name string, sides ...outsetSide) {
+	t, err := cfg.GetConfig(key)
 	if err != nil {
 		if err != config.ErrNotFound {
-			c.errors[name+"."+graphics+".outset"] = err
+			c.errors[name+"."+key] = err
 		}
 		return
 	}
 	for _, s := range sides {
-		n, err := o.GetInt(s.key)
-		key := name + "." + graphics + ".outset." + s.key
+		n, err := t.GetInt(s.key)
+		errKey := name + "." + key + "." + s.key
 		switch {
 		case errors.Is(err, config.ErrNotFound):
 		case err != nil:
-			c.errors[key] = err
+			c.errors[errKey] = err
 		case n < 0:
-			c.errors[key] = fmt.Errorf("expected 0 or more cells, got %d", n)
+			c.errors[errKey] = fmt.Errorf("expected 0 or more cells, got %d", n)
 		default:
 			*s.dst = n
 		}
@@ -6032,9 +6040,8 @@ func (c ideConfig) terminalStatus() (config.Config, bool) {
 // statusInboxStyle reads program_status, which styles the status inbox.
 // Its marker takes what program_status.marker_attr leaves unset of the
 // marker of the focused tab, browser.focus_tab_highlight_attr, but its
-// background, which is the selection's, and its divider the window
-// frame's left edge. Its focus block, over it, styles the inbox while
-// its window holds the focus.
+// background, which is the selection's. Its focus block, over it, styles
+// the inbox while its window holds the focus.
 func (c ideConfig) statusInboxStyle() idestatus.InboxStyle {
 	const name = "program_status"
 	var cfg config.Config
@@ -6061,7 +6068,6 @@ func (c ideConfig) statusInboxStyleOf(cfg config.Config, name string) idestatus.
 	ret := idestatus.DefaultInboxStyle()
 	ret.MarkerAttr = c.highlightTabAttr()
 	ret.MarkerAttr.Bg = term.ColorDefault
-	ret.Divider = c.statusDividerCharset(cfg, name, ret.Divider)
 	if cfg == nil {
 		return ret
 	}
@@ -6081,6 +6087,12 @@ func (c ideConfig) statusInboxStyleOf(cfg config.Config, name string) idestatus.
 	} else if err != config.ErrNotFound {
 		c.errors[prefix+"more_below"] = err
 	}
+	c.cellSides(cfg, "sidebar_margin", name,
+		outsetSide{&ret.SidebarMargin.Top, "top"},
+		outsetSide{&ret.SidebarMargin.Left, "left"},
+		outsetSide{&ret.SidebarMargin.Bottom, "bottom"},
+		outsetSide{&ret.SidebarMargin.Right, "right"},
+	)
 	for _, a := range []struct {
 		key string
 		dst *term.Attributes
@@ -6095,7 +6107,7 @@ func (c ideConfig) statusInboxStyleOf(cfg config.Config, name string) idestatus.
 		{"progress_remaining_selected_attr", &ret.ProgressRemainingSelectedAttr},
 		{"progress_label_attr", &ret.ProgressLabelAttr},
 		{"more_below_attr", &ret.MoreBelowAttr},
-		{"divider_attr", &ret.DividerAttr},
+		{"sidebar_attr", &ret.SidebarAttr},
 		{"placeholder_attr", &ret.PlaceholderAttr},
 	} {
 		if attr, err := config.GetAttributes(cfg, a.key); err == nil {
@@ -6134,75 +6146,6 @@ func (c ideConfig) statusInboxStyleOf(cfg config.Config, name string) idestatus.
 		ret.ProgressBarGraphics = bar
 	}
 	return ret
-}
-
-// statusDividerCharset reads the divider_charset of status, the
-// program_status section at statusName or nil, over def. Its vertical
-// rune and image, and the image's mode, default to those of the window
-// frame's left edge, and its vertical_top and vertical_bottom to its
-// vertical rune.
-func (c ideConfig) statusDividerCharset(
-	status config.Config, statusName string, def tcomponent.DividerCharSet,
-) (out tcomponent.DividerCharSet) {
-	name := statusName + ".divider_charset"
-	frame := c.windowFrameCharset()
-	out = def
-	out.VerticalTop, out.Vertical, out.VerticalBottom = 0, frame.VerticalLeft, 0
-	out.Graphics.Vertical = frame.Graphics.VerticalLeft
-	out.Graphics.Overlay = frame.Graphics.Overlay
-	defer func() {
-		if out.VerticalTop == 0 {
-			out.VerticalTop = out.Vertical
-		}
-		if out.VerticalBottom == 0 {
-			out.VerticalBottom = out.Vertical
-		}
-	}()
-	if status == nil {
-		return out
-	}
-	cfg, err := status.GetConfig("divider_charset")
-	if err != nil {
-		if err != config.ErrNotFound {
-			c.errors[name] = err
-		}
-		return out
-	}
-	for _, f := range []struct {
-		key string
-		dst *rune
-	}{
-		{"top", &out.Top},
-		{"vertical_top", &out.VerticalTop},
-		{"vertical", &out.Vertical},
-		{"vertical_bottom", &out.VerticalBottom},
-		{"bottom", &out.Bottom},
-	} {
-		r, err := cfg.GetRune(f.key)
-		if err != nil {
-			if err != config.ErrNotFound {
-				c.errors[name+"."+f.key] = err
-			}
-			continue
-		}
-		*f.dst = r
-	}
-	g := out.Graphics
-	if err := tconfig.GetGraphics(cfg, "graphics", &g.Overlay,
-		tconfig.GraphicsSlot{Key: "top", URI: &g.Top},
-		tconfig.GraphicsSlot{Key: "vertical", URI: &g.Vertical},
-		tconfig.GraphicsSlot{Key: "bottom", URI: &g.Bottom},
-	); err != nil {
-		c.errors[name] = err
-		return out
-	}
-	c.graphicsOutset(cfg, "graphics", name,
-		outsetSide{&g.Outset.Left, "left"},
-		outsetSide{&g.Outset.Right, "right"},
-		outsetSide{&g.Outset.Inward, "inward"},
-	)
-	out.Graphics = g
-	return out
 }
 
 // parseProgressBarCharSet reads a progress bar from its left end, what is

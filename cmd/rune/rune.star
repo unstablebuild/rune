@@ -1498,31 +1498,25 @@ config = {
         # nf-fa-arrow_down, as in tutorials.
         "more_below":      "\uf063",
         "more_below_attr": attr(fg = "default", bg = "default"),
-        # The line between the programs and the preview, and the text that
-        # stands in for them when there is nothing to show.
-        "divider_attr":     attr(fg = "gray"),
+        # The text that stands in for the programs and the preview when
+        # there is nothing to show.
         "placeholder_attr": attr(fg = "gray"),
-        # Glyphs joining the divider into the inbox window's frame: "top"
-        # and "bottom" are the joins, colored as the frame; "vertical_top",
-        # "vertical" and "vertical_bottom" are drawn under the top join,
-        # between, and over the bottom join, colored by "divider_attr".
-        # Missing vertical, vertical image and mode inherit the window
-        # frame's verticalleft; missing vertical_top and vertical_bottom
-        # inherit vertical. Under a window bar, there is no top join and
-        # the divider starts with vertical.
-        "divider_charset": {
-            "top":    "🭽",
-            "bottom": "🭼",
-            # Optional GUI images, with missing joins taking the frame's
-            # horizontaltop and horizontalbottom images:
-            # "graphics": {
-            #     "top":      "file:///divider-top.png",
-            #     "vertical": "file:///divider-tile.png",
-            #     "bottom":   "file:///divider-bottom.png",
-            #     "mode":     "overlay",  # or "replace"
-            #     "outset":   {"left": 0, "right": 0, "inward": 0},
-            # },
-        },
+        # Fills the program list, which the preview beside it stands apart
+        # from by keeping the window's background. Its colors replace the
+        # default colors of what is drawn there. Left unset, the background
+        # is a shade of the theme's background toward its foreground:
+        #
+        #     "sidebar_attr": attr(bg = "#262626"),
+        #
+        # The cells around that fill left in the window's background: "top"
+        # under the window bar, "left" and "bottom" inside the frame, and
+        # "right" between the program list and the preview. The GUI draws
+        # the list half a cell lower, so at 0 the fill stands half a cell
+        # below the window bar and half a cell above the frame's bottom
+        # line, and the frame's left column is about as wide. A cell is
+        # about twice as tall as it is wide, so a column on the right looks
+        # as wide again.
+        "sidebar_margin": {"top": 0, "left": 0, "bottom": 0, "right": 1},
         # An "images" table names images drawn under each program, in place
         # of the backgrounds of "selected_attr" and "hover_attr", in the
         # shape of browser.prompt.images: "selected" for the selected
@@ -1566,7 +1560,7 @@ config = {
         # match browser.window_manager's focus_background_attr:
         #
         #     "focus": {
-        #         "divider_attr": attr(fg = "silver"),
+        #         "sidebar_attr": attr(bg = "#2a2a2a"),
         #         "images":       {"selected": {"middle": "file:///path/to/focused-entry.png"}},
         #     },
     },
@@ -1761,10 +1755,9 @@ if tui:
             "frame_charset":   TUI_FRAME_CHARSET,
         },
         "program_status": {
-            "divider_charset": {
-                "top":    "┬",
-                "bottom": "┴",
-            },
+            # The theme's colours are not known here: a step up from the
+            # #1e1e1e background.
+            "sidebar_attr": attr(bg = "#262626"),
         },
         "terminal": {
             "attr":                  attr(fg = "default", bg = "#1e1e1e"),

@@ -2065,13 +2065,15 @@ func TestCommandProgramStatusPreviewsTab(t *testing.T) {
 }
 
 // statusInboxSidebarWidth returns the columns the sidebar of the
-// status inbox drawn takes, its divider included.
+// status inbox drawn takes: those before the first character on its
+// top row, which the sidebar pads with blanks and the preview starts
+// with one.
 func statusInboxSidebarWidth(t *testing.T, drawn string) int {
 	t.Helper()
 	first, _, _ := strings.Cut(drawn, "\n")
-	i := slices.Index([]rune(first), idestatus.DefaultInboxStyle().Divider.Vertical)
-	require.GreaterOrEqual(t, i, 0, "the sidebar ends with a divider")
-	return i + 1
+	i := slices.IndexFunc([]rune(first), func(r rune) bool { return r != ' ' })
+	require.Positive(t, i, "the preview starts past the sidebar")
+	return i
 }
 
 func TestCommandProgramStatusPreviewsWindowedTerminal(t *testing.T) {
@@ -13499,12 +13501,12 @@ func TestStatusInboxGraphicsIntegration(t *testing.T) {
 	view := &safeHandler{mu: mu, Component: inbox}
 	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
 
-	awaitFrame(t, view, w, nil, `                        │AAAAA
- ▌6661666666666666666   │AAAAA
- ▌6󰹇6agent66666666666   │AAAAA
- ▌666blocked666666666   │AAAAA
-                        │AAAAA
-                        │AAAAA`)
+	awaitFrame(t, view, w, nil, `                         AAAAA
+ ▌6661666666666666666    AAAAA
+ ▌6󰹇6agent66666666666    AAAAA
+ ▌666blocked666666666    AAAAA
+                         AAAAA
+                         AAAAA`)
 
 	writeHUDTestPNG(t, selected, color.Gray{Y: 40})
 	hud, err := i.LoadHUD(ctx)
@@ -13516,61 +13518,93 @@ func TestStatusInboxGraphicsIntegration(t *testing.T) {
 	require.NoError(t, w.Clear(term.Attributes{}))
 	view.Draw(w)
 	require.NoError(t, w.Flush())
-	assert.Equal(t, `                        │AAAAA
- ▌___1_______________   │AAAAA
- ▌_󰹇_agent___________   │AAAAA
- ▌___blocked_________   │AAAAA
-                        │AAAAA
-                        │AAAAA`, w.String(), "the open inbox draws the reloaded image at once")
+	assert.Equal(t, `                         AAAAA
+ ▌___1_______________    AAAAA
+ ▌_󰹇_agent___________    AAAAA
+ ▌___blocked_________    AAAAA
+                         AAAAA
+                         AAAAA`, w.String(), "the open inbox draws the reloaded image at once")
 }
 
-func TestStatusInboxDividerIntegration(t *testing.T) {
-	const width, height = 50, 12
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	require.NoError(t, err)
-	ws, err := filepath.EvalSymlinks(t.TempDir())
-	require.NoError(t, err)
-	bottom := filepath.Join(home, "bottom.png")
-	writeHUDTestPNG(t, bottom, color.Gray{Y: 255})
-	configPath := filepath.Join(home, "rune.yaml")
-	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
-		"workspace:\n  home: "+home+"\n"+
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"+
-		"program_status:\n  divider_charset:\n"+
-		"    top: T\n    vertical_top: t\n    vertical: v\n    vertical_bottom: b\n    bottom: B\n"+
-		"    graphics:\n      bottom: file://"+bottom+"\n"), 0o644))
-	i, mu := newHUDTestIDE(t, ws, configPath)
-	agent := mustURI(t, "rune-agent://model/agent")
-	mu.Lock()
-	h := i.workspaceHandler
-	focused := h.focusEx()
-	_, err = focused.comp.Tab(agent, 'x', "agent", browsertest.NewTestHandler())
-	require.NoError(t, err)
-	// The chat's extension opens it a view of its own for the inbox.
-	require.NoError(t, focused.comp.RegisterResourceOpener("rune-agent",
-		&recordingOpener{h: browsertest.NewTestHandler()}))
-	require.NoError(t, focused.comp.SetTabStatus(agent, programstatus.Report{
-		State: programstatus.Blocked, Progress: -1,
-	}))
-	require.NoError(t, h.commandProgramStatus())
-	mu.Unlock()
-	root := &safeHandler{mu: mu, Component: &i.root}
-	root.Resize(width, height)
-	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+func TestStatusInboxSidebarIntegration(t *testing.T) {
+	const width, height = 40, 8
+	dark := term.Attributes{Fg: term.NewRGBColor(220, 220, 220), Bg: term.NewRGBColor(20, 20, 20)}
+	light := term.Attributes{Fg: term.NewRGBColor(0, 0, 0), Bg: term.NewHexColor(0xffffea)}
+	for _, tc := range []struct {
+		name   string
+		config string
+		// wantDark and wantLight are the sidebar's background under the
+		// dark and the light theme.
+		wantDark, wantLight term.Color
+	}{
+		{
+			name:     "sidebar_attr fills the sidebar whatever the theme",
+			config:   "program_status:\n  sidebar_attr:\n    bg: navy\n",
+			wantDark: term.ColorNavy, wantLight: term.ColorNavy,
+		},
+		{
+			name:     "without it, the sidebar follows the theme's shade",
+			wantDark: term.NewRGBColor(36, 36, 36), wantLight: term.NewHexColor(0xebebd7),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			ws, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			configPath := filepath.Join(home, "rune.yaml")
+			require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+				"workspace:\n  home: "+home+"\n"+
+				"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"+
+				tc.config), 0o644))
+			i, mu := newHUDTestIDE(t, ws, configPath)
+			agent := mustURI(t, "rune-agent://model/agent")
+			mu.Lock()
+			defer mu.Unlock()
+			h := i.workspaceHandler
+			focused := h.focusEx()
+			_, err = focused.comp.Tab(agent, 'x', "agent", browsertest.NewTestHandler())
+			require.NoError(t, err)
+			require.NoError(t, focused.comp.RegisterResourceOpener("rune-agent",
+				&recordingOpener{h: browsertest.NewTestHandler()}))
+			require.NoError(t, focused.comp.SetTabStatus(agent, programstatus.Report{
+				State: programstatus.Blocked, Progress: -1,
+			}))
+			require.NoError(t, h.commandProgramStatus())
+			win, err := focused.comp.Focus()
+			require.NoError(t, err)
+			content, err := win.Content()
+			require.NoError(t, err)
+			inbox, ok := content.(*idestatus.View)
+			require.True(t, ok)
+			inbox.Resize(width, height)
 
-	// The window bar takes the top join's place.
-	awaitFrame(t, root, w, nil, `┌────────────────────────────────────────────────┐
-│󰹇  agent                                        │
-├█●██████████████████████████████████████████████┤
-││                        vAAAAAAAAAAAAAAAAAAAAA││
-││ ▌   1                  vAAAAAAAAAAAAAAAAAAAAA││
-││ ▌ 󰹇 agent              vAAAAAAAAAAAAAAAAAAAAA││
-││ ▌   blocked            vAAAAAAAAAAAAAAAAAAAAA││
-││                        vAAAAAAAAAAAAAAAAAAAAA││
-││                        bAAAAAAAAAAAAAAAAAAAAA││
-│└────────────────────────@─────────────────────┘│
-│                                                │
-└────────────────────────────────────────────────┘`)
+			for _, theme := range []struct {
+				name string
+				def  term.Attributes
+				want term.Color
+			}{
+				{"dark", dark, tc.wantDark},
+				{"light", light, tc.wantLight},
+			} {
+				i.SetThemeColors(ThemeColors{Default: theme.def})
+				w := cell.NewBufferWriter(context.Background(), width, height)
+				inbox.Draw(w)
+				cells := w.RawCells()
+				// The padding above the program and the rows below it.
+				for _, y := range []int{0, height - 1} {
+					fillW := slices.IndexFunc(cells[y], func(c term.Cell) bool { return c.Attributes().Bg != theme.want })
+					require.Positive(t, fillW, "the open inbox's sidebar is filled from its left edge on row %d "+
+						"under the %s theme", y, theme.name)
+					for x, c := range cells[y][fillW:] {
+						assert.Equal(t, term.ColorDefault, c.Attributes().Bg,
+							"the margin and the preview keep the window's background at %d,%d under the %s theme",
+							fillW+x, y, theme.name)
+					}
+				}
+			}
+		})
+	}
 }
 
 func TestNotificationGraphicsIntegration(t *testing.T) {

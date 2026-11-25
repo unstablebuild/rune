@@ -314,14 +314,14 @@ func TestFocusOverlay(t *testing.T) {
 				"background_attr": map[string]any{"bg": "navy"},
 				"graphics":        map[string]any{"topleft": ""},
 				"images":          []any{"three"},
-				"divider_attr":    map[string]any{"fg": "white"},
+				"sidebar_attr":    map[string]any{"bg": "white"},
 			},
 			want: map[string]any{
 				"layout":          "c",
 				"background_attr": map[string]any{"fg": "red", "bg": "navy"},
 				"graphics":        map[string]any{"topleft": "", "topright": "file:///tr.png"},
 				"images":          []any{"three"},
-				"divider_attr":    map[string]any{"fg": "white"},
+				"sidebar_attr":    map[string]any{"bg": "white"},
 			},
 		},
 	}

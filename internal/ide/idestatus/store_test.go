@@ -58,8 +58,10 @@ func statusTestStyle() InboxStyle {
 	// Unlike the default, it shows in snapshots without a Nerd Font.
 	style.MoreBelow = '↓'
 	style.MoreBelowAttr = term.Attributes{Fg: term.ColorYellow}
-	style.DividerAttr = term.Attributes{Fg: term.ColorOlive}
 	style.PlaceholderAttr = term.Attributes{Fg: term.ColorFuchsia}
+	// Flush with the view, for the layouts the tests draw to be the list's
+	// own. TestViewSidebarMargin places the list in its margin.
+	style.SidebarMargin = Margin{}
 	return style
 }
 
@@ -355,6 +357,34 @@ func TestStatusStoreSetStyle(t *testing.T) {
 	require.NotNil(t, store.images)
 	assert.Same(t, store.graphics.Image("file:///idle.png"), store.images.Idle.Middle,
 		"the images are the graphics' own")
+}
+
+func TestSidebarShade(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		def  term.Attributes
+		want term.Color
+	}{
+		{
+			name: "a dark theme lightens",
+			def:  term.Attributes{Fg: term.NewRGBColor(255, 255, 255), Bg: term.NewRGBColor(0, 0, 0)},
+			want: term.NewRGBColor(20, 20, 20),
+		},
+		{
+			name: "a light theme darkens",
+			def:  term.Attributes{Fg: term.NewRGBColor(0, 0, 0), Bg: term.NewHexColor(0xffffea)},
+			want: term.NewHexColor(0xebebd7),
+		},
+		{
+			name: "palette colours resolve",
+			def:  term.Attributes{Fg: term.ColorWhite, Bg: term.ColorNavy},
+			want: term.NewRGBColor(20, 20, 138),
+		},
+		{name: "a default background has no shade", def: term.Attributes{Fg: term.ColorWhite}},
+		{name: "a default foreground has no shade", def: term.Attributes{Bg: term.ColorNavy}},
+	} {
+		assert.Equal(t, tc.want, SidebarShade(tc.def), tc.name)
+	}
 }
 
 func TestStatusStoreWorkspaceCleanup(t *testing.T) {

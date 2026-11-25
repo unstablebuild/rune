@@ -59,36 +59,6 @@ func (g SeparatorGraphics) Empty() bool {
 	return g.Left == "" && g.Horizontal == "" && g.Right == ""
 }
 
-// DividerCharSet stitches an interior vertical rule into a frame. Top and
-// Bottom take the rule's cells in the frame's top and bottom rows,
-// VerticalTop and VerticalBottom its first and last cells inside the
-// frame, and Vertical the cells between.
-type DividerCharSet struct {
-	Top, VerticalTop, Vertical, VerticalBottom, Bottom rune
-	Graphics                                           DividerGraphics
-}
-
-// DividerGraphics names the two junction images and the repeating rule.
-// Empty junction slots preserve the frame's top and bottom images. An
-// empty vertical slot leaves the rule's characters visible.
-type DividerGraphics struct {
-	Top, Vertical, Bottom string
-	Overlay               bool
-	Outset                DividerOutset
-}
-
-// DividerOutset extends junction images left and right along the frame,
-// and inward along the rule, in whole cells. Outsets cover content
-// without changing the layout.
-type DividerOutset struct {
-	Left, Right, Inward int
-}
-
-// URIs returns the URIs g names, empty ones included.
-func (g DividerGraphics) URIs() []string {
-	return []string{g.Top, g.Vertical, g.Bottom}
-}
-
 // LineGraphics names the images drawn over a line of cells: Start over
 // its first cell, End over its last and Middle over each cell between.
 // An empty Start or End takes Middle's image, and an empty Middle leaves
@@ -483,52 +453,6 @@ func (g *FrameGraphics) DrawSeparator(
 	}
 	if !draw(gr.Right, cs.Right, width-1, image.Rect(width-1-inward, y-top, width, y+1+bottom), gr.Overlay) {
 		draw(f.Graphics.VerticalRight, cs.Right, width-1, image.Rect(width-1, y, width, y+1), f.Graphics.Overlay)
-	}
-}
-
-// DrawDivider draws images over an already drawn divider at x inside the
-// frame, as DrawSeparator does over a separator. The rule's cells inside
-// the frame are in attr, and its junctions in the frame's attributes.
-// Without joinTop, as under a window bar, the top row is left alone and
-// the rule's first cell inside the frame takes Vertical.
-func (g *FrameGraphics) DrawDivider(
-	w term.Writer, f *component.Frame, cs DividerCharSet, attr term.Attributes,
-	width, height, x int, joinTop bool,
-) {
-	if width < 3 || height < 3 || x <= 0 || x >= width-1 {
-		return
-	}
-	w = &component.VirtualWriter{Writer: w, Width: width, Height: height}
-	cw := cellImageWriter{Writer: w, layer: term.ImageLayerAboveText}
-	draw := func(uri string, cell term.Cell, y int, area image.Rectangle, overlay bool) bool {
-		if uri == "" {
-			return false
-		}
-		cw.keep = overlay
-		cw.under = term.NewCell(' ', 1, cell.Attributes())
-		cw.fallback = cell
-		return g.drawArea(&cw, uri, term.Coordinates{X: x, Y: y}, area)
-	}
-	gr := cs.Graphics
-	for y := 1; y < height-1; y++ {
-		ch := cs.Vertical
-		if y == 1 && joinTop {
-			ch = cs.VerticalTop
-		}
-		if y == height-2 {
-			ch = cs.VerticalBottom
-		}
-		draw(gr.Vertical, term.NewCell(ch, 1, attr), y, image.Rect(x, y, x+1, y+1), gr.Overlay)
-	}
-	// Junctions cover the ends of the repeated rule, including their outsets.
-	left, right, inward := max(0, gr.Outset.Left), max(0, gr.Outset.Right), max(0, gr.Outset.Inward)
-	top := term.NewCell(cs.Top, 1, f.Attributes)
-	if joinTop && !draw(gr.Top, top, 0, image.Rect(x-left, 0, x+1+right, 1+inward), gr.Overlay) {
-		draw(f.Graphics.HorizontalTop, top, 0, image.Rect(x, 0, x+1, 1), f.Graphics.Overlay)
-	}
-	bottom := term.NewCell(cs.Bottom, 1, f.Attributes)
-	if !draw(gr.Bottom, bottom, height-1, image.Rect(x-left, height-1-inward, x+1+right, height), gr.Overlay) {
-		draw(f.Graphics.HorizontalBottom, bottom, height-1, image.Rect(x, height-1, x+1, height), f.Graphics.Overlay)
 	}
 }
 

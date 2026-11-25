@@ -598,10 +598,13 @@ func TestStatusInboxStyle(t *testing.T) {
 	attrKeys := []string{
 		"marker_attr", "selected_attr", "hover_attr", "workspace_attr", "workspace_highlight_attr",
 		"progress_attr", "progress_done_attr", "progress_remaining_attr", "progress_remaining_selected_attr",
-		"progress_label_attr", "more_below_attr", "divider_attr", "placeholder_attr",
+		"progress_label_attr", "more_below_attr", "sidebar_attr", "placeholder_attr",
 	}
-	invalid := map[string]any{"marker": true, "progress_bar": true, "more_below": true}
-	wantInvalid := []string{"program_status.marker", "program_status.progress_bar", "program_status.more_below"}
+	invalid := map[string]any{"marker": true, "progress_bar": true, "more_below": true, "sidebar_margin": 1}
+	wantInvalid := []string{
+		"program_status.marker", "program_status.progress_bar", "program_status.more_below",
+		"program_status.sidebar_margin",
+	}
 	for _, key := range attrKeys {
 		invalid[key] = "gray"
 		wantInvalid = append(wantInvalid, "program_status."+key)
@@ -653,7 +656,8 @@ func TestStatusInboxStyle(t *testing.T) {
 				"progress_label_attr":              map[string]any{"fg": "aqua"},
 				"more_below":                       "↓",
 				"more_below_attr":                  map[string]any{"fg": "yellow"},
-				"divider_attr":                     map[string]any{"fg": "olive"},
+				"sidebar_attr":                     map[string]any{"fg": "white", "bg": "olive"},
+				"sidebar_margin":                   map[string]any{"top": 2, "left": 3, "bottom": 1, "right": 4},
 				"placeholder_attr":                 map[string]any{"fg": "fuchsia"},
 			}},
 			want: func() idestatus.InboxStyle {
@@ -672,10 +676,32 @@ func TestStatusInboxStyle(t *testing.T) {
 				s.ProgressLabelAttr = term.Attributes{Fg: term.ColorAqua}
 				s.MoreBelow = '↓'
 				s.MoreBelowAttr = term.Attributes{Fg: term.ColorYellow}
-				s.DividerAttr = term.Attributes{Fg: term.ColorOlive}
+				s.SidebarAttr = term.Attributes{Fg: term.ColorWhite, Bg: term.ColorOlive}
+				s.SidebarMargin = idestatus.Margin{Top: 2, Left: 3, Bottom: 1, Right: 4}
 				s.PlaceholderAttr = term.Attributes{Fg: term.ColorFuchsia}
 				return s
 			}(),
+		},
+		{
+			name: "a margin keeps the default sides it leaves out",
+			cfg:  map[string]any{"program_status": map[string]any{"sidebar_margin": map[string]any{"top": 5}}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.SidebarMargin.Top = 5
+				return s
+			}(),
+		},
+		{
+			name: "invalid sides of the margin keep their defaults",
+			cfg: map[string]any{"program_status": map[string]any{"sidebar_margin": map[string]any{
+				"right": -1, "left": "wide", "bottom": 2,
+			}}},
+			want: func() idestatus.InboxStyle {
+				s := def
+				s.SidebarMargin.Bottom = 2
+				return s
+			}(),
+			wantErr: []string{"program_status.sidebar_margin.left", "program_status.sidebar_margin.right"},
 		},
 		{
 			name: "the same character all along the bar",
@@ -766,92 +792,17 @@ func TestStatusInboxStyle(t *testing.T) {
 			},
 		},
 		{
-			name: "divider charset",
-			cfg: map[string]any{"program_status": map[string]any{"divider_charset": map[string]any{
-				"top": "╦", "vertical_top": "║", "vertical": "┃", "bottom": "╩",
-				"graphics": map[string]any{
-					"mode": "overlay", "top": "file:///divider/t.png",
-					"vertical": "file:///divider/v.png", "bottom": "file:///divider/b.png",
-					"outset": map[string]any{"left": 1, "right": 2, "inward": 3},
-				},
-			}}},
-			want: func() idestatus.InboxStyle {
-				s := def
-				s.Divider = tcomponent.DividerCharSet{
-					Top: '╦', VerticalTop: '║', Vertical: '┃', VerticalBottom: '┃', Bottom: '╩',
-					Graphics: tcomponent.DividerGraphics{
-						Top: "file:///divider/t.png", Vertical: "file:///divider/v.png",
-						Bottom: "file:///divider/b.png", Overlay: true,
-						Outset: tcomponent.DividerOutset{Left: 1, Right: 2, Inward: 3},
-					},
-				}
-				return s
-			}(),
-		},
-		{
-			name: "the divider takes the window frame's left edge",
-			cfg: map[string]any{"browser": map[string]any{"window_manager": map[string]any{
-				"frame_charset": map[string]any{
-					"verticalleft": "▏",
-					"graphics":     map[string]any{"mode": "overlay", "verticalleft": "file:///frame/left.png"},
-				},
-			}}},
-			want: func() idestatus.InboxStyle {
-				s := def
-				s.Divider.VerticalTop, s.Divider.Vertical, s.Divider.VerticalBottom = '▏', '▏', '▏'
-				s.Divider.Graphics = tcomponent.DividerGraphics{Vertical: "file:///frame/left.png", Overlay: true}
-				return s
-			}(),
-		},
-		{
-			name: "the divider clears the image it takes from the frame",
-			cfg: map[string]any{
-				"browser": map[string]any{"window_manager": map[string]any{"frame_charset": map[string]any{
-					"graphics": map[string]any{"verticalleft": "file:///frame/left.png"},
-				}}},
-				"program_status": map[string]any{"divider_charset": map[string]any{
-					"graphics": map[string]any{"vertical": ""},
-				}},
-			},
-			want: def,
-		},
-		{
-			name: "an invalid divider image draws none of the divider's images",
-			cfg: map[string]any{"program_status": map[string]any{"divider_charset": map[string]any{
-				"bottom":   "╩",
-				"graphics": map[string]any{"top": "file:///divider/t.png", "mode": "sideways"},
-			}}},
-			want: func() idestatus.InboxStyle {
-				s := def
-				s.Divider.Bottom = '╩'
-				return s
-			}(),
-			wantErr: []string{"program_status.divider_charset"},
-		},
-		{
-			name: "invalid divider characters keep their defaults",
-			cfg: map[string]any{"program_status": map[string]any{"divider_charset": map[string]any{
-				"top": true, "vertical": []any{"│"},
-				"graphics": map[string]any{"outset": map[string]any{"left": -1}},
-			}}},
-			want: def,
-			wantErr: []string{
-				"program_status.divider_charset.top", "program_status.divider_charset.vertical",
-				"program_status.divider_charset.graphics.outset.left",
-			},
-		},
-		{
 			name: "a focus block over the style",
 			cfg: map[string]any{"program_status": map[string]any{
 				"selected_attr": map[string]any{"bg": "navy"},
-				"divider_attr":  map[string]any{"fg": "olive"},
+				"sidebar_attr":  map[string]any{"bg": "olive"},
 				"images": map[string]any{
 					"idle":     map[string]any{"middle": "file:///inbox/idle.png"},
 					"selected": map[string]any{"middle": "file:///inbox/selected.png"},
 				},
 				"focus": map[string]any{
-					"selected_attr":   map[string]any{"bg": "blue"},
-					"divider_charset": map[string]any{"vertical": "┃"},
+					"selected_attr": map[string]any{"bg": "blue"},
+					"sidebar_attr":  map[string]any{"bg": "green"},
 					"images": map[string]any{
 						"selected": map[string]any{"middle": "file:///inbox/focus.png"},
 					},
@@ -860,14 +811,14 @@ func TestStatusInboxStyle(t *testing.T) {
 			want: func() idestatus.InboxStyle {
 				s := def
 				s.SelectedAttr = term.Attributes{Bg: term.ColorNavy}
-				s.DividerAttr = term.Attributes{Fg: term.ColorOlive}
+				s.SidebarAttr = term.Attributes{Bg: term.ColorOlive}
 				s.Images = browser.PromptImages{
 					Idle:     browser.PromptButtonImage{Middle: "file:///inbox/idle.png"},
 					Selected: browser.PromptButtonImage{Middle: "file:///inbox/selected.png"},
 				}
 				focus := s
 				focus.SelectedAttr = term.Attributes{Bg: term.ColorBlue}
-				focus.Divider.VerticalTop, focus.Divider.Vertical, focus.Divider.VerticalBottom = '┃', '┃', '┃'
+				focus.SidebarAttr = term.Attributes{Bg: term.ColorGreen}
 				focus.Images.Selected = browser.PromptButtonImage{Middle: "file:///inbox/focus.png"}
 				s.Focus = &focus
 				return s
@@ -4073,9 +4024,6 @@ func TestConfigHUDStyle(t *testing.T) {
 				"marker":          "┃",
 				"images":          map[string]any{"idle": map[string]any{"middle": "file:///inbox/idle.png"}},
 				"marker_graphics": map[string]any{"vertical": "file:///inbox/marker.png"},
-				"divider_charset": map[string]any{"graphics": map[string]any{
-					"top": "file:///inbox/top.png", "vertical": "file:///inbox/divider.png",
-				}},
 				"progress_bar_graphics": map[string]any{
 					"filled": "file:///inbox/filled.png", "empty": "file:///inbox/empty.png",
 				},
@@ -4085,8 +4033,8 @@ func TestConfigHUDStyle(t *testing.T) {
 				assert.Equal(t, "file:///inbox/idle.png", s.statusInbox.Images.Idle.Middle)
 			},
 			wantURIs: []string{
-				"file:///inbox/divider.png", "file:///inbox/empty.png", "file:///inbox/filled.png",
-				"file:///inbox/idle.png", "file:///inbox/marker.png", "file:///inbox/top.png",
+				"file:///inbox/empty.png", "file:///inbox/filled.png",
+				"file:///inbox/idle.png", "file:///inbox/marker.png",
 			},
 		},
 		{
@@ -4251,7 +4199,6 @@ func TestConfigHUDStyle(t *testing.T) {
 				"marker_graphics": map[string]any{"vertical": "file:///inbox/marker.png"},
 				"focus": map[string]any{
 					"images":                map[string]any{"selected": map[string]any{"middle": "file:///inbox/focus.png"}},
-					"divider_charset":       map[string]any{"graphics": map[string]any{"vertical": "file:///inbox/divider.png"}},
 					"progress_bar_graphics": map[string]any{"filled": "file:///inbox/filled.png"},
 				},
 			}},
@@ -4260,8 +4207,8 @@ func TestConfigHUDStyle(t *testing.T) {
 				assert.Equal(t, "file:///inbox/marker.png", s.statusInbox.Focus.MarkerGraphics.Middle)
 			},
 			wantURIs: []string{
-				"file:///inbox/divider.png", "file:///inbox/filled.png", "file:///inbox/focus.png",
-				"file:///inbox/idle.png", "file:///inbox/marker.png",
+				"file:///inbox/filled.png", "file:///inbox/focus.png", "file:///inbox/idle.png",
+				"file:///inbox/marker.png",
 			},
 		},
 		{

@@ -643,9 +643,30 @@ The [program status](../learn/terminal/program-status.md) inbox, opened with
 | Key | Images |
 | --- | --- |
 | `images` | Each entry: `left`, `middle` and `right` for `idle`, `hover` and `selected`, and an `outset` with `top`, `bottom` and `sides`. `selected` falls back to `hover`, and `hover` to `idle`. |
-| `divider_charset.graphics` | The line between the list and the preview: `vertical`, and the `top` and `bottom` joins. |
 | `progress_bar_graphics` | A working program's progress: `left`, `filled`, `empty` and `right`. |
 | `marker_graphics` | The marker down the selected entry: `top`, `vertical` and `bottom`. |
+
+The list sits on `program_status.sidebar_attr`, a shade of the theme's
+background unless you set one. Give entry images transparent corners, so the
+list's color shows through them.
+
+`program_status.sidebar_margin` adds cells of the window's background around
+that fill: `top`, `left` and `bottom` between the fill and the window's edges,
+and `right` between the fill and the preview. The GUI draws the list half a
+cell lower, so even at 0 the fill stands half a cell below the window bar and
+half a cell above the frame's bottom line, and the frame's left column leaves
+about as much on its left. The defaults are 0, 0, 0 and 1: a cell is about
+twice as tall as it is wide, so one column looks as wide as half a row. For
+more room around the list:
+
+```yaml tab
+program_status:
+  sidebar_margin: {top: 1, left: 2, bottom: 1, right: 2}
+```
+
+```python tab
+config["program_status"]["sidebar_margin"] = {"top": 1, "left": 2, "bottom": 1, "right": 2}
+```
 
 Violet Ledger draws its entries as cards and its progress bars in `overlay`
 mode, and sets `marker` to a space, since the selected card is marked by its
@@ -790,7 +811,7 @@ theme's surroundings.
 | Command prompt | `command.frame_charset.graphics`, `command.separator_charset.graphics` | The eight frame slots; the separator's `left`, `horizontal` and `right`. | separator: `top`, `bottom`, `inward` |
 | Dialog buttons | `browser.prompt.images` | `left`, `middle` and `right` for `idle`, `selected`, `hover` and `pressed`. | `top`, `bottom`, `sides` |
 | Notifications | `notifications.frame_charset.graphics`, `notifications.progress_format.graphics` | The eight frame slots; the progress bar's five. | |
-| Program status inbox | `program_status.images`, `divider_charset.graphics`, `progress_bar_graphics`, `marker_graphics`, and the same under `program_status.focus` | See [Program status inbox](#program-status-inbox). | entries: `top`, `bottom`, `sides` |
+| Program status inbox | `program_status.images`, `progress_bar_graphics`, `marker_graphics`, and the same under `program_status.focus` | See [Program status inbox](#program-status-inbox). | entries: `top`, `bottom`, `sides` |
 | Status bars | `{{ .Image }}` in `editor.status_bar.layout` and the agent's `status_bar.layout`, and in their `focus` blocks | An image of any size, placed in the layout. | |
 | Agent composer | `extensions.rune-agent.config.input_box_frame_charset.graphics`, and the same under `focus` | The eight frame slots. | |
 | Quick menu | `gui.quick_menu[].sprite` | `idle`, `hover` and `pressed`. | |
@@ -1450,7 +1471,7 @@ style key the section has, without repeating the others:
 | Block | Keys it changes |
 | --- | --- |
 | `editor.status_bar.focus` | `layout`, `background_attr` and `foreground_error_attr`. |
-| `program_status.focus` | Any style key, such as `divider_charset`, `divider_attr`, `images`, `marker_graphics` and `progress_bar_graphics`. |
+| `program_status.focus` | Any style key, such as `sidebar_attr`, `selected_attr`, `images`, `marker_graphics` and `progress_bar_graphics`, except `sidebar_margin`, so the layout stays put as the focus moves. |
 | `extensions.rune-agent.config.focus` | `status_bar`, `input_box_frame_charset`, `input_box_frame_attr`, `input_box_attr`, `input_background_color` and `background_attr`. ACP chats share it. |
 
 ```yaml tab

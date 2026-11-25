@@ -1113,6 +1113,7 @@ func (h *workspaceManagerHandler) focusBrowser() browser.Browser {
 
 func (h *workspaceManagerHandler) setThemeColors(c ThemeColors) {
 	h.theme = c
+	h.status.SetDefaultAttributes(c.Default)
 	for _, w := range h.workspaces {
 		if w == nil || w.ex == nil {
 			continue

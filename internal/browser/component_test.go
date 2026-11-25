@@ -1364,37 +1364,6 @@ func TestComponentRestoreTileLayoutFreesDisplayedTabs(t *testing.T) {
 		"clicking the freed tab must load it into the focused window")
 }
 
-// stitchingFloating records the frames it is asked to join its rules to.
-type stitchingFloating struct {
-	Floating
-	sizes [][2]int
-	bars  []bool
-}
-
-func (s *stitchingFloating) StitchFrame(
-	_ term.Writer, _ *component.Frame, _ *tcomponent.FrameGraphics, width, height int, bar bool,
-) {
-	s.sizes = append(s.sizes, [2]int{width, height})
-	s.bars = append(s.bars, bar)
-}
-
-func TestComponentFloatingStitchesFrame(t *testing.T) {
-	for _, noBar := range []bool{true, false} {
-		t.Run(fmt.Sprintf("no window bar %v", noBar), func(t *testing.T) {
-			cfg := DefaultConfig()
-			cfg.Frame = true
-			cfg.WindowBar = true
-			b := NewComponent(cfg)
-			b.Resize(40, 12)
-			s := &stitchingFloating{Floating: StaticFloating(newTestHandler(), 6, 3)}
-			b.Floating(s, browserapi.FloatingConfig{NoWindowBar: noBar})
-			b.Draw(term.NewStringWriter(40, 12))
-			assert.Equal(t, [][2]int{{8, 5}}, s.sizes, "the frame around the content")
-			assert.Equal(t, []bool{!noBar}, s.bars)
-		})
-	}
-}
-
 func TestWindowClosedOnClose(t *testing.T) {
 	b := NewComponent(DefaultConfig())
 	h := newTestHandler()

@@ -423,10 +423,8 @@ func TestRuneStarFixture(t *testing.T) {
 			assert.Equal(t, defaults, wsParams, "workspace tabs only retune the shine")
 			inbox, want := ide.statusInboxStyle(), idestatus.DefaultInboxStyle()
 			want.MarkerAttr = term.Attributes{Fg: ide.highlightTabAttr().Fg, Attrs: ide.highlightTabAttr().Attrs}
-			vertical := ide.windowFrameCharset().VerticalLeft
-			want.Divider.VerticalTop, want.Divider.Vertical, want.Divider.VerticalBottom = vertical, vertical, vertical
-			if !c.params["tui"].(bool) {
-				want.Divider.Top, want.Divider.Bottom = '🭽', '🭼'
+			if c.params["tui"].(bool) {
+				want.SidebarAttr = term.Attributes{Bg: term.GetColor("#262626")}
 			}
 			assert.Equal(t, want, inbox, "rune.star spells out the inbox defaults")
 			assert.Empty(t, ide.errors)

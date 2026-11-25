@@ -2415,16 +2415,6 @@ func (c *browserContent) Close() error {
 	return c.Handler.Close()
 }
 
-// StitchFrame satisfies tcomponent.FrameStitcher for a Handler that
-// does, and draws nothing for any other.
-func (c *browserContent) StitchFrame(
-	w term.Writer, f *component.Frame, g *tcomponent.FrameGraphics, width, height int, bar bool,
-) {
-	if s, ok := c.Handler.(tcomponent.FrameStitcher); ok {
-		s.StitchFrame(w, f, g, width, height, bar)
-	}
-}
-
 var _ Floating = (*browserFloatingContent)(nil)
 
 type browserFloatingContent struct {

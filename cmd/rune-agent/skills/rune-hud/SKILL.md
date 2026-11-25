@@ -376,8 +376,6 @@ Abbreviations:
   Command separator junctions use only T, B and I from their own outset. File
   tabs use only S, from theirs. Program status inbox entries use T, B and S,
   from theirs.
-- **DL, DR**: the inbox divider outsets `left` and `right`. Its junctions use
-  them and I, from their own outset.
 - **R**: the rows of the tab bar, 2 in the GUI.
 - **N**: the rows of a program status inbox entry, 2 to 4: the workspace name
   and the progress bar each add a row only when the entry has one.
@@ -428,11 +426,9 @@ Abbreviations:
 | | | `right` | (1+S) × (T+N+B) | fill |
 | Inbox marker | `program_status.marker_graphics` | `top`, `bottom` | 1 × 1 | fill |
 | | | `vertical` (tiles ↓) | 1 × 1 | fill |
-| Inbox divider | `program_status.divider_charset.graphics` | `top`, `bottom` | (DL+1+DR) × (1+I) | fill |
-| | | `vertical` (tiles ↓) | 1 × 1 | fill |
 | Inbox progress bar | `program_status.progress_bar_graphics` | `left`, `right` | 1 × 1 | fill |
 | | | `filled`, `empty` (tiles →) | 1 × 1 | fill |
-| Focused inbox | `program_status.focus.<images\|marker_graphics\|divider_charset.graphics\|progress_bar_graphics>` | same as the inbox rows above | same | fill |
+| Focused inbox | `program_status.focus.<images\|marker_graphics\|progress_bar_graphics>` | same as the inbox rows above | same | fill |
 | Editor status bar | `editor.status_bar.layout` | `.Image` elements | `width` × `height` | contain, or `fit "fill"` |
 | Focused editor status bar | `editor.status_bar.focus.layout` | `.Image` elements | `width` × `height` | contain, or `fit "fill"` |
 | Agent status bar | `extensions.rune-agent.config.status_bar.layout` | `.Image` elements | `width` × `height` | contain, or `fit "fill"` |
@@ -777,9 +773,23 @@ Status bar rails aren't frames, and Rune paints no inside for them:
 - The program status inbox is `:programstatus`. Every workspace shares it, so
   only the user's config styles it. Inspect its images only when a capture
   shows it open with programs listed.
-- Inbox divider images require `browser.window_manager.frame`: the divider
-  joins the inbox window's frame. With `browser.window_manager.window_bar` on,
-  the bar takes the frame's top row, so `top` isn't drawn.
+- Inbox sidebar: `program_status.sidebar_attr`, and
+  `program_status.focus.sidebar_attr` while the inbox has the focus, colours
+  the program list; the preview beside it keeps the window's background. The
+  default is a shade of the theme's background, so set it only to restyle.
+  Keep it a small step from the window background, as for the focused colour
+  (see Colour continuity), and never gray, which the selected entry uses.
+  Entry, marker and progress bar sprites sit on it: keep their corners
+  transparent rather than painted in the canvas colour.
+- Inbox margin: `program_status.sidebar_margin` (`top`, `left`, `bottom`,
+  `right`, in cells) keeps the window background around the sidebar fill;
+  `right` is the gap before the preview. The GUI draws the whole sidebar,
+  entry sprites included, half a cell lower: at 0 the fill sits half a cell
+  below the window bar and covers the top half of the frame's bottom row, and
+  the frame's left column leaves about as much on the left. Cells are about
+  twice as tall as wide, so add two columns for each row to keep the spacing
+  even. `focus` can't change it. Entry sprites start inside it, so it shifts
+  their x and y.
 - Inbox entry images stand in for the backgrounds of
   `program_status.selected_attr` and `program_status.hover_attr`: an entry
   keeps their other colours, and gets the background back while its images
@@ -908,26 +918,6 @@ Line up rails and seams across slices at these positions.
 - Progress bar images cover the bar's cells, one per cell, over the entry
   images; the percentage label stays as text to the bar's right.
 
-**Inbox divider:**
-- In `top`, the anchor is column DL, row 0, in the frame's top row; the rule
-  runs down from it through rows 1 to I. In `bottom`, the anchor is column DL,
-  row I, in the frame's bottom row; the rule comes down into it.
-- Join the rule at the same pixel X as the `vertical` tile's rail, and the
-  frame at the same pixel Y as the `horizontaltop` or `horizontalbottom`
-  tile's rail. Author the complete three-way junction: a successful image
-  replaces the frame's edge sprite at its anchor.
-- `vertical` repeats once per cell between the frame's top and bottom rows,
-  where the rule splits the entries from the preview. It is always 1×1,
-  regardless of junction outsets.
-- Junctions draw last. Their outsets cover the entries, the preview and the
-  frame, clipped to the window, and reserve no layout space.
-- Colour the rule like the unfocused window frame (`frame_attr` and the
-  `frame_charset` images), so it blends in whether or not the inbox has
-  focus.
-- The joins don't draw when the inbox is tiled, and `top` doesn't draw under
-  a window bar. Make the `vertical` rule read on its own. Leave `top` and
-  `bottom` empty unless the user wants joins where they will show.
-
 **Status bar `.Image`:**
 - The image is `width` × `height` cells, centred on its anchor: the first
   reserved cell.
@@ -957,10 +947,9 @@ command:
   separator_charset: {graphics: {outset: {top: 1, bottom: 1, inward: 1}}}
 program_status:
   images: {outset: {top: 1, bottom: 1, sides: 1}}
-  divider_charset: {graphics: {outset: {left: 1, right: 1, inward: 1}}}
 ```
-Outsets are whole cells, 0 or more. Separator and divider outsets default to
-zero and have no `sides` or `horizontal_top` field.
+Outsets are whole cells, 0 or more. Separator outsets default to zero and
+have no `sides` or `horizontal_top` field.
 
 ### `mode`
 Every `graphics` table takes a `mode`:
@@ -983,9 +972,6 @@ Every `graphics` table takes a `mode`:
   `program_status.marker` and `program_status.progress_bar`, so the entry
   images show through their transparent pixels; `overlay` keeps the characters
   in their colours.
-- The inbox divider's omitted mode inherits the window frame's mode. `overlay`
-  keeps its glyphs: the junctions in the frame's colours, the rule in
-  `program_status.divider_attr`.
 
 `browser.prompt.images`, the `tab_images` tables and `program_status.images`
 take no `mode`.
@@ -1020,13 +1006,6 @@ take no `mode`.
   No state is required: with only `selected`, the other entries keep their
   colours.
 - **Inbox marker:** a missing `top` or `bottom` uses `vertical`.
-- **Inbox divider:** omitted `graphics.vertical` inherits the window frame's
-  `graphics.verticalleft`, and the omitted `vertical` glyph its
-  `verticalleft` glyph; `vertical_top` and `vertical_bottom` inherit
-  `vertical`. Explicit `vertical: ""` clears only the image. Missing, loading
-  or failed junction images use the frame's `horizontaltop` or
-  `horizontalbottom` image if available, otherwise the `top` or `bottom`
-  glyph; terminal rendering always uses glyphs.
 - **Inbox progress bar:** a missing `left` or `right` uses the `filled` or
   `empty` image of the cell it stands in.
 
@@ -1587,7 +1566,10 @@ unavailable. Do not claim unactivated changes have been verified.
    follow the cache rules for the surface being edited.
 7. Run `runectl screenshot` again and open the returned PNG. Check readability,
    clipping, rail continuity, background matching, transparent areas and whether
-   ornaments obscure text. 
+   ornaments obscure text. When the change touches window backgrounds, the
+   theme or the inbox, open `programstatus` with programs listed and check
+   that its program list stands apart from the preview and the selected
+   entry stands apart from the list.
 8. Fix any config errors shown in the captured screenshot or in the logs at
 $RUNE_DATADIR/debug.log.
 9. Adjust the assets, spacing, dimensions, offsets or colours and repeat steps
