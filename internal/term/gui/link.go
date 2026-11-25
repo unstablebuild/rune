@@ -591,9 +591,10 @@ func (s *rowScanner) scanPath(
 			cell--
 			ch = row[cell].Ch
 		}
-		if ch == '/' {
+		switch ch {
+		case '/':
 			slash = true
-		} else if ch == '.' {
+		case '.':
 			dot = true
 		}
 		if !isPathRune(ch) {
