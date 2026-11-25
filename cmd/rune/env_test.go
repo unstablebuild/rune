@@ -30,6 +30,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
+	"github.com/unstablebuild/rune-go-sdk/term"
 	"gopkg.in/yaml.v3"
 
 	"unstable.build/rune/internal/ide"
@@ -202,14 +203,20 @@ func newBootstrapForTest(
 	t.Cleanup(restoreFlags)
 
 	mu := new(sync.Mutex)
-	publishEvent, stopPump := newBootstrapPublishPump(mu)
+	// b is set under mu, which the pump holds when it handles a key.
+	var b *bootstrapHandler
+	publishEvent, stopPump := newBootstrapPublishPump(mu, func(ev term.Event) {
+		if b != nil {
+			b.Handle(ev)
+		}
+	})
 	t.Cleanup(stopPump)
 	rootCfg, err := rootConfig(configPath)
 	require.NoError(t, err)
 
 	soundOutput := gui.NewSounds()
 	soundOutput.SetMuted(true)
-	b, err := newBootstrapHandler(
+	built, err := newBootstrapHandler(
 		dataDir, configPath, "" /* workspace */, "", /* shellRCDir */
 		hostenv.New(dataDir, ""), nil, /* filenames */
 		nil /* launchCmd */, ide.FuncExtensionsRunner(testE2EExtensionsRunner),
@@ -218,8 +225,11 @@ func newBootstrapForTest(
 		installBackupDir, rootCfg, pkgtrust.NewStore(),
 	)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = b.Close() })
-	return b
+	t.Cleanup(func() { _ = built.Close() })
+	mu.Lock()
+	b = built
+	mu.Unlock()
+	return built
 }
 
 // configChange is the change that adds the keys of diffYAML to an empty

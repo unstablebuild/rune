@@ -68,16 +68,17 @@ func overrideBootstrapFlags(t testing.TB, o bootstrapFlagOverrides) func() {
 
 // newBootstrapPublishPump wires the publish-event hook the way runGUI
 // does: a pumper goroutine runs EventInterrupt UserFuncs under the
-// bootstrap locker. Register the returned stop func with t.Cleanup
-// after the handler's Close cleanup so it runs before it (LIFO),
-// matching the runtime's pump-then-handler teardown order.
+// bootstrap locker, and passes key events, which echo publishes, to
+// handle under it. Register the returned stop func with t.Cleanup after
+// the handler's Close cleanup so it runs before it (LIFO), matching the
+// runtime's pump-then-handler teardown order.
 //
 // stop fences off further publishes before closing the pump channel:
 // the prompt-frame shader keeps interrupting at its own FPS well past
 // a fast test's lifetime, and a late publish into a closed channel
 // would panic the suite.
 func newBootstrapPublishPump(
-	mu *sync.Mutex,
+	mu *sync.Mutex, handle func(term.Event),
 ) (publish func(term.Event) bool, stop func()) {
 	publishCh := make(chan term.Event, 256)
 	var publishMu sync.Mutex
@@ -99,9 +100,14 @@ func newBootstrapPublishPump(
 	go debug.CapturePanicReport(func() {
 		defer close(pumperDone)
 		for ev := range publishCh {
-			if ev.Type == term.EventInterrupt && ev.UserFunc != nil {
+			switch {
+			case ev.Type == term.EventInterrupt && ev.UserFunc != nil:
 				mu.Lock()
 				ev.UserFunc()
+				mu.Unlock()
+			case ev.Type == term.EventKey:
+				mu.Lock()
+				handle(ev)
 				mu.Unlock()
 			}
 		}

@@ -504,6 +504,31 @@ func TestPublishEventSchedulesUserFunc(t *testing.T) {
 	})
 }
 
+func TestNewOffscreenRejectsInvalidSizes(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		width, height int
+		scale         float64
+	}{
+		{name: "zero width", width: 0, height: 10, scale: 1},
+		{name: "negative height", width: 10, height: -1, scale: 1},
+		{name: "zero scale", width: 10, height: 10, scale: 0},
+		{name: "nan scale", width: 10, height: 10, scale: math.NaN()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// The checks run before ebiten, which a process initializes
+			// once, so they leave the GUIs of other tests unaffected.
+			g, err := NewOffscreen(&mockHandler{}, tt.width, tt.height, tt.scale)
+			assert.Nil(t, g)
+			if !OffscreenSupported() {
+				require.ErrorIs(t, err, ErrOffscreenUnsupported)
+				return
+			}
+			require.ErrorContains(t, err, "invalid offscreen size")
+		})
+	}
+}
+
 func TestScreenshot(t *testing.T) {
 	for _, tt := range []struct {
 		name string

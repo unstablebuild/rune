@@ -25,6 +25,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -56,6 +57,10 @@ var (
 	// system cannot start, such as when no display server is reachable.
 	// No GUI can be created in the process after that.
 	ErrNoDisplay = errors.New("no display available")
+
+	// ErrOffscreenUnsupported is returned by NewOffscreen on platforms
+	// without a windowless mode.
+	ErrOffscreenUnsupported = errors.New("running without a window is supported only on macOS and Linux")
 )
 
 const (
@@ -93,6 +98,7 @@ type GUI struct {
 	defaultWidth      int
 	defaultHeight     int
 	explicitSize      bool
+	offscreen         bool
 	startPositionX    int
 	startPositionY    int
 	printFPS          bool
@@ -234,6 +240,48 @@ func New(handler tui.Handler, options ...Option) (*GUI, error) {
 	if err := ebiten.Init(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrNoDisplay, err)
 	}
+	return newGUI(handler, nil, options)
+}
+
+// offscreenSize is the fixed size of an offscreen GUI.
+type offscreenSize struct {
+	width, height int
+	deviceScale   float64
+}
+
+// OffscreenSupported reports whether NewOffscreen can create a GUI on this
+// platform. On Linux, Run also needs Mesa's EGL, and fails without it.
+func OffscreenSupported() bool {
+	return runtime.GOOS == "darwin" || runtime.GOOS == "linux"
+}
+
+// NewOffscreen is New for a GUI without a window, a Dock icon or an
+// application menu. Frames are drawn into a texture nothing displays, so
+// Screenshot still works, and there is no input: the handler only gets the
+// events published to the GUI. The GUI is width by height device-independent
+// pixels of deviceScale device pixels each, whatever monitors are attached;
+// WithSize and WithPosition have no effect.
+//
+// NewOffscreen must create the first GUI of the process, before any other
+// ebiten call. It returns ErrOffscreenUnsupported on platforms other than
+// macOS and Linux, and an error if a dimension or the scale is not positive.
+func NewOffscreen(
+	handler tui.Handler, width, height int, deviceScale float64, options ...Option,
+) (*GUI, error) {
+	if !OffscreenSupported() {
+		return nil, ErrOffscreenUnsupported
+	}
+	if width <= 0 || height <= 0 || !(deviceScale > 0) {
+		return nil, fmt.Errorf("invalid offscreen size %dx%d at scale %v", width, height, deviceScale)
+	}
+	ebiten.SetOffscreen(width, height, deviceScale)
+	if err := ebiten.Init(); err != nil {
+		return nil, err
+	}
+	return newGUI(handler, &offscreenSize{width, height, deviceScale}, options)
+}
+
+func newGUI(handler tui.Handler, offscreen *offscreenSize, options []Option) (*GUI, error) {
 	drawrect.Init()
 	const (
 		cellOverlapX = 0
@@ -278,6 +326,14 @@ func New(handler tui.Handler, options ...Option) (*GUI, error) {
 	}
 	if ret.processWindowClosed == nil {
 		ret.processWindowClosed = func() []term.Event { return nil }
+	}
+	if offscreen != nil {
+		ret.offscreen = true
+		ret.defaultWidth, ret.defaultHeight = offscreen.width, offscreen.height
+		ret.explicitSize = true
+		// The application icon belongs to the Dock, which an offscreen GUI
+		// stays out of.
+		ret.setAppIcon = func([]image.Image) {}
 	}
 
 	// clone original values for restoration
@@ -730,6 +786,12 @@ func (g *GUI) Layout(width, height int) (int, int) {
 // MinimizeWindow minimizes the window.
 func (g *GUI) MinimizeWindow() {
 	ebiten.MinimizeWindow()
+}
+
+// Offscreen reports whether NewOffscreen created g, so that it has no
+// window for platform UI to attach to.
+func (g *GUI) Offscreen() bool {
+	return g.offscreen
 }
 
 // MaximizeWindow maximizes the window.

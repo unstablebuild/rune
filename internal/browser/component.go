@@ -1628,6 +1628,12 @@ func (c *Component) OpenPrompt(
 	return c.Prompt(cfg, h), true, nil
 }
 
+// Prompting reports whether a prompt that Prompt or OpenPrompt opened is
+// still open, waiting for an answer.
+func (c *Component) Prompting() bool {
+	return len(c.prompts) > 0
+}
+
 // promptMessage renders the message of a prompt, as markdown when it
 // parses, whose links open with PromptConfig.OnLinkClick. See
 // browserapi.PromptConfig.MaxWidth for its size.

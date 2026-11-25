@@ -25,6 +25,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/text/textrpc"
 	"unstable.build/rune/internal/workspace"
 )
 
@@ -104,33 +105,36 @@ func newFlusher(
 	return f
 }
 
-// flush starts a non-force save for the tab at uri/h.
+// flush starts a non-force save for the tab at uri/h. A non-nil w is
+// claimed once the save starts, and receives its result in place of the
+// notification that reports a failed save.
 func (f *flusher) flush(
-	uri workspaceapi.URI, h browserapi.Handler,
+	uri workspaceapi.URI, h browserapi.Handler, w *textrpc.Waiter,
 ) error {
-	return f.flushAndThen(uri, h, false, nil)
+	return f.flushAndThen(uri, h, false, nil, w)
 }
 
 // forceFlush starts a force save (overwrites changes from other
-// processes) for the tab at uri/h.
+// processes) for the tab at uri/h, reporting to w as flush does.
 func (f *flusher) forceFlush(
-	uri workspaceapi.URI, h browserapi.Handler,
+	uri workspaceapi.URI, h browserapi.Handler, w *textrpc.Waiter,
 ) error {
-	return f.flushAndThen(uri, h, true, nil)
+	return f.flushAndThen(uri, h, true, nil, w)
 }
 
 // flushAndThen starts an async save and invokes onSuccess on the
 // sched goroutine after a successful completion. :wq uses this hook
-// to schedule editor exit only when the save succeeded.
+// to schedule editor exit only when the save succeeded. It reports to w
+// as flush does.
 func (f *flusher) flushAndThen(
 	uri workspaceapi.URI, h browserapi.Handler,
-	force bool, onSuccess func(),
+	force bool, onSuccess func(), w *textrpc.Waiter,
 ) error {
 	method := f.comp.FlushTab
 	if force {
 		method = f.comp.ForceFlushTab
 	}
-	return f.startAsync(uri, opSave, f.startWith(method, h), onSuccess)
+	return f.startAsync(uri, opSave, f.startWith(method, h), onSuccess, w)
 }
 
 // overwrite starts an async overwrite for the tab at uri/h. The
@@ -138,7 +142,7 @@ func (f *flusher) flushAndThen(
 func (f *flusher) overwrite(
 	uri workspaceapi.URI, h browserapi.Handler,
 ) error {
-	return f.startAsync(uri, opOverwrite, f.startWith(f.comp.OverwriteTab, h), nil)
+	return f.startAsync(uri, opOverwrite, f.startWith(f.comp.OverwriteTab, h), nil, nil)
 }
 
 // reloadAsync starts an async reload for the tab at uri/h. Used by
@@ -149,7 +153,7 @@ func (f *flusher) overwrite(
 func (f *flusher) reloadAsync(
 	uri workspaceapi.URI, h browserapi.Handler, onSuccess func(),
 ) error {
-	return f.startAsync(uri, opReload, f.startWith(f.comp.ReloadTab, h), onSuccess)
+	return f.startAsync(uri, opReload, f.startWith(f.comp.ReloadTab, h), onSuccess, nil)
 }
 
 // Reload satisfies exoeditor.Reloader. The exo handler's FS watcher
@@ -224,6 +228,7 @@ func (f *flusher) startAsync(
 	kind flusherOp,
 	start func(ctx context.Context) (<-chan error, error),
 	onSuccess func(),
+	w *textrpc.Waiter,
 ) error {
 	// The underlying workspace.FlusherCloser is the single owner of
 	// the per-URI "one in-flight op at a time" invariant; if a
@@ -232,6 +237,9 @@ func (f *flusher) startAsync(
 	ch, err := start(context.Background())
 	if err != nil {
 		return err
+	}
+	if w != nil {
+		w.Claimed = true
 	}
 	f.mu.Lock()
 	f.inflight++
@@ -242,7 +250,9 @@ func (f *flusher) startAsync(
 		// sched must dispatch onto the UI goroutine so
 		// notifications and onSuccess hooks happen on a single
 		// thread.
-		f.sched(func() { f.onDone(uri, kind, ferr, onSuccess) })
+		if !f.sched(func() { f.onDone(uri, kind, ferr, onSuccess, w) }) && w != nil {
+			w.Ch <- ferr
+		}
 	})
 	return nil
 }
@@ -257,12 +267,16 @@ func (f *flusher) done() {
 }
 
 func (f *flusher) onDone(
-	uri workspaceapi.URI, kind flusherOp, err error, onSuccess func(),
+	uri workspaceapi.URI, kind flusherOp, err error, onSuccess func(), w *textrpc.Waiter,
 ) {
+	if err == nil && onSuccess != nil {
+		onSuccess()
+	}
+	if w != nil {
+		w.Ch <- err
+		return
+	}
 	if err == nil {
-		if onSuccess != nil {
-			onSuccess()
-		}
 		return
 	}
 	name := uri.Name()

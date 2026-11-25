@@ -1058,7 +1058,7 @@ func (e *ex) flushCloseIgnoreNonFlushed(_ context.Context, args ...string) error
 	if !ok {
 		return nil
 	}
-	_ = e.flusher.forceFlush(uri, t)
+	_ = e.flusher.forceFlush(uri, t, nil)
 	return nil
 }
 
@@ -1077,10 +1077,10 @@ func (e *ex) flushClose(_ context.Context, args ...string) error {
 	return e.flusher.flushAndThen(uri, t, false /* force */, func() {
 		e.forceExit = false
 		e.exit = true
-	})
+	}, nil)
 }
 
-func (e *ex) flush(context.Context, ...string) error {
+func (e *ex) flush(ctx context.Context, _ ...string) error {
 	if h, ok := e.fileExplorerHandlerInFocus(); ok {
 		return h.flush()
 	}
@@ -1088,10 +1088,10 @@ func (e *ex) flush(context.Context, ...string) error {
 	if !ok {
 		return textapi.ErrInvalidSave
 	}
-	return e.flusher.flush(uri, t)
+	return e.flusher.flush(uri, t, resultWaiter(ctx))
 }
 
-func (e *ex) forceFlush(context.Context, ...string) error {
+func (e *ex) forceFlush(ctx context.Context, _ ...string) error {
 	if h, ok := e.fileExplorerHandlerInFocus(); ok {
 		return h.forceFlush()
 	}
@@ -1099,25 +1099,51 @@ func (e *ex) forceFlush(context.Context, ...string) error {
 	if !ok {
 		return textapi.ErrInvalidSave
 	}
-	return e.flusher.forceFlush(uri, t)
+	return e.flusher.forceFlush(uri, t, resultWaiter(ctx))
 }
 
-func (e *ex) flushAll(_ context.Context, args ...string) (ret error) {
-	for _, t := range e.comp.Tabs() {
-		if err := e.flusher.flush(t.URI(), t); err != nil {
-			ret = multierror.Append(ret, err)
-		}
-	}
-	return
+func (e *ex) flushAll(ctx context.Context, _ ...string) error {
+	return e.saveAll(ctx, e.flusher.flush)
 }
 
-func (e *ex) forceFlushAll(_ context.Context, args ...string) (ret error) {
+func (e *ex) forceFlushAll(ctx context.Context, _ ...string) error {
+	return e.saveAll(ctx, e.flusher.forceFlush)
+}
+
+// saveAll saves every tab with save. A caller that waits for the result
+// gets it once every save that started has finished, joined with the
+// errors of those that did not start.
+func (e *ex) saveAll(
+	ctx context.Context,
+	save func(workspaceapi.URI, browserapi.Handler, *textrpc.Waiter) error,
+) error {
+	w := resultWaiter(ctx)
+	var errs error
+	var started []*textrpc.Waiter
 	for _, t := range e.comp.Tabs() {
-		if err := e.flusher.forceFlush(t.URI(), t); err != nil {
-			ret = multierror.Append(ret, err)
+		var tw *textrpc.Waiter
+		if w != nil {
+			tw = &textrpc.Waiter{Ch: make(chan error, 1)}
+		}
+		if err := save(t.URI(), t, tw); err != nil {
+			errs = multierror.Append(errs, err)
+		} else if tw != nil {
+			started = append(started, tw)
 		}
 	}
-	return
+	if len(started) == 0 {
+		return errs
+	}
+	w.Claimed = true
+	go debug.CapturePanicReport(func() {
+		for _, tw := range started {
+			if err := <-tw.Ch; err != nil {
+				errs = multierror.Append(errs, err)
+			}
+		}
+		w.Ch <- errs
+	})
+	return nil
 }
 
 func (e *ex) forcequit(_ context.Context, args ...string) error {

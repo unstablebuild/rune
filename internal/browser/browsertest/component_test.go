@@ -1385,6 +1385,30 @@ func TestComponentPromptPointerShape(t *testing.T) {
 	assert.Equal(t, term.PointerDefault, hover(at('P')), "over the message")
 }
 
+func TestComponentPrompting(t *testing.T) {
+	tests := []struct {
+		name  string
+		close term.Event
+	}{
+		{name: "answered", close: term.Event{Type: term.EventKey, Key: term.KeyEnter}},
+		{name: "dismissed", close: term.Event{Type: term.EventKey, Key: term.KeyEsc}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := browser.NewComponent(browser.DefaultConfig())
+			c.Resize(60, 20)
+			require.False(t, c.Prompting())
+
+			c.Prompt(browserapi.PromptConfig{Message: "Proceed?", Options: []string{"Yes", "No"}},
+				handler.NopPromptHandler())
+			require.True(t, c.Prompting(), "an open prompt waits for an answer")
+
+			c.Handle(tt.close)
+			assert.False(t, c.Prompting())
+		})
+	}
+}
+
 func TestComponentPromptHoverMovesHighlight(t *testing.T) {
 	const width, height = 60, 20
 	style := browser.DefaultConfig().PromptConfig

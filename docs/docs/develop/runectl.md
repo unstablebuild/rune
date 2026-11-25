@@ -187,6 +187,89 @@ keep it out of your shell history and logs. A Rune too old for questions opens
 the dialog without them, so `runectl` closes it at once and fails with an
 unsupported operation error.
 
+## Automating Rune with --exec
+
+```sh
+rune --exec 'edit main.go' --exec 'windownew right'
+```
+
+`--exec` (`-e`) runs a command line once Rune starts, as the command prompt
+runs it when you type it and press Enter. Pass it more than once to run
+several, in order. It runs Rune in GUI mode, as `--gui` does, and cannot be
+combined with `--tui` or `--headless`. It needs a data directory that is
+set up, with a `config.yaml` or `config.star`; otherwise Rune exits with an
+error rather than run commands against the first-run setup.
+
+For every command, Rune writes one line to standard output: `ok`,
+`ok <path>` for `screenshot`, or `error: <message>`, with any line break in
+the message written as `\n`. Rune reads the next command only once it has
+replied. With only `--exec` commands, Rune stays open after the last one,
+like `vim -c`.
+
+`--exec -` reads command lines from standard input instead, one per line,
+and skips empty ones. Other `--exec` flags run before or after it, in the
+order given. When standard input ends, Rune exits without asking about
+unsaved changes.
+
+### Waiting for Rune
+
+A command replies once it has finished, including the work it started:
+
+- `echo` replies once the keys it sends, and whatever they set off, have
+  been handled, so the next command sees their effect.
+- After `edit` and the other commands that open files, the next command
+  waits until those files have loaded, so its keys reach their editors.
+- `write`, `write!`, `writeall` and `writeall!` reply once the files are
+  saved, or with the error when a save fails.
+- `workspaceready [command]` waits until the workspace being opened is
+  ready, then runs the command, if any. `extensionready <id> [command]` does
+  the same for an extension. Start a script with `workspaceready`.
+- `screenshot` replies with the path of the PNG it saved in
+  `$RUNE_DATADIR/screenshots/`. `screenshot --reload` first applies the
+  config again, as described in [Screenshots](#screenshots).
+
+When the workspace has a `.rune` config that the data directory has not
+trusted yet, Rune asks whether to trust it, and `workspaceready` waits for
+the answer. Answer with `echo` first; a `screenshot` shows the choices.
+
+### Running without a window
+
+```sh
+rune --offscreen --geometry 1280x800@2 -d /tmp/rune-test -e -
+```
+
+`--offscreen` runs Rune with no window, Dock icon or menu bar, and draws
+frames only when there is something to show, so it neither appears on
+screen nor takes focus. It needs `--exec`, as nothing else could reach or
+close it. It plays no sounds, opens no browser and keeps its own clipboard.
+`--offscreen` is available on macOS and Linux. On Linux it needs no X or
+Wayland server, but it needs Mesa's EGL, such as Debian's `libegl-mesa0`
+package; without a GPU, Mesa draws in software.
+
+`--geometry WxH@SCALE` sets the size in points and the device scale, so
+screenshots do not depend on the displays attached: `1280x800@2`, the
+default, captures 2560 by 1600 pixels. Without `--offscreen`,
+`--geometry WxH` opens the window at that size instead of its last one, and
+takes no scale. Each side can be at most 8192 pixels.
+
+Give the instance its own data directory, as with `-d` above, so it has its
+own config, history and screenshots and leaves yours alone. Copy your
+config there to test it.
+
+```console
+$ mkdir -p /tmp/rune-test && printf 'editor:\n  mode: vim\n' > /tmp/rune-test/config.yaml
+$ printf '%s\n' workspaceready 'edit main.go' 'echo yyp' write 'screenshot --reload' |
+    rune --offscreen -d /tmp/rune-test -w ~/src/project -e -
+ok
+ok
+ok
+ok
+ok /tmp/rune-test/screenshots/screenshot-20260101T120000.000000000Z-1.png
+```
+
+In Rune Agent, the `rune_gui` tool runs such an instance for the agent, so
+it can check a change to Rune or to your config the way you would see it.
+
 ## Program status
 
 `runectl status` speaks the [Program Status
