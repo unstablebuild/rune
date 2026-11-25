@@ -862,7 +862,8 @@ func (e *ex) tabclose(_ context.Context, args ...string) error {
 
 // closeWindowContent closes what win shows as tabclose closes what the
 // focused window shows: it hides the companion terminal and the file
-// explorer, and asks before discarding changes pending to be written.
+// explorer, asks whether to detach or terminate a terminal running a
+// program, and asks before discarding changes pending to be written.
 func (e *ex) closeWindowContent(win browser.Window) error {
 	b := e.comp.Browser()
 	if sameWindow(win, e.companionTerminalWin) {
@@ -872,13 +873,19 @@ func (e *ex) closeWindowContent(win browser.Window) error {
 		e.closeFileExplorerWindow()
 		return nil
 	}
+	if av, ok := terminalViewIn(win); ok {
+		e.closeTerminalViews([]*asyncVTE{av})
+		return nil
+	}
 	content, err := win.Content()
 	if err != nil {
 		return fmt.Errorf("get window content: %w", err)
 	}
 	tab, isTab := content.(*browser.Tab)
 	if !isTab && win.IsFloating() {
-		// Its content only lives in this window, so no tab may take its place.
+		// Content that is not a tab is closed once swapped out, so it lives
+		// only in this window: close the window rather than fill a floating
+		// window with a free tab.
 		return win.Close()
 	}
 	if isTab && e.tabIsDirty(tab) {
@@ -905,9 +912,14 @@ func sameWindow(a, b browser.Window) bool {
 }
 
 // closeTabFromIcon closes tab like tabclose closes the one in focus,
-// asking first when it has changes pending to be written.
+// asking first when it has changes pending to be written or shows a
+// terminal running a program.
 func (e *ex) closeTabFromIcon(tab *browser.Tab) {
 	b := e.comp.Browser()
+	if av, ok := tab.Handler().(*asyncVTE); ok {
+		e.closeTerminalViews([]*asyncVTE{av})
+		return
+	}
 	if e.tabIsDirty(tab) {
 		e.openCloseDirtyTabsPrompt(
 			fmt.Sprintf("File '%s' has changes pending to be written. "+
@@ -923,46 +935,57 @@ func (e *ex) closeTabFromIcon(tab *browser.Tab) {
 }
 
 func (e *ex) tabcloseall(_ context.Context, args ...string) error {
-	b := e.comp.Browser()
 	dirty := e.dirtyTabCount(e.comp.Tabs())
 	if dirty > 0 {
 		e.openCloseDirtyTabsPrompt(
 			fmt.Sprintf("There are %d tabs with changes pending to be written. "+
 				"Close and discard changes?", dirty),
 			func() error {
-				b.RemoveAllTabs()
+				e.closeTabs(e.comp.Tabs())
 				return nil
 			},
 		)
 		return nil
 	}
-	// on focus dispatch to vte.Handler via Close
-	b.RemoveAllTabs()
+	e.closeTabs(e.comp.Tabs())
 	return nil
 }
 
 func (e *ex) tabcloseinactive(_ context.Context, args ...string) error {
-	b := e.comp.Browser()
 	inactive := e.inactiveTabs()
+	if len(inactive) == 0 {
+		return errors.New("no inactive tabs left")
+	}
 	dirty := e.dirtyTabCount(inactive)
 	if dirty > 0 {
 		e.openCloseDirtyTabsPrompt(
 			fmt.Sprintf("There are %d inactive tabs with changes pending to be written. "+
 				"Close and discard changes?", dirty),
 			func() error {
-				if removed := b.RemoveInactiveTabs(); !removed {
-					return errors.New("no inactive tabs left")
-				}
+				e.closeTabs(e.inactiveTabs())
 				return nil
 			},
 		)
 		return nil
 	}
-	if removed := b.RemoveInactiveTabs(); !removed {
-		return errors.New("no inactive tabs left")
-
-	}
+	e.closeTabs(inactive)
 	return nil
+}
+
+// closeTabs closes tabs as tabclose closes one: the tab of a terminal
+// that may be running a program stays until the user detaches or
+// terminates the terminal, and every other tab closes at once.
+func (e *ex) closeTabs(tabs []*browser.Tab) {
+	b := e.comp.Browser()
+	var views []*asyncVTE
+	for _, tab := range tabs {
+		if av, ok := tab.Handler().(*asyncVTE); ok {
+			views = append(views, av)
+			continue
+		}
+		b.RemoveTab(tab)
+	}
+	e.closeTerminalViews(views)
 }
 
 func (e *ex) tabIsDirty(tab *browser.Tab) bool {
@@ -2767,6 +2790,14 @@ func terminalIn(win browser.Window) (vte.View, bool) {
 	return nil, false
 }
 
+// terminalViewIn returns the view of a terminal of the workspace that
+// win shows, in a tab or not.
+func terminalViewIn(win browser.Window) (*asyncVTE, bool) {
+	v, _ := terminalIn(win)
+	av, ok := v.(*asyncVTE)
+	return av, ok
+}
+
 // terminalInFocusTab returns the terminal the invoking window shows in
 // a tab, which closing the window's content closes.
 func (e *ex) terminalInFocusTab() (*asyncVTE, error) {
@@ -2892,6 +2923,119 @@ func (e *ex) terminalclose(_ context.Context, args ...string) error {
 		}
 	})
 	return nil
+}
+
+// closeTerminalViews closes the tabs and windows that show views, views
+// of terminals of the workspace. The last views of a terminal that may
+// be running a program close once the user chooses to detach or to
+// terminate it, and any other view closes at once.
+func (e *ex) closeTerminalViews(views []*asyncVTE) {
+	var ids []vte.ID
+	for _, t := range e.lastViews(views) {
+		ids = append(ids, t.info.ID)
+	}
+	if len(ids) == 0 {
+		e.askTerminalsClose(views, nil)
+		return
+	}
+	e.terminals.livenessOf(ids, func(ls map[vte.ID]vte.Liveness) {
+		e.askTerminalsClose(views, ls)
+	})
+}
+
+// askTerminalsClose closes views as closeTerminalViews does, where ls
+// tells what their terminals run. A terminal ls does not tell of may be
+// running a program.
+func (e *ex) askTerminalsClose(views []*asyncVTE, ls map[vte.ID]vte.Liveness) {
+	var (
+		asked   []*asyncVTE
+		infos   []vte.Info
+		running []vte.Liveness
+	)
+	// Views may have closed, other views attached, or terminals ended
+	// while ls was told.
+	for _, t := range e.lastViews(views) {
+		if l := ls[t.info.ID]; l != vte.LivenessIdle {
+			asked = append(asked, t.views...)
+			infos = append(infos, t.info)
+			running = append(running, l)
+		}
+	}
+	for _, av := range views {
+		if !slices.Contains(asked, av) {
+			e.removeView(av, vteCloseAuto)
+		}
+	}
+	if len(asked) > 0 {
+		e.openTerminalClosePrompt(terminalDetachQuestion(infos, running), asked)
+	}
+}
+
+// closingTerminal is a terminal whose every view is closing.
+type closingTerminal struct {
+	info  vte.Info
+	views []*asyncVTE
+}
+
+// lastViews returns the terminals that closing views leaves without a
+// view, in the order of views.
+func (e *ex) lastViews(views []*asyncVTE) []closingTerminal {
+	var ret []closingTerminal
+	for _, av := range views {
+		info, ok := e.terminalOf(av)
+		if !ok {
+			continue
+		}
+		i := slices.IndexFunc(ret, func(t closingTerminal) bool { return t.info.ID == info.ID })
+		if i < 0 {
+			i = len(ret)
+			ret = append(ret, closingTerminal{info: info})
+		}
+		ret[i].views = append(ret[i].views, av)
+	}
+	return slices.DeleteFunc(ret, func(t closingTerminal) bool {
+		return t.info.Attachments > len(t.views)
+	})
+}
+
+// terminalOf describes the terminal av shows, which is false while av
+// loads, once it closed, and once the terminal is gone.
+func (e *ex) terminalOf(av *asyncVTE) (vte.Info, bool) {
+	if av.real == nil || av.closed {
+		return vte.Info{}, false
+	}
+	return e.terminals.info(av.ID())
+}
+
+// removeView closes the tab or the window that shows av, which leaves
+// the terminal of av as mode tells. A view nothing shows any longer is
+// left as it is.
+func (e *ex) removeView(av *asyncVTE, mode vteCloseMode) {
+	b := e.comp.Browser()
+	for _, tab := range b.Tabs() {
+		if tab.Handler() == av {
+			av.closeMode = mode
+			b.RemoveTab(tab)
+			return
+		}
+	}
+	var win browser.Window
+	b.IterateWindows(func(w browser.Window) {
+		if content, err := w.Content(); err == nil && content == av {
+			win = w
+		}
+	})
+	if win == nil {
+		return
+	}
+	av.closeMode = mode
+	if !win.IsFloating() {
+		b.RemoveWindowContent(win)
+		return
+	}
+	if err := win.Close(); err != nil {
+		_, _ = e.notifications.Notify(browserapi.LevelError, "close window: %v", err)
+	}
 }
 
 func (e *ex) panic(_ context.Context, args ...string) error {

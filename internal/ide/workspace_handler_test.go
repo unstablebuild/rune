@@ -2247,7 +2247,7 @@ func TestCommandProgramStatusDetachedTerminals(t *testing.T) {
 		require.True(t, ok)
 		av = h.(*asyncVTE)
 		exe.fg.Store(job)
-		require.NoError(t, e.closeWindowContent(e.invokeWindow()))
+		require.NoError(t, e.terminaldetach(ctx))
 	})
 	m.quiesce()
 	uri := av.real.URI()
@@ -2267,7 +2267,7 @@ func TestCommandProgramStatusDetachedTerminals(t *testing.T) {
 	}, 5*time.Second, 5*time.Millisecond)
 	m.locked(func() {
 		sum, ok := m.status.Status(w.uri, uri)
-		require.True(t, ok, "closing the tab of a job lists the terminal")
+		require.True(t, ok, "detaching a job lists the terminal")
 		assert.Equal(t, programstatus.Working, sum.State)
 		preview, ok := statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, uri)
 		require.True(t, ok, "a detached terminal is previewed")
@@ -2301,6 +2301,116 @@ func TestCommandProgramStatusDetachedTerminals(t *testing.T) {
 	})
 	m.quiesce()
 	m.locked(func() { assert.Equal(t, -1, attachments(), "closing it from the inbox ends it") })
+}
+
+func TestCommandProgramStatusClosesTerminalTab(t *testing.T) {
+	const job = 99
+	ctx := context.Background()
+	type fixture struct {
+		e   *ex
+		exe *fgPtyExecutor
+		av  *asyncVTE
+		p   *workspacetest.Process
+	}
+	cases := []struct {
+		desc string
+		// window shows the terminal in a window rather than in a tab.
+		window bool
+		setup  func(t *testing.T, f fixture)
+		// answer is the key answering the question asked before closing,
+		// if any.
+		answer rune
+		// want is how many views the terminal is left with, -1 once it
+		// ends.
+		want int
+	}{{
+		desc:   "a job asks before it ends",
+		setup:  func(_ *testing.T, f fixture) { f.exe.fg.Store(job) },
+		answer: 'y',
+		want:   -1,
+	}, {
+		desc:  "an idle shell ends",
+		setup: func(_ *testing.T, f fixture) { f.exe.fg.Store(int64(f.p.Pid)) },
+		want:  -1,
+	}, {
+		desc: "a terminal another tab shows only loses the tab",
+		setup: func(t *testing.T, f fixture) {
+			f.exe.fg.Store(job)
+			info, ok := f.e.terminals.info(f.av.ID())
+			require.True(t, ok)
+			require.NoError(t, f.e.attachTerminalTab(info, f.e.invokeWindow()))
+		},
+		want: 1,
+	}, {
+		desc: "a job reading working is not asked about again",
+		setup: func(t *testing.T, f fixture) {
+			f.exe.fg.Store(job)
+			require.NoError(t, f.e.tm.SetTabStatus(f.av.URI(), programstatus.Report{
+				State: programstatus.Working, Progress: -1, App: "make",
+			}))
+		},
+		want: -1,
+	}, {
+		desc:   "a job in a window asks before it ends",
+		window: true,
+		setup:  func(_ *testing.T, f fixture) { f.exe.fg.Store(job) },
+		answer: 'y',
+		want:   -1,
+	}}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+			t.Cleanup(func() { _ = m.Close() })
+			ws := m.workspaces[slot].uri
+			var f fixture
+			m.locked(func() {
+				f.e = m.workspaces[slot].ex
+				f.e.Resize(60, 30)
+				f.exe = useTestVTEs(t, f.e)
+				if tc.window {
+					require.NoError(t, f.e.terminalneworsplit(ctx))
+				} else {
+					require.NoError(t, f.e.terminalnewtab(ctx))
+				}
+			})
+			m.quiesce()
+			f.p = <-f.exe.Started()
+			m.locked(func() {
+				h, ok := f.e.terminalInFocus()
+				require.True(t, ok)
+				f.av = h.(*asyncVTE)
+				tc.setup(t, f)
+			})
+			m.quiesce()
+			attachments := func() int {
+				info, ok := f.e.terminals.info(f.av.ID())
+				if !ok {
+					return -1
+				}
+				return info.Attachments
+			}
+			floating := func() int { return m.focusEx().comp.Browser().FloatingWindows() }
+			m.locked(func() { require.NoError(t, m.closeStatusSource(ws, f.av.URI())) })
+			m.quiesce()
+			if tc.answer != 0 {
+				m.locked(func() {
+					require.Equal(t, 1, floating(), "it asks")
+					assert.NotEqual(t, -1, attachments(), "nothing ends before the answer")
+					m.Handle(term.Event{Type: term.EventKey, Ch: tc.answer})
+				})
+				m.quiesce()
+			}
+			m.locked(func() {
+				assert.Zero(t, floating(), "nothing else is asked")
+				_, shown := f.e.comp.Browser().Tab(f.av.URI())
+				_, inWindow := statusWindowOf(f.e, f.av.URI())
+				assert.False(t, shown || inWindow, "no tab or window shows it")
+				assert.Equal(t, tc.want, attachments())
+				_, listed := f.e.terminals.detached(f.av.real.URI())
+				assert.False(t, listed, "the terminal is not listed as detached")
+			})
+		})
+	}
 }
 
 func TestCommandProgramStatusPreviewsTerminalTab(t *testing.T) {

@@ -38,8 +38,11 @@ import (
 )
 
 const (
-	yesOpt = "    Yes    "
-	noOpt  = "    No    "
+	yesOpt       = "    Yes    "
+	noOpt        = "    No    "
+	cancelOpt    = "    Cancel    "
+	detachOpt    = "    Detach    "
+	terminateOpt = "    Terminate    "
 )
 
 var yesNoKeyCombs = []term.KeyComb{{Ch: 'y'}, {Ch: 'n'}}
@@ -47,6 +50,8 @@ var yesNoKeyCombs = []term.KeyComb{{Ch: 'y'}, {Ch: 'n'}}
 // noYesKeyCombs keeps the same option letters for prompts that list the
 // safe option first: bindings select options by position.
 var noYesKeyCombs = []term.KeyComb{{Ch: 'n'}, {Ch: 'y'}}
+
+var cancelDetachTerminateKeyCombs = []term.KeyComb{{Ch: 'c'}, {Ch: 'd'}, {Ch: 't'}}
 
 func (h *workspaceManagerHandler) openRestorePrompt(
 	ex *ex,
@@ -381,6 +386,47 @@ func (h *closeDirtyTabsPrompt) OnSelect(idx int, option string) {
 }
 
 func (h *closeDirtyTabsPrompt) OnClose() error {
+	return nil
+}
+
+// openTerminalClosePrompt asks message, and closes the tabs and windows
+// that show views by then, detaching or terminating their terminals as
+// the user chooses. Cancelling closes nothing.
+func (ex *ex) openTerminalClosePrompt(message string, views []*asyncVTE) {
+	promptHandler := &terminalClosePrompt{ex: ex, views: views}
+	promptHandler.promptWindow = ex.comp.Prompt(
+		message,
+		[]string{cancelOpt, detachOpt, terminateOpt},
+		cancelDetachTerminateKeyCombs,
+		promptHandler,
+	)
+}
+
+type terminalClosePrompt struct {
+	ex           *ex
+	views        []*asyncVTE
+	promptWindow browser.Window
+}
+
+func (h *terminalClosePrompt) OnSelect(_ int, option string) {
+	if h.promptWindow != nil {
+		_ = h.promptWindow.Close()
+	}
+	var mode vteCloseMode
+	switch option {
+	case detachOpt:
+		mode = vteCloseDetach
+	case terminateOpt:
+		mode = vteCloseDelete
+	default:
+		return
+	}
+	for _, av := range h.views {
+		h.ex.removeView(av, mode)
+	}
+}
+
+func (h *terminalClosePrompt) OnClose() error {
 	return nil
 }
 

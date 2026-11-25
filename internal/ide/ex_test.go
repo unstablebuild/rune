@@ -6452,6 +6452,36 @@ func TestTerminalCommands(t *testing.T) {
 		}
 		return info.Attachments
 	}
+	// settle runs what the terminals call back with on the event loop
+	// until they wait on nothing.
+	settle := func(f fixture) {
+		for {
+			f.b.waitAsyncVTELoads()
+			f.b.scheduler.mu.Lock()
+			idle := len(f.b.scheduler.pending) == 0
+			f.b.scheduler.mu.Unlock()
+			if idle {
+				return
+			}
+			f.b.flushScheduled()
+		}
+	}
+	press := func(t *testing.T, f fixture, ev term.Event) {
+		t.Helper()
+		_, handled := f.b.Handle(ev)
+		require.True(t, handled)
+		settle(f)
+	}
+	key := func(ch rune) term.Event { return term.Event{Type: term.EventKey, Ch: ch} }
+	asks := func(t *testing.T, f fixture) {
+		t.Helper()
+		settle(f)
+		require.Equal(t, 1, f.b.comp.Browser().FloatingWindows(), "it asks")
+	}
+	shown := func(f fixture, av *asyncVTE) bool {
+		_, ok := f.b.comp.Browser().Tab(av.URI())
+		return ok
+	}
 	cases := []struct {
 		desc string
 		run  func(t *testing.T, f fixture)
@@ -6575,6 +6605,181 @@ func TestTerminalCommands(t *testing.T) {
 			assert.False(t, sessions[0].Visible)
 			assert.Equal(t, 1, f.b.runningDetachedCount(),
 				"saving it leaves it detached")
+		},
+	}, {
+		desc: "tabclose ends an idle shell without asking",
+		run: func(t *testing.T, f fixture) {
+			av, p := open(t, f)
+			f.exe.fg.Store(int64(p.Pid))
+			require.NoError(t, f.b.ex.tabclose(ctx))
+			settle(f)
+			assert.Zero(t, f.b.comp.Browser().FloatingWindows())
+			assert.False(t, shown(f, av))
+			assert.Equal(t, -1, attachments(t, f, av.ID()))
+		},
+	}, {
+		desc: "tabclose asks about a job, and cancelling keeps its tab",
+		run: func(t *testing.T, f fixture) {
+			av, _ := open(t, f)
+			f.exe.fg.Store(job)
+			for _, cancel := range []term.Event{
+				{Type: term.EventKey, Key: term.KeyEnter},
+				{Type: term.EventKey, Key: term.KeyEsc},
+			} {
+				require.NoError(t, f.b.ex.tabclose(ctx))
+				asks(t, f)
+				assert.True(t, shown(f, av), "nothing closes before the answer")
+				press(t, f, cancel)
+				assert.Zero(t, f.b.comp.Browser().FloatingWindows())
+				assert.True(t, shown(f, av), "its tab stays")
+				assert.Equal(t, 1, attachments(t, f, av.ID()))
+			}
+		},
+	}, {
+		desc: "tabclose detaches a job",
+		run: func(t *testing.T, f fixture) {
+			av, _ := open(t, f)
+			f.exe.fg.Store(job)
+			require.NoError(t, f.b.ex.tabclose(ctx))
+			asks(t, f)
+			press(t, f, key('d'))
+			assert.False(t, shown(f, av))
+			assert.Equal(t, 0, attachments(t, f, av.ID()))
+			assert.Equal(t, 1, f.b.runningDetachedCount())
+		},
+	}, {
+		desc: "tabclose terminates a job",
+		run: func(t *testing.T, f fixture) {
+			av, _ := open(t, f)
+			f.exe.fg.Store(job)
+			require.NoError(t, f.b.ex.tabclose(ctx))
+			asks(t, f)
+			press(t, f, key('t'))
+			assert.False(t, shown(f, av))
+			assert.Equal(t, -1, attachments(t, f, av.ID()))
+			assert.Equal(t, 0, f.b.runningDetachedCount())
+		},
+	}, {
+		desc: "tabclose asks about a terminal that may be running something",
+		run: func(t *testing.T, f fixture) {
+			f.exe.unknown.Store(true)
+			av, _ := open(t, f)
+			require.NoError(t, f.b.ex.tabclose(ctx))
+			asks(t, f)
+			press(t, f, key('t'))
+			assert.Equal(t, -1, attachments(t, f, av.ID()))
+		},
+	}, {
+		desc: "tabclose closes a tab of a terminal another tab shows without asking",
+		run: func(t *testing.T, f fixture) {
+			av, _ := open(t, f)
+			f.exe.fg.Store(job)
+			require.NoError(t, f.b.ex.terminalattach(ctx, string(av.ID())[:terminalIDLength]))
+			settle(f)
+			again, ok := f.b.ex.terminalInFocus()
+			require.True(t, ok)
+			require.NotSame(t, av, again)
+			require.NoError(t, f.b.ex.tabclose(ctx))
+			settle(f)
+			assert.Zero(t, f.b.comp.Browser().FloatingWindows())
+			assert.False(t, shown(f, again.(*asyncVTE)))
+			assert.True(t, shown(f, av), "the other tab stays")
+			assert.Equal(t, 1, attachments(t, f, av.ID()))
+		},
+	}, {
+		desc: "the close icon asks about a job",
+		run: func(t *testing.T, f fixture) {
+			av, _ := open(t, f)
+			f.exe.fg.Store(job)
+			tab, ok := f.b.comp.Browser().Tab(av.URI())
+			require.True(t, ok)
+			f.b.ex.closeTabFromIcon(tab)
+			asks(t, f)
+			press(t, f, key('d'))
+			assert.False(t, shown(f, av))
+			assert.Equal(t, 0, attachments(t, f, av.ID()))
+		},
+	}, {
+		desc: "an answer closes the job's tab, not what its window shows by then",
+		run: func(t *testing.T, f fixture) {
+			av, _ := open(t, f)
+			f.exe.fg.Store(job)
+			win := f.b.ex.invokeWindow()
+			require.NoError(t, f.b.ex.tabclose(ctx))
+			asks(t, f)
+			file := mustURI(t, "file:///a.go")
+			_, err := f.b.ex.editFileURI(file, win, false)
+			require.NoError(t, err)
+			press(t, f, key('d'))
+			require.Zero(t, f.b.comp.Browser().FloatingWindows(), "it is answered")
+			assert.False(t, shown(f, av), "its tab closes out of sight")
+			assert.Equal(t, 0, attachments(t, f, av.ID()))
+			content, err := win.Content()
+			require.NoError(t, err)
+			tab, ok := content.(*browser.Tab)
+			require.True(t, ok)
+			assert.True(t, tab.URI().Equal(file), "the window keeps the file")
+		},
+	}, {
+		desc: "tabcloseall asks once about every job",
+		run: func(t *testing.T, f fixture) {
+			first, _ := open(t, f)
+			second, _ := open(t, f)
+			f.exe.fg.Store(job)
+			require.NoError(t, f.b.ex.tabcloseall(ctx))
+			asks(t, f)
+			press(t, f, key('d'))
+			assert.Zero(t, f.b.comp.Browser().FloatingWindows())
+			assert.Empty(t, f.b.comp.Tabs())
+			assert.Equal(t, 0, attachments(t, f, first.ID()))
+			assert.Equal(t, 0, attachments(t, f, second.ID()))
+			assert.Equal(t, 2, f.b.runningDetachedCount())
+		},
+	}, {
+		desc: "tabcloseinactive asks only about inactive jobs",
+		run: func(t *testing.T, f fixture) {
+			inactive, _ := open(t, f)
+			active, _ := open(t, f)
+			f.exe.fg.Store(job)
+			require.NoError(t, f.b.ex.tabcloseinactive(ctx))
+			asks(t, f)
+			press(t, f, key('t'))
+			assert.False(t, shown(f, inactive))
+			assert.Equal(t, -1, attachments(t, f, inactive.ID()))
+			assert.True(t, shown(f, active))
+			assert.Equal(t, 1, attachments(t, f, active.ID()))
+		},
+	}, {
+		desc: "tabcloseall asks about unsaved changes before a job",
+		run: func(t *testing.T, f fixture) {
+			av, _ := open(t, f)
+			f.exe.fg.Store(job)
+			dirty := mustURI(t, "file:///dirty.go")
+			_, err := f.b.ex.editFileURI(dirty, f.b.ex.invokeWindow(), false)
+			require.NoError(t, err)
+			editBuffer(t, f.b.ex, dirty, "ABC")
+			require.NoError(t, f.b.ex.tabcloseall(ctx))
+			asks(t, f)
+			press(t, f, key('y'))
+			assert.Len(t, f.b.comp.Tabs(), 1, "the file closes, the job's tab waits")
+			asks(t, f)
+			press(t, f, key('d'))
+			assert.Empty(t, f.b.comp.Tabs())
+			assert.Equal(t, 0, attachments(t, f, av.ID()))
+		},
+	}, {
+		desc: "tabcloseall keeps the tab of a job the user cancels",
+		run: func(t *testing.T, f fixture) {
+			av, _ := open(t, f)
+			f.exe.fg.Store(job)
+			_, err := f.b.ex.editFileURI(mustURI(t, "file:///a.go"), f.b.ex.invokeWindow(), false)
+			require.NoError(t, err)
+			require.NoError(t, f.b.ex.tabcloseall(ctx))
+			asks(t, f)
+			press(t, f, key('c'))
+			require.Len(t, f.b.comp.Tabs(), 1)
+			assert.True(t, shown(f, av))
+			assert.Equal(t, 1, attachments(t, f, av.ID()))
 		},
 	}}
 	for _, tc := range cases {

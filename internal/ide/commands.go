@@ -126,7 +126,8 @@ var (
 		"tabclose": {
 			man: textapi.CommandManual{
 				Summary: "Close the current active window's tab. It is automatically replaced " +
-					"with the next available tab in the tabs list.",
+					"with the next available tab in the tabs list. Asks whether to detach " +
+					"or terminate a terminal that is running a program.",
 			},
 			handler: (*ex).tabclose,
 		},
@@ -160,13 +161,15 @@ var (
 		},
 		"tabcloseall": {
 			man: textapi.CommandManual{
-				Summary: "Close all tabs in the tabs list.",
+				Summary: "Close all tabs in the tabs list. Asks whether to detach or " +
+					"terminate a terminal that is running a program.",
 			},
 			handler: (*ex).tabcloseall,
 		},
 		"tabcloseinactive": {
 			man: textapi.CommandManual{
-				Summary: "Close all tabs that are not currently displayed by any window.",
+				Summary: "Close all tabs that are not currently displayed by any window. " +
+					"Asks whether to detach or terminate a terminal that is running a program.",
 			},
 			handler: (*ex).tabcloseinactive,
 		},
@@ -469,10 +472,10 @@ var (
 			man: textapi.CommandManual{
 				Summary: "Close the tab of the terminal in the current active window but " +
 					"keep the terminal running, even when its shell waits at its prompt. " +
-					"Closing the tab of a terminal that is running a program detaches it " +
-					"too. A detached terminal running a program is listed in the program " +
-					"status inbox until it is done, and `terminalattach` shows it again. " +
-					"Terminals end when Rune exits.",
+					"Closing the tab of a terminal that is running a program asks whether " +
+					"to detach or terminate it. A detached terminal running a program is " +
+					"listed in the program status inbox until it is done, and " +
+					"`terminalattach` shows it again. Terminals end when Rune exits.",
 			},
 			handler: (*ex).terminaldetach,
 		},

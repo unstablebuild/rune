@@ -420,6 +420,10 @@ func TestE2ETerminalDetach(t *testing.T) {
 				"the job never ran")
 			uri := av.real.URI()
 			require.NoError(t, f.b.ex.closeWindowContent(f.b.ex.invokeWindow()))
+			waitFor(t, f, func() bool { return f.b.comp.Browser().FloatingWindows() == 1 },
+				"closing the tab of a job must ask what to do with it")
+			_, handled := f.b.Handle(term.Event{Type: term.EventKey, Ch: 'd'})
+			require.True(t, handled)
 			waitFor(t, f, func() bool { return hostState(f, uri) == programstatus.Working },
 				"the detached job must be listed")
 			i, ok := info(f, av)

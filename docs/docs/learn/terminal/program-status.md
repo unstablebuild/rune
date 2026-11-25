@@ -114,7 +114,7 @@ its width, growing and shrinking downwards as the preview changes size.
 | Click | Select a program |
 | Mouse wheel over the sidebar | Scroll the programs |
 | `<enter>` | Switch to the program's workspace and show it. A [detached terminal](./detached-terminals.md) opens in a new tab |
-| `<delete>` / `<backspace>` | Close the program as `tabclose` would: a tab or window is closed, a task stopped, an ACP session or a detached terminal ended, and the companion terminal hidden. A `working` or `blocked` program, or a file with unwritten changes, asks first |
+| `<delete>` / `<backspace>` | Close the program as `tabclose` would: a tab or window is closed, a task stopped, an ACP session ended, and the companion terminal hidden. A terminal, detached or not, is ended rather than detached, unless another tab shows it. A `working` or `blocked` program, a terminal running a program, or a file with unwritten changes, asks first |
 | `<esc>` / `q` / `<ctrl-c>` | Close the inbox |
 
 Tabs that never reported a status are not listed, and the inbox is not bound

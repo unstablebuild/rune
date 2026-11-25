@@ -4814,7 +4814,8 @@ func (s statusWorkspaces) Close(ws, uri workspaceapi.URI) {
 // task as taskstop does, the companion terminal by hiding it, a
 // detached terminal as terminalclose does, a window of a tile as
 // tabclose does, and any other floating window, such as a "!" command
-// or a prompt, by closing it.
+// or a prompt, by closing it. A tab or a window that shows a terminal
+// ends it as endStatusTerminal does.
 func (h *workspaceManagerHandler) closeStatusSource(ws, uri workspaceapi.URI) error {
 	e := h.exForWorkspace(ws)
 	if e == nil {
@@ -4822,6 +4823,10 @@ func (h *workspaceManagerHandler) closeStatusSource(ws, uri workspaceapi.URI) er
 	}
 	b := e.comp.Browser()
 	if tab, ok := b.Tab(uri); ok {
+		if av, ok := tab.Handler().(*asyncVTE); ok {
+			h.endStatusTerminal(e, ws, uri, av)
+			return nil
+		}
 		if !e.tabIsDirty(tab) {
 			b.RemoveTab(tab)
 			return nil
@@ -4868,12 +4873,44 @@ func (h *workspaceManagerHandler) closeStatusSource(ws, uri workspaceapi.URI) er
 	if !ok {
 		return errors.New("it is shown nowhere to close")
 	}
+	if av, ok := terminalViewIn(win); ok && !sameWindow(win, e.companionTerminalWin) {
+		h.endStatusTerminal(e, ws, uri, av)
+		return nil
+	}
 	if win.IsFloating() && !sameWindow(win, e.companionTerminalWin) {
 		// Removing the content of a floating window would show a free tab
 		// in it instead of closing it.
 		return win.Close()
 	}
 	return e.closeWindowContent(win)
+}
+
+// endStatusTerminal closes the tab or window that shows av, the view of
+// a terminal that reported at uri in the workspace at ws, and ends the
+// terminal unless another view shows it: detached, it would only be
+// listed again. Ending a program asks first, unless the inbox asked
+// already.
+func (h *workspaceManagerHandler) endStatusTerminal(e *ex, ws, uri workspaceapi.URI, av *asyncVTE) {
+	info, ok := e.terminalOf(av)
+	if !ok || info.Attachments > 1 {
+		e.removeView(av, vteCloseAuto)
+		return
+	}
+	// The inbox already asked before closing what reads working or
+	// blocked.
+	if sum, _ := h.status.Status(ws, uri); sum.State == programstatus.Working ||
+		sum.State == programstatus.Blocked {
+		e.removeView(av, vteCloseDelete)
+		return
+	}
+	e.terminals.liveness(info.ID, func(l vte.Liveness) {
+		warning := terminalCloseWarning(info, 1, l)
+		if warning == "" {
+			e.removeView(av, vteCloseDelete)
+			return
+		}
+		statusWorkspaces{h}.Confirm(warning, func() { e.removeView(av, vteCloseDelete) })
+	})
 }
 
 func (s statusWorkspaces) Confirm(message string, yes func()) {
