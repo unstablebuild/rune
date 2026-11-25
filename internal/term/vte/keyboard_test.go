@@ -566,6 +566,19 @@ func TestHandlerShiftEsc(t *testing.T) {
 			wantViMode: true, wantErrors: 1, wantScreen: []string{"first row", "second row"},
 		},
 		{
+			name:       "A appends after the line",
+			output:     altScreen,
+			steps:      []modalStep{{keys: "<s-esc>kA"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 9},
+			wantScreen: []string{"first row", "second row"},
+		},
+		{
+			name:       "nothing A appends reaches the full-screen program",
+			output:     altScreen,
+			steps:      []modalStep{{keys: "<s-esc>kAx"}},
+			wantViMode: true, wantErrors: 1, wantScreen: []string{"first row", "second row"},
+		},
+		{
 			name:   "the screen does not follow the program",
 			output: altScreen,
 			steps: []modalStep{
@@ -641,12 +654,14 @@ func TestHandlerModalEsc(t *testing.T) {
 	const (
 		probe = "\x01\x07"
 		// the shell's answer to the probe: ctrl-a put its cursor after "$ "
-		answer  = "\x1b[3G\a"
-		right   = "\x1b[C"
-		del     = "\x1b[3~"
-		command = "\x1b]133;C\x1b\\"
-		working = "\x1b]7501;state=working\x1b\\"
-		prompt  = "\x1b]133;A\x1b\\"
+		answer = "\x1b[3G\a"
+		right  = "\x1b[C"
+		del    = "\x1b[3~"
+		// ctrl-e
+		endOfLine = "\x05"
+		command   = "\x1b]133;C\x1b\\"
+		working   = "\x1b]7501;state=working\x1b\\"
+		prompt    = "\x1b]133;A\x1b\\"
 		// a second prompt below the first
 		secondPrompt = "\r\n$ two"
 	)
@@ -866,6 +881,33 @@ func TestHandlerModalEsc(t *testing.T) {
 			output:     secondPrompt + command + working,
 			steps:      []modalStep{{keys: "<esc>gJ"}, {keys: "A<delete>"}, {keys: "0X"}},
 			wantViMode: true, wantErrors: 3, wantNotes: 1, wantHint: true,
+		},
+		// the screen's rows are as wide as the screen: past what the
+		// program wrote are cells it never wrote
+		{
+			name:       "A appends after the line",
+			steps:      []modalStep{{keys: "<esc>A"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 9},
+		},
+		{
+			name: "what A appends reaches the end of the shell's line",
+			steps: []modalStep{
+				{keys: "<esc>AX", want: probe},
+				{output: answer, want: endOfLine + "X" + probe},
+			},
+			wantViMode: true,
+		},
+		{
+			name:       "A appends after the spaces the program wrote",
+			output:     "  ",
+			steps:      []modalStep{{keys: "<esc>A"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 11},
+		},
+		{
+			name:       "A appends after a line above the prompt",
+			output:     secondPrompt,
+			steps:      []modalStep{{keys: "<esc>kA"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 9},
 		},
 	}
 	for _, tc := range cases {

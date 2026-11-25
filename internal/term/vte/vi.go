@@ -152,6 +152,8 @@ const (
 	viKeyRead
 	viKeyEdit
 	viKeyEndOfLine
+	// viKeyAppend appends after the line, as A does.
+	viKeyAppend
 	viKeyEnter
 	viKeyUp
 	viKeyDown
@@ -678,9 +680,14 @@ func (v *viHandler) classifyOn(vi *vi.Vi, ev term.Event) (k viKey, exit, handled
 		}
 	}
 
+	appends := ev.Mod == 0 && ev.Ch == 'A' && vi.IsNormalMode()
 	v.edited = false
 	_, handled = vi.Handle(ev)
 	k.kind = viKeyRead
+	if appends {
+		k.kind = viKeyAppend
+		appendAfterLine(vi)
+	}
 	if v.edited {
 		k.kind = viKeyEdit
 	}
@@ -691,7 +698,7 @@ func (v *viHandler) classifyOn(vi *vi.Vi, ev term.Event) (k viKey, exit, handled
 // its input.
 func (v *viHandler) reachesShell(k viKey) bool {
 	switch k.kind {
-	case viKeyRead, viKeyEndOfLine:
+	case viKeyRead, viKeyEndOfLine, viKeyAppend:
 		return false
 	case viKeyExit:
 		// leaving only moves the shell's cursor when the vi cursor was
@@ -706,10 +713,13 @@ func (v *viHandler) reachesShell(k viKey) bool {
 // read runs k, which must not reach the shell, on the vi alone.
 func (v *viHandler) read(k viKey) {
 	switch k.kind {
-	case viKeyRead:
+	case viKeyRead, viKeyAppend:
 		v.reading = true
 		v.sync.vi.Handle(k.ev)
 		v.reading = false
+		if k.kind == viKeyAppend {
+			appendAfterLine(v.sync.vi)
+		}
 		v.keepInContent()
 	case viKeyEndOfLine:
 		// unlike remoteMoveToEndOfLine, which clamps to the start of the
@@ -740,6 +750,24 @@ func blankRow(row []term.Cell) bool {
 		}
 	}
 	return true
+}
+
+// appendAfterLine puts the cursor of vi, which A left at the end of its
+// row, after the last cell a program wrote there: past it, the cells that
+// make the row as wide as the screen are no part of the line, and a shell
+// appends nothing there.
+func appendAfterLine(vi *vi.Vi) {
+	pos := vi.CursorAtScroll()
+	cells := vi.CellView().RawCells()
+	if pos.Y >= len(cells) {
+		return
+	}
+	row := cells[pos.Y]
+	x := min(pos.X, len(row))
+	for x > 0 && row[x-1].Ch == vtescreen.DefaultChar {
+		x--
+	}
+	vi.SetCursorAtScroll(term.Coordinates{Y: pos.Y, X: x})
 }
 
 // send runs k once the shell answered the probe: whatever reaches it
@@ -774,7 +802,7 @@ func (v *viHandler) send(k viKey) {
 			v.remoteFlush()
 		})
 		v.scheduleAfterBell(false, v.moveViToLastLineCharacter)
-	case viKeyRead, viKeyEdit:
+	case viKeyRead, viKeyEdit, viKeyAppend:
 		// schedule any potential edits after finding the start of the prompt:
 		// this avoids race conditions when serializing handle with bell callbacks
 		// and also prevents the main loop goroutine to not deadlock with the vte parser
@@ -783,6 +811,9 @@ func (v *viHandler) send(k viKey) {
 		v.scheduleAfterBell(k.kind == viKeyEdit, func() {
 			v.vteParserEdited = false
 			v.sync.vi.Handle(k.ev)
+			if k.kind == viKeyAppend {
+				appendAfterLine(v.sync.vi)
+			}
 		})
 
 		// correct cursor coordinates beyond last line so

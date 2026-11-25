@@ -797,7 +797,70 @@ $ ech▐              `},
 					Expected: screen("27", "28", "29", "30", "$ cat", "one", "one", "two", "two", "▐")},
 			})
 	})
+
+	t.Run("append", func(t *testing.T) {
+		t.Parallel()
+		for _, sequence := range modalAppendSequences {
+			t.Run(sequence.name, func(t *testing.T) {
+				t.Parallel()
+				cfg := DefaultConfig()
+				cfg.Modal = true
+				testSequenceVsh(t, cfg, defaultWaitForIdleVte,
+					vshtest.Options{Commands: vshCommands()}, []string{"sh"}, sequence.cases)
+			})
+		}
+	})
+
+	t.Run("append on a full-screen program", func(t *testing.T) {
+		t.Parallel()
+		cfg := DefaultConfig()
+		cfg.Modal = true
+		testSequenceVsh(t, cfg, defaultWaitForIdleVte, vshtest.Options{Commands: vshCommands()}, []string{"sh"},
+			[]vtetest.Case{
+				{InputSequence: "fullscreen>⎋kA", Expected: screen("first row▐", "second row")},
+				{InputSequence: "X", Expected: screen("first row▐", "second row")},
+				{InputSequence: "i>", Expected: screen("$ fullscreen", `read ""`, "$ ▐")},
+			})
+	})
 }
+
+// modalAppendSequences press A in modal mode, which appends after the
+// last cell the program wrote on the cursor's row: past it are the cells
+// that make the row as wide as the screen, which it never wrote. On the
+// prompt, what is typed next reaches the end of the shell's line. They
+// run on the Rune shell, and on real ones in the e2e suite.
+var modalAppendSequences = func() []struct {
+	name  string
+	cases []vtetest.Case
+} {
+	scrolled := func(rows ...string) string {
+		return screen(append([]string{"22", "23", "24", "25", "26", "27", "28", "29"}, rows...)...)
+	}
+	return []struct {
+		name  string
+		cases []vtetest.Case
+	}{
+		{name: "on the first row", cases: []vtetest.Case{
+			{InputSequence: "echo bla<AX", Expected: screen("$ echo blaX▐")},
+		}},
+		{name: "below output", cases: []vtetest.Case{
+			{InputSequence: "echo one>echo bla<AX", Expected: screen("$ echo one", "one", "$ echo blaX▐")},
+		}},
+		{name: "on a scrolled screen", cases: []vtetest.Case{
+			{InputSequence: "seq 30>echo bla<AX", Expected: scrolled("30", "$ echo blaX▐")},
+		}},
+		{name: "after a space", cases: []vtetest.Case{
+			{InputSequence: "echo bla <AX", Expected: screen("$ echo bla X▐")},
+		}},
+		{name: "twice", cases: []vtetest.Case{
+			{InputSequence: "echo bla<AX<AY", Expected: screen("$ echo blaXY▐")},
+		}},
+		{name: "above the prompt", cases: []vtetest.Case{
+			{InputSequence: "seq 30>echo bla<kA", Expected: scrolled("30▐", "$ echo bla")},
+			{InputSequence: "X<GAY", Expected: scrolled("30", "$ echo blaY▐")},
+		}},
+	}
+}()
 
 // modalLineJoinSequences press the keys that join two rows in modal mode,
 // which a shell's single line refuses: on the prompt or above it, on

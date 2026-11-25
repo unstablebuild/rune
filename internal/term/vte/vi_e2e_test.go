@@ -254,6 +254,10 @@ func TestModalLineJoins(t *testing.T) {
 	testModalSequencesOnShells(t, modalLineJoinSequences)
 }
 
+func TestModalAppend(t *testing.T) {
+	testModalSequencesOnShells(t, modalAppendSequences)
+}
+
 // testModalSequencesOnShells plays each sequence in modal mode on bash,
 // zsh and fish, those on PATH, with the prompt "$ ".
 func testModalSequencesOnShells(t *testing.T, sequences []struct {
