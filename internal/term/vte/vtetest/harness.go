@@ -164,8 +164,12 @@ func handleTestCase(
 			callHandle(term.Event{Key: term.KeyEnter, Type: term.EventKey})
 		case '<':
 			callHandle(term.Event{Key: term.KeyEsc, Type: term.EventKey})
+		case '⎋':
+			callHandle(term.Event{Key: term.KeyEsc, Mod: term.ModShift, Type: term.EventKey})
 		case '✌':
 			callHandle(term.Event{Key: term.KeyTab, Type: term.EventKey})
+		case '⌦':
+			callHandle(term.Event{Key: term.KeyDelete, Type: term.EventKey})
 		case '⬇':
 			callHandle(term.Event{Key: term.KeyArrowDown, Type: term.EventKey})
 		case '⬆':

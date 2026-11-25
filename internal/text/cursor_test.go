@@ -4762,6 +4762,113 @@ func TestCursorConflate(t *testing.T) {
 	}
 }
 
+// refusingEditor is a cell.Editor that edits nothing and counts what it
+// was asked to edit.
+type refusingEditor struct {
+	edits int
+}
+
+func (e *refusingEditor) Edit(_ context.Context, start, _ term.Coordinates, _ string) (
+	from, to term.Coordinates, old string,
+) {
+	e.edits++
+	return start, start, ""
+}
+
+// newPerformanceCursor returns a Cursor at pos on a buffer with no undo
+// holding content.
+func newPerformanceCursor(t *testing.T, content string, pos term.Coordinates) (*Cursor, *cell.Buffer) {
+	t.Helper()
+	buf := new(cell.Buffer)
+	buf.InitPerformance(8, 8, ' ')
+	buf.WriteString(content)
+	scroll := new(component.Scroll)
+	scroll.InitPerformance(buf)
+	scroll.Resize(40, 10)
+	c := new(Cursor)
+	c.InitPerformance(scroll)
+	c.SetCursorAtScroll(pos)
+	require.Equal(t, pos, c.CursorAtScroll())
+	return c, buf
+}
+
+func TestCursorJoinsRowsOnPerformanceBuffer(t *testing.T) {
+	const content = "zero\none\n\n three\nfour"
+	at := func(x, y int) term.Coordinates { return term.Coordinates{X: x, Y: y} }
+	tests := []struct {
+		name string
+		at   term.Coordinates
+		join func(*Cursor) bool
+		// wantEdit is whether the join edits the buffer.
+		wantEdit bool
+	}{
+		{"Backspace at the start of a row", at(0, 1), (*Cursor).Backspace, true},
+		{"Backspace at the start of an empty row", at(0, 2), (*Cursor).Backspace, true},
+		{"Backspace at the start of the row after an empty one", at(0, 3), (*Cursor).Backspace, true},
+		{"Backspace at the start of the first row", at(0, 0), (*Cursor).Backspace, false},
+		{"BackspaceAutoPair at the start of a row", at(0, 4), (*Cursor).BackspaceAutoPair, true},
+		{"Conflate", at(2, 3), (*Cursor).Conflate, true},
+		{"Conflate on the first row", at(0, 0), (*Cursor).Conflate, true},
+		{"Conflate on an empty row", at(0, 2), (*Cursor).Conflate, true},
+		{"Conflate on the last row", at(1, 4), (*Cursor).Conflate, false},
+		{"Join", at(2, 3), (*Cursor).Join, true},
+		{"Join with an empty row", at(1, 1), (*Cursor).Join, true},
+		{"Join on the last row", at(1, 4), (*Cursor).Join, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("edits its own rows like a buffer with undo", func(t *testing.T) {
+				undo := setupCursorContent(t, 40, 10, content, false)
+				undo.RightInclusiveSemantics = false
+				undo.SetCursorAtScroll(tc.at)
+				require.Equal(t, tc.at, undo.CursorAtScroll())
+				wantOk := tc.join(undo)
+				require.Equal(t, tc.wantEdit, undo.buffer().String() != content)
+
+				c, buf := newPerformanceCursor(t, content, tc.at)
+				assert.Equal(t, wantOk, tc.join(c))
+				assert.Equal(t, undo.buffer().String(), buf.String())
+				assert.Equal(t, undo.CursorAtScroll(), c.CursorAtScroll())
+			})
+
+			t.Run("leaves the edit to an installed editor", func(t *testing.T) {
+				c, buf := newPerformanceCursor(t, content, tc.at)
+				rec := new(refusingEditor)
+				buf.WithEditor(rec)
+
+				require.NotPanics(t, func() { tc.join(c) })
+
+				if tc.wantEdit {
+					assert.NotZero(t, rec.edits, "the edit must reach the editor")
+				}
+				assert.Equal(t, content, buf.String())
+				assertCursorInBufferBounds(t, c.CursorAtScroll(), buf)
+			})
+
+			t.Run("leaves the edit of another buffer's rows to an installed editor", func(t *testing.T) {
+				_, shown := newPerformanceCursor(t, content, tc.at)
+				// A buffer may read the rows of another one, which hold
+				// more than its own.
+				c, buf := newPerformanceCursor(t, "own", term.Coordinates{})
+				own := buf.WithView(shown)
+				rec := new(refusingEditor)
+				buf.WithEditor(rec)
+				c.SetCursorAtScroll(tc.at)
+				require.Equal(t, tc.at, c.CursorAtScroll())
+
+				require.NotPanics(t, func() { tc.join(c) })
+
+				if tc.wantEdit {
+					assert.NotZero(t, rec.edits, "the edit must reach the editor")
+				}
+				assert.Equal(t, content, shown.String())
+				assert.Equal(t, "own", own.String())
+				assertCursorInBufferBounds(t, c.CursorAtScroll(), buf)
+			})
+		})
+	}
+}
+
 func TestBackspaceViaConflate(t *testing.T) {
 	const (
 		str = `

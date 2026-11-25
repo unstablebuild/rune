@@ -740,7 +740,134 @@ $ ech▐              `},
 			{InputSequence: "", Expected: screen("$ echo abc", "abc", "$ sleep 30", "^C", "$ ▐")},
 		})
 	})
+
+	t.Run("line joins", func(t *testing.T) {
+		t.Parallel()
+		for _, sequence := range modalLineJoinSequences {
+			t.Run(sequence.name, func(t *testing.T) {
+				t.Parallel()
+				cfg := DefaultConfig()
+				cfg.Modal = true
+				testSequenceVsh(t, cfg, defaultWaitForIdleVte,
+					vshtest.Options{Commands: vshCommands()}, []string{"sh"}, sequence.cases)
+			})
+		}
+	})
+
+	// The frozen screen edits nothing, and its program reads none of the
+	// keys, which fullscreen would print. A refused join leaves the
+	// cursor where the rows would join, past the last column: 0 takes it
+	// back to the row's start.
+	t.Run("line joins on a full-screen program", func(t *testing.T) {
+		t.Parallel()
+		program := screen("first row", "se▐ond row")
+		firstRow := screen("▐irst row", "second row")
+		cfg := DefaultConfig()
+		cfg.Modal = true
+		testSequenceVsh(t, cfg, defaultWaitForIdleVte, vshtest.Options{Commands: vshCommands()}, []string{"sh"},
+			[]vtetest.Case{
+				{InputSequence: "fullscreen>", Expected: program},
+				{InputSequence: "⎋", Expected: program},
+				{InputSequence: "kgJ0", Expected: firstRow},
+				{InputSequence: "A⌦<0", Expected: firstRow},
+				{InputSequence: "jI^<0", Expected: firstRow},
+				{InputSequence: "j0X0", Expected: firstRow},
+				{InputSequence: "jVkgJ0", Expected: firstRow},
+				{InputSequence: "i>", Expected: screen("$ fullscreen", `read ""`, "$ ▐")},
+			})
+	})
+
+	// A command reading a line answers the probe as the shell does, and
+	// gets no line join either: the next line it reads is the one typed.
+	t.Run("line joins during a command", func(t *testing.T) {
+		t.Parallel()
+		running := func(rows ...string) string {
+			return screen(append([]string{"25", "26", "27", "28", "29", "30"}, rows...)...)
+		}
+		cfg := DefaultConfig()
+		cfg.Modal = true
+		testSequenceVsh(t, cfg, defaultWaitForIdleVte, vshtest.Options{Commands: vshCommands()}, []string{"sh"},
+			[]vtetest.Case{
+				{InputSequence: "seq 30>cat>one>", Expected: running("$ cat", "one", "one", "▐")},
+				{InputSequence: "<kgJ0", Expected: running("$ cat", "one", "▐ne", "")},
+				{InputSequence: "X0", Expected: running("$ cat", "▐ne", "one", "")},
+				{InputSequence: "jI^<0", Expected: running("$ cat", "▐ne", "one", "")},
+				{InputSequence: "kA⌦<0", Expected: running("▐ cat", "one", "one", "")},
+				{InputSequence: "itwo>",
+					Expected: screen("27", "28", "29", "30", "$ cat", "one", "one", "two", "two", "▐")},
+			})
+	})
 }
+
+// modalLineJoinSequences press the keys that join two rows in modal mode,
+// which a shell's single line refuses: on the prompt or above it, on
+// screen or in the history. Each leaves the rows as the shell drew them
+// and its line editable. They run on the Rune shell, and on real ones in
+// the e2e suite.
+var modalLineJoinSequences = func() []struct {
+	name  string
+	cases []vtetest.Case
+} {
+	fresh := func(prompt string) string { return screen("$ echo one", "one", prompt) }
+	scrolled := func(prompt string) string {
+		return screen("22", "23", "24", "25", "26", "27", "28", "29", "30", prompt)
+	}
+	return []struct {
+		name  string
+		cases []vtetest.Case
+	}{
+		{name: "gJ", cases: []vtetest.Case{
+			{InputSequence: "echo one>echo bla<gJ", Expected: fresh("$ echo bl▐")},
+			{InputSequence: "k0gJ0", Expected: screen("$ echo one", "▐ne", "$ echo bla")},
+			{InputSequence: "G\\$aX", Expected: fresh("$ echo blaX▐")},
+		}},
+		{name: "delete at the end of the line", cases: []vtetest.Case{
+			{InputSequence: "echo one>echo bla<A⌦", Expected: fresh("$ echo bla▐")},
+			{InputSequence: "X", Expected: fresh("$ echo blaX▐")},
+			{InputSequence: "<kA⌦<0", Expected: screen("$ echo one", "▐ne", "$ echo blaX")},
+			{InputSequence: "G\\$aY", Expected: fresh("$ echo blaXY▐")},
+		}},
+		{name: "backspace at the start of a line", cases: []vtetest.Case{
+			{InputSequence: "echo one>echo bla<k0I^<G\\$aX", Expected: fresh("$ echo blaX▐")},
+		}},
+		{name: "backspace on a changed line", cases: []vtetest.Case{
+			{InputSequence: "echo one>echo bla<S^", Expected: fresh("$ ▐")},
+			{InputSequence: "echo two>", Expected: screen("$ echo one", "one", "$ echo two", "two", "$ ▐")},
+		}},
+		{name: "delete before the start of a line", cases: []vtetest.Case{
+			{InputSequence: "echo one>echo bla<k0XG\\$aX", Expected: fresh("$ echo blaX▐")},
+		}},
+		{name: "gJ on a scrolled screen", cases: []vtetest.Case{
+			{InputSequence: "seq 30>echo bla<gJ", Expected: scrolled("$ echo bl▐")},
+			{InputSequence: "kgJ0", Expected: screen("22", "23", "24", "25", "26", "27", "28", "29", "▐0", "$ echo bla")},
+			{InputSequence: "G\\$aX", Expected: scrolled("$ echo blaX▐")},
+		}},
+		{name: "delete at the end of the line on a scrolled screen", cases: []vtetest.Case{
+			{InputSequence: "seq 30>echo bla<\\$a⌦X", Expected: scrolled("$ echo blaX▐")},
+		}},
+		{name: "delete at the end of a scrolled row", cases: []vtetest.Case{
+			{InputSequence: "seq 30>echo bla<kA⌦<G\\$aX", Expected: scrolled("$ echo blaX▐")},
+		}},
+		{name: "backspace at the start of a scrolled row", cases: []vtetest.Case{
+			{InputSequence: "seq 30>echo bla<k0I^<G\\$aX", Expected: scrolled("$ echo blaX▐")},
+		}},
+		{name: "backspace on a changed line on a scrolled screen", cases: []vtetest.Case{
+			{InputSequence: "seq 30>echo bla<S^", Expected: scrolled("$ ▐")},
+			{InputSequence: "echo two>",
+				Expected: screen("24", "25", "26", "27", "28", "29", "30", "$ echo two", "two", "$ ▐")},
+		}},
+		{name: "delete before the start of a scrolled row", cases: []vtetest.Case{
+			{InputSequence: "seq 30>echo bla<k0XG\\$aX", Expected: scrolled("$ echo blaX▐")},
+		}},
+		{name: "history", cases: []vtetest.Case{
+			{InputSequence: "seq 30>echo bla<gg0",
+				Expected: screen("▐ seq 30", "1", "2", "3", "4", "5", "6", "7", "8", "9")},
+			{InputSequence: "jgJ0XjI^<jA⌦<0",
+				Expected: screen("$ seq 30", "▐", "2", "3", "4", "5", "6", "7", "8", "9")},
+			{InputSequence: "G\\$aX", Expected: scrolled("$ echo blaX▐")},
+		}},
+	}
+}()
 
 func TestViEditUnit(t *testing.T) {
 	t.Parallel()
@@ -819,16 +946,23 @@ func TestViEditUnit(t *testing.T) {
 		}
 		commands := []struct {
 			name string
-			ev   term.Event
+			keys string
 		}{
-			{name: "open below", ev: term.Event{Type: term.EventKey, Ch: 'o'}},
-			{name: "open above", ev: term.Event{Type: term.EventKey, Ch: 'O'}},
-			{name: "append", ev: term.Event{Type: term.EventKey, Ch: 'a'}},
-			{name: "delete character", ev: term.Event{Type: term.EventKey, Ch: 'x'}},
-			{name: "move up", ev: term.Event{Type: term.EventKey, Ch: 'k'}},
-			{name: "move down", ev: term.Event{Type: term.EventKey, Ch: 'j'}},
-			{name: "end of line", ev: term.Event{Type: term.EventKey, Ch: '$'}},
-			{name: "join lines", ev: term.Event{Type: term.EventKey, Ch: 'J'}},
+			{name: "open below", keys: "o"},
+			{name: "open above", keys: "O"},
+			{name: "append", keys: "a"},
+			{name: "delete character", keys: "x"},
+			{name: "delete character before", keys: "X"},
+			{name: "move up", keys: "k"},
+			{name: "move down", keys: "j"},
+			{name: "end of line", keys: "$"},
+			{name: "join lines", keys: "J"},
+			{name: "join lines verbatim", keys: "gJ"},
+			{name: "join selected lines verbatim", keys: "VkgJ"},
+			{name: "backspace at the start of a line", keys: "I<backspace>"},
+			{name: "backspace on a changed line", keys: "cc<backspace>"},
+			{name: "backspace on an opened line", keys: "o<backspace>"},
+			{name: "delete at the end of a line", keys: "A<delete>"},
 		}
 
 		for _, operation := range operations {
@@ -857,8 +991,12 @@ func TestViEditUnit(t *testing.T) {
 						assert.LessOrEqual(t, at.X, vi.copy.vi.CellView().Columns(at.Y))
 					}
 					assert.NotPanics(t, func() {
-						_, _ = vi.copy.vi.Handle(command.ev)
+						for _, ev := range keyEvents(t, command.keys) {
+							_, _ = vi.copy.vi.Handle(ev)
+						}
 					})
+					assert.Equal(t, operation.want, comp.scroll.Buffer().String(),
+						"the copy vi only tells what a key does")
 				})
 			}
 		}

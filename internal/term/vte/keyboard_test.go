@@ -19,6 +19,8 @@ package vte
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -176,12 +178,48 @@ func (h *modalHarness) screen(t *testing.T) []string {
 	return rows
 }
 
+// rows returns the text of the primary screen and its history, which only
+// the program writes.
+func (h *modalHarness) rows() string {
+	scroll, mu := h.comp.PrimaryScroll()
+	mu.Lock()
+	defer mu.Unlock()
+	return term.CellsToString(scroll.Buffer().RawCells())
+}
+
+// frozenRows returns the text of the screen modal mode froze, and whether
+// modal mode is over it.
+func (h *modalHarness) frozenRows() (string, bool) {
+	h.vi.sync.mu.Lock()
+	defer h.vi.sync.mu.Unlock()
+	return h.vi.frozen.buf.String(), h.vi.frozen.on
+}
+
+// probing reports whether a probe waits for the program's bell.
+func (h *modalHarness) probing() bool {
+	h.vi.sync.mu.Lock()
+	defer h.vi.sync.mu.Unlock()
+	return h.vi.probe == viProbing
+}
+
 func keyEv(key term.Key, mod term.Modifier) term.Event {
 	return term.Event{Type: term.EventKey, Key: key, Mod: mod}
 }
 
 func chEv(ch rune, mod term.Modifier) term.Event {
 	return term.Event{Type: term.EventKey, Ch: ch, Mod: mod}
+}
+
+// keyEvents returns the events of keys, written as in term.ParseKeys.
+func keyEvents(t *testing.T, keys string) []term.Event {
+	t.Helper()
+	combs, err := term.ParseKeys(keys)
+	require.NoError(t, err)
+	events := make([]term.Event, len(combs))
+	for i, k := range combs {
+		events[i] = term.Event{Type: term.EventKey, Key: k.Key, Ch: k.Ch, Mod: k.Mod}
+	}
+	return events
 }
 
 func TestKittyKeyboardFlags(t *testing.T) {
@@ -504,6 +542,30 @@ func TestHandlerShiftEsc(t *testing.T) {
 			wantViMode: true, wantErrors: 5, wantScreen: []string{"first row", "second row"},
 		},
 		{
+			name:       "no line join reaches the full-screen program",
+			output:     altScreen,
+			steps:      []modalStep{{keys: "<s-esc>kgJ"}},
+			wantViMode: true, wantErrors: 1, wantScreen: []string{"first row", "second row"},
+		},
+		{
+			name:       "no delete at the end of a line reaches the full-screen program",
+			output:     altScreen,
+			steps:      []modalStep{{keys: "<s-esc>kA<delete>"}},
+			wantViMode: true, wantErrors: 1, wantScreen: []string{"first row", "second row"},
+		},
+		{
+			name:       "no backspace at the start of a line reaches the full-screen program",
+			output:     altScreen,
+			steps:      []modalStep{{keys: "<s-esc>I<backspace>"}},
+			wantViMode: true, wantErrors: 1, wantScreen: []string{"first row", "second row"},
+		},
+		{
+			name:       "no delete before the start of a line reaches the full-screen program",
+			output:     altScreen,
+			steps:      []modalStep{{keys: "<s-esc>0X"}},
+			wantViMode: true, wantErrors: 1, wantScreen: []string{"first row", "second row"},
+		},
+		{
 			name:   "the screen does not follow the program",
 			output: altScreen,
 			steps: []modalStep{
@@ -585,7 +647,11 @@ func TestHandlerModalEsc(t *testing.T) {
 		command = "\x1b]133;C\x1b\\"
 		working = "\x1b]7501;state=working\x1b\\"
 		prompt  = "\x1b]133;A\x1b\\"
+		// a second prompt below the first
+		secondPrompt = "\r\n$ two"
 	)
+	// more rows than the screen holds, then a prompt
+	history := strings.Repeat("\r\nline", 100) + secondPrompt
 	hover := term.Event{Type: term.EventMouse, MouseX: 3, MouseY: 0}
 	cases := []struct {
 		name       string
@@ -734,6 +800,73 @@ func TestHandlerModalEsc(t *testing.T) {
 			},
 			wantViMode: true,
 		},
+		{
+			name: "a line join probes the shell, which gets none",
+			steps: []modalStep{
+				{keys: "<esc>gJ", want: probe},
+				{output: answer, want: probe},
+			},
+			wantViMode: true, wantErrors: 1,
+		},
+		{
+			name:   "a line join above the prompt is refused",
+			output: secondPrompt,
+			steps: []modalStep{
+				{keys: "<esc>kgJ", want: probe},
+				{output: answer},
+			},
+			wantViMode: true, wantErrors: 1,
+		},
+		{
+			name:   "a line join in the history is refused",
+			output: history,
+			steps: []modalStep{
+				{keys: "<esc>kkkgJ", want: probe},
+				{output: answer},
+			},
+			wantViMode: true, wantErrors: 1,
+		},
+		{
+			name: "delete at the end of the line probes the shell, which gets none",
+			steps: []modalStep{
+				{keys: "<esc>A<delete>", want: probe},
+				{output: answer, want: probe},
+			},
+			wantViMode: true, wantErrors: 1,
+		},
+		{
+			name:   "backspace at the start of the line probes the shell, which gets none",
+			output: secondPrompt,
+			steps: []modalStep{
+				{keys: "<esc>I<backspace>", want: probe},
+				{output: answer, want: probe},
+			},
+			wantViMode: true, wantErrors: 1,
+		},
+		{
+			name:   "backspace at the start of a line in the history is refused",
+			output: history,
+			steps: []modalStep{
+				{keys: "<esc>kkkI<backspace>", want: probe},
+				{output: answer},
+			},
+			wantViMode: true, wantErrors: 1,
+		},
+		{
+			name:   "delete before the start of the line probes the shell, which gets none",
+			output: secondPrompt,
+			steps: []modalStep{
+				{keys: "<esc>0X", want: probe},
+				{output: answer, want: probe},
+			},
+			wantViMode: true, wantErrors: 1,
+		},
+		{
+			name:       "a program that reported a status gets no line join",
+			output:     secondPrompt + command + working,
+			steps:      []modalStep{{keys: "<esc>gJ"}, {keys: "A<delete>"}, {keys: "0X"}},
+			wantViMode: true, wantErrors: 3, wantNotes: 1, wantHint: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -741,6 +874,7 @@ func TestHandlerModalEsc(t *testing.T) {
 			h := newModalHarness(t, DefaultConfig())
 			h.output(tc.output)
 			h.written()
+			rows := h.rows()
 			for i, step := range tc.steps {
 				for _, ev := range step.events {
 					h.Handle(ev)
@@ -757,6 +891,7 @@ func TestHandlerModalEsc(t *testing.T) {
 			if tc.wantCursor != nil {
 				assert.Equal(t, *tc.wantCursor, h.vi.cursorAtScroll())
 			}
+			assert.Equal(t, rows, h.rows(), "only the program writes the rows")
 			assert.Equal(t, tc.wantErrors, h.errorSounds())
 			notes := h.notes.Messages()
 			assert.Len(t, notes, tc.wantNotes)
@@ -765,6 +900,165 @@ func TestHandlerModalEsc(t *testing.T) {
 			}
 		})
 	}
+}
+
+// modalFuzzKeys are the keys FuzzHandlerModalKeys presses, written as in
+// term.ParseKeys.
+const modalFuzzKeys = `abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789` +
+	`$^~.;,/?%{}()[]*#'"=-+_|:!@&\<\>` +
+	`<esc><s-esc><enter><backspace><delete><insert><up><down><left><right>` +
+	`<tab><space><home><end><pgup><pgdn>` +
+	`<c-a><c-b><c-c><c-d><c-e><c-f><c-h><c-j><c-k><c-n><c-o><c-p><c-r><c-u><c-v><c-w><c-x><c-y>`
+
+var modalFuzzKey = regexp.MustCompile(`<[^>]+>|\\.|.`)
+
+func FuzzHandlerModalKeys(f *testing.F) {
+	const (
+		// the shell's answer to a probe: ctrl-a put its cursor after "$ "
+		answer    = "\x1b[3G\a"
+		command   = "\x1b]133;C\x1b\\"
+		working   = "\x1b]7501;state=working\x1b\\"
+		altScreen = "\x1b[?1049h\x1b[Hfirst row\r\nsecond row\x1b[2;3H"
+	)
+	const (
+		promptOnly = iota
+		twoPrompts
+		historyAbove
+		fullScreen
+		layouts
+	)
+	const (
+		answers = iota
+		silent
+		reportedStatus
+		shells
+	)
+	alphabet := modalFuzzKey.FindAllString(modalFuzzKeys, -1)
+	require.LessOrEqual(f, len(alphabet), 256)
+	encode := func(keys string) []byte {
+		var encoded []byte
+		for _, key := range modalFuzzKey.FindAllString(keys, -1) {
+			i := slices.Index(alphabet, key)
+			require.GreaterOrEqual(f, i, 0, "seed key %q is not fuzzed", key)
+			encoded = append(encoded, byte(i))
+		}
+		return encoded
+	}
+	for _, seed := range []struct {
+		layout, shell uint8
+		keys          string
+	}{
+		{promptOnly, answers, "gJ"},
+		{promptOnly, answers, "A<delete>"},
+		{promptOnly, answers, "xhx"},
+		{promptOnly, answers, "hhi"},
+		{promptOnly, answers, "0Cecho<esc>u"},
+		{promptOnly, answers, "0vey$p<enter>"},
+		{promptOnly, silent, "xhx"},
+		{promptOnly, reportedStatus, "xx<esc><esc>"},
+		{twoPrompts, answers, "kgJ"},
+		{twoPrompts, answers, "VkgJ"},
+		{twoPrompts, answers, "I<backspace>"},
+		{twoPrompts, answers, "0X"},
+		{twoPrompts, answers, "cc<backspace>"},
+		{twoPrompts, answers, "S<backspace>x"},
+		{twoPrompts, answers, "o<backspace>"},
+		{twoPrompts, answers, "kA<delete><esc>jA<delete>"},
+		{twoPrompts, silent, "gJA<delete>0X"},
+		{twoPrompts, reportedStatus, "gJA<delete>0X"},
+		{historyAbove, answers, "kkkgJ"},
+		{historyAbove, answers, "kkkI<backspace>"},
+		{historyAbove, answers, "ggjgJ0XjI<backspace><esc>jA<delete>"},
+		{historyAbove, answers, "/line<enter>nNgJ"},
+		{historyAbove, answers, "<c-u><c-u>3gJG"},
+		{historyAbove, silent, "ggVGgJ"},
+		{fullScreen, answers, "kgJ"},
+		{fullScreen, answers, "kA<delete>"},
+		{fullScreen, answers, "I<backspace>"},
+		{fullScreen, answers, "0X"},
+		{fullScreen, answers, "kx<enter>$a1<esc>dd<up>"},
+		{fullScreen, silent, "ggVGgJ"},
+	} {
+		f.Add(seed.layout, seed.shell, encode(seed.keys))
+	}
+	history := strings.Repeat("\r\nline", 100) + "\r\n$ two"
+
+	f.Fuzz(func(t *testing.T, layout, shell uint8, keys []byte) {
+		layout %= layouts
+		shell %= shells
+		h := newModalHarness(t, DefaultConfig())
+		// a probe times out on a timer: at once for a shell that never
+		// answers, never for one that does
+		h.comp.bellProbeTimeout = time.Millisecond
+		if shell == answers {
+			h.comp.bellProbeTimeout = time.Minute
+		}
+		enter := "<esc>"
+		switch layout {
+		case twoPrompts:
+			h.output("\r\n$ two")
+		case historyAbove:
+			h.output(history)
+		case fullScreen:
+			h.output(altScreen)
+			enter = "<s-esc>"
+		}
+		if shell == reportedStatus {
+			h.output(command + working)
+		}
+		h.written()
+		rows := h.rows()
+
+		// press presses key and returns what reached the program, which
+		// only rings back when it answers probes
+		press := func(key string) string {
+			h.press(t, key)
+			var written strings.Builder
+			for {
+				out := h.written()
+				written.WriteString(out)
+				bells := strings.Count(out, "\a")
+				if bells == 0 || shell != answers {
+					break
+				}
+				for range bells {
+					h.output(answer)
+					h.drain()
+				}
+			}
+			if h.probing() {
+				h.waitTick(t)
+			}
+			return written.String()
+		}
+		press(enter)
+		var digits int
+		for i, k := range keys[:min(len(keys), 64)] {
+			key := alphabet[int(k)%len(alphabet)]
+			// a count repeats what the shell refuses once for every
+			// one of its units: a long one takes the engine's time
+			if len(key) == 1 && key[0] >= '0' && key[0] <= '9' {
+				if digits++; digits > 2 {
+					continue
+				}
+			} else {
+				digits = 0
+			}
+			frozenBefore, wasFrozen := h.frozenRows()
+			written := press(key)
+			frozenAfter, isFrozen := h.frozenRows()
+
+			require.Equal(t, rows, h.rows(), "key %d (%s): only the program writes the rows", i, key)
+			if wasFrozen && isFrozen {
+				require.Equal(t, frozenBefore, frozenAfter, "key %d (%s): the frozen screen stays", i, key)
+				require.Empty(t, written, "key %d (%s): no key reaches the program under the frozen screen", i, key)
+			}
+			pos := h.vi.cursorAtScroll()
+			require.False(t, pos.X < 0 || pos.Y < 0, "key %d (%s): the cursor left the content: %+v", i, key, pos)
+			h.screen(t)
+			h.Cursor()
+		}
+	})
 }
 
 func TestHandlerLeavesWhitelistedKeysUnhandled(t *testing.T) {

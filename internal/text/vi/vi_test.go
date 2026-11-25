@@ -19,6 +19,7 @@ package vi
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -32,6 +33,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/syntax/treesitter"
 	"unstable.build/rune/internal/text"
@@ -2275,5 +2277,177 @@ func TestChangeListNavigationWithStaleLocations(t *testing.T) {
 			assertCursorAtScroll(t, vi, tc.want(vi))
 			assert.Equal(t, normalMode, vi.handler.mode())
 		})
+	}
+}
+
+// refusingEditor is a cell.Editor that edits nothing and counts what it
+// was asked to edit.
+type refusingEditor struct {
+	edits int
+}
+
+func (e *refusingEditor) Edit(_ context.Context, start, _ term.Coordinates, _ string) (
+	from, to term.Coordinates, old string,
+) {
+	e.edits++
+	return start, start, ""
+}
+
+// newScrollVi returns a Vi at pos that InitWithScroll built on a buffer
+// with no undo holding content.
+func newScrollVi(t *testing.T, content string, pos term.Coordinates) (*Vi, *cell.Buffer) {
+	t.Helper()
+	buf := new(cell.Buffer)
+	buf.InitPerformance(8, 8, ' ')
+	buf.WriteString(content)
+	scroll := new(component.Scroll)
+	scroll.InitPerformance(buf)
+	vi := new(Vi)
+	vi.InitWithScroll(scroll, uri, text.IndentRuneTab, 0)
+	vi.Resize(40, 10)
+	vi.SetCursorAtScroll(pos)
+	require.Equal(t, pos, vi.CursorAtScroll())
+	return vi, buf
+}
+
+// handleKeys runs keys, written as in term.ParseKeys, on vi.
+func handleKeys(t *testing.T, vi *Vi, keys string) {
+	t.Helper()
+	combs, err := term.ParseKeys(keys)
+	require.NoError(t, err)
+	for _, k := range combs {
+		vi.Handle(term.Event{Type: term.EventKey, Key: k.Key, Ch: k.Ch, Mod: k.Mod})
+	}
+}
+
+func TestViInitWithScrollJoinsLines(t *testing.T) {
+	const content = "zero\none\n\n three\nfour"
+	at := func(x, y int) term.Coordinates { return term.Coordinates{X: x, Y: y} }
+	tests := []struct {
+		name string
+		at   term.Coordinates
+		keys string
+		// wantEdit is whether the keys edit the buffer.
+		wantEdit bool
+	}{
+		{"gJ", at(1, 0), "gJ", true},
+		{"gJ with an empty line", at(1, 1), "gJ", true},
+		{"gJ on an empty line", at(0, 2), "gJ", true},
+		{"gJ on the last line", at(1, 4), "gJ", false},
+		{"counted gJ", at(1, 0), "3gJ", true},
+		{"visual gJ", at(1, 0), "VjgJ", true},
+		{"J", at(1, 0), "J", true},
+		{"J on the last line", at(1, 4), "J", false},
+		{"visual J", at(1, 0), "VjJ", true},
+		{"backspace at the start of a line", at(0, 1), "i<backspace>", true},
+		{"backspace at the start of the line after an empty one", at(0, 3), "i<backspace>", true},
+		{"backspace at the start of the first line", at(0, 0), "i<backspace>", false},
+		{"backspace on a changed line", at(1, 1), "cc<backspace>", true},
+		{"delete at the end of a line", at(1, 0), "A<delete>", true},
+		{"delete on an empty line", at(0, 2), "i<delete>", true},
+		{"delete at the end of the last line", at(1, 4), "A<delete>", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("edits its own rows like a buffer with undo", func(t *testing.T) {
+				undoBuf := cell.NewBuffer()
+				undoBuf.WriteString(content)
+				undo := New(undoBuf, uri)
+				undo.Resize(40, 10)
+				undo.SetCursorAtScroll(tc.at)
+				require.Equal(t, tc.at, undo.CursorAtScroll())
+				handleKeys(t, undo, tc.keys)
+				require.Equal(t, tc.wantEdit, undoBuf.String() != content)
+
+				vi, buf := newScrollVi(t, content, tc.at)
+				handleKeys(t, vi, tc.keys)
+				assert.Equal(t, undoBuf.String(), buf.String())
+				assert.Equal(t, undo.CursorAtScroll(), vi.CursorAtScroll())
+			})
+
+			t.Run("leaves the edit to an installed editor", func(t *testing.T) {
+				vi, buf := newScrollVi(t, content, tc.at)
+				rec := new(refusingEditor)
+				buf.WithEditor(rec)
+
+				require.NotPanics(t, func() { handleKeys(t, vi, tc.keys) })
+
+				if tc.wantEdit {
+					assert.NotZero(t, rec.edits, "the edit must reach the editor")
+				}
+				assert.Equal(t, content, buf.String())
+			})
+
+			t.Run("leaves the edit of another buffer's rows to an installed editor", func(t *testing.T) {
+				_, shown := newScrollVi(t, content, tc.at)
+				// A buffer may read the rows of another one, which hold
+				// more than its own.
+				vi, buf := newScrollVi(t, "own", term.Coordinates{})
+				own := buf.WithView(shown)
+				rec := new(refusingEditor)
+				buf.WithEditor(rec)
+				vi.SetCursorAtScroll(tc.at)
+				require.Equal(t, tc.at, vi.CursorAtScroll())
+
+				require.NotPanics(t, func() { handleKeys(t, vi, tc.keys) })
+
+				if tc.wantEdit {
+					assert.NotZero(t, rec.edits, "the edit must reach the editor")
+				}
+				assert.Equal(t, content, shown.String())
+				assert.Equal(t, "own", own.String())
+			})
+		})
+	}
+}
+
+func TestViInitWithScrollLeavesEditsToEditor(t *testing.T) {
+	const content = "zero\none\n\n three\nfour"
+	keys := []string{
+		"x", "X", "3x", "dd", "2dd", "D", "dw", "db", "d0", "d$", "dj", "dk", "dG", "dgg",
+		"cc", "cw", "C", "s", "S", "r!", "~", "J", "3J", "gJ", "3gJ", "\\>\\>", "\\<\\<",
+		"o", "O", "ox<esc>", "Ox<esc>", "ix<esc>", "ax<esc>", "Ix<esc>", "Ax<esc>",
+		"i<enter>", "i<tab>", "i<backspace>", "i<delete>", "A<backspace>", "A<delete>",
+		"I<backspace>", "I<delete>", "cc<backspace>", "cc<delete>", "S<backspace>x",
+		"o<backspace>", "O<delete>", "ix<backspace><backspace><backspace>",
+		"yyp", "yyP", "yyjp", "ywP", "p", "P",
+		"vd", "vjd", "vjJ", "vjgJ", "Vd", "Vjd", "VjJ", "VjgJ", "Vjc", "<c-v>jd", "<c-v>jlc",
+		"u", "<c-r>", ".",
+	}
+	var positions []term.Coordinates
+	for y, row := range strings.Split(content, "\n") {
+		for _, x := range []int{0, len(row) / 2, max(0, len(row)-1)} {
+			if pos := (term.Coordinates{X: x, Y: y}); !slices.Contains(positions, pos) {
+				positions = append(positions, pos)
+			}
+		}
+	}
+	for _, shared := range []bool{false, true} {
+		for _, k := range keys {
+			for _, pos := range positions {
+				name := fmt.Sprintf("%s at %d,%d", k, pos.X, pos.Y)
+				if shared {
+					name += " over another buffer's rows"
+				}
+				t.Run(name, func(t *testing.T) {
+					vi, buf := newScrollVi(t, content, pos)
+					shown := buf
+					if shared {
+						vi, buf = newScrollVi(t, "own", term.Coordinates{})
+						_, shown = newScrollVi(t, content, pos)
+						buf.WithView(shown)
+						vi.SetCursorAtScroll(pos)
+					}
+					buf.WithEditor(new(refusingEditor))
+
+					require.NotPanics(t, func() { handleKeys(t, vi, k) })
+
+					assert.Equal(t, content, shown.String())
+					at := vi.CursorAtScroll()
+					require.Less(t, at.Y, shown.Rows())
+					assert.LessOrEqual(t, at.X, shown.Columns(at.Y))
+				})
+			}
+		}
 	}
 }

@@ -4444,6 +4444,38 @@ func TestExRunsTheRuneShellInMemoryWorkspaces(t *testing.T) {
 		waitShellDrawn(t, b, width, height, "│▐la ")
 	})
 
+	t.Run("modal mode joins no rows", func(t *testing.T) {
+		cfg := vte.DefaultConfig()
+		cfg.Modal = true
+		b := newMemoryShellEx(t, 0, cfg)
+		openTerminal(t, b, b.ex.terminalnewtab)
+		typeShell(b, "echo one\n")
+		waitShellDrawn(t, b, width, height, "│one ")
+		typeShell(b, "echo bla")
+		waitShellDrawn(t, b, width, height, "$ echo bla▐")
+		typeShell(b, "\x1b")
+		require.Eventually(t, func() bool {
+			b.flushScheduled()
+			_, style, _ := b.Cursor()
+			return style != term.CursorStyleSteadyBar
+		}, 10*time.Second, 5*time.Millisecond)
+
+		backspace := term.Event{Type: term.EventKey, Key: term.KeyBackspace, Raw: []byte{0x7f}}
+		del := term.Event{Type: term.EventKey, Key: term.KeyDelete, Raw: []byte("\x1b[3~")}
+		typeShell(b, "gJkgJA")
+		b.Handle(del)
+		typeShell(b, "\x1b0XI")
+		b.Handle(backspace)
+		// leaving above the prompt puts the shell's cursor at the end of
+		// its line, which none of the keys changed
+		typeShell(b, "\x1bi")
+		waitShellDrawn(t, b, width, height, "$ echo bla▐")
+		typeShell(b, "X")
+		frame := waitShellDrawn(t, b, width, height, "$ echo blaX▐")
+		assert.Contains(t, frame, "│memory:/// $ echo one ")
+		assert.Contains(t, frame, "│one ")
+	})
+
 	t.Run("console", func(t *testing.T) {
 		b := newMemoryShellEx(t, 0, vte.DefaultConfig())
 		b.Resize(width, height)

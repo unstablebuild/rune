@@ -233,19 +233,53 @@ func TestBufferConflateWrap(t *testing.T) {
 		},
 	}
 
-	for i, test := range suite {
-		buf := NewBuffer()
-		buf.Write([]byte(test.in))
-		x, actualOk := buf.ConflateRow(test.at)
-		require.Equal(t, test.expectOk, actualOk)
-		if test.expectOk {
-			assert.Equal(t, test.after, buf.String())
-			require.True(t, buf.WrapRow(test.at, x), i)
+	performance := func() *Buffer {
+		b := new(Buffer)
+		b.InitPerformance(4, 8, ' ')
+		return b
+	}
+	modes := []struct {
+		name string
+		new  func() *Buffer
+		// recorded is whether an Editor is installed over the buffer's
+		// own, which must then see every edit.
+		recorded bool
+	}{
+		{name: "undo", new: NewBuffer},
+		{name: "performance", new: performance},
+		{name: "undo with an editor", new: NewBuffer, recorded: true},
+		{name: "performance with an editor", new: performance, recorded: true},
+	}
+	for _, mode := range modes {
+		for i, test := range suite {
+			t.Run(fmt.Sprintf("%s/%d", mode.name, i), func(t *testing.T) {
+				buf := mode.new()
+				buf.Write([]byte(test.in))
+				rec := new(recordingEditor)
+				if mode.recorded {
+					rec = recordEdits(buf)
+				}
+
+				x, actualOk := buf.ConflateRow(test.at)
+				require.Equal(t, test.expectOk, actualOk)
+				if test.expectOk {
+					assert.Equal(t, test.after, buf.String())
+					if mode.recorded {
+						assert.Equal(t, 1, rec.calls, "ConflateRow must edit through the Editor")
+					}
+					require.True(t, buf.WrapRow(test.at, x))
+					if mode.recorded {
+						assert.Equal(t, 2, rec.calls, "WrapRow must edit through the Editor")
+					}
+				} else {
+					assert.Zero(t, rec.calls)
+				}
+				assert.Equal(t, test.in, buf.String())
+				assert.NotPanics(t, func() {
+					buf.Write([]byte("a\n"))
+				})
+			})
 		}
-		assert.Equal(t, test.in, buf.String())
-		assert.NotPanics(t, func() {
-			buf.Write([]byte("a\n"))
-		})
 	}
 
 	t.Run("wrap row multiple times", func(t *testing.T) {
@@ -795,6 +829,86 @@ func (e *recordingEditor) Edit(
 		return e.delegate.Edit(ctx, start, end, str)
 	}
 	return start, start, ""
+}
+
+// recordEdits installs over b's Editor one that counts the edits before
+// passing them on.
+func recordEdits(b *Buffer) *recordingEditor {
+	rec := &recordingEditor{delegate: b.WithEditor(nil)}
+	b.WithEditor(rec)
+	return rec
+}
+
+func TestBufferEditsThroughInstalledEditor(t *testing.T) {
+	at := func(x, y int) term.Coordinates { return term.Coordinates{X: x, Y: y} }
+	attr := term.Attributes{Attrs: term.AttrBold}
+	tests := []struct {
+		name string
+		edit func(b *Buffer)
+	}{
+		{"ConflateRow on the first row", func(b *Buffer) { b.ConflateRow(0) }},
+		{"ConflateRow into an empty row", func(b *Buffer) { b.ConflateRow(1) }},
+		{"ConflateRow past the buffer's own rows", func(b *Buffer) { b.ConflateRow(3) }},
+		{"WrapRow on the first row", func(b *Buffer) { b.WrapRow(0, 2) }},
+		{"WrapRow at the end of a row", func(b *Buffer) { b.WrapRow(1, 3) }},
+		{"WrapRow past the buffer's own rows", func(b *Buffer) { b.WrapRow(3, 2) }},
+		{"Insert", func(b *Buffer) { b.Insert(at(1, 3), 'x') }},
+		{"InsertWithAttr", func(b *Buffer) { b.InsertWithAttr(at(1, 3), 'x', attr) }},
+		{"InsertString", func(b *Buffer) { b.InsertString(at(1, 3), "x\ny") }},
+		{"InsertStringWithAttr", func(b *Buffer) { b.InsertStringWithAttr(at(1, 3), "x\ny", attr) }},
+		{"Edit", func(b *Buffer) { b.Edit(context.Background(), at(1, 1), at(2, 3), "x") }},
+		{"EditWithAttr", func(b *Buffer) {
+			b.EditWithAttr(context.Background(), at(1, 1), at(2, 3), "x", attr)
+		}},
+		{"Delete", func(b *Buffer) { b.Delete(at(1, 1), at(2, 3)) }},
+		{"DeleteCell", func(b *Buffer) { b.DeleteCell(at(1, 3)) }},
+		{"DeleteRow", func(b *Buffer) { b.DeleteRow(3) }},
+		{"DeleteLine", func(b *Buffer) { b.DeleteLine(at(0, 3), at(0, 3)) }},
+		{"DeleteBlock", func(b *Buffer) { b.DeleteBlock(at(1, 3), at(3, 4)) }},
+		{"TruncateRowFrom", func(b *Buffer) { b.TruncateRowFrom(at(1, 3)) }},
+		{"TruncateFrom", func(b *Buffer) { b.TruncateFrom(at(1, 3)) }},
+		{"Replace", func(b *Buffer) { b.Replace("x") }},
+		{"Reset", func(b *Buffer) { b.Reset() }},
+		{"Write", func(b *Buffer) { _, _ = b.Write([]byte("x")) }},
+		{"WriteString", func(b *Buffer) { b.WriteString("x") }},
+		{"WriteStringWithAttr", func(b *Buffer) { b.WriteStringWithAttr("x", attr) }},
+		{"ShiftRowRight", func(b *Buffer) { b.ShiftRowRight(3) }},
+		{"ShiftRowLeft", func(b *Buffer) { b.ShiftRowLeft(3) }},
+	}
+	modes := []struct {
+		name string
+		new  func() *Buffer
+	}{
+		{"undo", NewBuffer},
+		{"performance", func() *Buffer {
+			b := new(Buffer)
+			b.InitPerformance(4, 8, ' ')
+			return b
+		}},
+	}
+	for _, mode := range modes {
+		for _, tc := range tests {
+			t.Run(mode.name+"/"+tc.name, func(t *testing.T) {
+				// A buffer may read the rows of another one, which hold
+				// more than its own, and leave its Editor to decide what
+				// an edit does: here, nothing.
+				b := mode.new()
+				b.WriteString("own")
+				own := cloneCellRows(b.cells.cells)
+				view := ringTestView{rows: term.StringToCells("zero\none\n\n three\nfour")}
+				shown := cloneCellRows(view.rows)
+				b.WithView(view)
+				rec := new(recordingEditor)
+				b.WithEditor(rec)
+
+				require.NotPanics(t, func() { tc.edit(b) })
+
+				assert.NotZero(t, rec.calls, "the edit must reach the Editor")
+				assert.Equal(t, own, b.cells.cells, "the buffer's own rows must be left to the Editor")
+				assert.Equal(t, shown, view.rows, "the rows read must be left to the Editor")
+			})
+		}
+	}
 }
 
 func TestBufferResetCells(t *testing.T) {

@@ -250,6 +250,60 @@ func TestBashViModeEdgeCases(t *testing.T) {
 	}
 }
 
+func TestModalLineJoins(t *testing.T) {
+	testModalSequencesOnShells(t, modalLineJoinSequences)
+}
+
+// testModalSequencesOnShells plays each sequence in modal mode on bash,
+// zsh and fish, those on PATH, with the prompt "$ ".
+func testModalSequencesOnShells(t *testing.T, sequences []struct {
+	name  string
+	cases []vtetest.Case
+}) {
+	for _, sh := range []struct {
+		name string
+		// rc gives the shell in home the prompt the screens assume.
+		rc func(t *testing.T, home string)
+	}{
+		{"bash", func(t *testing.T, home string) {
+			require.NoError(t, os.WriteFile(filepath.Join(home, ".bash_profile"),
+				[]byte(". ~/.bashrc\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(home, ".bashrc"), []byte("PS1='$ '\n"), 0o644))
+			t.Setenv("INPUTRC", "")
+			t.Setenv("BASH_SILENCE_DEPRECATION_WARNING", "1")
+		}},
+		{"zsh", func(t *testing.T, home string) {
+			require.NoError(t, os.WriteFile(filepath.Join(home, ".zshrc"), []byte("PS1='$ '\n"), 0o644))
+			t.Setenv("ZDOTDIR", "")
+		}},
+		{"fish", func(t *testing.T, home string) {
+			configDir := filepath.Join(home, ".config")
+			require.NoError(t, os.MkdirAll(filepath.Join(configDir, "fish"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(configDir, "fish", "config.fish"),
+				[]byte("set -g fish_greeting\nfunction fish_prompt; printf '$ '; end\n"), 0o644))
+			t.Setenv("XDG_CONFIG_HOME", configDir)
+			t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+		}},
+	} {
+		t.Run(sh.name, func(t *testing.T) {
+			path, err := find.Executable(sh.name)
+			if err != nil {
+				t.Skipf("%s not found in PATH", sh.name)
+			}
+			for _, sequence := range sequences {
+				t.Run(sequence.name, func(t *testing.T) {
+					home := t.TempDir()
+					t.Setenv("HOME", home)
+					sh.rc(t, home)
+					cfg := DefaultConfig()
+					cfg.Modal = true
+					testSequenceShell(t, cfg, defaultWaitForIdleVte, path, sequence.cases)
+				})
+			}
+		})
+	}
+}
+
 func TestZshViModeEdgeCases(t *testing.T) {
 	zshPath, err := find.Executable("zsh")
 	if err != nil {
