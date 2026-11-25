@@ -25,6 +25,7 @@ import (
 
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/syntaxapi"
+	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -38,8 +39,10 @@ type Entry struct {
 	Display string
 }
 
-// Config configures the appearance of a picker.
+// Config controls a picker's preview source and appearance.
 type Config struct {
+	// Editor supplies open buffers when locations include unsaved edits.
+	Editor        textapi.Editor
 	ListTextAttr  term.Attributes
 	ListFocusAttr term.Attributes
 	PreviewAttr   term.Attributes
@@ -57,6 +60,7 @@ type Picker struct {
 	entries          []Entry
 	list             *component.FocusList
 	fs               workspaceapi.FileSystem
+	editor           textapi.Editor
 	scheduleNextTick func(func()) bool
 	parser           syntaxapi.Parser
 	log              *slog.Logger
@@ -100,6 +104,7 @@ func New(
 		entries:          entries,
 		list:             list,
 		fs:               fs,
+		editor:           cfg.Editor,
 		scheduleNextTick: scheduleNextTick,
 		parser:           parser,
 		log:              log,
@@ -275,20 +280,12 @@ func (l *Picker) loadPreview() {
 	if entry.URI.String() == l.prevURI {
 		return
 	}
-	f, err := l.fs.OpenFile(entry.URI.Path(), os.O_RDONLY, 0)
+	content, err := l.previewContent(entry.URI)
 	if err != nil {
 		l.previewCells = nil
 		l.prevURI = ""
 		return
 	}
-	defer f.Close() //nolint:errcheck
-	data, err := io.ReadAll(f)
-	if err != nil {
-		l.previewCells = nil
-		l.prevURI = ""
-		return
-	}
-	content := string(data)
 	l.previewCells = term.StringToCells(content)
 	l.prevURI = entry.URI.String()
 	if l.parser != nil {
@@ -298,6 +295,27 @@ func (l *Picker) loadPreview() {
 			l.loadHighlights(fileURI, content, baseCells)
 		})
 	}
+}
+
+func (l *Picker) previewContent(uri workspaceapi.URI) (string, error) {
+	if l.editor != nil {
+		if h, err := l.editor.Editor(uri); err == nil && h != nil {
+			if view := l.editor.CellView(h); view != nil {
+				cells, err := view.RawCells()
+				if err != nil {
+					return "", err
+				}
+				return term.CellsToString(cells), nil
+			}
+		}
+	}
+	f, err := l.fs.OpenFile(uri.Path(), os.O_RDONLY, 0)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close() //nolint:errcheck
+	data, err := io.ReadAll(f)
+	return string(data), err
 }
 
 func (l *Picker) loadHighlights(

@@ -18,17 +18,24 @@ package lspcmd
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/handler/locationpicker"
+	"unstable.build/rune/internal/ide/idelsp"
+	"unstable.build/rune/internal/ide/syntax/grammarfixture"
+	"unstable.build/rune/internal/ide/syntax/treesitter"
+	"unstable.build/rune/internal/workspace"
 )
 
 var _ textapi.CommandHandler = (*referencesHandler)(nil)
@@ -41,6 +48,67 @@ func waitFloating(t *testing.T, done <-chan struct{}) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for the async LSP result")
 	}
+}
+
+func TestReferencesPreviewAfterUnsavedEdit(t *testing.T) {
+	const caller = "package main\nfunc main() { alpha() }\n"
+	const decl = "func alpha() {}\n"
+	root, err := workspaceapi.ParseURI("file://" + t.TempDir())
+	require.NoError(t, err)
+	fs, err := workspace.NewFileScheme(t.Context(), config.NopConfig(), root)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = fs.Close() })
+	path := filepath.Join(root.Path(), "main.go")
+	require.NoError(t, os.WriteFile(path, []byte(caller+decl), 0o600))
+	uri, err := fs.URI(path)
+	require.NoError(t, err)
+	editor := &mockEditor{
+		editorFn: func(u workspaceapi.URI) (textapi.Handler, error) {
+			require.Equal(t, uri, u)
+			return &mockHandler{uri: u}, nil
+		},
+		cellViewFn: func(textapi.Handler) textapi.CellView {
+			return &mockCellView{cells: term.StringToCells(caller + "\n" + decl)}
+		},
+	}
+	call := semanticapi.Range{Start: semanticapi.Position{Line: 1, Character: 14}, End: semanticapi.Position{Line: 1, Character: 19}}
+	check := func(t *testing.T, lsp commandLSP, line int) {
+		t.Helper()
+		var picker browserapi.Floating
+		wm := &mockWindowManager{floatingFn: func(f browserapi.Floating, _ browserapi.FloatingConfig) (browserapi.Window, error) {
+			picker = f
+			return nil, nil
+		}}
+		h := referencesHandler{lsp: lsp, editor: editor, wm: wm, fs: fs, rootURI: root, scheduleNextTick: syncTick}
+		require.NoError(t, h.execute(t.Context(), uri, call.Start))
+		require.NotNil(t, picker)
+		w, height := picker.Dimensions()
+		picker.Resize(w, height)
+		screen := term.NewStringWriter(w, height)
+		picker.Draw(screen)
+		row := screen.Cells()[line*w : (line+1)*w]
+		for i, ch := range "func alpha() {}" {
+			c := row[1+i] // one column of picker padding
+			require.Equal(t, ch, c.Ch, "source column %d", i)
+			require.Equal(t, i >= 5 && i < 10, c.Attrs&term.AttrReverse != 0, "source column %d", i)
+		}
+	}
+	t.Run("language server", func(t *testing.T) {
+		check(t, &mockLSP{referencesFn: func(context.Context, semanticapi.ReferenceParams) ([]semanticapi.Location, error) {
+			return []semanticapi.Location{
+				{URI: uri.String(), Range: semanticapi.Range{Start: semanticapi.Position{Line: 3, Character: 5}, End: semanticapi.Position{Line: 3, Character: 10}}},
+				{URI: uri.String(), Range: call},
+			}, nil
+		}}, 3)
+	})
+	t.Run("tree-sitter without a server", func(t *testing.T) {
+		pkgs := grammarfixture.NewPackages(t, map[string][]string{"go": {"1.0.0"}})
+		pkgs.Install(t, "go", "1.0.0", grammarfixture.PackageFiles(t, filepath.Join("..", "..", "syntax", "syntaxtest", "go")))
+		parser := treesitter.NewParser(fs, pkgs, root)
+		mgr := idelsp.New(root, fs, nil, nil, nil, nil, idelsp.Config{NoInitializeServer: true, Parser: parser})
+		t.Cleanup(func() { _ = mgr.Close() })
+		check(t, mgr, 2)
+	})
 }
 
 func TestReferencesEnrichedDisplay(t *testing.T) {
