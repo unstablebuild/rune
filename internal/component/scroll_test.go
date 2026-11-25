@@ -110,16 +110,34 @@ func TestScrollDrawsRingBackedRowsInLogicalOrder(t *testing.T) {
 }
 
 func TestInitPerfWithHidden(t *testing.T) {
+	for _, invert := range []bool{false, true} {
+		t.Run(fmt.Sprintf("invert offset %v", invert), func(t *testing.T) {
+			s := new(Scroll)
+			s.InitPerformance(cell.NewBuffer())
+			s.InvertOffset = invert
+			s.Buffer().WriteString("abc\ndef\nghi\n")
+			assert.NotPanics(t, func() {
+				assert.False(t, s.MarkHidden(0, 1))
+				assert.False(t, s.MarkHidden(0, 3))
+				assert.False(t, s.MarkVisible(0))
+				s.Draw(term.NewStringWriter(10, 10))
+				s.ScrollToWindowCoordinates(term.Coordinates{})
+				s.WindowToScrollCoordinates(term.Coordinates{})
+			})
+		})
+	}
+}
+
+func TestMarkHiddenPanicsWithInvertOffset(t *testing.T) {
 	s := new(Scroll)
-	s.InitPerformance(cell.NewBuffer())
-	s.Buffer().WriteString("abc\n")
-	assert.NotPanics(t, func() {
-		assert.False(t, s.MarkHidden(0, 3))
-		assert.False(t, s.MarkVisible(0))
-		s.Draw(term.NewStringWriter(10, 10))
-		s.ScrollToWindowCoordinates(term.Coordinates{})
-		s.WindowToScrollCoordinates(term.Coordinates{})
-	})
+	s.Init(cell.NewBuffer())
+	s.InvertOffset = true
+	s.Buffer().WriteString("abc\ndef\nghi\n")
+	for _, r := range [][2]int{{0, 1}, {1, 1}, {0, 9}} {
+		assert.PanicsWithValue(t, "called MarkHidden but InvertOffset is enabled", func() {
+			s.MarkHidden(r[0], r[1])
+		}, "MarkHidden(%d, %d)", r[0], r[1])
+	}
 }
 
 func TestScrollCenterAt(t *testing.T) {

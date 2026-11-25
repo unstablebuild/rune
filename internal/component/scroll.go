@@ -75,7 +75,8 @@ type Scroll struct {
 
 	// InvertOffset inverts the semantics of all the Seek* methods,
 	// thus the default offset is the maximum offset. This is incompatible
-	// with hidden lines, so calls to MarkHidden will panic.
+	// with hidden lines, so calls to MarkHidden will panic unless the
+	// scroll was initialized with InitPerformance, where they hide nothing.
 	InvertOffset bool
 
 	// Hatch, when set, draws its stripes over the rows below the content.
@@ -419,7 +420,12 @@ func (s *Scroll) HiddenLineCount() int {
 // MarkHidden marks the inner rows of the given row range as hidden,
 // so next call to Draw will not display them, and instead display an icon to indicate
 // that there are hidden rows.
+// It hides nothing and returns false if the scroll was initialized with
+// InitPerformance; otherwise it panics if InvertOffset is set.
 func (s *Scroll) MarkHidden(start, end int) bool {
+	if s.hiddenblocks == nil {
+		return false
+	}
 	if s.InvertOffset {
 		panic("called MarkHidden but InvertOffset is enabled")
 	}
@@ -431,7 +437,7 @@ func (s *Scroll) MarkHidden(start, end int) bool {
 	if start == end {
 		return false
 	}
-	if start < 0 || end >= s.buf.Rows() || s.hiddenblocks == nil {
+	if start < 0 || end >= s.buf.Rows() {
 		return false
 	}
 

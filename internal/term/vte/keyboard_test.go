@@ -579,6 +579,13 @@ func TestHandlerShiftEsc(t *testing.T) {
 			wantViMode: true, wantErrors: 1, wantScreen: []string{"first row", "second row"},
 		},
 		{
+			name:       "z hides no row of the full-screen program",
+			output:     altScreen,
+			steps:      []modalStep{{keys: "<s-esc>kVjz"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 2, Y: 1},
+			wantScreen: []string{"first row", "second row"},
+		},
+		{
 			name:   "the screen does not follow the program",
 			output: altScreen,
 			steps: []modalStep{
@@ -909,6 +916,28 @@ func TestHandlerModalEsc(t *testing.T) {
 			steps:      []modalStep{{keys: "<esc>kA"}},
 			wantViMode: true, wantCursor: &term.Coordinates{X: 9},
 		},
+		{
+			name:       "z hides no character",
+			steps:      []modalStep{{keys: "<esc>vhz"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 7},
+		},
+		{
+			name:       "z hides no row",
+			output:     secondPrompt,
+			steps:      []modalStep{{keys: "<esc>Vkz"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 4},
+		},
+		{
+			name:       "z hides no block",
+			output:     secondPrompt,
+			steps:      []modalStep{{keys: "<esc><c-v>khz"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 3},
+		},
+		{
+			name:       "z leaves visual mode",
+			steps:      []modalStep{{keys: "<esc>vzhd"}},
+			wantViMode: true, wantCursor: &term.Coordinates{X: 7},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1020,6 +1049,10 @@ func FuzzHandlerModalKeys(f *testing.F) {
 		{fullScreen, answers, "0X"},
 		{fullScreen, answers, "kx<enter>$a1<esc>dd<up>"},
 		{fullScreen, silent, "ggVGgJ"},
+		{promptOnly, answers, "vhz"},
+		{twoPrompts, answers, "Vkz"},
+		{twoPrompts, answers, "<c-v>khz"},
+		{fullScreen, answers, "kVjz"},
 	} {
 		f.Add(seed.layout, seed.shell, encode(seed.keys))
 	}

@@ -822,6 +822,30 @@ $ ech▐              `},
 				{InputSequence: "i>", Expected: screen("$ fullscreen", `read ""`, "$ ▐")},
 			})
 	})
+
+	t.Run("hide", func(t *testing.T) {
+		t.Parallel()
+		for _, sequence := range modalHideSequences {
+			t.Run(sequence.name, func(t *testing.T) {
+				t.Parallel()
+				cfg := DefaultConfig()
+				cfg.Modal = true
+				testSequenceVsh(t, cfg, defaultWaitForIdleVte,
+					vshtest.Options{Commands: vshCommands()}, []string{"sh"}, sequence.cases)
+			})
+		}
+	})
+
+	t.Run("hide on a full-screen program", func(t *testing.T) {
+		t.Parallel()
+		cfg := DefaultConfig()
+		cfg.Modal = true
+		testSequenceVsh(t, cfg, defaultWaitForIdleVte, vshtest.Options{Commands: vshCommands()}, []string{"sh"},
+			[]vtetest.Case{
+				{InputSequence: "fullscreen>⎋kVjz", Expected: screen("first row", "se▐ond row")},
+				{InputSequence: "i>", Expected: screen("$ fullscreen", `read ""`, "$ ▐")},
+			})
+	})
 }
 
 // modalAppendSequences press A in modal mode, which appends after the
@@ -858,6 +882,42 @@ var modalAppendSequences = func() []struct {
 		{name: "above the prompt", cases: []vtetest.Case{
 			{InputSequence: "seq 30>echo bla<kA", Expected: scrolled("30▐", "$ echo bla")},
 			{InputSequence: "X<GAY", Expected: scrolled("30", "$ echo blaY▐")},
+		}},
+	}
+}()
+
+// modalHideSequences press z on a selection in modal mode, which would
+// hide its rows in an editor: the terminal hides none, and leaves visual
+// mode with the rows as the program drew them. They run on the Rune
+// shell, and on real ones in the e2e suite.
+var modalHideSequences = func() []struct {
+	name  string
+	cases []vtetest.Case
+} {
+	fresh := func(prompt string) string { return screen("$ echo one", "one", prompt) }
+	scrolled := func(rows ...string) string {
+		return screen(append([]string{"22", "23", "24", "25", "26", "27", "28", "29"}, rows...)...)
+	}
+	return []struct {
+		name  string
+		cases []vtetest.Case
+	}{
+		{name: "characters", cases: []vtetest.Case{
+			{InputSequence: "echo one>echo bla<vhz", Expected: fresh("$ echo b▐a")},
+			{InputSequence: "\\$aX", Expected: fresh("$ echo blaX▐")},
+		}},
+		{name: "rows", cases: []vtetest.Case{
+			{InputSequence: "echo one>echo bla<Vkz0", Expected: screen("$ echo one", "▐ne", "$ echo bla")},
+			{InputSequence: "G\\$aX", Expected: fresh("$ echo blaX▐")},
+		}},
+		{name: "rows on a scrolled screen", cases: []vtetest.Case{
+			{InputSequence: "seq 30>echo bla<Vkz0", Expected: scrolled("▐0", "$ echo bla")},
+			{InputSequence: "G\\$aX", Expected: scrolled("30", "$ echo blaX▐")},
+		}},
+		{name: "history", cases: []vtetest.Case{
+			{InputSequence: "seq 30>echo bla<ggVjjz0",
+				Expected: screen("$ seq 30", "1", "▐", "3", "4", "5", "6", "7", "8", "9")},
+			{InputSequence: "G\\$aX", Expected: scrolled("30", "$ echo blaX▐")},
 		}},
 	}
 }()
