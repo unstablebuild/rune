@@ -991,8 +991,12 @@ func newBootstrapForWorkspace(
 	t.Cleanup(restoreFlags)
 
 	mu := new(sync.Mutex)
-	publishEvent, stopPump := newBootstrapPublishPump(mu)
+	pump, stopPump := newBootstrapPublishPump(mu)
 	t.Cleanup(stopPump)
+	// The host loop does not run scheduled callbacks during ide.New;
+	// hold them until construction returns, as runGUI's guiPublisher does.
+	var publisher guiPublisher
+	publishEvent := publisher.publish
 
 	rootCfg, err := ide.Config(configPath, runeDefaultConfig())
 	require.NoError(t, err)
@@ -1015,9 +1019,14 @@ func newBootstrapForWorkspace(
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = b.Close() })
 	require.NotNil(t, b.realIDE, "the workspace must give the handler a real IDE")
+	publisher.attach(pumpPublisher(pump))
 	b.realIDE.WaitWorkspaces()
 	return b, &opened
 }
+
+type pumpPublisher func(term.Event) bool
+
+func (p pumpPublisher) PublishEvent(ev term.Event) bool { return p(ev) }
 
 // tabLister is the part of the browser the link test needs.
 type tabLister interface {
