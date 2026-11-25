@@ -282,21 +282,28 @@ func (t *WebBrowser) Close() {
 }
 
 func (t *WebBrowser) session(ctx context.Context) string {
+	name := dialogueSessionName(ctx, t.dialogueID)
+	t.mu.Lock()
+	t.sessions[name] = struct{}{}
+	t.mu.Unlock()
+	return name
+}
+
+// dialogueSessionName names the session of the agent that called a tool,
+// keyed by the dialogue ID on ctx or else fallback, using only characters
+// that are safe in a file name.
+func dialogueSessionName(ctx context.Context, fallback string) string {
 	id := agent.DialogueIDFromContext(ctx)
 	if id == "" {
-		id = t.dialogueID
+		id = fallback
 	}
-	name := "rune-" + strings.Map(func(r rune) rune {
+	return "rune-" + strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
 			return r
 		}
 		return '-'
 	}, id)
-	t.mu.Lock()
-	t.sessions[name] = struct{}{}
-	t.mu.Unlock()
-	return name
 }
 
 func (t *WebBrowser) screenshotDir() string {

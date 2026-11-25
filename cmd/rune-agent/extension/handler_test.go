@@ -3320,6 +3320,68 @@ func TestHandlerWebBrowser(t *testing.T) {
 	}
 }
 
+func TestHandlerRuneGUI(t *testing.T) {
+	const host = "/opt/rune-dev/bin/rune"
+	uri := func(s string) workspaceapi.URI {
+		u, err := workspaceapi.ParseURI(s)
+		require.NoError(t, err)
+		return u
+	}
+	tests := []struct {
+		name string
+		cwd  workspaceapi.URI
+		// executable is the RUNE_EXECUTABLE Rune started the extension with.
+		executable string
+		// wantBinary reports that start runs a binary the agent names,
+		// through the workspace's executor.
+		wantBinary bool
+	}{
+		{name: "local workspace", cwd: dirURI("/workspace/project"), executable: host, wantBinary: true},
+		{name: "remote workspace", cwd: uri("ssh://dev@host/home/dev/project"), executable: host},
+		{name: "memory workspace", cwd: uri("memory:///scratch"), executable: host},
+		{name: "docs workspace", cwd: uri("docs:///"), executable: host},
+		{name: "not started by Rune", cwd: dirURI("/workspace/project")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("RUNE_EXECUTABLE", tt.executable)
+			exec := &lookupExec{}
+			h := &aiEditorHandler{ctx: context.Background(), executor: exec, cwd: tt.cwd,
+				userDataDir: t.TempDir()}
+
+			tool := h.runeGUI("chat-1")
+
+			assert.Empty(t, exec.lookups(), "rune is looked up on this machine, not the workspace")
+			if tt.executable == "" {
+				assert.Nil(t, tool)
+				return
+			}
+			require.NotNil(t, tool)
+			defer tool.Close()
+			result := tool.Execute(context.Background(), `{"command":["config","editor: {mode: vim}"]}`)
+			require.False(t, result.IsError, result.Content)
+			assert.FileExists(t, filepath.Join(h.userDataDir, "rune-gui", "rune-chat-1", "agent.yaml"),
+				"the instance's data lives in the user's data directory")
+
+			result = tool.Execute(context.Background(), `{"command":["start","--binary","/opt/bin/rune-dev"]}`)
+			cmds := exec.commands()
+			if !tt.wantBinary {
+				assert.True(t, result.IsError)
+				assert.Contains(t, result.Content, "--binary needs your workspace to be on this machine")
+				assert.Empty(t, cmds)
+				return
+			}
+			require.False(t, result.IsError, result.Content)
+			require.Len(t, cmds, 1)
+			assert.Equal(t, "/opt/bin/rune-dev", cmds[0].Path)
+			assert.Contains(t, cmds[0].Env, "RUNE_DATADIR="+filepath.Join(h.userDataDir, "rune-gui", "rune-chat-1"))
+			target, err := os.Readlink(filepath.Join(h.userDataDir, "rune-gui", "rune-chat-1", "hud"))
+			require.NoError(t, err)
+			assert.Equal(t, filepath.Join(h.userDataDir, "hud"), target, "the instance shares the user's HUD")
+		})
+	}
+}
+
 func TestExtensionDialogueLinkClick(t *testing.T) {
 	goTo := func(uri, pos string) []string {
 		return []string{"show " + uri, "editor " + uri, "cursor " + uri + " " + pos}

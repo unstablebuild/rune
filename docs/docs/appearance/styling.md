@@ -151,18 +151,23 @@ For example:
 
 From there, the agent:
 
-- Finds your config and backs it up before its first change. It then edits
-  only the keys it needs, and leaves a comment next to each value it replaces
-  that names the one before.
+- Writes each version of the theme, its config and its images, to a new
+  folder, `$RUNE_DATADIR/etc/hud-<theme>-v<N>/`, and keeps the earlier ones.
 - Draws the images, starting with the window frames, and keeps every surface
   in one style: one accent color, light from one side, and buttons and tabs
-  of the same shape. It saves each revision to a new folder under
-  `$RUNE_DATADIR/hud/<theme>/` and keeps the earlier ones, so you can roll
-  back.
-- Takes a screenshot with
-  [`runectl screenshot`](../develop/runectl.md#screenshots) after each change,
-  looks at it, and fixes what doesn't line up, such as the seams between
-  tiles, the joins between surfaces and the padding around labels.
+  of the same shape.
+- Checks each change in a Rune of its own, which runs without a window and
+  leaves yours as it is: it takes a screenshot, looks at it, and fixes what
+  doesn't line up, such as the seams between tiles, the joins between
+  surfaces and the padding around labels.
+- Once the version is ready, adds its `config.yaml` as the last entry of your
+  config's [`include`](../config.md#including-other-files) list, so it
+  overrides the files included before it, and leaves the rest of your config
+  alone. Put the previous version's entry back to roll back.
+
+The agent's own Rune needs macOS, or Linux with Mesa's EGL. When it can't
+start one, the agent tells you why and leaves your config and your Rune as
+they are.
 
 Once you have a theme, ask for one change at a time: a brighter frame around
 the focused window, a badge behind the mode in the status bar, or a new icon

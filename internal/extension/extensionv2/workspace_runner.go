@@ -558,6 +558,11 @@ func (m *workspaceRunner) makeCommand(
 		return workspaceapi.Cmd{}, nil, nil, err
 	}
 	ret.Env = append(ret.Env, fmt.Sprintf("RUNE_PID=%d", os.Getpid()))
+	// Extensions run on this machine, so they can start this same Rune,
+	// whatever another Rune on PATH is, as the agent's rune_gui tool does.
+	if exe, err := os.Executable(); err == nil {
+		ret.Env = append(ret.Env, "RUNE_EXECUTABLE="+exe)
+	}
 	stdin, releaseStdin, stdout, err := m.makeProtocolExchange(state, verifiedPublisher)
 	if err != nil {
 		cleanup()

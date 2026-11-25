@@ -9,24 +9,31 @@ description: >
   instead of a frame, for a smoother or more modern look), scroll bars,
   command prompts, editor
   and agent status-bar layouts, the quick menu, prompt buttons, wallpaper, the
-  app icon and sounds. Discover the configuration, edit it, run runectl
-  screenshot and inspect the result yourself. This is configuration and asset
-  editing, not Rune source development. Use when the user wants to create,
-  restyle or iterate on Rune's appearance or sounds.
+  app icon and sounds. Discover the configuration, stage a new version of the
+  theme, check it in a private Rune instance with rune_gui and inspect the
+  result yourself, then add it as the last entry of the user's config include
+  list. This is configuration and asset editing, not Rune source development.
+  Use when the user wants to create, restyle or iterate on Rune's appearance
+  or sounds.
 ---
 
 # Rune HUD images and sounds
 
 Own the edit-and-verify loop. Read the user's configuration and existing assets,
-make the requested changes, run `runectl screenshot`, inspect the PNG and fix
-what looks wrong. Do not ask the user to measure cells, run diagnostic commands
-or provide screenshots you can capture yourself.
+stage the requested changes as a new version of the theme with its own
+`config.yaml`, check it in a private Rune instance with the `rune_gui` tool,
+inspect the screenshots and fix what looks wrong. Once it meets the brief, add
+the version's `config.yaml` as the last entry of the `include` list in the
+user's config, so it overrides the files included before it. That entry is
+the only change to the user's config. Do not ask the user to measure cells,
+run diagnostic commands or provide screenshots you can capture yourself.
 
 ## Scope: configuration and assets only
-- Edit the theme's config file, the include line that loads it, theme assets
-  and the manifest. Generate or edit the requested sprites and wallpaper;
-  generate sounds only when requested. Keep unrelated configuration and
-  artwork unchanged.
+- Write each version's config and sprites, the theme's shared assets and the
+  manifest, and add the version to the user's `include` list. Generate or edit
+  the requested sprites and wallpaper; generate sounds only when requested.
+  Leave every other line of the user's config, and unrelated artwork,
+  unchanged.
 - Do not locate, read or modify Rune's source code to carry out an appearance
   request. Do not write parser tests, run test suites, build Rune, install a
   development toolchain or implement new template features.
@@ -37,8 +44,8 @@ or provide screenshots you can capture yourself.
 - Use the syntax and examples below. If the requested effect is unsupported,
   explain the limitation and use a supported configuration or artwork approach;
   do not turn the styling task into a code change.
-- Verify appearance with `runectl screenshot` and image inspection, not source
-  analysis or test programs.
+- Verify appearance only with `rune_gui` screenshots and image inspection, not
+  source analysis, test programs or the user's own Rune.
 - Floating-only shadows and distinct focused headers are supported config
   surfaces. Use the optional charsets below, not core changes or shared tiled
   frame edits, when the request concerns only floating windows.
@@ -53,12 +60,35 @@ or provide screenshots you can capture yourself.
   below rather than squeezing the curve into a one-cell corner sprite.
 
 ## Checking your work
-Take a baseline screenshot before editing. Run `runectl screenshot` yourself,
-then open the PNG at the printed path with your image-reading tool. Use the
-rendered result to judge proportions, spacing, legibility and seams. Repeat
-after each revision; run captures sequentially.
+Take a baseline screenshot before editing, and another after each revision.
+Use the rendered result to judge proportions, spacing, legibility and seams.
 
-Before each capture, Rune reads the active configuration file again and applies
+Check a staged version in a private Rune instance with the `rune_gui` tool, so
+the user's Rune keeps their current version until the new one is ready:
+
+1. `["config", "include:\n  - $RUNE_DATADIR/etc/hud-<theme>-v<N>/config.yaml\n"]`
+   makes the instance load that version. The instance shares the user's
+   `$RUNE_DATADIR/hud` and `$RUNE_DATADIR/etc`, so the version's URIs
+   resolve, but it starts from Rune's defaults otherwise: add any key outside
+   the theme that a surface you check depends on, such as the editor mode.
+2. `["start"]`, then `["exec", "workspaceready"]`.
+3. Open what you need to see with Rune commands and keys:
+   `["exec", "windownew right"]` for a second tile, `["exec", "edit <file>"]`
+   for an editor, `["keys", "{prompt}"]` for the command prompt.
+4. `["screenshot"]` reads the instance's config again, applies the keys listed
+   below and returns the image.
+
+Keys that are not reloaded live take effect with `["stop"]` and `["start"]`.
+The instance plays no sounds, and a surface it cannot show, such as a chat
+that needs the user's account, goes in your report as not verified.
+
+`rune_gui` is the only way to check a version. Never capture or reload the
+user's Rune, and never add an unfinished version to the user's config to see
+it. When you do not have `rune_gui`, or it reports an error you cannot fix
+with its own commands (`["log"]` shows why the instance exited), stop: tell
+the user the error and leave their config as it is.
+
+Before each capture, Rune reads the instance's configuration again and applies
 these keys to every open workspace:
 
 - `browser.window_manager`: `frame_attr`, `focus_frame_attr`, `frame_charset`,
@@ -116,19 +146,24 @@ do not claim to have verified a prompt or state that was not shown.
 - **Data directory:** read `$RUNE_DATADIR` yourself with
   `printf '%s\n' "$RUNE_DATADIR"`, including when it names a development
   installation. Do not dump the full environment, which can contain credentials.
-- **Config:** read `$RUNE_DATADIR/config.yaml`, or `config.star` if the YAML file
-  is absent. If the user supplied another config path, edit that file instead.
-  Edit Starlark with `config["a"]["b"] = ...` statements. Do not create a new
-  default config over an unidentified installation. Ask only if these checks
-  leave a genuine ambiguity or access blocker, not as a routine first step.
-- **Assets:** `$RUNE_DATADIR/hud/<theme>/v<N>/...`, sounds in
-  `$RUNE_DATADIR/hud/<theme>/sounds/`. Copy any asset the user hands you from
-  elsewhere (such as `~/Downloads`) into `hud/<theme>/` before referencing it.
+- **Config:** the user's config is `$RUNE_DATADIR/config.yaml`, or
+  `config.star` if the YAML file is absent, unless the user supplied another
+  path. Read it, and the files it includes, to learn the current theme and
+  which keys the user sets, but put every theme key in the staged version's
+  `config.yaml`, never in the user's config. Do not create a new default
+  config over an unidentified installation. Ask only if these checks leave a
+  genuine ambiguity or access blocker, not as a routine first step.
+- **Versions:** each version of a theme is a directory,
+  `$RUNE_DATADIR/etc/hud-<theme>-v<N>/`, holding its `config.yaml` and its
+  sprites. `$RUNE_DATADIR/hud/<theme>/` keeps what the versions share: the
+  manifest, sources, sounds and wallpaper. Copy any asset the user hands you
+  from elsewhere (such as `~/Downloads`) into these directories before
+  referencing it.
 - **Manifest:** keep `hud/<theme>/manifest.yaml` up to date:
 
   ```yaml
   theme: ember
-  version: 3              # the v<N> the config points at
+  version: 3              # the v<N> the user's include list selects
   background: "#080808"   # the theme background, see Colour continuity
   accent: "#d0622a"       # the one accent colour
   light: top-left         # where every surface is lit from
@@ -140,18 +175,35 @@ do not claim to have verified a prompt or state that was not shown.
   ```
 
 - **Editing the config:**
-  - Write the theme's keys to a file the theme owns,
-    `$RUNE_DATADIR/hud/<theme>/config.yaml`, and make sure the user's config
-    includes it: a YAML config lists it under the top-level `include:` key, a
-    Starlark config calls `include("$RUNE_DATADIR/hud/<theme>/config.yaml")`.
-    Add the line once, as text, and leave the rest of the user's file alone;
-    the user's own settings override the theme's, so a key the user set stays
-    in effect until they remove it.
-  - Patch only the keys you change, as text. Never round-trip the user's file
-    through a YAML library: it drops their comments.
-  - Rune reads the config again when an included file changes, so a save is
-    enough to apply the theme's live keys; `runectl screenshot` applies them
-    before each capture as well.
+  - Start a version by copying the current one to
+    `etc/hud-<theme>-v<N+1>/` and pointing the URIs in its `config.yaml` at
+    the new directory, then make every change there. A new version always has
+    new URIs, so no cached image hides a change.
+  - The user's config selects a version with one include entry, added only
+    once the version is checked. In a YAML config, append
+    `$RUNE_DATADIR/etc/hud-<theme>-v<N>/config.yaml` as the last item of the
+    top-level `include:` list, creating the list if it is missing. In a
+    Starlark config, add
+    `include("$RUNE_DATADIR/etc/hud-<theme>-v<N>/config.yaml")` after the
+    file's last `include()` call, or at its top if it has none. Included files
+    apply in order, so the last one overrides the theme keys of those before
+    it.
+  - If the list already includes an earlier version of the theme, remove
+    that entry and append the new one last, so the list holds one version of
+    the theme. Putting the earlier entry back rolls the theme back.
+  - The user's own settings override everything they include, so a theme key
+    the user set stays in effect. Do not remove it: name it in your report.
+  - A theme made before versions lived under `etc` is included from
+    `$RUNE_DATADIR/hud/<theme>/config.yaml`, with sprites in
+    `hud/<theme>/v<N>/`. Stage its next version under `etc` as above and
+    replace the old entry with the new one, last in the list; keep the old
+    files for rollback.
+  - Patch only the keys you change, as text. Never round-trip a config file
+    through a YAML library: it drops comments.
+  - Rune reads the config again when an included file changes, so once the
+    user's config includes the version, a save is enough to apply its live
+    keys there. That is why the included version stays as it is and the next
+    change goes in a new one.
 
 Layout of a theme:
 ```
@@ -160,17 +212,19 @@ hud/<theme>/
   wallpaper.png
   sources/<name>.png, <name>.prompt.txt
   sounds/<cue>.wav
-  v<N>/icon.png
-  v<N>/frame/{normal,focused,prompt}/<slot>.png
-  v<N>/panel/{normal,focused}/<slot>.png      (the 8 frame slots and center)
-  v<N>/scroll/{top,middle,bottom,hover-top,hover-middle,hover-bottom}.png
-  v<N>/scroll/focused-{top,middle,bottom,hover-top,hover-middle,hover-bottom}.png
-  v<N>/window-bar/{left,middle,right}.png
-  v<N>/separator/{left,horizontal,right}.png
-  v<N>/status/{normal,focused}/<name>.png
-  v<N>/inbox/{normal,focused}/<name>.png
-  v<N>/quickmenu/{idle,hover,pressed}/<button>.png
-  v<N>/button/{idle,selected,hover,pressed}/{left,middle,right}.png
+etc/hud-<theme>-v<N>/
+  config.yaml
+  icon.png
+  frame/{normal,focused,prompt}/<slot>.png
+  panel/{normal,focused}/<slot>.png      (the 8 frame slots and center)
+  scroll/{top,middle,bottom,hover-top,hover-middle,hover-bottom}.png
+  scroll/focused-{top,middle,bottom,hover-top,hover-middle,hover-bottom}.png
+  window-bar/{left,middle,right}.png
+  separator/{left,horizontal,right}.png
+  status/{normal,focused}/<name>.png
+  inbox/{normal,focused}/<name>.png
+  quickmenu/{idle,hover,pressed}/<button>.png
+  button/{idle,selected,hover,pressed}/{left,middle,right}.png
 ```
 Use lowercase kebab-case file names, with no spaces, `?`, `#` or `%`: they
 would need percent-encoding in a `file://` URI.
@@ -179,14 +233,15 @@ would need percent-encoding in a `file://` URI.
 1. **Use absolute URIs**, except for the wallpaper and the app icon. Image
    values are `file:///absolute/path.png` or `https://...`, with no `~` and no
    `$VARS`, except `$RUNE_DATADIR` in a `file://` URI, as in
-   `file://$RUNE_DATADIR/hud/<theme>/v1/frame/normal/topleft.png`.
+   `file://$RUNE_DATADIR/etc/hud-<theme>-v1/frame/normal/topleft.png`.
    `workspace.wallpaper_image` and `gui.app_icon` are the exceptions: they
    take a plain path, which may use `~` and environment variables.
 2. **Overwrite an image in place only if a key under Checking your work names
    it.** Rune caches images by URI for 24 hours by default, but
-   `runectl screenshot` reads those images again, so you can overwrite them
-   while you iterate. Save each version you ship in a new `v<N>` directory
-   and keep the previous one for rollback.
+   screenshots read those images again, so you can overwrite them while you
+   iterate on a staged version. Once the user's config selects a version,
+   leave it alone: make the next change in a new `etc/hud-<theme>-v<N>/`
+   directory and keep the previous one for rollback.
    - The wallpaper and the app icon are not cached: overwrite them in place.
 3. **Formats:** PNG with alpha is preferred. JPEG, GIF and WebP also load, except
    for the wallpaper, which must be a PNG. Each side is at most 8192 px.
@@ -298,10 +353,10 @@ Match background fills to the active theme. Transparent image pixels reveal
 whatever is underneath: usually the theme background, but also status colours,
 text or other images. Use that intentionally for status-bar ornaments.
 - Read `gui.default_theme`, then its `background`: from `gui.themes.<name>` in
-  the user's config when it's defined there, otherwise from the built-in list
-  below. Read its `focus_background` too, the focused canvas while
-  `focus_background_attr` and `focus_background_graphics` are unset. Record
-  both in the manifest.
+  the user's config or a file it includes when it's defined there, otherwise
+  from the built-in list below. Read its `focus_background` too, the focused
+  canvas while `focus_background_attr` and `focus_background_graphics` are
+  unset. Record both in the manifest.
 - Built-in backgrounds: furman `#202020`, romero `#000000`, carmack `#080808`,
   reynolds `#121212`, brevik `#080808`, thompson `#0f1114`, pike `#ffffea`,
   hopper `#000000`, kernighan `#0c0c0c`, wozniak `#120F1D`, auge `#270d06`,
@@ -467,25 +522,25 @@ browser:
   window_manager:
     floating_frame_charset:
       graphics: &float_shadow
-        verticalright: file://$RUNE_DATADIR/hud/custom/v1/shadow-right.png
-        horizontalbottom: file://$RUNE_DATADIR/hud/custom/v1/shadow-bottom.png
-        bottomright: file://$RUNE_DATADIR/hud/custom/v1/shadow-corner.png
+        verticalright: file://$RUNE_DATADIR/etc/hud-custom-v1/shadow-right.png
+        horizontalbottom: file://$RUNE_DATADIR/etc/hud-custom-v1/shadow-bottom.png
+        bottomright: file://$RUNE_DATADIR/etc/hud-custom-v1/shadow-corner.png
     focus_floating_frame_charset:
       graphics: *float_shadow
     window_bar_charset:
       graphics:
-        left: file://$RUNE_DATADIR/hud/custom/v1/black-left.png
-        horizontal: file://$RUNE_DATADIR/hud/custom/v1/black-middle.png
-        right: file://$RUNE_DATADIR/hud/custom/v1/black-right.png
+        left: file://$RUNE_DATADIR/etc/hud-custom-v1/black-left.png
+        horizontal: file://$RUNE_DATADIR/etc/hud-custom-v1/black-middle.png
+        right: file://$RUNE_DATADIR/etc/hud-custom-v1/black-right.png
     focus_window_bar_charset:
       graphics:
-        left: file://$RUNE_DATADIR/hud/custom/v1/lavender-left.png
-        horizontal: file://$RUNE_DATADIR/hud/custom/v1/lavender-middle.png
-        right: file://$RUNE_DATADIR/hud/custom/v1/lavender-right.png
+        left: file://$RUNE_DATADIR/etc/hud-custom-v1/lavender-left.png
+        horizontal: file://$RUNE_DATADIR/etc/hud-custom-v1/lavender-middle.png
+        right: file://$RUNE_DATADIR/etc/hud-custom-v1/lavender-right.png
 ```
 
-Create the assets and merge only the requested keys into the existing config.
-`runectl screenshot` and `themereload` refresh every optional image URI, even
+Create the assets and merge only the requested keys into the staged version's
+config. A screenshot and `themereload` refresh every optional image URI, even
 when overwritten at the same path. Removing an optional key restores its
 shared fallback on existing floats on the next capture; removing just a slot
 restores inheritance, while `""` explicitly clears it. Inspect focused and
@@ -551,7 +606,7 @@ Semantics:
   the bottom ones, so their cells show the edges.
 
 Work in the pixels of Rune's screenshots, which are at the device scale
-(`runectl screenshot` on a Retina display, or `--geometry ...@2`, is 2).
+(a `rune_gui` screenshot is at scale 2 unless its `--size` sets another).
 
 1. **Measure the cell** in a screenshot: the width of a run of text divided
    by its characters, and the distance between two lines of text.
@@ -776,11 +831,11 @@ browser:
   window_manager:
     focus_background_graphics:
       fit: fill
-      center: file://$RUNE_DATADIR/hud/custom/v1/panel/focused/center.png
-      topleft: file://$RUNE_DATADIR/hud/custom/v1/panel/focused/topleft.png
+      center: file://$RUNE_DATADIR/etc/hud-custom-v1/panel/focused/center.png
+      topleft: file://$RUNE_DATADIR/etc/hud-custom-v1/panel/focused/topleft.png
       # ...the other corners and edges
     focus_scroll_bar_charset:
-      graphics: {middle_char: file://$RUNE_DATADIR/hud/custom/v1/scroll/focused-middle.png}
+      graphics: {middle_char: file://$RUNE_DATADIR/etc/hud-custom-v1/scroll/focused-middle.png}
 ```
 
 #### Adding a focus background to a theme
@@ -916,10 +971,11 @@ Status bar rails aren't frames, and Rune paints no inside for them:
   focus. Its colours come from `browser.focus_tab_attr`,
   `browser.non_focus_tab_attr` and
   `browser.focus_tab_highlight_attr`. Every workspace shares it, so only the
-  user's config styles it, never a workspace's own.
+  user's config and the files it includes, the theme's among them, style it,
+  never a workspace's own `.rune/config.yaml`.
 - The program status inbox is `:programstatus`. Every workspace shares it, so
-  only the user's config styles it. Inspect its images only when a capture
-  shows it open with programs listed.
+  only the user's config and the files it includes style it. Inspect its
+  images only when a capture shows it open with programs listed.
 - Inbox sidebar: `program_status.sidebar_attr`, and
   `program_status.focus.sidebar_attr` while the inbox has the focus, colours
   the program list; the preview beside it keeps the window's background. The
@@ -1210,7 +1266,7 @@ are shaders, not images. They're out of scope for this skill.
 
 ## Editor and agent status-bar layouts
 
-Use this reference to edit the user's configuration without a Rune source
+Use this reference to edit the theme's configuration without a Rune source
 checkout. Dimensions below are configuration units, not measurements the user
 must supply. Start with the existing layout and refine the result using
 screenshots. Preserve the user's useful status information while changing its
@@ -1223,14 +1279,12 @@ presentation.
 | Editor | `editor.status_bar.layout` | `background_attr.bg`, `foreground_error_attr.fg` under `editor.status_bar` |
 | Agent | `extensions.rune-agent.config.status_bar.layout` | `enabled`, `background_attr`, `status`, and the gauge settings below, under `extensions.rune-agent.config.status_bar` |
 
-`runectl screenshot` applies both bars' keys to the open editors and chats and
-to those opened later, and reads their images again, so you can overwrite an
+A screenshot applies both bars' keys to the open editors and chats and to
+those opened later, and reads their images again, so you can overwrite an
 image at the same path while you iterate.
 
-Add the examples to the theme's config; do not replace unrelated keys or
-remove the user's useful fields. In Starlark, the equivalent paths are
-`config["editor"]["status_bar"]["layout"]` and
-`config["extensions"]["rune-agent"]["config"]["status_bar"]["layout"]`.
+Add the examples to the staged version's `config.yaml`; do not replace
+unrelated keys or remove the user's useful fields.
 
 ### Layout syntax
 
@@ -1657,42 +1711,44 @@ workspace: {tab_sounds: {hover: hud-ember-hover, click: hud-ember-click}}
 ```
 
 ## Apply and verify
-Run `runectl screenshot` yourself and inspect the result after each revision.
-For the keys under Checking your work, this also applies the change; do not
-ask the user to reload them. Do not restart Rune or reload the agent's own
-workspace automatically: that can interrupt the conversation and running work.
+Capture a screenshot with `rune_gui` and inspect the result after each
+revision. For the keys under Checking your work, the capture also applies the
+change. Do not restart or reload the user's Rune or the agent's own
+workspace: that can interrupt the conversation and running work. The
+`rune_gui` instance is yours to stop and start.
 For focus styles, capture with two tiles and a floating window open, so the
 focused and unfocused states, and a float over the panel, show in one
 screenshot. Capture once more with the command prompt open, and once with one
-of Rune's standard prompts open, such as the close-dirty-tabs prompt: ask the
-user to open it if you can't, and never answer it yourself. Crop and enlarge
-(4x or more) the seam between the two tiles, a frame corner, the compose box's
-corners and bottom edge, the command prompt's corners and separator, the
-standard prompt's message and edges, and both ends of each status bar, in
-both states. On each side of every line, sample the pixel colour: outside
-must be the theme background, inside the pane colour of that state. Behind
-the standard prompt's text and along the inside of its frame, the colour must
-be the same as the rest of its interior. A band, halo, notch, square corner
-or lighter rectangle in any crop means the work isn't done.
+of Rune's standard prompts open, such as the prompt that closing a tab with
+unsaved changes opens: make one in the instance with commands and keys. Crop
+and enlarge (4x or more) the seam between the two tiles, a frame corner, the
+compose box's corners and bottom edge, the command prompt's corners and
+separator, the standard prompt's message and edges, and both ends of each
+status bar, in both states. On each side of every line, sample the pixel
+colour: outside must be the theme background, inside the pane colour of that
+state. Behind the standard prompt's text and along the inside of its frame,
+the colour must be the same as the rest of its interior. A band, halo, notch,
+square corner or lighter rectangle in any crop means the work isn't done.
 
 | Change | Takes effect |
 |---|---|
-| A key listed under Checking your work, or an image it names, even overwritten at the same path | `runectl screenshot`, in every open workspace |
-| Any other `browser.*`, `command.*` or `extensions.*` key | `workspacereload` in the focused workspace |
-| Any other `gui.*` key, `animations.*` | Restart Rune. `:guiwindownew` opens a fresh process to preview them |
+| A key listed under Checking your work, or an image it names, even overwritten at the same path | The next screenshot, in every open workspace |
+| Any other `browser.*`, `command.*` or `extensions.*` key | `workspacereload` in the focused workspace, or `rune_gui` `stop` and `start` |
+| Any other `gui.*` key, `animations.*` | `rune_gui` `stop` and `start`. Once included, the user's Rune needs a restart, or `:guiwindownew` for a fresh process |
 | A sound file overwritten at the same path | The next time it plays |
-| The wallpaper file overwritten at the same path | `runectl screenshot` or `workspacereload` |
+| The wallpaper file overwritten at the same path | The next screenshot or `workspacereload` |
 | Any other image overwritten at the same URI | Never: give it a new URI |
 
-If a requested change needs a workspace reload or restart, prepare it and state
-that specific activation requirement once. After activation, capture and inspect
-the result yourself. Do not ask for a screenshot unless capture is genuinely
-unavailable. Do not claim unactivated changes have been verified.
+Check a change that needs a restart with `rune_gui` `stop` and `start`. Once
+the user's include list selects the version, tell the user once which of its
+changes need their Rune restarted. Do not ask the user for screenshots, and
+do not claim to have verified what no `rune_gui` capture showed.
 
 **Errors:**
 - Config errors appear as notifications after the reload, so the screenshot
   shows them. If the configuration file does not parse, no new styles are
-  installed. Correct the edit and capture again.
+  installed. Correct the edit and capture again. `["log"]` shows the
+  `rune_gui` instance's log.
 - An invalid URI rejects its whole `graphics` table. Correct the URI instead
   of assuming the previous images will remain.
 - An unreadable wallpaper is a config error.
@@ -1703,30 +1759,33 @@ unavailable. Do not claim unactivated changes have been verified.
 
 ## Loop
 1. Discover the active config and read it, the manifest and the existing assets.
-   Back up the config and preserve a rollback copy of any assets being replaced.
-2. Run `runectl screenshot` and inspect the baseline image.
+   Note the include entry that selects the current version, if any: it is the
+   rollback. Stage the next version in `etc/hud-<theme>-v<N+1>/`, copied from
+   the current one, or start `v1` for a new theme.
+2. Capture a baseline with `rune_gui` running the current version, and
+   inspect the image.
 3. Use the user's brief and current theme to choose the palette, material and
    light direction. Keep changes within the requested scope.
 4. Work one surface at a time without asking for approval at every step. Use
    the surface table for configuration units and the screenshot for visual fit.
 5. Generate or edit the assets, or adjust the layout using the status-bar
    reference. Inspect the asset files and test repeating tiles for seams.
-6. Patch only the relevant configuration keys. Use absolute image URIs and
-   follow the cache rules for the surface being edited.
-7. Run `runectl screenshot` again and open the returned PNG. Check readability,
-   clipping, rail continuity, background matching, transparent areas and whether
-   ornaments obscure text. When the change touches window backgrounds, the
-   theme or the inbox, open `programstatus` with programs listed and check
-   that its program list stands apart from the preview and the selected
-   entry stands apart from the list.
-8. Fix any config errors shown in the captured screenshot or in the logs at
-$RUNE_DATADIR/debug.log.
+6. Patch only the relevant keys in the staged version's config. Use absolute
+   image URIs and follow the cache rules for the surface being edited.
+7. Capture with `rune_gui` again and inspect the image. Check readability,
+   clipping, rail continuity, background matching, transparent areas and
+   whether ornaments obscure text. When the change touches window backgrounds,
+   the theme or the inbox, open `programstatus` with programs listed and check
+   that its program list stands apart from the preview and the selected entry
+   stands apart from the list.
+8. Fix any config errors shown in the screenshot or in `["log"]`.
 9. Adjust the assets, spacing, dimensions, offsets or colours and repeat steps
-   5–8 until the rendered result meets the brief. A successful file write or
+   5 to 8 until the rendered result meets the brief. A successful file write or
    screenshot command alone is not verification: inspect the resulting image.
-10. Update the manifest and report the final screenshot path, changed keys and
-   rollback location. Note any state you could not inspect or change that still
-   needs activation.
-11. Ask the user if the new UI is to their liking.
-   rollback location. Note any state you could not inspect or change that still
-   needs activation.
+10. Append the staged version as the last entry of the user's `include` list,
+    removing the previous version's entry, and update the manifest. This is
+    the only change to the user's config, and the last step.
+11. Report the version, the changed keys, any theme key the user's own
+    settings still override, and the include entry that rolls it back. Note
+    any state you could not inspect or change that still needs activation,
+    then ask the user if the new UI is to their liking.

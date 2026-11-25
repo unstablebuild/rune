@@ -534,6 +534,9 @@ func TestWorkspaceRunnerRunCarriesExtensionID(t *testing.T) {
 	assert.Contains(t, exec.cmd.Env, "RUNE_DATADIR=/tmp/ext-data",
 		"extensions run next to the IDE and see its data dir")
 	assert.Contains(t, exec.cmd.Env, fmt.Sprintf("RUNE_PID=%d", os.Getpid()))
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	assert.Contains(t, exec.cmd.Env, "RUNE_EXECUTABLE="+exe)
 
 	states := runner.listExtensions()
 	require.Len(t, states, 1)
