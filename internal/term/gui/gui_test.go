@@ -1193,7 +1193,7 @@ func TestDrawPaintsPicturesOnTheirCells(t *testing.T) {
 	t.Cleanup(screen.Deallocate)
 	benchdraw.BeginFrame(t)
 	defer benchdraw.EndFrame(t)
-	rects := r.drawImageLayer(screen, gui.writer.Images(), term.ImageLayerAboveText)
+	rects := r.drawImageLayer(nil, screen, gui.writer.Images(), term.ImageLayerAboveText)
 
 	m := gui.fontManager
 	px := func(v float64) int { return int(math.Round(v)) }

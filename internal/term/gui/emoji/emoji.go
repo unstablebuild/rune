@@ -28,6 +28,7 @@ import (
 	_ "image/jpeg" // register the JPEG decoder for JPG-format glyphs
 	_ "image/png"  // register the PNG decoder for the common emoji case
 	"os"
+	"unicode/utf8"
 
 	"github.com/go-text/typesetting/di"
 	gofont "github.com/go-text/typesetting/font"
@@ -93,6 +94,11 @@ func NewFaceFromFile(path string) (*Face, error) {
 // fonts also carry color bitmaps for (digits, '©', bare '❤', keycaps)
 // on the monochrome path.
 func (f *Face) Has(cluster []rune) bool {
+	// The renderer asks about every glyph it draws, and no ASCII rune is
+	// emoji-presented on its own.
+	if len(cluster) == 1 && cluster[0] < utf8.RuneSelf {
+		return false
+	}
 	if !emojiPresented(cluster) {
 		return false
 	}

@@ -58,6 +58,10 @@ type imageLayer struct {
 	// quad backs the vertices of tiled placements, which would
 	// otherwise be allocated for every one drawn.
 	quad [4]ebiten.Vertex
+
+	// targets are the regions of the destination placements are
+	// clipped to.
+	targets subImages
 }
 
 var (
@@ -161,14 +165,17 @@ func (l *imageLayer) drawOne(
 		// Fill replaces the pixels rather than blending over them, as a
 		// cell's background does, so a translucent window background is
 		// not composited twice.
-		dst.SubImage(p.clip).(*ebiten.Image).Fill(fill)
+		l.targets.of(dst, p.clip).Fill(fill)
 		return p.clip
 	}
 	tex := l.texture(img)
 	if tex == nil {
 		return image.Rectangle{}
 	}
-	src := tex.SubImage(p.src).(*ebiten.Image)
+	src := tex
+	if !p.src.Eq(tex.Bounds()) {
+		src = tex.SubImage(p.src).(*ebiten.Image)
+	}
 	if img.Fit == term.ImageFitTile {
 		l.quad = tileQuad(p)
 		if img.Fill {
@@ -189,7 +196,7 @@ func (l *imageLayer) drawOne(
 
 	target := dst
 	if !p.clip.Eq(dst.Bounds()) {
-		target = dst.SubImage(p.clip).(*ebiten.Image)
+		target = l.targets.of(dst, p.clip)
 	}
 	if img.Fill {
 		colorm.DrawImage(target, src, fillColorM(fill),
@@ -284,6 +291,7 @@ func (l *imageLayer) evictUnused() {
 		tex.img.Deallocate()
 		delete(l.textures, id)
 	}
+	l.targets.evictUnused()
 }
 
 func (l *imageLayer) deallocate() {
@@ -292,6 +300,55 @@ func (l *imageLayer) deallocate() {
 		delete(l.textures, id)
 	}
 	l.scratch = nil
+	l.targets.deallocate()
+}
+
+// subImages keeps the sub-images of one image across frames, so that a
+// region drawn into every frame reuses its sub-image, and the vertex
+// buffer ebiten grows for each image, instead of allocating both again.
+type subImages struct {
+	parent  *ebiten.Image
+	regions map[image.Rectangle]*subImage
+}
+
+type subImage struct {
+	img  *ebiten.Image
+	used bool
+}
+
+// of returns the sub-image of parent covering r. Asking for a region of
+// another parent releases the regions of the previous one.
+func (s *subImages) of(parent *ebiten.Image, r image.Rectangle) *ebiten.Image {
+	if parent != s.parent {
+		clear(s.regions)
+		s.parent = parent
+	}
+	if s.regions == nil {
+		s.regions = make(map[image.Rectangle]*subImage)
+	}
+	sub, ok := s.regions[r]
+	if !ok {
+		sub = &subImage{img: parent.SubImage(r).(*ebiten.Image)}
+		s.regions[r] = sub
+	}
+	sub.used = true
+	return sub.img
+}
+
+// evictUnused releases the regions not asked for since the last call.
+func (s *subImages) evictUnused() {
+	for r, sub := range s.regions {
+		if !sub.used {
+			delete(s.regions, r)
+			continue
+		}
+		sub.used = false
+	}
+}
+
+func (s *subImages) deallocate() {
+	s.parent = nil
+	s.regions = nil
 }
 
 // cropRect resolves a placement's source rectangle in Src's coordinate

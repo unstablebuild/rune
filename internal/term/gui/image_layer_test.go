@@ -207,6 +207,37 @@ func TestImageLayerTextureRejectsEmptySource(t *testing.T) {
 	assert.Empty(t, l.textures)
 }
 
+func TestSubImagesKeepsRegionsAcrossFrames(t *testing.T) {
+	parent := ebiten.NewImage(10, 10)
+	t.Cleanup(parent.Deallocate)
+	region := image.Rect(2, 3, 5, 7)
+
+	var s subImages
+	sub := s.of(parent, region)
+	assert.Equal(t, region, sub.Bounds())
+	assert.Same(t, sub, s.of(parent, region), "asked again in the same frame")
+	assert.NotSame(t, sub, s.of(parent, image.Rect(0, 0, 1, 1)), "another region")
+
+	s.evictUnused()
+	assert.Same(t, sub, s.of(parent, region), "asked for in the frame before")
+	s.evictUnused()
+	assert.Len(t, s.regions, 1, "a region not asked for in a frame is released")
+	assert.Contains(t, s.regions, region)
+
+	s.evictUnused()
+	assert.NotSame(t, sub, s.of(parent, region), "released after a frame without it")
+
+	other := ebiten.NewImage(10, 10)
+	t.Cleanup(other.Deallocate)
+	moved := s.of(other, region)
+	assert.NotSame(t, sub, moved, "a region of another image")
+	assert.Len(t, s.regions, 1, "the regions of the previous image are released")
+
+	s.deallocate()
+	assert.Empty(t, s.regions)
+	assert.Nil(t, s.parent)
+}
+
 func TestImageLayerEvictsUnplacedPictures(t *testing.T) {
 	m := testFontManager(t)
 	dst := ebiten.NewImage(200, 200)
@@ -500,7 +531,7 @@ func TestDrawImageLayerTiles(t *testing.T) {
 
 	benchdraw.BeginFrame(t)
 	defer benchdraw.EndFrame(t)
-	assert.Equal(t, want, r.drawImageLayer(screen, images, term.ImageLayerBelowText),
+	assert.Equal(t, want, r.drawImageLayer(nil, screen, images, term.ImageLayerBelowText),
 		"each piece paints the cells it still covers")
 	assert.Len(t, r.images.textures, 1, "the pieces share one upload")
 }
@@ -577,7 +608,7 @@ func TestDrawImageLayerFills(t *testing.T) {
 			benchdraw.BeginFrame(t)
 			defer benchdraw.EndFrame(t)
 			assert.Equal(t, []image.Rectangle{want},
-				r.drawImageLayer(screen, []term.Image{tt.img}, term.ImageLayerBelowBackground))
+				r.drawImageLayer(nil, screen, []term.Image{tt.img}, term.ImageLayerBelowBackground))
 			assert.Len(t, r.images.textures, tt.uploads)
 		})
 	}
@@ -646,15 +677,15 @@ func TestDrawImageLayerPartitions(t *testing.T) {
 	benchdraw.BeginFrame(t)
 	defer benchdraw.EndFrame(t)
 
-	rects := r.drawImageLayer(screen, images, term.ImageLayerBelowText)
+	rects := r.drawImageLayer(nil, screen, images, term.ImageLayerBelowText)
 	require.Len(t, rects, 1, "only the below-text placement is painted")
 	assert.Equal(t, cellRectToPixels(below.Bounds(), r.fontManager), rects[0])
 
-	rects = r.drawImageLayer(screen, images, term.ImageLayerAboveText)
+	rects = r.drawImageLayer(nil, screen, images, term.ImageLayerAboveText)
 	require.Len(t, rects, 1)
 	assert.Equal(t, cellRectToPixels(above.Bounds(), r.fontManager), rects[0])
 
-	assert.Empty(t, r.drawImageLayer(screen, images, term.ImageLayerBelowBackground))
+	assert.Empty(t, r.drawImageLayer(nil, screen, images, term.ImageLayerBelowBackground))
 	assert.Len(t, r.images.textures, 2, "each placement uploaded its own picture")
 }
 
@@ -754,7 +785,7 @@ func TestDrawImageLayerVerticalRenderOffset(t *testing.T) {
 
 			benchdraw.BeginFrame(t)
 			defer benchdraw.EndFrame(t)
-			assert.Equal(t, want, r.drawImageLayer(screen, images, term.ImageLayerAboveText))
+			assert.Equal(t, want, r.drawImageLayer(nil, screen, images, term.ImageLayerAboveText))
 		})
 	}
 }
@@ -891,7 +922,7 @@ func TestDrawImageLayerOffset(t *testing.T) {
 
 			benchdraw.BeginFrame(t)
 			defer benchdraw.EndFrame(t)
-			assert.Equal(t, tt.want, r.drawImageLayer(screen, w.Images(), term.ImageLayerAboveText))
+			assert.Equal(t, tt.want, r.drawImageLayer(nil, screen, w.Images(), term.ImageLayerAboveText))
 		})
 	}
 }
