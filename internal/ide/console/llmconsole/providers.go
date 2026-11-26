@@ -27,7 +27,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
-	"github.com/unstablebuild/rune-go-sdk/handler/inputbox"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -50,20 +49,18 @@ var hostedProviders = []string{
 type providersConfig struct {
 	storage  storageapi.Service
 	router   *llmrouter.Router
-	wm       browserapi.WindowManager
 	notifs   browserapi.Notifications
 	schedule func(func()) bool
-	prompt   PromptOpener
+	prompt   browserapi.Prompter
 }
 
 // providersHandler implements the `models providers` subtree.
 type providersHandler struct {
 	storage  storageapi.Service
 	router   *llmrouter.Router
-	wm       browserapi.WindowManager
 	notifs   browserapi.Notifications
 	schedule func(func()) bool
-	prompt   PromptOpener
+	prompt   browserapi.Prompter
 	// verify tests an API key before storing it. It defaults to the
 	// router's live verification; tests swap in a fake to avoid network
 	// calls. region scopes the probe for region-bound providers (Bedrock)
@@ -78,7 +75,6 @@ func newProvidersHandler(cfg providersConfig) *providersHandler {
 	h := &providersHandler{
 		storage:  cfg.storage,
 		router:   cfg.router,
-		wm:       cfg.wm,
 		notifs:   cfg.notifs,
 		schedule: cfg.schedule,
 		prompt:   cfg.prompt,
@@ -595,7 +591,7 @@ func (c *completionIter) Close() error {
 	return nil
 }
 
-// providerAdd opens a redacted floating prompt to capture an API key for
+// providerAdd opens a prompt with a secret field to capture an API key for
 // the given provider, verifies it live, and stores it on success. On a
 // verification failure it opens a yes/no confirmation prompt carrying the
 // provider's error. The work is asynchronous; the returned iterator stays
@@ -649,41 +645,37 @@ func addKeyHelp(provider string) string {
 	return usageMarkdown(add)
 }
 
-// openKeyPrompt schedules the redacted inputbox onto the event loop. ci is
+// openKeyPrompt schedules the key prompt onto the event loop. ci is
 // signaled on every terminal outcome so the add command's iterator
 // completes only once the prompt has fully resolved.
 func (h *providersHandler) openKeyPrompt(
 	ctx context.Context, provider, name, region string, ci *completionIter,
 ) {
 	h.schedule(func() {
-		ib := inputbox.New(
-			inputbox.WithPrompt(
-				fmt.Sprintf("Paste your %s API key: ", providerLabel(provider))),
-			inputbox.WithRedact(true),
-			inputbox.WithCtrlCAborts(),
-		)
-		fh := &keyInputFloating{
-			ib:    ib,
-			label: fmt.Sprintf("Paste your %s API key: ", providerLabel(provider)),
-			onDone: func(key string, aborted bool) {
-				key = strings.TrimSpace(key)
-				if aborted || key == "" {
-					ci.signalDone()
-					return
-				}
-				h.verifyAndStore(ctx, provider, name, key, region, ci)
+		// The prompt closes after it is answered, when verification
+		// is the one left to signal ci.
+		answered := false
+		_, err := h.prompt.Prompt(browserapi.PromptConfig{
+			Message: fmt.Sprintf("Paste your %s API key", providerLabel(provider)),
+			Options: []string{"Add"},
+			Fields:  []browserapi.Field{{Question: "API key", Secret: true, Mandatory: true}},
+		}, handler.FuncAnswerHandler(
+			func(_ int, _ string, answers []string) {
+				answered = true
+				h.verifyAndStore(ctx, provider, name, strings.TrimSpace(answers[0]), region, ci)
 			},
-		}
-		win, err := h.wm.Floating(fh, browserapi.FloatingConfig{
-			Alignment: component.AlignmentCentered,
-		})
+			func() error {
+				if !answered {
+					ci.signalDone()
+				}
+				return nil
+			},
+		))
 		if err != nil {
 			_, _ = h.notifs.Notify(browserapi.LevelError,
 				"open %s api key prompt: %v", provider, err)
 			ci.signalDone()
-			return
 		}
-		fh.win = win
 	})
 }
 
@@ -731,18 +723,22 @@ func (h *providersHandler) openConfirmPrompt(
 	message := fmt.Sprintf(
 		"This api key was tested and `%s` returned the following error:\n\n```\n%s\n```\n\nDo you still want to add it?",
 		provider, verifyErr.Error())
-	h.prompt.Prompt(
-		message,
-		[]string{yesOpt, noOpt},
-		[]term.KeyComb{{Ch: 'y'}, {Ch: 'n'}},
-		handler.FuncPromptHandler(func(idx int, _ string) {
-			if idx == 0 {
-				h.storeKey(ctx, provider, name, key, region, ci)
-				return
-			}
-			_, _ = h.notifs.Notify(browserapi.LevelInfo,
-				"%s api key '%s' not added", provider, name)
-			ci.signalDone()
-		}, func() error { ci.signalDone(); return nil }),
-	)
+	_, err := h.prompt.Prompt(browserapi.PromptConfig{
+		Message:  message,
+		Options:  []string{yesOpt, noOpt},
+		Bindings: []term.KeyComb{{Ch: 'y'}, {Ch: 'n'}},
+	}, handler.FuncPromptHandler(func(idx int, _ string) {
+		if idx == 0 {
+			h.storeKey(ctx, provider, name, key, region, ci)
+			return
+		}
+		_, _ = h.notifs.Notify(browserapi.LevelInfo,
+			"%s api key '%s' not added", provider, name)
+		ci.signalDone()
+	}, func() error { ci.signalDone(); return nil }))
+	if err != nil {
+		_, _ = h.notifs.Notify(browserapi.LevelError,
+			"open %s api key confirmation: %v", provider, err)
+		ci.signalDone()
+	}
 }

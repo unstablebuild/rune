@@ -1918,7 +1918,8 @@ config["command"]["show_manual"] = False
 ## Dialogs
 
 When Rune asks you a question, such as whether to discard unsaved changes, it
-opens a dialog with a row of buttons. Its keys live under `browser.prompt`:
+opens a dialog with a row of buttons, and fields to type into when it needs
+text, such as a password. Its keys live under `browser.prompt`:
 
 | Key | Styles |
 | --- | --- |
@@ -1927,6 +1928,13 @@ opens a dialog with a row of buttons. Its keys live under `browser.prompt`:
 | `hover_attr` | A button under the pointer. |
 | `clicked_attr` | A button while you click it. |
 | `background_attr` | The dialog around its message and buttons. |
+| `field_attr` | Where you type the answers to the dialog's questions, on the colors of `background_attr`. |
+| `focus_field_attr` | The field your keys go to. Left empty, it is `field_attr`. |
+| `placeholder_attr` | The hint an empty field shows. Left empty, it is gray. |
+
+Each field is framed like a window, in the `frame_charset` and `frame_attr` of
+`browser.window_manager`, and the field your keys go to in its
+`focus_frame_charset` and `focus_frame_attr`.
 
 The message itself is drawn on the theme's background, whatever
 `background_attr` says, so a `background_attr` far from it leaves the

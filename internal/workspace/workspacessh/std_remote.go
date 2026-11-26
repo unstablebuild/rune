@@ -32,6 +32,7 @@ import (
 
 	gitknownhosts "github.com/go-git/go-git/v6/plumbing/transport/ssh/knownhosts"
 	"github.com/unstablebuild/blue/bluectx"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"golang.org/x/crypto/ssh"
@@ -323,7 +324,7 @@ func dialOnce(
 	username string, hostkeyCallback ssh.HostKeyCallback, hostKeyAlgos []string,
 	keyPaths []string, includeFallbacks bool, passCache *passwordCache, sessionPinned bool,
 ) (remote, error) {
-	auths, err := authMethodsFromURI(ctx, cfg, uri, ui, keyPaths, includeFallbacks, passCache)
+	auths, err := authMethodsFromURI(ctx, cfg, uri, ui, username, keyPaths, includeFallbacks, passCache)
 	if err != nil {
 		return nil, err
 	}
@@ -606,12 +607,14 @@ func (r *stdRemote) Close() error {
 //
 // The Go ssh client only invokes a callback when the server's
 // methodsAllowed list advertises the corresponding method, so the user
-// only sees prompts that can succeed.
+// only sees prompts that can succeed. The prompts name username at the
+// host of uri.
 func authMethodsFromURI(
-	ctx context.Context, cfg sshConfig, uri workspaceapi.URI, ui UI,
+	ctx context.Context, cfg sshConfig, uri workspaceapi.URI, ui UI, username string,
 	keyPaths []string, includeFallbacks bool, passCache *passwordCache,
 ) ([]ssh.AuthMethod, error) {
 	var auths []ssh.AuthMethod
+	target := username + "@" + uri.Hostname()
 
 	// 1. URI-embedded password takes precedence: no prompt needed.
 	if pass, ok := uri.Password(); ok {
@@ -654,10 +657,13 @@ func authMethodsFromURI(
 					passAttempts))
 			}
 			passAttempts++
-			pass, err := ui.PromptSecret(ctx, "ssh password: ")
+			answers, err := ui.PromptFields(ctx,
+				"SSH password for "+escapeMarkdown(target),
+				[]browserapi.Field{{Question: "Password", Secret: true}})
 			if err != nil {
 				return "", err
 			}
+			pass := answers[0]
 			passCache.put(pass)
 			return pass, nil
 		}),
@@ -674,7 +680,7 @@ func authMethodsFromURI(
 	if cfg.kbdInteractive {
 		auths = append(auths, ssh.RetryableAuthMethod(
 			ssh.KeyboardInteractive(func(name, instruction string, questions []string, echos []bool) ([]string, error) {
-				return askKbd(ctx, ui, name, instruction, questions, echos)
+				return askKbd(ctx, ui, target, name, instruction, questions, echos)
 			}),
 			3,
 		))
@@ -684,7 +690,7 @@ func authMethodsFromURI(
 }
 
 // gatherSigners parses the given private key paths into ssh.Signer values.
-// When a key file is encrypted, ui.PromptSecret is used to collect the
+// When a key file is encrypted, ui.PromptFields is used to collect the
 // passphrase. Keys that fail to parse are notified to the user but skipped,
 // so a single broken key does not prevent the others from being tried.
 func gatherSigners(ctx context.Context, keyPaths []string, ui UI) ([]ssh.Signer, error) {
@@ -744,47 +750,59 @@ func signerForKey(ctx context.Context, keyPath string, ui UI) (ssh.Signer, error
 	if _, ok := err.(*ssh.PassphraseMissingError); !ok {
 		return nil, fmt.Errorf("could not parse private key: %w", err)
 	}
-	passphrase, err := ui.PromptSecret(ctx,
-		fmt.Sprintf("passphrase for ssh key %s: ", keyPath))
+	answers, err := ui.PromptFields(ctx,
+		"Passphrase for the SSH key "+escapeMarkdown(keyPath),
+		[]browserapi.Field{{Question: "Passphrase", Secret: true}})
 	if err != nil {
 		return nil, fmt.Errorf("passphrase prompt: %w", err)
 	}
-	signer, err = ssh.ParsePrivateKeyWithPassphrase(privateKey, []byte(passphrase))
+	signer, err = ssh.ParsePrivateKeyWithPassphrase(privateKey, []byte(answers[0]))
 	if err != nil {
 		return nil, fmt.Errorf("could not parse private key with passphrase: %w", err)
 	}
 	return signer, nil
 }
 
-// askKbd answers a single round of keyboard-interactive challenges. Each
-// non-empty question is forwarded to ui.PromptSecret (echo=false) or
-// ui.PromptText (echo=true).
+// askKbd answers a single round of keyboard-interactive challenges for
+// target in one prompt: the server's name and instruction make its
+// message, and each question a field, hidden unless the server echoes
+// it. A round without questions answers none without prompting.
 func askKbd(
-	ctx context.Context, ui UI,
+	ctx context.Context, ui UI, target string,
 	name, instruction string, questions []string, echos []bool,
 ) ([]string, error) {
-	answers := make([]string, len(questions))
-	for i, q := range questions {
-		label := q
-		if instruction != "" && i == 0 {
-			label = instruction + "\n" + q
-		}
-		_ = name
-		var (
-			ans string
-			err error
-		)
-		if i < len(echos) && echos[i] {
-			ans, err = ui.PromptText(ctx, label, "")
-		} else {
-			ans, err = ui.PromptSecret(ctx, label)
-		}
-		if err != nil {
-			return nil, err
-		}
-		answers[i] = ans
+	if len(questions) == 0 {
+		return []string{}, nil
 	}
-	return answers, nil
+	message := "SSH login to " + escapeMarkdown(target)
+	for _, s := range []string{name, instruction} {
+		if s = strings.TrimSpace(s); s != "" {
+			message += "\n\n" + escapeMarkdown(s)
+		}
+	}
+	fields := make([]browserapi.Field, len(questions))
+	for i, q := range questions {
+		// Servers end their questions in ": " for a terminal to
+		// type after, where the prompt draws the answer apart.
+		q = strings.TrimRight(strings.TrimSpace(q), ":")
+		if q == "" {
+			q = fmt.Sprintf("Answer %d", i+1)
+		}
+		fields[i] = browserapi.Field{Question: q, Secret: !echos[i]}
+	}
+	return ui.PromptFields(ctx, message, fields)
+}
+
+var markdownEscaper = strings.NewReplacer(
+	`\`, `\\`, "`", "\\`", `*`, `\*`, `_`, `\_`, `[`, `\[`, `]`, `\]`,
+	`<`, `\<`, `>`, `\>`, `#`, `\#`, `|`, `\|`,
+)
+
+// escapeMarkdown keeps the text of a prompt's message that comes from
+// the server or the user, such as the underscores of id_ed25519, from
+// being read as markup.
+func escapeMarkdown(s string) string {
+	return markdownEscaper.Replace(s)
 }
 
 // translateDialError maps a raw ssh.Dial error to a user-friendly typed

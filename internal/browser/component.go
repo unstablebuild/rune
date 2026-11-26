@@ -1538,11 +1538,13 @@ func (c *Component) Selection() (string, bool) {
 // cfg.Message, rendered as markdown, and takes over events until the
 // user picks an option or closes the window, which promptHandler is
 // told as browserapi.Prompter describes. The prompt is styled with
-// Config.PromptConfig. It panics when cfg.Validate fails.
+// Config.PromptConfig. Picking an option while a Mandatory field is
+// blank raises an error notification and keeps the prompt open. It
+// panics when cfg.Validate fails.
 //
 // Prompt uses cfg.Message to de-duplicate prompts: while a prompt with
 // the same message is open, it returns that prompt's window and
-// promptHandler is never called.
+// promptHandler is never called, whatever the fields of either.
 func (c *Component) Prompt(
 	cfg browserapi.PromptConfig, promptHandler handler.PromptHandler,
 ) Window {
@@ -1558,22 +1560,48 @@ func (c *Component) Prompt(
 		message: cfg.Message,
 	}
 	style := c.config.PromptConfig
+	wm := c.config.WindowManagerConfig
+	fields := make([]handler.PromptField, len(cfg.Fields))
+	for i, f := range cfg.Fields {
+		fields[i] = handler.PromptField{
+			Question:    f.Question,
+			Answer:      f.Answer,
+			Secret:      f.Secret,
+			Mandatory:   f.Mandatory,
+			Placeholder: f.Placeholder,
+		}
+	}
 	promptConfig := handler.PromptConfig{
 		PromptConfig: component.PromptConfig{
 			Message:              cfg.Message,
 			Options:              cfg.Options,
 			BackgroundAttributes: style.BackgroundAttr,
+			FieldAttr:            style.FieldAttr,
+			FocusFieldAttr:       style.FocusFieldAttr,
+			FieldFrame:           wm.FrameCharSet,
+			FocusFieldFrame:      wm.FocusFrameCharSet,
+			FieldFrameAttr:       wm.FrameAttr,
+			FocusFieldFrameAttr:  wm.FocusFrameAttr,
 			MinWidth:             style.MinWidth,
 			NewMessage: func(str string) component.Floating {
 				return c.promptMessage(str, cfg.MaxWidth)
 			},
 			ButtonImages: c.ButtonImages(),
 		},
-		PromptHandler:  clearHandler,
-		OptionBindings: cfg.Bindings,
-		OptionAttr:     style.TextAttr,
-		HighlightAttr:  style.HighlightAttr,
-		ClickedAttr:    style.ClickedAttr,
+		PromptHandler: clearHandler,
+		Fields:        fields,
+		OnUnanswered: func(i int) {
+			if q := cfg.Fields[i].Question; q != "" {
+				c.notify(browserapi.LevelError, "%s is required", q)
+				return
+			}
+			c.notify(browserapi.LevelError, "An answer is required")
+		},
+		OptionBindings:  cfg.Bindings,
+		OptionAttr:      style.TextAttr,
+		HighlightAttr:   style.HighlightAttr,
+		ClickedAttr:     style.ClickedAttr,
+		PlaceholderAttr: style.PlaceholderAttr,
 	}
 
 	prompt := handler.NewPrompt(promptConfig)
@@ -2361,6 +2389,15 @@ func (c *clearOnClosePromptHandler) clear() {
 
 func (c *clearOnClosePromptHandler) OnSelect(idx int, option string) {
 	c.clear()
+	c.root.OnSelect(idx, option)
+}
+
+func (c *clearOnClosePromptHandler) OnAnswer(idx int, option string, answers []string) {
+	c.clear()
+	if ah, ok := c.root.(handler.AnswerHandler); ok {
+		ah.OnAnswer(idx, option, answers)
+		return
+	}
 	c.root.OnSelect(idx, option)
 }
 

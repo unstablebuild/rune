@@ -35,6 +35,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"golang.org/x/crypto/ssh"
 	"unstable.build/rune/internal/debug"
@@ -83,8 +84,8 @@ func TestStdRemoteAuthCallbacks(t *testing.T) {
 		require.NoError(t, err)
 		_ = r.Close()
 		require.Len(t, ui.prompts, 1)
-		assert.Contains(t, ui.prompts[0], "secret:")
-		assert.Contains(t, ui.prompts[0], "ssh password")
+		assert.Contains(t, ui.prompts[0], "secret:Password")
+		assert.Contains(t, ui.prompts[0], "SSH password for test@"+uri.Hostname())
 	})
 
 	t.Run("password-only retries up to 3 times on wrong answer", func(t *testing.T) {
@@ -191,14 +192,17 @@ func TestStdRemoteAuthCallbacks(t *testing.T) {
 		assert.Equal(t, "hunter2", got, "cache must be updated with the freshly typed password")
 	})
 
-	t.Run("keyboard-interactive prompts for each challenge", func(t *testing.T) {
+	t.Run("keyboard-interactive asks each round in one prompt", func(t *testing.T) {
 		srvCfg := &ssh.ServerConfig{
 			KeyboardInteractiveCallback: func(_ ssh.ConnMetadata, c ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
-				answers, err := c("login", "Please answer", []string{"OTP: "}, []bool{false})
+				if _, err := c("", "", nil, nil); err != nil {
+					return nil, err
+				}
+				answers, err := c("login", "Please *answer*", []string{"User: ", "OTP: ", ""}, []bool{true, false, false})
 				if err != nil {
 					return nil, err
 				}
-				if len(answers) == 1 && answers[0] == "123456" {
+				if slices.Equal(answers, []string{"me", "123456", "x"}) {
 					return nil, nil
 				}
 				return nil, fmt.Errorf("bad otp")
@@ -206,7 +210,7 @@ func TestStdRemoteAuthCallbacks(t *testing.T) {
 		}
 		srv := startInProcessServer(t, srvCfg)
 
-		ui := &recordingUI{secrets: []string{"123456"}}
+		ui := &recordingUI{texts: []string{"me"}, secrets: []string{"123456", "x"}}
 		cfg := configForCallbackTest(t, srv, nil)
 		cfg.kbdInteractive = true
 		uri := uriForServer(t, srv, "")
@@ -214,8 +218,15 @@ func TestStdRemoteAuthCallbacks(t *testing.T) {
 		r, err := newStdRemote(context.Background(), cfg, uri, ui, nil, nil)
 		require.NoError(t, err)
 		_ = r.Close()
-		require.NotEmpty(t, ui.prompts)
-		assert.Contains(t, ui.prompts[len(ui.prompts)-1], "OTP")
+		require.Len(t, ui.messages, 1, "a round without questions does not prompt; saw %v", ui.prompts)
+		assert.Equal(t,
+			"SSH login to test@"+uri.Hostname()+"\n\nlogin\n\nPlease \\*answer\\*",
+			ui.messages[0])
+		assert.Equal(t, [][]browserapi.Field{{
+			{Question: "User"},
+			{Question: "OTP", Secret: true},
+			{Question: "Answer 3", Secret: true},
+		}}, ui.fields)
 	})
 
 	t.Run("publickey-only server with no keys returns helpful error", func(t *testing.T) {
@@ -369,10 +380,13 @@ func TestPasswordRetryNotifiesOnFailure(t *testing.T) {
 	}
 }
 
-// recordingUI captures prompts and replies with canned answers.
+// recordingUI captures prompts and replies with canned answers: secret
+// fields with secrets and the others with texts, in order.
 type recordingUI struct {
 	mu           sync.Mutex
 	prompts      []string
+	messages     []string
+	fields       [][]browserapi.Field
 	secrets      []string
 	texts        []string
 	choice       int
@@ -382,28 +396,35 @@ type recordingUI struct {
 	levels       []NotificationLevel
 }
 
-func (u *recordingUI) PromptSecret(_ context.Context, label string) (string, error) {
+func (u *recordingUI) PromptFields(
+	_ context.Context, message string, fields []browserapi.Field,
+) ([]string, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.prompts = append(u.prompts, "secret:"+label)
-	if len(u.secrets) == 0 {
-		return "", context.Canceled
+	u.messages = append(u.messages, message)
+	u.fields = append(u.fields, fields)
+	prompt := "fields:" + message
+	for _, f := range fields {
+		if f.Secret {
+			prompt += "\nsecret:" + f.Question
+		} else {
+			prompt += "\ntext:" + f.Question
+		}
 	}
-	ans := u.secrets[0]
-	u.secrets = u.secrets[1:]
-	return ans, nil
-}
-
-func (u *recordingUI) PromptText(_ context.Context, label, _ string) (string, error) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.prompts = append(u.prompts, "text:"+label)
-	if len(u.texts) == 0 {
-		return "", context.Canceled
+	u.prompts = append(u.prompts, prompt)
+	answers := make([]string, len(fields))
+	for i, f := range fields {
+		queue := &u.texts
+		if f.Secret {
+			queue = &u.secrets
+		}
+		if len(*queue) == 0 {
+			return nil, context.Canceled
+		}
+		answers[i] = (*queue)[0]
+		*queue = (*queue)[1:]
 	}
-	ans := u.texts[0]
-	u.texts = u.texts[1:]
-	return ans, nil
+	return answers, nil
 }
 
 func (u *recordingUI) PromptChoice(_ context.Context, label string, _ []string) (int, error) {

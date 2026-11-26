@@ -2162,6 +2162,27 @@ func (c ideConfig) promptBackgroundAttr() term.Attributes {
 	)
 }
 
+func (c ideConfig) promptFieldAttr() term.Attributes {
+	return c.getCfgAttr(
+		"field_attr", browser.DefaultConfig().FieldAttr,
+		"prompt", c.prompt,
+	)
+}
+
+func (c ideConfig) promptFocusFieldAttr() term.Attributes {
+	return c.getCfgAttr(
+		"focus_field_attr", browser.DefaultConfig().FocusFieldAttr,
+		"prompt", c.prompt,
+	)
+}
+
+func (c ideConfig) promptPlaceholderAttr() term.Attributes {
+	return c.getCfgAttr(
+		"placeholder_attr", browser.DefaultConfig().PlaceholderAttr,
+		"prompt", c.prompt,
+	)
+}
+
 func (c ideConfig) commandOverlayMatchedTextAttr() (ret term.Attributes) {
 	def := text.DefaultCommandOverlayConfig().MatchedTextAttr
 	return c.getCommandAttr("matched_text_attr", def)
@@ -2354,6 +2375,9 @@ func (c ideConfig) promptConfig() browser.PromptConfig {
 	ret.HoverAttr = c.promptHoverAttr()
 	ret.ClickedAttr = c.promptClickedAttr()
 	ret.BackgroundAttr = c.promptBackgroundAttr()
+	ret.FieldAttr = c.promptFieldAttr()
+	ret.FocusFieldAttr = c.promptFocusFieldAttr()
+	ret.PlaceholderAttr = c.promptPlaceholderAttr()
 	ret.Images = c.promptImages()
 	return ret
 }

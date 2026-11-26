@@ -294,6 +294,14 @@ browser:
         clicked_attr:
             bg: purple
             fg: white
+        field_attr:
+            bg: navy
+        focus_field_attr:
+            bg: blue
+            fg: white
+        placeholder_attr:
+            fg: silver
+            flags: italic
     window_manager:
         frame: true
         dim: false
@@ -2393,11 +2401,14 @@ func TestConfigSetting(t *testing.T) {
 	}, cfg.tabStatusNotifyConfig())
 
 	expectedPrompt := browser.PromptConfig{
-		TextAttr:      term.Attributes{Fg: term.ColorTeal},
-		HighlightAttr: term.Attributes{Fg: term.GetColor("#f0f0f0"), Bg: term.ColorRed},
-		HoverAttr:     term.Attributes{Fg: term.ColorNavy, Bg: term.ColorSilver},
-		ClickedAttr:   term.Attributes{Fg: term.ColorWhite, Bg: term.ColorPurple},
-		MinWidth:      browser.DefaultConfig().MinWidth,
+		TextAttr:        term.Attributes{Fg: term.ColorTeal},
+		HighlightAttr:   term.Attributes{Fg: term.GetColor("#f0f0f0"), Bg: term.ColorRed},
+		HoverAttr:       term.Attributes{Fg: term.ColorNavy, Bg: term.ColorSilver},
+		ClickedAttr:     term.Attributes{Fg: term.ColorWhite, Bg: term.ColorPurple},
+		FieldAttr:       term.Attributes{Bg: term.ColorNavy},
+		FocusFieldAttr:  term.Attributes{Fg: term.ColorWhite, Bg: term.ColorBlue},
+		PlaceholderAttr: term.Attributes{Fg: term.ColorSilver, Attrs: term.AttrItalic},
+		MinWidth:        browser.DefaultConfig().MinWidth,
 	}
 	assert.Equal(t, expectedPrompt, cfg.promptConfig())
 

@@ -182,7 +182,15 @@ type PromptConfig struct {
 	// release that selects it.
 	ClickedAttr    term.Attributes
 	BackgroundAttr term.Attributes
-	MinWidth       int
+	// FieldAttr styles the inputs of a prompt's text fields, and
+	// FocusFieldAttr the input of the field in focus. Their frames are
+	// those of WindowManagerConfig, the focused field's its focus frame.
+	FieldAttr      term.Attributes
+	FocusFieldAttr term.Attributes
+	// PlaceholderAttr styles the placeholder of an empty field. Left
+	// zero, it is gray.
+	PlaceholderAttr term.Attributes
+	MinWidth        int
 	// Images names the images that writers that can draw images show
 	// under the prompt's buttons, in place of their background.
 	Images PromptImages
@@ -430,6 +438,9 @@ func (c Config) Restyled(s Style) Config {
 	c.PromptConfig.HoverAttr = s.Prompt.HoverAttr
 	c.PromptConfig.ClickedAttr = s.Prompt.ClickedAttr
 	c.PromptConfig.BackgroundAttr = s.Prompt.BackgroundAttr
+	c.PromptConfig.FieldAttr = s.Prompt.FieldAttr
+	c.PromptConfig.FocusFieldAttr = s.Prompt.FocusFieldAttr
+	c.PromptConfig.PlaceholderAttr = s.Prompt.PlaceholderAttr
 	c.PromptConfig.Images = s.Prompt.Images
 	c.Wallpaper = s.Wallpaper
 	c.FocusTabAttr = s.Tabs.FocusTabAttr

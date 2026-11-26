@@ -52,7 +52,7 @@ for a specific one. The main groups:
 | `runectl screenshot` | Take a GUI screenshot and print its absolute path. |
 | `runectl exec -- <cmd> [args...]` | Run a command through the workspace executor. |
 | `runectl editor ...` | Read and edit buffer text, cursors, and location lists. |
-| `runectl wm ...` | Window-manager actions: focus, split, float, close. |
+| `runectl wm ...` | Window-manager actions: focus, split, float, close, and [prompt](#prompts) the user. |
 | `runectl lsp ...` | Language-server queries: definitions, references, diagnostics, rename, symbols, and more. |
 | `runectl syntax ...` | Tree-sitter searches and structural queries across the workspace. |
 | `runectl storage ...` | Create, read, update, and delete extension documents. |
@@ -93,7 +93,8 @@ keys to every open workspace, as `themereload` does:
   `focus_tab_highlight_char`, `tab_images`,
   `focus_tab_highlight_graphics` and `tab_sounds`;
 - `browser.prompt`: `text_attr`, `highlight_attr`, `hover_attr`,
-  `clicked_attr`, `background_attr` and `images`;
+  `clicked_attr`, `background_attr`, `field_attr`, `focus_field_attr`,
+  `placeholder_attr` and `images`;
 - `command.frame_charset`, `command.separator_charset` and
   `command.show_manual`;
 - `editor.status_bar`: `layout`, `background_attr`,
@@ -143,6 +144,48 @@ Screenshots require GUI mode. TUI sessions safely discard the request, and
 output, not native window borders or the desktop behind it. Requests sharing
 a data directory should run sequentially: simultaneous requests can observe
 the same new file.
+
+## Prompts
+
+```sh
+choice=$(runectl wm prompt 'Deploy *main* to production?' Deploy Cancel)
+```
+
+`runectl wm prompt <message> <option>...` opens a dialog that asks the
+markdown `<message>`, waits for the user to pick one of the options and
+prints it. It fails if the user dismisses the dialog, or if one with the same
+message is already open, and stopping the command closes the dialog.
+
+| Flag | What it does |
+| --- | --- |
+| `-k`, `--keys` | Keys that pick each option in order, such as `yn` or `<enter><esc>`. |
+| `-w`, `--max-width` | Size the message to its widest line, wrapping at this many cells. |
+| `--field QUESTION[=ANSWER]` | Ask a question the user answers by typing, starting from `ANSWER`. |
+| `--secret QUESTION[=ANSWER]` | The same, with the answer hidden as typed. |
+| `--mandatory` | Keep the options from being picked while the answer to the `--field` or `--secret` before it is blank. |
+| `--placeholder TEXT` | Show `TEXT` in the `--field` or `--secret` before it while its answer is empty. It is never the answer. |
+
+Questions show in the order given, between the message and the options, and
+the answers are printed a line each after the option:
+
+```sh
+runectl wm prompt 'Log in to *db*' OK Cancel \
+  --field User=me --secret Password --mandatory -F json
+```
+
+```json
+{"Answers":["me","hunter2"],"Index":0,"Option":"OK","success":true}
+```
+
+Tab and Shift-Tab, or Down and Up, move between the questions and the row of
+options. Enter moves to the next question, and picks the selected option from
+the last one. The `--keys` only pick an option from the row of options, so a
+`y` typed into a question is just text. Esc and Ctrl+C dismiss the dialog.
+
+A secret answer is hidden on screen but printed to stdout like any other, so
+keep it out of your shell history and logs. A Rune too old for questions opens
+the dialog without them, so `runectl` closes it at once and fails with an
+unsupported operation error.
 
 ## Program status
 

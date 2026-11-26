@@ -2909,7 +2909,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 	cmdcfg := lspCommandsConfig(uri, cfg, h.events.newInterrupter(uri),
 		parser, callbacks, ex.onLinkClick)
 	apiHandler, err := lspcmd.AllHandler(
-		lsp, apieditor, apibrowser, apibrowser, apibrowser,
+		lsp, apieditor, apibrowser, apibrowser, apibrowser, apibrowser,
 		ex.workspace, parser, cmdcfg)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("new lsp command handler: %v", err)
@@ -2957,10 +2957,9 @@ func (h *workspaceManagerHandler) buildExtensions(
 		LocalRegistry:    h.llmRouter.LocalRegistry(),
 		Storage:          h.storage,
 		Router:           h.llmRouter,
-		WindowManager:    apibrowser,
 		Notifications:    notifications,
 		ScheduleNextTick: cfg.scheduleNextTick,
-		PromptOpener:     &ex.comp,
+		Prompter:         apibrowser,
 	})
 	if err := ex.editorObserver.RegisterREPLCommand(llmconsole.Manual(), llmHandler); err != nil {
 		log.Errorf("register llm repl command: %v", err)

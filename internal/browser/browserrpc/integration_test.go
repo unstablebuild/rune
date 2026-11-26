@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -320,6 +321,88 @@ func TestClientServerIntegrationPrompt(t *testing.T) {
 			assert.Never(t, func() bool { return len(events) > 0 },
 				asyncResultsSleepDuration, 10*time.Millisecond, "unexpected prompt event")
 			assert.Equal(t, tcase.closed, win.closed.Load())
+		})
+	}
+}
+
+func TestClientServerIntegrationPromptFields(t *testing.T) {
+	cfg := browserapi.PromptConfig{
+		Message: "Log in",
+		Options: []string{"OK", "Cancel"},
+		Fields: []browserapi.Field{
+			{Question: "User", Answer: "me", Placeholder: "you@example.com"},
+			{Question: "Password", Secret: true, Mandatory: true},
+		},
+	}
+	for _, tcase := range []struct {
+		name string
+		// answers is what the user answers through the handler the
+		// host opened the prompt with, or nil to dismiss it.
+		answers []string
+		answer  bool
+		want    []string
+	}{
+		{
+			name:    "answered",
+			answers: []string{"you", "s3cret"},
+			answer:  true,
+			want:    []string{`answer 0 OK ["you" "s3cret"]`, "close"},
+		},
+		{
+			name: "dismissed",
+			want: []string{"close"},
+		},
+	} {
+		t.Run(tcase.name, func(t *testing.T) {
+			defer goleak.VerifyNone(t)
+			hook := logtest.NewGlobal()
+			defer hook.Reset()
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mock := browsertest.NewMockBrowser(ctrl)
+			client, cleanup := newClientServerIntegration(t, mock)
+			defer cleanup()
+
+			win := &promptWindow{Window: browsertest.NopWindow()}
+			mock.EXPECT().Window(gomock.Any()).Return(win, true).AnyTimes()
+			mock.EXPECT().OpenPrompt(cfg, gomock.Any()).DoAndReturn(func(
+				_ browserapi.PromptConfig, h handler.PromptHandler,
+			) (browser.Window, bool, error) {
+				win.h = h
+				return win, true, nil
+			})
+
+			events := make(chan string, 2)
+			_, err := client.Prompt(cfg, handler.FuncAnswerHandler(
+				func(i int, option string, answers []string) {
+					events <- fmt.Sprintf("answer %d %s %q", i, option, answers)
+				},
+				func() error {
+					events <- "close"
+					return nil
+				}))
+			require.NoError(t, err)
+
+			if tcase.answer {
+				ah, ok := win.h.(handler.AnswerHandler)
+				require.True(t, ok, "the host gets the answers")
+				ah.OnAnswer(0, "OK", tcase.answers)
+			}
+			require.NoError(t, win.h.OnClose())
+			for _, want := range tcase.want {
+				select {
+				case ev := <-events:
+					assert.Equal(t, want, ev)
+				case <-time.After(5 * time.Second):
+					require.FailNow(t, "prompt event not delivered", want)
+				}
+			}
+			for _, entry := range hook.AllEntries() {
+				line, err := entry.String()
+				require.NoError(t, err)
+				assert.NotContains(t, line, "s3cret", "a log carries an answer")
+			}
 		})
 	}
 }

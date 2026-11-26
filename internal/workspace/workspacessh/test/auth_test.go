@@ -31,6 +31,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/workspace/workspacessh"
@@ -208,7 +209,8 @@ func TestAuthMatrixDefaultIdentityFile(t *testing.T) {
 		"expected no prompts when default identity key authenticates; saw %v", ui.prompts)
 }
 
-// recordingUI captures the prompts made and replies with canned answers.
+// recordingUI captures the prompts made and replies with canned answers:
+// secret fields with secrets and the others with texts, in order.
 type recordingUI struct {
 	mu      sync.Mutex
 	prompts []string
@@ -220,28 +222,33 @@ type recordingUI struct {
 	choiceCancel bool
 }
 
-func (u *recordingUI) PromptSecret(_ context.Context, label string) (string, error) {
+func (u *recordingUI) PromptFields(
+	_ context.Context, message string, fields []browserapi.Field,
+) ([]string, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.prompts = append(u.prompts, "secret:"+label)
-	if len(u.secrets) == 0 {
-		return "", context.Canceled
+	prompt := "fields:" + message
+	for _, f := range fields {
+		if f.Secret {
+			prompt += "\nsecret:" + f.Question
+		} else {
+			prompt += "\ntext:" + f.Question
+		}
 	}
-	a := u.secrets[0]
-	u.secrets = u.secrets[1:]
-	return a, nil
-}
-
-func (u *recordingUI) PromptText(_ context.Context, label, _ string) (string, error) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.prompts = append(u.prompts, "text:"+label)
-	if len(u.texts) == 0 {
-		return "", context.Canceled
+	u.prompts = append(u.prompts, prompt)
+	answers := make([]string, len(fields))
+	for i, f := range fields {
+		queue := &u.texts
+		if f.Secret {
+			queue = &u.secrets
+		}
+		if len(*queue) == 0 {
+			return nil, context.Canceled
+		}
+		answers[i] = (*queue)[0]
+		*queue = (*queue)[1:]
 	}
-	a := u.texts[0]
-	u.texts = u.texts[1:]
-	return a, nil
+	return answers, nil
 }
 
 func (u *recordingUI) PromptChoice(_ context.Context, label string, _ []string) (int, error) {
@@ -434,7 +441,7 @@ func TestKbdInteractiveAuth(t *testing.T) {
 	require.NoError(t, err,
 		"with kbd_interactive opted-in and a server that only allows "+
 			"keyboard-interactive auth, askKbd must drive PAM's "+
-			"password challenge through ui.PromptSecret and succeed")
+			"password challenge through ui.PromptFields and succeed")
 	assert.NotEmpty(t, ui.prompts,
 		"kbd-interactive flow must surface at least one prompt; if "+
 			"prompts is empty askKbd is skipping its challenge loop")
@@ -631,7 +638,7 @@ func TestPassphrasePromptCancelled(t *testing.T) {
 	require.NoError(t, err)
 
 	keyPath := PrivateKeyPath(t, "id_ed25519_pass")
-	// recordingUI with no secrets queued: PromptSecret returns
+	// recordingUI with no secrets queued: PromptFields returns
 	// context.Canceled (the same error a real UI returns when the
 	// user dismisses the dialog with Esc).
 	ui := &recordingUI{}

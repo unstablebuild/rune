@@ -18,6 +18,7 @@ package browsertest
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -33,6 +34,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/handler"
+	"github.com/unstablebuild/rune-go-sdk/handler/handlertest"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	tcomponent "unstable.build/rune/internal/component"
@@ -1749,6 +1751,321 @@ func TestComponentPromptMaxWidth(t *testing.T) {
 			assert.LessOrEqual(t, width, tcase.maxWidth)
 		})
 	}
+}
+
+func TestComponentPromptFields(t *testing.T) {
+	login := browserapi.PromptConfig{
+		Message: "Log in to *db*", Options: []string{"OK", "Cancel"},
+		Fields: []browserapi.Field{
+			{Question: "User", Answer: "me"},
+			{Question: "Password", Secret: true, Mandatory: true, Placeholder: "8+ characters"},
+		},
+	}
+	withBindings := login
+	withBindings.Bindings = []term.KeyComb{{Ch: 'o'}, {Ch: 'c'}}
+	noFields := browserapi.PromptConfig{Message: "Log in to *db*", Options: []string{"OK", "Cancel"}}
+	rename := browserapi.PromptConfig{
+		Message: "Rename old to:", Options: []string{"Rename"},
+		Fields: []browserapi.Field{{Answer: "old", Placeholder: "New name", Mandatory: true}},
+	}
+
+	// The writer draws the cells with a foreground color as ▓. Of the
+	// default config, those are the cells of the focused windows'
+	// frames, in the red FocusFrameAttr of the window manager, so the
+	// frame of the field in focus is drawn as ▓ while the others are
+	// not; and the highlighted option, and the gray placeholder.
+	const (
+		hidden      = '▓'
+		blank       = "                                                "
+		placeholder = "▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓"
+		options     = "              ▓▓              Cancel            "
+		browserTop  = "┌──────────────────────────────────────────────────────────┐\n" +
+			"│                                                          │\n" +
+			"├──────────────────────────────────────────────────────────┤\n" +
+			"│                                                          │\n"
+		browserBottom = "│                                                          │\n" +
+			"│                                                          │\n" +
+			"└──────────────────────────────────────────────────────────┘"
+		promptEdge = "│    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓    │\n"
+	)
+	message := fmt.Sprintf("  %-46s", "Log in to db")
+	// field is the rows of the field asking question, whose input reads
+	// input inside its frame.
+	field := func(question string, focused bool, input string) []string {
+		top, middle, bottom := "┌──────────────────────────────┐", "│%-30s│", "└──────────────────────────────┘"
+		if focused {
+			edge := strings.Repeat("▓", 32)
+			top, middle, bottom = edge, "▓%-30s▓", edge
+		}
+		return []string{
+			"              " + top + "  ",
+			fmt.Sprintf("  %-12s"+middle+"  ", question, input),
+			"              " + bottom + "  ",
+		}
+	}
+	// loginScreen is the login prompt with the field at index focus in
+	// focus, or none on the row of options, and the inputs reading user
+	// and password.
+	loginScreen := func(focus int, user, password string) string {
+		rows := []string{blank, message, blank, blank}
+		rows = append(rows, field("User", focus == 0, user)...)
+		rows = append(rows, blank)
+		rows = append(rows, field("Password *", focus == 1, password)...)
+		rows = append(rows, blank, options)
+		screen := browserTop + promptEdge
+		for _, row := range rows {
+			screen += "│    ▓" + row + "▓    │\n"
+		}
+		return screen + promptEdge + browserBottom
+	}
+	// Without fields the prompt only asks to be as wide as its message.
+	noFieldsScreen := browserTop +
+		strings.Repeat("│                                                          │\n", 4) +
+		"│                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓                   │\n" +
+		"│                   ▓                  ▓                   │\n" +
+		"│                   ▓  Log in to db    ▓                   │\n" +
+		"│                   ▓                  ▓                   │\n" +
+		"│                   ▓                  ▓                   │\n" +
+		"│                   ▓    ▓▓    Cancel  ▓                   │\n" +
+		"│                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓                   │\n" +
+		strings.Repeat("│                                                          │\n", 4) +
+		browserBottom
+	closed := browserTop +
+		strings.Repeat("│                                                          │\n", 15) +
+		browserBottom
+	// renameScreen is the rename prompt centered on the screen, as wide
+	// as its input reading input asks it to be.
+	renameScreen := func(input string) string {
+		n := len([]rune(input))
+		width := n + 6
+		pad := func(s string) string { return s + strings.Repeat(" ", width-len([]rune(s))) }
+		box := "  " + strings.Repeat("▓", n+2) + "  "
+		rows := []string{
+			pad(""), pad("  Rename old to:"), pad(""), pad(""),
+			box, "  ▓" + input + "▓  ", box,
+			pad(""), pad(strings.Repeat(" ", (width-6)/2) + "▓▓▓▓▓▓"),
+		}
+		left := (58 - width - 2) / 2
+		line := func(s string) string {
+			return "│" + strings.Repeat(" ", left) + s + strings.Repeat(" ", 58-width-2-left) + "│\n"
+		}
+		edge := line(strings.Repeat("▓", width+2))
+		screen := browserTop + strings.Repeat("│                                                          │\n", 2) + edge
+		for _, row := range rows {
+			screen += line("▓" + row + "▓")
+		}
+		return screen + edge + strings.Repeat("│                                                          │\n", 2) + browserBottom
+	}
+	once := func(input, want string) []handlertest.SequenceTestCase {
+		return []handlertest.SequenceTestCase{{InputSequence: input, Expected: want}}
+	}
+
+	tests := []struct {
+		name string
+		cfg  browserapi.PromptConfig
+		// style changes the default config of the browser.
+		style     func(*browser.Config)
+		select_   bool
+		steps     []handlertest.SequenceTestCase
+		wantCalls []string
+		wantNotes []string
+		wantOpen  bool
+	}{
+		{
+			name: "tab moves the focus frame through the fields and the options",
+			cfg:  login,
+			steps: []handlertest.SequenceTestCase{
+				{Expected: loginScreen(0, "me▐", placeholder)},
+				{InputSequence: "<tab>", Expected: loginScreen(1, "me", placeholder)},
+				{InputSequence: "hunter2", Expected: loginScreen(1, "me", "*******▐")},
+				{InputSequence: "<tab>", Expected: loginScreen(-1, "me", "*******")},
+				{InputSequence: "<tab>", Expected: loginScreen(0, "me▐", "*******")},
+				{InputSequence: "<s-tab>", Expected: loginScreen(-1, "me", "*******")},
+				{InputSequence: "<s-tab>", Expected: loginScreen(1, "me", "*******▐")},
+			},
+			wantOpen: true,
+		},
+		{
+			name: "the placeholder is styled with PlaceholderAttr",
+			cfg:  login,
+			style: func(cfg *browser.Config) {
+				cfg.PromptConfig.PlaceholderAttr = term.Attributes{Attrs: term.AttrItalic}
+			},
+			steps:    once("<tab>", loginScreen(1, "me", "▐+ characters")),
+			wantOpen: true,
+		},
+		{
+			name: "the field frames are those of the window manager",
+			cfg:  login,
+			style: func(cfg *browser.Config) {
+				cfg.WindowManagerConfig.FrameCharSet = component.FrameCharSet{
+					TopLeft: '╭', TopRight: '╮', BottomLeft: '╰', BottomRight: '╯',
+					HorizontalTop: '─', HorizontalBottom: '─', VerticalLeft: '│', VerticalRight: '│',
+				}
+				cfg.WindowManagerConfig.FocusFrameCharSet = component.FrameCharSetHighlight()
+				cfg.WindowManagerConfig.FocusFrameAttr = term.Attributes{Attrs: term.AttrBold}
+			},
+			steps: once("", "╭──────────────────────────────────────────────────────────╮\n"+
+				"│                                                          │\n"+
+				"├──────────────────────────────────────────────────────────┤\n"+
+				"│                                                          │\n"+
+				"│    █▓████████████████████████████████████████████████    │\n"+
+				"│    ┃                                                ┃    │\n"+
+				"│    ┃  Log in to db                                  ┃    │\n"+
+				"│    ┃                                                ┃    │\n"+
+				"│    ┃                                                ┃    │\n"+
+				"│    ┃              ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓  ┃    │\n"+
+				"│    ┃  User        ┃me▐                           ┃  ┃    │\n"+
+				"│    ┃              ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛  ┃    │\n"+
+				"│    ┃                                                ┃    │\n"+
+				"│    ┃              ╭──────────────────────────────╮  ┃    │\n"+
+				"│    ┃  Password *  │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│  ┃    │\n"+
+				"│    ┃              ╰──────────────────────────────╯  ┃    │\n"+
+				"│    ┃                                                ┃    │\n"+
+				"│    ┃              ▓▓              Cancel            ┃    │\n"+
+				"│    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛    │\n"+
+				"│                                                          │\n"+
+				"│                                                          │\n"+
+				"╰──────────────────────────────────────────────────────────╯"),
+			wantOpen: true,
+		},
+		{
+			name:      "an empty mandatory field is required",
+			cfg:       login,
+			steps:     once("<tab><tab><enter>", loginScreen(1, "me", placeholder)),
+			wantNotes: []string{"Password is required"},
+			wantOpen:  true,
+		},
+		{
+			name:      "the answers with the option",
+			cfg:       login,
+			steps:     once("<c-u>you<enter>pw<tab><right><enter>", closed),
+			wantCalls: []string{`answer 1 Cancel ["you" "pw"]`, "close"},
+		},
+		{
+			name:      "a PromptHandler gets the option",
+			cfg:       login,
+			select_:   true,
+			steps:     once("<tab>pw<enter>", closed),
+			wantCalls: []string{"select 0 OK", "close"},
+		},
+		{
+			name:     "a binding typed into a field is text",
+			cfg:      withBindings,
+			steps:    once("<c-u>oc", loginScreen(0, "oc▐", placeholder)),
+			wantOpen: true,
+		},
+		{
+			name:      "a binding picks on the row of options",
+			cfg:       withBindings,
+			steps:     once("<tab>pw<tab>c", closed),
+			wantCalls: []string{`answer 1 Cancel ["me" "pw"]`, "close"},
+		},
+		{
+			name:      "esc dismisses without answers",
+			cfg:       login,
+			steps:     once("<tab>pw<esc>", closed),
+			wantCalls: []string{"close"},
+		},
+		{
+			name:      "ctrl-c dismisses without answers",
+			cfg:       login,
+			steps:     once("<tab>pw<c-c>", closed),
+			wantCalls: []string{"close"},
+		},
+		{
+			name:      "a prompt without fields answers none",
+			cfg:       noFields,
+			steps:     once("<right><enter>", closed),
+			wantCalls: []string{"answer 1 Cancel []", "close"},
+		},
+		{
+			name:     "a prompt without fields ignores ctrl-c",
+			cfg:      noFields,
+			steps:    once("<c-c>", noFieldsScreen),
+			wantOpen: true,
+		},
+		{
+			name: "the prompt grows and shrinks with the answer",
+			cfg:  rename,
+			steps: []handlertest.SequenceTestCase{
+				{Expected: renameScreen(fmt.Sprintf("%-30s", "old▐"))},
+				{
+					InputSequence: strings.Repeat("x", 40),
+					Expected:      renameScreen("old" + strings.Repeat("x", 40) + "▐"),
+				},
+				{InputSequence: "<c-u>", Expected: renameScreen(placeholder)},
+			},
+			wantOpen: true,
+		},
+		{
+			name:      "an empty field without a question is required",
+			cfg:       rename,
+			steps:     once("<c-u><enter>", renameScreen(placeholder)),
+			wantNotes: []string{"An answer is required"},
+			wantOpen:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			notes := new(recordingNotifications)
+			cfg := browser.DefaultConfig()
+			cfg.PromptConfig.MinWidth = 0
+			cfg.Notifications = notes
+			if tt.style != nil {
+				tt.style(&cfg)
+			}
+			c := browser.NewComponent(cfg)
+			c.Resize(60, 22)
+			var calls []string
+			h := handler.FuncAnswerHandler(func(idx int, option string, answers []string) {
+				calls = append(calls, fmt.Sprintf("answer %d %s %q", idx, option, answers))
+			}, func() error {
+				calls = append(calls, "close")
+				return nil
+			})
+			var ph handler.PromptHandler = h
+			if tt.select_ {
+				ph = handler.FuncPromptHandler(func(idx int, option string) {
+					calls = append(calls, fmt.Sprintf("select %d %s", idx, option))
+				}, h.OnClose)
+			}
+			c.Prompt(tt.cfg, ph)
+			w := term.NewStringWriter(60, 22)
+			w.ForegroundCh = hidden
+			handlertest.RunHandlerSequenceWriter(t, w, c, 60, 22, tt.steps)
+			assert.Equal(t, tt.wantCalls, calls)
+			assert.Equal(t, tt.wantNotes, notes.notes)
+			wantWindows := 0
+			if tt.wantOpen {
+				wantWindows = 1
+			}
+			assert.Equal(t, wantWindows, c.FloatingWindows())
+		})
+	}
+}
+
+// recordingNotifications records the notifications it is asked to
+// deliver, formatted.
+type recordingNotifications struct {
+	notes []string
+}
+
+func (n *recordingNotifications) Notify(
+	_ browserapi.NotificationLevel, msg string, args ...any,
+) (string, error) {
+	n.notes = append(n.notes, fmt.Sprintf(msg, args...))
+	return "", nil
+}
+
+func (n *recordingNotifications) NotifyOnce(
+	level browserapi.NotificationLevel, msg string, args ...any,
+) (string, error) {
+	return n.Notify(level, msg, args...)
+}
+
+func (n *recordingNotifications) UpdateNotificationProgress(string, string, int64, int64) error {
+	return nil
 }
 
 func TestComponentSplitNil(t *testing.T) {

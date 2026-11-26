@@ -52,6 +52,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"golang.org/x/crypto/ssh"
 	"unstable.build/rune/internal/workspace/workspacessh"
 )
@@ -377,12 +378,8 @@ type recordingUI struct {
 	notes []string
 }
 
-func (u *recordingUI) PromptSecret(context.Context, string) (string, error) {
-	return "", errors.New("unexpected secret prompt")
-}
-
-func (u *recordingUI) PromptText(context.Context, string, string) (string, error) {
-	return "", errors.New("unexpected text prompt")
+func (u *recordingUI) PromptFields(context.Context, string, []browserapi.Field) ([]string, error) {
+	return nil, errors.New("unexpected fields prompt")
 }
 
 func (u *recordingUI) PromptChoice(context.Context, string, []string) (int, error) {

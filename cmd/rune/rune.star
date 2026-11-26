@@ -1222,10 +1222,20 @@ config = {
         # "hover", and "hover" falls back to "idle". "outset" stretches
         # every image "top" rows up and "bottom" rows down, and the left
         # and right images "sides" cells outward.
+        #
+        # "field_attr" styles where the answers to a prompt's questions
+        # are typed, "focus_field_attr" the one the keys go to, and
+        # "placeholder_attr" the hint an empty one shows. The fields are
+        # framed in the window_manager's "frame_charset" and "frame_attr",
+        # the one the keys go to in its "focus_frame_charset" and
+        # "focus_frame_attr".
         "prompt": {
             "text_attr":       attr(bg = "gray", flag = "bold"),
             "highlight_attr":  attr(bg = "red", flag = "bold"),
             "background_attr": attr(fg = "default", bg = "default"),
+            "field_attr":       attr(fg = "default", bg = "default"),
+            "focus_field_attr": attr(fg = "default", bg = "default", flag = "bold"),
+            "placeholder_attr": attr(fg = "gray", bg = "default"),
         },
     },
     # Workspace configuration. This configuration is never reloaded.
@@ -1742,6 +1752,8 @@ if tui:
                 "text_attr":       attr(fg = "default", bg = "#1e1e1e"),
                 "highlight_attr":  attr(fg = "#c6c6c6", bg = "default", flag = "reverse"),
                 "background_attr": attr(fg = "default", bg = "#1e1e1e"),
+                "field_attr":       attr(fg = "default", bg = "#262626"),
+                "focus_field_attr": attr(fg = "#c6c6c6", bg = "#303030"),
             },
         },
         "workspace": {
