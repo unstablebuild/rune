@@ -3790,21 +3790,24 @@ func TestWindowManagerWithoutBackgroundRecordsNothing(t *testing.T) {
 // quarter of it.
 func lineSprites(t *testing.T) component.FrameCharSetGraphics {
 	t.Helper()
-	dir := t.TempDir()
-	write := func(name, art string) string {
-		var b bytes.Buffer
-		require.NoError(t, png.Encode(&b, spritePixels(art)))
-		path := filepath.Join(dir, name+".png")
-		require.NoError(t, os.WriteFile(path, b.Bytes(), 0o600))
-		return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
-	}
-	h := write("h", "....\n####\n....\n....")
-	v := write("v", ".#..\n.#..\n.#..\n.#..")
-	cross := write("cross", ".#..\n####\n.#..\n.#..")
+	h := spriteFile(t, "....\n####\n....\n....")
+	v := spriteFile(t, ".#..\n.#..\n.#..\n.#..")
+	cross := spriteFile(t, ".#..\n####\n.#..\n.#..")
 	return component.FrameCharSetGraphics{
 		TopLeft: cross, TopRight: cross, BottomLeft: cross, BottomRight: cross,
 		HorizontalTop: h, HorizontalBottom: h, VerticalLeft: v, VerticalRight: v,
 	}
+}
+
+// spriteFile writes the sprite of art, as spritePixels draws it, and
+// returns its URI.
+func spriteFile(t *testing.T, art string) string {
+	t.Helper()
+	var b bytes.Buffer
+	require.NoError(t, png.Encode(&b, spritePixels(art)))
+	path := filepath.Join(t.TempDir(), "sprite.png")
+	require.NoError(t, os.WriteFile(path, b.Bytes(), 0o600))
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
 }
 
 // fillMap returns where s holds a fill, f for one in navy and ? for one
@@ -3838,6 +3841,13 @@ func fillMap(t *testing.T, s *imageScreen) string {
 func TestWindowManagerBorderInsides(t *testing.T) {
 	lines := lineSprites(t)
 	pics := newFramePictures(t)
+	// A corner two cells wide whose picture draws a line in its left cell
+	// only, unmirrored at every corner: its right cell's part has no
+	// inside to fill.
+	wideCorner := lines
+	half := spriteFile(t, ".#......\n####....\n.#......\n.#......")
+	wideCorner.TopLeft, wideCorner.TopRight, wideCorner.BottomLeft, wideCorner.BottomRight = half, half, half, half
+	wideCorner.CornerWidth = 2
 	navy := term.Attributes{Bg: term.ColorNavy}
 	ring := `
 ffffffff
@@ -3890,6 +3900,24 @@ nttttttn
 nnnnnnnn
 nnnnnnnn
 nnnnnnnn`,
+		},
+		{
+			name:       "each cell of a corner fills inside its part of the line",
+			background: WindowBackground{Attr: navy},
+			graphics:   wideCorner,
+			loads:      3,
+			fills: `
+f.fffff.
+f......f
+f......f
+f......f
+f.fffff.`,
+			bg: `
+.n.....n
+.tttttt.
+.nnnnnn.
+.nnnnnn.
+.n.....n`,
 		},
 		{
 			name:       "a panel draws the cells it covers",

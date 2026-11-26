@@ -2,7 +2,9 @@
 name: rune-hud
 description: >
   Update Rune's configuration and generate sprites to refine its UI:
-  window frames, floating-only frames and focused headers, window backgrounds
+  window frames (including rounder corners, wider gaps between windows and
+  corner art larger than a cell), floating-only frames and focused headers,
+  window backgrounds
   and focus styles (including marking the focused window by its background
   instead of a frame, for a smoother or more modern look), scroll bars,
   command prompts, editor
@@ -45,6 +47,10 @@ or provide screenshots you can capture yourself.
   `focus_background_attr`, or the theme's `focus_background`. Follow
   "Frameless focus" below, also when the user only asks for a smoother,
   cleaner or more modern design.
+- Rounder frame corners, a wider gap between windows with round corners, and
+  corner ornaments larger than a cell are a supported config surface:
+  `corner_width` and `corner_height`. Follow "Corners larger than a cell"
+  below rather than squeezing the curve into a one-cell corner sprite.
 
 ## Checking your work
 Take a baseline screenshot before editing. Run `runectl screenshot` yourself,
@@ -384,24 +390,24 @@ Abbreviations:
 
 | Surface | Key | Images | Cells (w × h) | Fit |
 |---|---|---|---|---|
-| Window frame | `browser.window_manager.frame_charset.graphics` | `topleft` `topright` `bottomleft` `bottomright` | 1 × 1 | fill |
+| Window frame | `browser.window_manager.frame_charset.graphics` | `topleft` `topright` `bottomleft` `bottomright` | `corner_width` × `corner_height`, 1 × 1 by default (see "Corners larger than a cell") | fill |
 | | | `horizontaltop` `horizontalbottom` (tiles →), `verticalleft` `verticalright` (tiles ↓) | 1 × 1 | fill |
-| Focused frame | `browser.window_manager.focus_frame_charset.graphics` | same 8 | 1 × 1 | fill |
+| Focused frame | `browser.window_manager.focus_frame_charset.graphics` | same 8 | same as the window frame | fill |
 | Window background | `browser.window_manager.background_graphics` | `topleft` `topright` `bottomleft` `bottomright` | 1 × 1 | `fit`: fill (default) or tile |
 | | | `horizontaltop` `horizontalbottom` | (w−2) × 1 | `fit` |
 | | | `verticalleft` `verticalright` | 1 × (h−2) | `fit` |
 | | | `center` | (w−2) × (h−2) | `fit` |
 | Focused window background | `browser.window_manager.focus_background_graphics` | same 9 | same as above | `fit` |
-| Floating-only frame | `browser.window_manager.floating_frame_charset.graphics` | same 8 | 1 × 1 | fill |
-| Focused floating-only frame | `browser.window_manager.focus_floating_frame_charset.graphics` | same 8 | 1 × 1 | fill |
-| Command prompt frame | `command.frame_charset.graphics` | same 8 | 1 × 1 | fill |
+| Floating-only frame | `browser.window_manager.floating_frame_charset.graphics` | same 8 | same as the window frame | fill |
+| Focused floating-only frame | `browser.window_manager.focus_floating_frame_charset.graphics` | same 8 | same as the window frame | fill |
+| Command prompt frame | `command.frame_charset.graphics` | same 8 | same as the window frame | fill |
 | Command separator | `command.separator_charset.graphics` | `left`, `right` | (1+I) × (T+1+B) | fill |
 | | | `horizontal` (tiles →) | 1 × 1 | fill |
-| Notification frame | `notifications.frame_charset.graphics` | same 8 | 1 × 1 | fill |
+| Notification frame | `notifications.frame_charset.graphics` | same 8 | same as the window frame | fill |
 | Notification progress bar | `notifications.progress_format.graphics` | `start`, `current_tip`, `end` | 1 × 1 | fill |
 | | | `current` `remain` (tiles →) | 1 × 1 | fill |
-| Agent compose box frame | `extensions.rune-agent.config.input_box_frame_charset.graphics` | same 8 | 1 × 1 | fill |
-| Focused agent compose box frame | `extensions.rune-agent.config.focus.input_box_frame_charset.graphics` | same 8 | 1 × 1 | fill |
+| Agent compose box frame | `extensions.rune-agent.config.input_box_frame_charset.graphics` | same 8 | same as the window frame | fill |
+| Focused agent compose box frame | `extensions.rune-agent.config.focus.input_box_frame_charset.graphics` | same 8 | same as the window frame | fill |
 | Scroll bar | `browser.window_manager.scroll_bar_charset.graphics` | `top_char`, `middle_char` (tiles ↓), `bottom_char`, and the `hover_` version of each | (1+L) × 1 | fill |
 | Focused scroll bar | `browser.window_manager.focus_scroll_bar_charset.graphics` | same as the scroll bar | (1+L) × 1 | fill |
 | Floating window bar | `browser.window_manager.window_bar_charset.graphics` | `left` | (S+1+I) × (T+1+B) | fill |
@@ -485,6 +491,147 @@ shared fallback on existing floats on the next capture; removing just a slot
 restores inheritance, while `""` explicitly clears it. Inspect focused and
 unfocused floats, check shadows and header joins, and confirm tiled frames
 remain unchanged. Do not claim a focus state was verified unless visible.
+
+### Corners larger than a cell
+
+A frame cell is about 7 × 17 points: 14 × 34 pixels in a screenshot at
+device scale 2. A corner image covers one cell by default, so its curve can
+be at most one cell wide, less how far the line sits in from the cell's
+edge: a radius of about 5 points with any gap at all. So a one-cell corner
+can't deliver any of these:
+
+- rounder corners, with a radius over about one cell width;
+- a wider gap between windows, or more padding, with round corners kept:
+  moving the line in from the cell's edge eats into the radius;
+- a corner ornament, bevel or notch larger than a cell.
+
+Don't fake it with an elliptical bend squeezed into one cell, which reads as
+bevelled rather than round, and don't trade away the gap. Make the corners
+larger: `corner_width` and `corner_height`, in the charset's `graphics`
+table, set how many cells each corner image covers along the top and bottom
+rows and along the left and right columns. Draw each corner as one picture
+that size and Rune cuts it into cells.
+
+```yaml
+browser:
+  window_manager:
+    frame_charset:
+      graphics:
+        corner_width: 2      # cells along the top and bottom rows
+        corner_height: 1     # cells along the left and right columns
+        topleft: file://$RUNE_DATADIR/hud/<theme>/v<N>/frame/normal/topleft.png
+        topright: file://$RUNE_DATADIR/hud/<theme>/v<N>/frame/normal/topright.png
+        bottomleft: file://$RUNE_DATADIR/hud/<theme>/v<N>/frame/normal/bottomleft.png
+        bottomright: file://$RUNE_DATADIR/hud/<theme>/v<N>/frame/normal/bottomright.png
+        # ...and the four edges, which stay one cell
+```
+
+Semantics:
+- Each corner image is drawn in its corner, as it is: the top-right image's
+  top-right cell goes in the frame's top-right cell. Draw the top-left
+  corner and mirror it for the others (`-flop` for top-right, `-flip` for
+  bottom-left, both for bottom-right).
+- Only the cells on the frame's border are drawn: the corner's own cell and
+  the edge cells next to it, in place of the edges' images. The rest of the
+  picture lies over the window's content and is never drawn, so keep the art
+  in an L along the two edges. With a cell `cw` × `ch` and the line `ix` in
+  from the side and `iy` from the top, a quarter circle of radius R stays on
+  the border while R ≤ ch − iy or (cw − ix − R)² + (ch − iy − R)² ≤ R². On
+  a 14 × 34 pixel cell that is up to 79 pixels (39 points) with no insets
+  and 64 pixels with 4 pixel insets.
+- The size applies to all four corners. Set it on every charset whose
+  corner images are that size: `frame_charset` and `focus_frame_charset`
+  each need their own. The floating-only charsets and the command prompt
+  frame inherit it from the charset they inherit their images from. Set it
+  back to 1 where a charset overrides the corners with one-cell images.
+- Where the corners at both ends of an edge reach a cell, in a small
+  window, the nearer one draws it, the top or left one halfway between
+  them. A corner without an image leaves its cells to the edges: a floating
+  window's bar replaces the top corners, and a notification's progress bar
+  the bottom ones, so their cells show the edges.
+
+Work in the pixels of Rune's screenshots, which are at the device scale
+(`runectl screenshot` on a Retina display, or `--geometry ...@2`, is 2).
+
+1. **Measure the cell** in a screenshot: the width of a run of text divided
+   by its characters, and the distance between two lines of text.
+2. **Measure the reference**, when the user shows one (a screenshot, or the
+   site in the web browser):
+   - Check its scale: a one-point hairline is 2 pixels thick at scale 2. If
+     it differs from Rune's, scale the measurements below by Rune's scale
+     over the reference's.
+   - Print the luminance of a 30 × 30 pixel crop around the corner (script
+     below). Find the row of the top line and the column of the left line,
+     and where each stops being straight: R is the distance from that point
+     to the other line, about the same along both.
+   - Confirm it is a circle: at 45° the line sits about 0.29 R in from both
+     lines (R − R/√2). CSS `border-radius` is circular.
+   - Note the line's thickness, and sample three colours: outside the
+     curve, the line, and inside. The outside is the theme background (for
+     tiled windows) and the inside the window's `background_attr.bg` or
+     `focus_background_attr.bg`; see "Which colour a transparent pixel
+     shows". Only the line goes in the sprites.
+3. **Pick the insets** `ix` and `iy`, the line's distance from the cell's
+   side and top. The gap between two windows is twice the inset, so equal
+   insets give an even gap. Check R against the limit above.
+4. **Generate** the corners and edges with the script below. It sizes the
+   corner to N = ceil((ix + R) / cw) by M = ceil((iy + R) / ch) cells,
+   checks that nothing is drawn over the window's content, mirrors the
+   corner, draws the edges at the same insets and thickness, and prints the
+   `graphics` table to merge into the charset. Run it again with the focused
+   line colour, into another folder, for `focus_frame_charset`.
+5. **Compare** in Rune's screenshot. Crop it so its lines fall on the same
+   pixels as the reference's, append the two side by side, and print both
+   luminance grids: each line should straighten at the same distance from
+   the corner, and the 45° point should match within a pixel. Also check a
+   zoomed crop where two tiled windows meet: no step where the corner meets
+   the edges.
+
+A corner picture's line runs unbroken across every cell it covers, so it
+follows "One colour on each side of a line": Rune fills the side facing the
+content in the window's colour, cell by cell.
+
+```sh
+# All lengths in screenshot pixels. K rasterizes larger for sharp edges.
+out="$RUNE_DATADIR/hud/<theme>/v<N>/frame/normal"
+cw=14 ch=34 r=22 stroke=2 ix=4 iy=4 color='#28292a' K=4
+mkdir -p "$out"
+CW=$((cw*K)) CH=$((ch*K)) R=$((r*K)) SW=$((stroke*K)) IX=$((ix*K)) IY=$((iy*K))
+N=$(( (IX+R+CW-1)/CW )) M=$(( (IY+R+CH-1)/CH )) W=$((N*CW)) H=$((M*CH))
+magick -size ${W}x${H} xc:none -fill none -stroke "$color" -strokewidth $SW \
+  -draw "path 'M $IX,$H L $IX,$((IY+R)) A $R,$R 0 0,1 $((IX+R)),$IY L $W,$IY'" \
+  "$out/topleft.png"
+magick "$out/topleft.png" -format 'corner alpha %[fx:mean.a] (must not be 0)\n' info:
+if [ $N -gt 1 ] && [ $M -gt 1 ]; then
+  magick "$out/topleft.png" -crop $((W-CW))x$((H-CH))+$CW+$CH +repage \
+    -format 'over the content %[fx:mean.a] (must be 0)\n' info:
+fi
+magick "$out/topleft.png" -flop "$out/topright.png"
+magick "$out/topleft.png" -flip "$out/bottomleft.png"
+magick "$out/topleft.png" -flip -flop "$out/bottomright.png"
+magick -size ${CW}x${CH} xc:none -fill "$color" \
+  -draw "rectangle 0,$((IY-SW/2)) $((CW-1)),$((IY+SW/2-1))" "$out/horizontaltop.png"
+magick "$out/horizontaltop.png" -flip "$out/horizontalbottom.png"
+magick -size ${CW}x${CH} xc:none -fill "$color" \
+  -draw "rectangle $((IX-SW/2)),0 $((IX+SW/2-1)),$((CH-1))" "$out/verticalleft.png"
+magick "$out/verticalleft.png" -flop "$out/verticalright.png"
+printf 'graphics:\n  corner_width: %d\n  corner_height: %d\n' $N $M
+for s in topleft topright bottomleft bottomright \
+  horizontaltop horizontalbottom verticalleft verticalright; do
+  printf '  %s: file://%s/%s.png\n' $s "$out" $s
+done
+```
+
+Print the luminance around a point, here 30 × 30 pixels from 86,52:
+
+```sh
+magick shot.png -colorspace gray -crop 30x30+86+52 +repage -depth 8 gray:- |
+  python3 -c 'import sys; d=sys.stdin.buffer.read()
+for y in range(30): print(" ".join("%3d" % v for v in d[y*30:y*30+30]))'
+```
+
+Draw the curve with ImageMagick's `path` primitive, as the script does: its
+built-in SVG renderer can return a fully transparent image.
 
 ### Focus styles
 
@@ -808,7 +955,9 @@ Line up rails and seams across slices at these positions.
 - Edges are one cell thick.
 - Keep the line at the cell's outer edge, where the default `▔ ▁ ▏ ▕`
   characters sit, so content keeps its spacing.
-- Corners must meet both edges at the cell boundary.
+- Corners must meet both edges at the far side of the cells they cover:
+  the corner's cell, or with `corner_width` and `corner_height`, the last
+  cell along each edge.
 
 **Window background panel:**
 - The panel covers the whole window, frame cells included. Corners are one
