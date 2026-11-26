@@ -553,7 +553,11 @@ func (h *fileExplorerHandler) reveal(dir workspaceapi.URI) error {
 
 func (h *fileExplorerHandler) enterAt(pos term.Coordinates) bool {
 	prev := pos
-	uri, open := h.comp.ExpandNodeAt(pos)
+	uri, open, err := h.comp.ExpandNodeAt(pos)
+	if err != nil {
+		h.host.SetError(fmt.Errorf("file explorer: %w", err))
+		return true
+	}
 	if open {
 		h.open(uri)
 		return true
