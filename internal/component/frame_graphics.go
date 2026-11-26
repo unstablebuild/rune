@@ -279,12 +279,18 @@ func (g *FrameGraphics) draw(
 		g.drawFrameCell(&cw, c, term.Coordinates{X: x, Y: y})
 	}
 
+	// Each side is drawn on its own, so that a renderer drawing images
+	// of one picture together draws a side at once.
 	for x := 1; x < limitX; x++ {
 		draw(f.HorizontalTop, x, 0)
+	}
+	for x := 1; x < limitX; x++ {
 		draw(f.HorizontalBottom, x, limitY)
 	}
 	for y := 1; y < limitY; y++ {
 		draw(f.VerticalLeft, 0, y)
+	}
+	for y := 1; y < limitY; y++ {
 		draw(f.VerticalRight, limitX, y)
 	}
 	draw(f.TopLeft, 0, 0)
@@ -424,8 +430,11 @@ func (g *FrameGraphics) drawBorder(
 	for x := 1; x < limitX; x++ {
 		draw(f.HorizontalBottom, x, limitY)
 	}
+	// The right side is drawn after the left, as Draw does.
 	for y := 1; y < limitY; y++ {
 		draw(f.VerticalLeft, 0, y)
+	}
+	for y := 1; y < limitY; y++ {
 		if !sb || y < sbPos.Y || y >= sbPos.Y+sbHeight {
 			draw(f.VerticalRight, limitX, y)
 			continue

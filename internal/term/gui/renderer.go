@@ -273,8 +273,9 @@ func (r *renderer) drawImages(
 	r.clips.evictUnused()
 }
 
-// drawImageLayer paints the placements belonging to one layer and
-// returns dst with the pixel rectangles they covered appended.
+// drawImageLayer paints the placements belonging to one layer, all of
+// them before it returns, and returns dst with the pixel rectangles
+// they covered appended.
 func (r *renderer) drawImageLayer(
 	dst []image.Rectangle, screen *ebiten.Image, images []term.Image, layer term.ImageLayer,
 ) []image.Rectangle {
@@ -287,6 +288,7 @@ func (r *renderer) drawImageLayer(
 			dst = append(dst, rect)
 		}
 	}
+	r.images.flush()
 	return dst
 }
 

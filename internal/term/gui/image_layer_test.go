@@ -20,6 +20,7 @@ import (
 	"context"
 	"image"
 	"image/color"
+	"image/draw"
 	"testing"
 
 	ebiten "github.com/hajimehoshi/ebiten/v2"
@@ -179,18 +180,18 @@ func TestImageLayerTextureReuse(t *testing.T) {
 	src := solidRGBA(4, 4, color.RGBA{R: 255, A: 255})
 	img := term.Image{Src: src, ID: term.NewImageID(), Width: 2, Height: 2}
 
-	first := l.texture(img)
+	first := l.upload(img).img
 	require.NotNil(t, first)
-	assert.Same(t, first, l.texture(img), "same version must reuse the upload")
+	assert.Same(t, first, l.upload(img).img, "same version must reuse the upload")
 
 	img.Version++
-	second := l.texture(img)
+	second := l.upload(img).img
 	require.NotNil(t, second)
 	assert.Same(t, first, second, "a new version of the same size reuses the GPU image")
-	assert.Equal(t, img.Version, l.textures[img.ID].version, "the new version was uploaded")
+	assert.Equal(t, img.Version, l.textures[textureKey{id: img.ID}].version, "the new version was uploaded")
 
 	img.Src = solidRGBA(8, 8, color.RGBA{B: 255, A: 255})
-	third := l.texture(img)
+	third := l.upload(img).img
 	require.NotNil(t, third)
 	assert.NotSame(t, second, third, "new source bounds need a new GPU image")
 	assert.Equal(t, image.Rect(0, 0, 8, 8), third.Bounds())
@@ -200,8 +201,8 @@ func TestImageLayerTextureRejectsEmptySource(t *testing.T) {
 	var l imageLayer
 	defer l.deallocate()
 
-	assert.Nil(t, l.texture(term.Image{Width: 2, Height: 2}), "nil Src")
-	assert.Nil(t, l.texture(term.Image{
+	assert.Nil(t, l.upload(term.Image{Width: 2, Height: 2}), "nil Src")
+	assert.Nil(t, l.upload(term.Image{
 		Src: image.NewRGBA(image.Rectangle{}), Width: 2, Height: 2,
 	}), "empty Src bounds")
 	assert.Empty(t, l.textures)
@@ -262,7 +263,7 @@ func TestImageLayerEvictsUnplacedPictures(t *testing.T) {
 	drawFrame(&l, dst, m, a)
 	benchdraw.EndFrame(t)
 	assert.Len(t, l.textures, 1)
-	assert.Contains(t, l.textures, a.ID)
+	assert.Contains(t, l.textures, textureKey{id: a.ID})
 
 	benchdraw.BeginFrame(t)
 	drawFrame(&l, dst, m)
@@ -278,6 +279,7 @@ func drawFrame(
 	for _, img := range images {
 		l.drawOne(dst, img, m, 0, color.RGBA{})
 	}
+	l.flush()
 	l.evictUnused()
 }
 
@@ -539,7 +541,7 @@ func TestDrawImageLayerTiles(t *testing.T) {
 func TestImageLayerDeallocateReleasesTextures(t *testing.T) {
 	benchdraw.BeginFrame(t)
 	var l imageLayer
-	require.NotNil(t, l.texture(term.Image{
+	require.NotNil(t, l.upload(term.Image{
 		Src: solidRGBA(4, 4, color.RGBA{A: 255}),
 		ID:  term.NewImageID(), Width: 2, Height: 2,
 	}))
@@ -614,7 +616,7 @@ func TestDrawImageLayerFills(t *testing.T) {
 	}
 }
 
-func TestFillColorM(t *testing.T) {
+func TestMaskFillColor(t *testing.T) {
 	tests := []struct {
 		name  string
 		fill  color.RGBA
@@ -648,12 +650,233 @@ func TestFillColorM(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cm := fillColorM(tt.fill)
-			got := color.RGBAModel.Convert(cm.Apply(tt.pixel)).(color.RGBA)
-			assert.InDelta(t, tt.want.R, got.R, 1)
-			assert.InDelta(t, tt.want.G, got.G, 1)
-			assert.InDelta(t, tt.want.B, got.B, 1)
-			assert.InDelta(t, tt.want.A, got.A, 1)
+			mask := image.NewRGBA(image.Rect(0, 0, 1, 1))
+			mask.Set(0, 0, tt.pixel)
+			var l imageLayer
+			texel := l.coverage(mask, mask.Bounds())
+			scale := fillScale(tt.fill)
+			// The GPU multiplies the texel by the vertex colour.
+			var got [4]float64
+			for i := range got {
+				got[i] = float64(texel[i]) * float64(scale[i])
+			}
+			assert.InDelta(t, tt.want.R, got[0], 1)
+			assert.InDelta(t, tt.want.G, got[1], 1)
+			assert.InDelta(t, tt.want.B, got[2], 1)
+			assert.InDelta(t, tt.want.A, got[3], 1)
+		})
+	}
+}
+
+func TestMaskCoverage(t *testing.T) {
+	rgba := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	copy(rgba.Pix, []byte{10, 20, 30, 40, 0, 0, 0, 0})
+	nrgba := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	nrgba.SetNRGBA(0, 0, color.NRGBA{R: 255, A: 128})
+	alpha := image.NewAlpha(image.Rect(0, 0, 2, 1))
+	alpha.SetAlpha(1, 0, color.Alpha{A: 200})
+	offset := image.NewRGBA(image.Rect(3, 4, 4, 6))
+	offset.SetRGBA(3, 5, color.RGBA{G: 7, A: 9})
+	tests := []struct {
+		name string
+		src  image.Image
+		want []byte
+	}{
+		{name: "a packed RGBA source", src: rgba, want: []byte{40, 40, 40, 40, 0, 0, 0, 0}},
+		{name: "a source of straight colours", src: nrgba, want: []byte{128, 128, 128, 128}},
+		{name: "an alpha source", src: alpha, want: []byte{0, 0, 0, 0, 200, 200, 200, 200}},
+		{name: "a source away from the origin", src: offset, want: []byte{0, 0, 0, 0, 9, 9, 9, 9}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := image.NewRGBA(tt.src.Bounds())
+			draw.Draw(before, before.Rect, tt.src, tt.src.Bounds().Min, draw.Src)
+			var l imageLayer
+			assert.Equal(t, tt.want, l.coverage(tt.src, tt.src.Bounds()))
+			after := image.NewRGBA(tt.src.Bounds())
+			draw.Draw(after, after.Rect, tt.src, tt.src.Bounds().Min, draw.Src)
+			assert.Equal(t, before.Pix, after.Pix, "the source is left as it was")
+		})
+	}
+}
+
+func TestImageLayerUploadsAPictureAndItsMaskApart(t *testing.T) {
+	benchdraw.BeginFrame(t)
+	defer benchdraw.EndFrame(t)
+	var l imageLayer
+	defer l.deallocate()
+
+	picture := term.Image{
+		Src: solidRGBA(4, 4, color.RGBA{R: 255, A: 255}), ID: term.NewImageID(), Width: 1, Height: 1,
+	}
+	mask := picture
+	mask.Fill = true
+	require.NotSame(t, l.upload(picture).img, l.upload(mask).img)
+	assert.Len(t, l.textures, 2)
+	assert.Same(t, l.upload(picture).img, l.textures[textureKey{id: picture.ID}].img)
+	assert.Same(t, l.upload(mask).img, l.textures[textureKey{id: picture.ID, mask: true}].img)
+}
+
+func TestPlacementQuad(t *testing.T) {
+	area := image.Rect(10, 20, 50, 40)
+	tests := []struct {
+		name string
+		p    placement
+		// wantSrc spans the texels the quad samples from its top-left to
+		// its bottom-right corner.
+		wantSrc [4]float32
+	}{
+		{
+			name:    "the texture stretched over the area",
+			p:       placement{src: image.Rect(0, 0, 8, 4), area: area, clip: area},
+			wantSrc: [4]float32{0, 0, 8, 4},
+		},
+		{
+			name: "an area moved by a pixel offset moves the texels",
+			p: placement{
+				src: image.Rect(0, 0, 8, 4), area: area.Add(image.Pt(5, -5)),
+				clip: image.Rect(15, 20, 50, 35),
+			},
+			wantSrc: [4]float32{0, 1, 7, 4},
+		},
+		{
+			name:    "a clip samples the texels the area puts under it",
+			p:       placement{src: image.Rect(0, 0, 8, 4), area: area, clip: image.Rect(30, 30, 50, 40)},
+			wantSrc: [4]float32{4, 2, 8, 4},
+		},
+		{
+			name:    "a contained picture fills only its area",
+			p:       placement{src: image.Rect(0, 0, 8, 8), area: image.Rect(25, 0, 75, 50), clip: image.Rect(25, 0, 75, 50)},
+			wantSrc: [4]float32{0, 0, 8, 8},
+		},
+		{
+			name:    "a crop stretches only its texels",
+			p:       placement{src: image.Rect(2, 1, 6, 3), area: area, clip: image.Rect(30, 20, 50, 40)},
+			wantSrc: [4]float32{4, 1, 6, 3},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			quad := placementQuad(tt.p)
+			dst := corners(tt.p.clip)
+			src := [4][2]float32{
+				{tt.wantSrc[0], tt.wantSrc[1]}, {tt.wantSrc[2], tt.wantSrc[1]},
+				{tt.wantSrc[0], tt.wantSrc[3]}, {tt.wantSrc[2], tt.wantSrc[3]},
+			}
+			for i, v := range quad {
+				assert.Equal(t, dst[i], image.Pt(int(v.DstX), int(v.DstY)), "corner %d covers the clip", i)
+				assert.InDelta(t, src[i][0], v.SrcX, 1e-4, "corner %d samples", i)
+				assert.InDelta(t, src[i][1], v.SrcY, 1e-4, "corner %d samples", i)
+				assert.Equal(t, [4]float32{1, 1, 1, 1}, [4]float32{v.ColorR, v.ColorG, v.ColorB, v.ColorA},
+					"corner %d keeps the texels' colors", i)
+			}
+		})
+	}
+}
+
+// drawRecorder records the runs an imageBatch draws, and the quads of
+// each by the x of their first corner.
+type drawRecorder struct {
+	t     *testing.T
+	calls *[]drawCall
+}
+
+type drawCall struct {
+	dst     *drawRecorder
+	src     *ebiten.Image
+	options *ebiten.DrawTrianglesOptions
+	quads   []int
+}
+
+func (r *drawRecorder) DrawTriangles(
+	vertices []ebiten.Vertex, indices []uint16, img *ebiten.Image, options *ebiten.DrawTrianglesOptions,
+) {
+	call := drawCall{dst: r, src: img, options: options}
+	for i := 0; i < len(vertices); i += 4 {
+		call.quads = append(call.quads, int(vertices[i].DstX))
+		n := uint16(i)
+		assert.Equal(r.t, []uint16{n, n + 1, n + 2, n + 1, n + 2, n + 3}, indices[i/4*6:i/4*6+6],
+			"the triangles of quad %d", i/4)
+	}
+	*r.calls = append(*r.calls, call)
+}
+
+func TestImageBatchRuns(t *testing.T) {
+	a, b, white := ebiten.NewImage(1, 1), ebiten.NewImage(1, 1), ebiten.NewImage(3, 3)
+	t.Cleanup(a.Deallocate)
+	t.Cleanup(b.Deallocate)
+	t.Cleanup(white.Deallocate)
+	fill := batchRun{src: white, solid: true}
+	type step struct {
+		// dst is which of two destinations the quads are drawn into.
+		dst int
+		run batchRun
+		n   int
+	}
+	type want struct {
+		dst   int
+		run   batchRun
+		quads int
+	}
+	tests := []struct {
+		name  string
+		steps []step
+		want  []want
+	}{
+		{
+			name: "consecutive placements of one source share a run, in order",
+			steps: []step{
+				{run: batchRun{src: a}, n: 2}, {run: batchRun{src: b}, n: 1},
+				{run: batchRun{src: a}, n: 1}, {run: fill, n: 1},
+			},
+			want: []want{
+				{run: batchRun{src: a}, quads: 2}, {run: batchRun{src: b}, quads: 1},
+				{run: batchRun{src: a}, quads: 1}, {run: fill, quads: 1},
+			},
+		},
+		{
+			name:  "a source tiled and stretched draws two runs",
+			steps: []step{{run: batchRun{src: a}, n: 1}, {run: batchRun{src: a, tile: true}, n: 1}},
+			want:  []want{{run: batchRun{src: a}, quads: 1}, {run: batchRun{src: a, tile: true}, quads: 1}},
+		},
+		{
+			name:  "another destination starts a run",
+			steps: []step{{run: batchRun{src: a}, n: 1}, {dst: 1, run: batchRun{src: a}, n: 1}},
+			want:  []want{{run: batchRun{src: a}, quads: 1}, {dst: 1, run: batchRun{src: a}, quads: 1}},
+		},
+		{
+			name:  "a run past what its indices address is split",
+			steps: []step{{run: batchRun{src: a}, n: maxBatchVertices/4 + 1}},
+			want:  []want{{run: batchRun{src: a}, quads: maxBatchVertices / 4}, {run: batchRun{src: a}, quads: 1}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls []drawCall
+			dsts := []*drawRecorder{{t: t, calls: &calls}, {t: t, calls: &calls}}
+			var batch imageBatch
+			var added []int
+			for _, s := range tt.steps {
+				for range s.n {
+					x := len(added)
+					added = append(added, x)
+					batch.add(dsts[s.dst], s.run, solidQuad(image.Rect(x, 0, x+1, 1), color.RGBA{}))
+				}
+			}
+			require.Len(t, calls, len(tt.want)-1, "the last run is drawn when the batch is flushed")
+			batch.flush()
+			require.Len(t, calls, len(tt.want))
+			var drawn []int
+			for i, w := range tt.want {
+				assert.Same(t, dsts[w.dst], calls[i].dst, "run %d", i)
+				assert.Same(t, w.run.src, calls[i].src, "run %d", i)
+				assert.Same(t, w.run.options(), calls[i].options, "run %d", i)
+				assert.Len(t, calls[i].quads, w.quads, "run %d", i)
+				drawn = append(drawn, calls[i].quads...)
+			}
+			assert.Equal(t, added, drawn, "the quads are drawn in the order they were added")
+			batch.flush()
+			assert.Len(t, calls, len(tt.want), "a flushed batch is empty")
 		})
 	}
 }

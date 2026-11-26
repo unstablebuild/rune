@@ -328,11 +328,13 @@ func BenchmarkRendererDrawTransparent4k(b *testing.B) {
 	benchmarkRendererContent(b, 3840, 2160, 0.5)
 }
 
-// BenchmarkRendererDrawImagesBelowText draws two framed tiles whose
-// borders and tab bar are one-cell pictures below the text, as a theme
-// with charset graphics places them, while the cursor moves a row per
-// frame.
-func BenchmarkRendererDrawImagesBelowText(b *testing.B) {
+// BenchmarkRendererDrawThemedFrame draws the placements of a theme with
+// image frames around three tiles, two side by side with the right one
+// split, while the cursor moves a row per frame. The mix is what such a
+// theme placed in one frame: a picture above the text over each cell of
+// each border, and below the text, a fill through a mask inside each of
+// them, solid one-cell fills and a few pictures.
+func BenchmarkRendererDrawThemedFrame(b *testing.B) {
 	const cols, rows = 142, 35
 	drawrect.Init()
 	m := testFontManager(b)
@@ -355,30 +357,89 @@ func BenchmarkRendererDrawImagesBelowText(b *testing.B) {
 		cells[rows-1][x].Bg = term.NewColor(28, 28, 31)
 	}
 
-	horizontal := term.NewImageID()
-	vertical := term.NewImageID()
-	tab := term.NewImageID()
-	src := solidRGBA(9, 18, color.RGBA{R: 35, G: 37, B: 42, A: 255})
-	piece := func(id term.ImageID, x, y int) term.Image {
-		return term.Image{
-			Src: src, ID: id, Pos: term.Coordinates{X: x, Y: y},
-			Width: 1, Height: 1, Layer: term.ImageLayerBelowText,
+	// A sprite draws a line through its cell, transparent either side.
+	sprite := image.NewRGBA(image.Rect(0, 0, 56, 136))
+	for y := range 136 {
+		for x := 24; x < 32; x++ {
+			sprite.SetRGBA(x, y, color.RGBA{R: 90, G: 100, B: 120, A: 255})
 		}
+	}
+	frameColor := term.NewColor(20, 22, 28)
+	// The focused tile's border has pictures of its own.
+	type border struct{ sprites, masks [8]term.ImageID }
+	newBorder := func() (s border) {
+		for i := range s.sprites {
+			s.sprites[i], s.masks[i] = term.NewImageID(), term.NewImageID()
+		}
+		return s
+	}
+	focused, other := newBorder(), newBorder()
+	tiles := []struct {
+		area   image.Rectangle
+		border border
+	}{
+		{image.Rect(0, 0, cols/2, rows), focused},
+		{image.Rect(cols/2, 0, cols, rows/2), other},
+		{image.Rect(cols/2, rows/2, cols, rows), other},
 	}
 	var images []term.Image
-	for x := range 60 {
-		images = append(images, piece(tab, x, 0))
-	}
-	for _, y := range []int{1, rows - 2} {
-		for x := range cols {
-			images = append(images, piece(horizontal, x, y))
+	for _, tile := range tiles {
+		a := tile.area
+		var ring []term.Image
+		add := func(kind, x, y int) {
+			ring = append(ring, term.Image{
+				Src: sprite, ID: tile.border.sprites[kind], Pos: term.Coordinates{X: x, Y: y},
+				Width: 1, Height: 1,
+			})
+		}
+		// The pictures are, in the order the window manager draws them,
+		// the top, the bottom, the left, the right and the four corners.
+		for _, y := range []int{a.Min.Y, a.Max.Y - 1} {
+			for x := a.Min.X + 1; x < a.Max.X-1; x++ {
+				add(min(y-a.Min.Y, 1), x, y)
+			}
+		}
+		for i, x := range []int{a.Min.X, a.Max.X - 1} {
+			for y := a.Min.Y + 1; y < a.Max.Y-1; y++ {
+				add(2+i, x, y)
+			}
+		}
+		last := a.Max.Sub(image.Pt(1, 1))
+		for i, corner := range []image.Point{a.Min, {X: last.X, Y: a.Min.Y}, {X: a.Min.X, Y: last.Y}, last} {
+			add(4+i, corner.X, corner.Y)
+		}
+		images = append(images, ring...)
+		for _, s := range ring {
+			mask := s
+			mask.ID = tile.border.masks[slices.Index(tile.border.sprites[:], s.ID)]
+			mask.Fill, mask.FillColor, mask.Layer = true, frameColor, term.ImageLayerBelowText
+			images = append(images, mask)
+		}
+		for x := a.Min.X + 1; x < a.Min.X+23; x++ {
+			images = append(images, term.Image{
+				Fill: true, FillColor: frameColor, Pos: term.Coordinates{X: x, Y: a.Max.Y - 2},
+				Width: 1, Height: 1, Layer: term.ImageLayerBelowText,
+			})
 		}
 	}
-	for y := 2; y < rows-2; y++ {
-		for _, x := range []int{0, cols/2 - 1, cols / 2, cols - 1} {
-			images = append(images, piece(vertical, x, y))
-		}
+	tab := solidRGBA(56, 272, color.RGBA{R: 35, G: 37, B: 42, A: 255})
+	tabID := term.NewImageID()
+	for x := 1; x < 12; x++ {
+		images = append(images, term.Image{
+			Src: tab, ID: tabID, Pos: term.Coordinates{X: x, Y: 1},
+			Width: 1, Height: 2, Layer: term.ImageLayerBelowText,
+		})
 	}
+	images = append(images,
+		term.Image{
+			Src: solidRGBA(322, 510, color.RGBA{R: 60, G: 30, B: 90, A: 128}), ID: term.NewImageID(),
+			Pos: term.Coordinates{X: cols - 30, Y: rows/2 + 2}, Width: 23, Height: 15,
+		},
+		term.Image{
+			Fill: true, FillColor: frameColor, Pos: term.Coordinates{X: 1, Y: rows - 1},
+			Width: 66, Height: 1, Layer: term.ImageLayerBelowBackground,
+		},
+	)
 	b.ReportMetric(float64(len(images)), "placements")
 
 	b.ReportAllocs()
