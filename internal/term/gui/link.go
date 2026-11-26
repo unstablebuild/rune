@@ -652,18 +652,10 @@ func (s *rowScanner) scanPath(
 	return dst, end
 }
 
-// positionAt reads the position that starts at byte x of text and returns
-// the 1-based line and column with the byte one past the position. The
-// rule lives in linecol: grepLike says nothing but the path precedes the
-// position, which enables the grep -n fallback.
-func positionAt(text string, x int, grepLike bool) (line, col, end int, ok bool) {
-	return linecol.ParseAt(text, x, grepLike)
-}
-
 // parsePosition reads the position that starts at the given cell of the
 // row and returns the 1-based line and column with the cell one past the
-// position. The rules live in positionAt: the cells are copied into a
-// byte slice and its byte count is the number of cells the position
+// position. The rules live in linecol.ParseAt: the cells are copied into
+// a byte slice and its byte count is the number of cells the position
 // covers, since every cell in the run is one ASCII byte.
 func (s *rowScanner) parsePosition(
 	row []term.Cell, x int, grepLike bool,
@@ -683,7 +675,7 @@ func (s *rowScanner) parsePosition(
 			break
 		}
 	}
-	line, col, rel, ok := positionAt(string(s.pos), 0, grepLike)
+	line, col, rel, ok := linecol.ParseAt(string(s.pos), 0, grepLike)
 	if !ok {
 		return 0, 0, 0, false
 	}
@@ -801,7 +793,7 @@ func parsePathRef(text string) (path string, line, col, start, end int, ok bool)
 			break
 		}
 	}
-	line, col, n, ok := positionAt(text, pos+1, grepLike)
+	line, col, n, ok := linecol.ParseAt(text, pos+1, grepLike)
 	if !ok {
 		return "", 0, 0, 0, 0, false
 	}
@@ -939,10 +931,11 @@ func hasHost(u []byte) bool {
 	return i >= 0 && len(u) > i+3
 }
 
-// schemeLink builds the Link of a link whose text carried a scheme. The
-// text must carry a host to be a link at all. A URL that does not parse
-// is not openable.
-func schemeLink(text string) (Link, bool) {
+// SchemeLink builds a Link from text that carried a URL scheme. For a
+// file:// URL, any #line:col fragment or trailing :line:col suffix is
+// extracted into Path, Line, and Col and stripped from Link.URL. It
+// returns false if text does not parse as a URL.
+func SchemeLink(text string) (Link, bool) {
 	u, err := url.Parse(text)
 	if err != nil {
 		return Link{}, false
@@ -1124,7 +1117,7 @@ func (s linkSpan) buildLink() (Link, bool) {
 	if s.kind == linkPath {
 		return s.link, true
 	}
-	return schemeLink(s.text)
+	return SchemeLink(s.text)
 }
 
 func (l *linkScanner) at(x, y int) (linkSpan, bool) {

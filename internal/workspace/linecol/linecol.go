@@ -22,9 +22,9 @@
 // is no column. Coord turns either into the zero-based coordinates an
 // editor cursor uses.
 //
-// This package is the only place that parses a position. Callers that
-// hold a position in a byte slice, such as a terminal row, use Cut; the
-// rest use Parse.
+// This package is the only place that parses a position. Parse reads a
+// position at the start of a string, ParseAt adds the grep fallback at
+// a byte offset, and Cut splits a path from its trailing position.
 package linecol
 
 import (

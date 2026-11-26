@@ -1143,17 +1143,26 @@ func TestBootstrapLinkObserverOpensURLs(t *testing.T) {
 	assert.Equal(t, []string{"https://example.com/"}, *opened)
 	assert.Empty(t, tabsOf(t, b), "a url link must open no tab")
 
-	// A file link opens in the editor.
+	// A file link opens in the editor, and a second open through a
+	// #line:col link built by SchemeLink reuses the same tab and moves
+	// the cursor.
 	require.NoError(t, os.WriteFile(filepath.Join(root, "a.go"),
-		[]byte("package main\n"), 0o644))
+		[]byte("package main\n\nfunc main() {\n\tprintln()\n}\n"), 0o644))
 	uri, err := workspaceapi.ParseURI("file://" + filepath.Join(root, "a.go"))
 	require.NoError(t, err)
-	require.NoError(t, b.openLink(gui.Link{
-		URL:  mustParseURL(t, uri.String()),
-		Line: 3, Col: 2,
-	}))
-	assert.Contains(t, tabsOf(t, b), uri,
+	plainLink, ok := gui.SchemeLink(uri.String())
+	require.True(t, ok)
+	require.NoError(t, b.openLink(plainLink))
+	assert.Equal(t, []workspaceapi.URI{uri}, tabsOf(t, b),
 		"a file link must open the file in a tab")
+
+	fragLink, ok := gui.SchemeLink(uri.String() + "#3:2")
+	require.True(t, ok)
+	require.NoError(t, b.openLink(fragLink))
+	assert.Equal(t, []workspaceapi.URI{uri}, tabsOf(t, b),
+		"re-opening the same file with a fragment must keep a single tab")
+	assert.Equal(t, term.Coordinates{Y: 2, X: 1}, cursorOf(t, b, uri),
+		"the fragment link's line and column must place the cursor")
 
 	// A file link that names no file is reported rather than opening an
 	// empty buffer, the way a bare path is.

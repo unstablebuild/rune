@@ -2265,7 +2265,7 @@ func TestSchemeLinkPositions(t *testing.T) {
 
 	for _, tc := range suite {
 		t.Run(tc.description, func(t *testing.T) {
-			link, ok := schemeLink(tc.text)
+			link, ok := SchemeLink(tc.text)
 			require.True(t, ok)
 			assert.Equal(t, tc.wantPath, link.Path)
 			// The position is not part of the file's address: a tab
