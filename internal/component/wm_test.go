@@ -3788,7 +3788,7 @@ func TestWindowManagerWithoutBackgroundRecordsNothing(t *testing.T) {
 // the middle of its cells, transparent either side, and returns its
 // graphics: a cross in the corners, so that each corner's bend is a
 // quarter of it.
-func lineSprites(t *testing.T) component.FrameCharSetGraphics {
+func lineSprites(t testing.TB) component.FrameCharSetGraphics {
 	t.Helper()
 	h := spriteFile(t, "....\n####\n....\n....")
 	v := spriteFile(t, ".#..\n.#..\n.#..\n.#..")
@@ -3801,7 +3801,7 @@ func lineSprites(t *testing.T) component.FrameCharSetGraphics {
 
 // spriteFile writes the sprite of art, as spritePixels draws it, and
 // returns its URI.
-func spriteFile(t *testing.T, art string) string {
+func spriteFile(t testing.TB, art string) string {
 	t.Helper()
 	var b bytes.Buffer
 	require.NoError(t, png.Encode(&b, spritePixels(art)))
@@ -3986,6 +3986,30 @@ nnnnnnnn`,
 			assert.Equal(t, tt.fills, fillMap(t, s))
 			assert.Equal(t, tt.bg, colorMap(s, func(c term.Cell) term.Color { return c.Bg }))
 		})
+	}
+}
+
+func BenchmarkWindowManagerDrawFramed(b *testing.B) {
+	cfg := testWindowManagerConfig()
+	cfg.Background = WindowBackground{Attr: term.Attributes{Bg: term.ColorNavy}}
+	cfg.FrameCharSet.Graphics = lineSprites(b)
+	cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	irq := make(interruptCounter, 16)
+	cfg.Interrupter = irq
+	wm, left := NewWindowManager(&stripedContent{}, cfg)
+	b.Cleanup(func() { assert.NoError(b, wm.Close()) })
+	right, _ := wm.SplitVertical(left, &stripedContent{})
+	wm.SplitHorizontal(right, &stripedContent{})
+	const width, height = 160, 48
+	wm.Resize(width, height)
+	wm.Draw(term.NewStringWriter(width, height))
+	irq.wait(b, 3)
+
+	s := newImageScreen(width, height)
+	b.ReportAllocs()
+	for b.Loop() {
+		s.images, s.drawnAt = s.images[:0], s.drawnAt[:0]
+		wm.Draw(s)
 	}
 }
 

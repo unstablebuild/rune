@@ -1570,7 +1570,7 @@ func (c interruptCounter) Interrupt(context.Context) error {
 	return nil
 }
 
-func (c interruptCounter) wait(t *testing.T, n int) {
+func (c interruptCounter) wait(t testing.TB, n int) {
 	t.Helper()
 	for range n {
 		select {

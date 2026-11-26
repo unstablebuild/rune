@@ -430,7 +430,8 @@ func (wm *WindowManager) drawBackground(t backgroundTarget) {
 // the window shows what is under it.
 func (wm *WindowManager) fillBorderInsides(c term.Color, area image.Rectangle, bare []image.Rectangle) {
 	w := &wm.bgWriter
-	for i, sprite := range w.sprites {
+	for _, s := range w.sprites {
+		i := s.i
 		if w.cells[i]&(cellSprite|cellMasked) != cellSprite {
 			continue
 		}
@@ -439,7 +440,7 @@ func (wm *WindowManager) fillBorderInsides(c term.Color, area image.Rectangle, b
 			continue
 		}
 		sides := RingSides(p, area)
-		fill, ok := wm.masks.Inside(sprite, sides, c)
+		fill, ok := wm.masks.Inside(s.img, sides, c)
 		if !ok || !w.Writer.DrawImage(fill) {
 			continue
 		}
@@ -551,15 +552,24 @@ func shiftFlags(prev cellDefaults, attrs term.AttrMask) cellDefaults {
 // backgroundWriter forwards everything to Writer, and records, for each
 // cell of area, which of its colours were last left the default and its
 // background, and the images over the cells of its outermost ring when a
-// border takes it.
+// border takes it. The images are kept in a slice reused across windows
+// because a map would put each of these large values on the heap.
 type backgroundWriter struct {
 	term.Writer
-	area    image.Rectangle
-	cells   []cellDefaults
-	bg      []term.Color
-	framed  bool
-	sprites map[int]term.Image
-	masks   *FrameMasks
+	area   image.Rectangle
+	cells  []cellDefaults
+	bg     []term.Color
+	framed bool
+	// sprites holds the last image of the border drawn over each cell,
+	// at spriteIdx[cell]-1.
+	sprites   []spriteAt
+	spriteIdx []int32
+	masks     *FrameMasks
+}
+
+type spriteAt struct {
+	i   int
+	img term.Image
 }
 
 // begin records t.area of dst from now on, after clearing t.interior to
@@ -573,7 +583,10 @@ func (w *backgroundWriter) begin(dst term.Writer, t backgroundTarget, masks *Fra
 	w.cells = slices.Grow(w.cells[:0], n)[:n]
 	w.bg = slices.Grow(w.bg[:0], n)[:n]
 	clear(w.bg)
+	w.spriteIdx = slices.Grow(w.spriteIdx[:0], n)[:n]
+	clear(w.spriteIdx)
 	clear(w.sprites)
+	w.sprites = w.sprites[:0]
 	ring := cellDefaultBg | cellDefaultFg
 	if t.under {
 		ring |= cellUnder
@@ -691,10 +704,12 @@ func (w *backgroundWriter) DrawImage(img term.Image) bool {
 		switch {
 		case !img.Fill && img.Layer == term.ImageLayerAboveText:
 			w.cells[i] |= cellSprite
-			if w.sprites == nil {
-				w.sprites = make(map[int]term.Image)
+			if j := w.spriteIdx[i]; j != 0 {
+				w.sprites[j-1].img = img
+			} else {
+				w.sprites = append(w.sprites, spriteAt{i: i, img: img})
+				w.spriteIdx[i] = int32(len(w.sprites))
 			}
-			w.sprites[i] = img
 		case img.Fill && img.Src != nil && img.Layer == term.ImageLayerBelowText &&
 			w.cells[i]&cellSprite != 0:
 			w.cells[i] |= cellMasked
