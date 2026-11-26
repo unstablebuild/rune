@@ -153,7 +153,7 @@ The settings under `extensions.go.config.gopls` split into two groups.
 starts, and gopls ignores the same keys under `workspace/configuration`, so
 every workspace folder in the session shares them. Two settings are in this
 group: `fileWatcher`, and the `vulncheck` prompt (`"Prompt"`, the default).
-Changing either takes effect after `:workspacereload`, which restarts the
+Changing either takes effect after `workspacereload`, which restarts the
 server.
 
 Everything else is read per folder: `analyses`, `codelenses`, `hints`,

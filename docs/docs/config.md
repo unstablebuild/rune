@@ -526,4 +526,4 @@ config["gui"]["app_icon"] = "~/.rune/icon.png"
 
   Keys gopls reads only at startup, such as `fileWatcher`, are not answered
   here. Set those under `extensions.go.config.gopls` instead; changing them
-  needs `:workspacereload` before they take effect.
+  needs `workspacereload` before they take effect.

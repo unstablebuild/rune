@@ -365,7 +365,7 @@ value and call `Initialize`. The Go integration shows the essential control
 flow clearly:
 
 ```go
-params, err := goplsInitializeParams(root.URI, dbg, goplsBin)
+params, err := goplsInitializeParams(root.URI, dbg, goplsBin, userSettings)
 if err != nil {
     return fmt.Errorf("build init params: %w", err)
 }
@@ -377,7 +377,7 @@ if _, err := lsp.Initialize(ctx, params); err != nil {
 That example is taken from
 [`initializeGoRoot`](https://github.com/unstablebuild/rune/blob/main/cmd/extension_go/extension.go#L164-L193).
 The complete parameter builders for
-[Go](https://github.com/unstablebuild/rune/blob/main/cmd/extension_go/initialize.go#L67-L262),
+[Go](https://github.com/unstablebuild/rune/blob/main/cmd/extension_go/initialize.go#L65-L257),
 [Python](https://github.com/unstablebuild/rune/blob/main/cmd/extension_python/initialize.go#L48-L217),
 [Rust](https://github.com/unstablebuild/rune/blob/main/cmd/extension_rust/initialize.go#L26-L253),
 [Zig](https://github.com/unstablebuild/rune/blob/main/cmd/extension_zig/initialize.go#L45-L209),
