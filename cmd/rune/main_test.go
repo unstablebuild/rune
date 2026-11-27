@@ -325,6 +325,15 @@ func TestVersionStringUsesBuildStampLayout(t *testing.T) {
 	}
 }
 
+func TestReleaseHTTPClientCapsConnectionsPerHost(t *testing.T) {
+	transport, ok := newReleaseHTTPClient().Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.Equal(t, releaseMaxConnsPerHost, transport.MaxConnsPerHost)
+	assert.NotNil(t, transport.Proxy, "it keeps the default transport's settings")
+	assert.Zero(t, http.DefaultTransport.(*http.Transport).MaxConnsPerHost,
+		"the default transport is left as is")
+}
+
 func TestAppLaunchArgs(t *testing.T) {
 	tests := []struct {
 		name     string

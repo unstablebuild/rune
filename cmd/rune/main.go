@@ -1210,10 +1210,21 @@ func newAPIClient(
 	// fails client-side with auth.ErrNotAuthenticated when no token
 	// is cached, which would break package installs for logged-out
 	// users under the usage-based paywall.
-	httpClient := &http.Client{}
-	releaseManager := cdnrelease.NewManager(httpClient,
+	releaseManager := cdnrelease.NewManager(newReleaseHTTPClient(),
 		idepkg.ReleasesURL(*flagHTTPAddress, idepkg.HostArch()))
 	return client, releaseManager
+}
+
+// releaseMaxConnsPerHost caps the connections to the release server: each
+// holds an OS thread while macOS verifies its certificate, so looking up
+// many packages at once would otherwise create a thread per lookup.
+const releaseMaxConnsPerHost = 8
+
+// newReleaseHTTPClient is the client release managers download through.
+func newReleaseHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxConnsPerHost = releaseMaxConnsPerHost
+	return &http.Client{Transport: transport}
 }
 
 // apiClientConfig is the production apiclient configuration from the
