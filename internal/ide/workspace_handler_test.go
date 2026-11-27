@@ -12719,7 +12719,8 @@ func TestTextOptsInstallSyntaxTrees(t *testing.T) {
 	require.NoError(t, err)
 
 	textCfg := text.DefaultConfig()
-	for _, opt := range (&workspaceManagerHandler{}).textOpts(cfg, nil, uri, nil) {
+	for _, opt := range (&workspaceManagerHandler{pkgmanager: new(localPkgManager)}).
+		textOpts(cfg, nil, uri, nil) {
 		opt(&textCfg)
 	}
 	assert.NotNil(t, textCfg.SyntaxTree,
@@ -12734,7 +12735,8 @@ func TestTextOptsEnableMarkdownImages(t *testing.T) {
 	require.NoError(t, err)
 
 	textCfg := text.DefaultConfig()
-	for _, opt := range (&workspaceManagerHandler{}).textOpts(cfg, nil, uri, nil) {
+	for _, opt := range (&workspaceManagerHandler{pkgmanager: new(localPkgManager)}).
+		textOpts(cfg, nil, uri, nil) {
 		opt(&textCfg)
 	}
 	// Images are cached in a partition of their own.

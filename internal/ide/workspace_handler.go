@@ -857,7 +857,7 @@ func (h *workspaceManagerHandler) init(
 
 	// don't install a fs watcher for the home workspace,
 	// to prevent unecessary resource consumption
-	homeParser := treesitter.NewParser(h.homeWorkspace, h.pkgmanager, h.homeURI).
+	homeParser := treesitter.NewParser(h.homeWorkspace, h.pkgmanager.libDir, h.homeURI).
 		WithCaptureNamesAttributes(cfg.syntaxConfig().CaptureNamesAttributes)
 	globalOpts := h.textOpts(cfg, homeParser, h.homeURI, h.homeWorkspace)
 	tm := new(workspaceTabManager)
@@ -1885,7 +1885,7 @@ func (h *workspaceManagerHandler) textOpts(
 		text.WithRightInset(h.rightInset),
 		text.WithTabBarHeight(h.tabBarHeight),
 		text.WithTabNameSeparator(cfg.tabNameSeparator()),
-		text.WithPackageManager(h.pkgmanager),
+		text.WithPackageManager(h.pkgmanager.libDir),
 		text.WithSyntaxConfig(cfg.syntaxConfig()),
 		text.WithMaxSyntaxParseSize(cfg.editorMaxSizeForSyntax()),
 		text.WithSyntaxTree(multitree.New),
@@ -2252,7 +2252,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		}
 	}
 
-	parser := treesitter.NewParser(cwd, h.pkgmanager, uri).
+	parser := treesitter.NewParser(cwd, h.pkgmanager.libDir, uri).
 		WithCaptureNamesAttributes(cfg.syntaxConfig().CaptureNamesAttributes)
 	symbolIndex, indexedSymbols := h.openSymbolIndex(cfg, uri, cwd, parser)
 	symbolDBCloser := io.Closer(symbolIndex)
@@ -2847,11 +2847,11 @@ func (h *workspaceManagerHandler) buildExtensions(
 	}()
 	// Language servers and debuggers run on the workspace host, so the
 	// packages they need are installed there.
-	var pkgs idelsp.PkgManager = h.pkgmanager
+	var pkgs idelsp.PkgManager = h.pkgmanager.libDir
 	pkgshellCfg := pkgconsole.Config{Manager: h.pkgmanager.pkg}
 	hostPkgs := h.hostPackageManager(cfg, uri, cwd, notifications)
 	if hostPkgs != nil {
-		pkgs = hostPkgs
+		pkgs = newSharedLibDir(installedPackages{hostPkgs.pm}, hostPkgs, false)
 		pkgshellCfg = pkgconsole.Config{Manager: hostPkgs.pm, Host: hostPkgs.host}
 		defer func() {
 			if retErr != nil {
