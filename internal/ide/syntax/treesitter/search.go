@@ -1184,22 +1184,6 @@ func loadLanguage(
 	return &loadedLanguage{lib: lib, lang: language, parser: sitterParser}, query, nil
 }
 
-// dlopenGrammar loads the grammar at path through the file path resolves
-// to. A package in use under another version keeps the paths of its
-// files, and glibc's loader hands back the library it already loaded
-// under a path, so loading by that path would parse with the old grammar
-// for as long as anything holds it open.
-func dlopenGrammar(path string) (uintptr, error) {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		path = resolved
-	}
-	lib, err := purego.Dlopen(path, purego.RTLD_NOW|purego.RTLD_GLOBAL)
-	if err != nil {
-		return 0, fmt.Errorf("dlopen %q: %w", path, err)
-	}
-	return lib, nil
-}
-
 // compileQuery compiles a tree-sitter query against lang.
 func compileQuery(lang *sitter.Language, query string) (*sitter.Query, error) {
 	q, qerr := sitter.NewQuery(lang, query)
