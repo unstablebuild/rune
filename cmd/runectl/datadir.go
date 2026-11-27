@@ -14,10 +14,35 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//go:build tools
-
-package tools
+package main
 
 import (
-	_ "github.com/unstablebuild/rune-go-sdk/cmd/runectl"
+	"github.com/spf13/cobra"
 )
+
+func newDatadirCmd(a *app) *cobra.Command {
+	var format string
+
+	cmd := &cobra.Command{
+		Use:   "datadir",
+		Short: "Print the extension data directory",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
+			defer func() { retErr = formatError(format, retErr) }()
+			w, err := a.getWorkspace()
+			if err != nil {
+				return err
+			}
+			return printString(
+				format, w.DataDir(cmd.Context()), []string{"DataDir"},
+			)
+		},
+	}
+
+	cmd.Flags().StringVarP(
+		&format, "format", "F", "",
+		"Output format: table, json, or Go template",
+	)
+
+	return cmd
+}

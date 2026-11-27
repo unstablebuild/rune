@@ -28,6 +28,10 @@ pkg install runectl
 (or `console pkg install runectl` from the command prompt). Once installed,
 `runectl` is on your `PATH` inside Rune's terminals.
 
+To build it from source instead, run `make runectl` in a
+[Rune checkout](./building.md#get-the-source); the binary is written to
+`bin/runectl`.
+
 ## How it finds the workspace
 
 Commands you run from a Rune terminal target the right workspace
