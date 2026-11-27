@@ -99,7 +99,7 @@ type promptingPackages struct {
 	prompts map[string]chan struct{}
 }
 
-func newPromptingPackages(t *testing.T, catalog []string, installed ...string) *promptingPackages {
+func newPromptingPackages(t testing.TB, catalog []string, installed ...string) *promptingPackages {
 	t.Helper()
 	wd, err := os.Getwd()
 	require.NoError(t, err)
@@ -220,7 +220,7 @@ func highlight(from, to term.Coordinates, attr term.Attributes) textapi.Location
 // compositeTree is a composite tree installed into a bare buffer, with the
 // highlights it publishes recorded.
 type compositeTree struct {
-	t     *testing.T
+	t     testing.TB
 	mu    *sync.Mutex
 	buf   *cell.Buffer
 	tree  *multitree.Tree
@@ -236,7 +236,7 @@ func newSvelteTree(t *testing.T, pkgs syntax.PkgManager, content string) *compos
 // newCompositeTree installs into a buffer holding content the composite tree
 // of a file with extension ext, configured by cfg.
 func newCompositeTree(
-	t *testing.T, pkgs syntax.PkgManager, ext, content string,
+	t testing.TB, pkgs syntax.PkgManager, ext, content string,
 	cfg func(*sync.Mutex) syntax.Config,
 ) *compositeTree {
 	t.Helper()
