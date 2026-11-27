@@ -4004,9 +4004,9 @@ quit           <c-q>
 	}
 }
 
-// hintFgAt returns the foreground color of the rightmost non-space cell
-// on the row identified by prefix, i.e. the last rune of the key hint.
-func hintFgAt(t *testing.T, w *term.StringWriter, width int, prefix string) term.Color {
+// hintCellAt returns the rightmost non-space cell on the row identified
+// by prefix, i.e. the last rune of the key hint.
+func hintCellAt(t *testing.T, w *term.StringWriter, width int, prefix string) term.Cell {
 	t.Helper()
 	lines := strings.Split(w.String(), "\n")
 	cells := w.Cells()
@@ -4017,49 +4017,92 @@ func hintFgAt(t *testing.T, w *term.StringWriter, width int, prefix string) term
 		for x := width - 1; x >= 0; x-- {
 			c := cells[y*width+x]
 			if c.Ch != 0 && c.Ch != ' ' {
-				return c.Fg
+				return c
 			}
 		}
 	}
 	t.Fatalf("no hinted row found for prefix %q", prefix)
-	return 0
+	return term.Cell{}
 }
 
-func TestKeyBindingHintFocusColor(t *testing.T) {
-	cfg := keybindingTestConfig()
-	cfg.KeyBindingHintAttr = term.Attributes{Fg: term.ColorGray}
-	cfg.KeyBindingHintFocusAttr = term.Attributes{Fg: term.ColorSilver}
-	cfg.KeyBindingHint = func(line string) string {
-		switch line {
-		case "edit":
-			return "<ctrl-e>"
-		case "quit":
-			return "<ctrl-q>"
-		}
-		return ""
+func TestKeyBindingHintAttributes(t *testing.T) {
+	elementBg := term.NewRGBColor(0x1c, 0x1c, 0x1f)
+	focusBg := term.NewRGBColor(0x32, 0x34, 0x43)
+	hintBg := term.NewRGBColor(0x10, 0x20, 0x30)
+	tsuite := []struct {
+		desc                     string
+		elementAttr, focusAttr   term.Attributes
+		hintAttr, hintFocus      term.Attributes
+		wantFocus, wantUnfocused term.Attributes
+	}{
+		{
+			desc:          "hint colors follow focus",
+			hintAttr:      term.Attributes{Fg: term.ColorGray},
+			hintFocus:     term.Attributes{Fg: term.ColorSilver},
+			wantFocus:     term.Attributes{Fg: term.ColorSilver},
+			wantUnfocused: term.Attributes{Fg: term.ColorGray},
+		},
+		{
+			desc:          "hint inherits the row background",
+			elementAttr:   term.Attributes{Fg: term.ColorWhite, Bg: elementBg},
+			focusAttr:     term.Attributes{Fg: term.ColorPurple, Bg: focusBg},
+			hintAttr:      term.Attributes{Fg: term.ColorGray},
+			hintFocus:     term.Attributes{Fg: term.ColorSilver},
+			wantFocus:     term.Attributes{Fg: term.ColorSilver, Bg: focusBg},
+			wantUnfocused: term.Attributes{Fg: term.ColorGray, Bg: elementBg},
+		},
+		{
+			desc:          "explicit hint background wins",
+			elementAttr:   term.Attributes{Fg: term.ColorWhite, Bg: elementBg},
+			focusAttr:     term.Attributes{Fg: term.ColorPurple, Bg: focusBg},
+			hintAttr:      term.Attributes{Fg: term.ColorGray, Bg: hintBg},
+			hintFocus:     term.Attributes{Fg: term.ColorSilver, Bg: hintBg},
+			wantFocus:     term.Attributes{Fg: term.ColorSilver, Bg: hintBg},
+			wantUnfocused: term.Attributes{Fg: term.ColorGray, Bg: hintBg},
+		},
 	}
+	for _, tcase := range tsuite {
+		t.Run(tcase.desc, func(t *testing.T) {
+			cfg := keybindingTestConfig()
+			cfg.ElementAttr = tcase.elementAttr
+			cfg.FocusElementAttr = tcase.focusAttr
+			cfg.KeyBindingHintAttr = tcase.hintAttr
+			cfg.KeyBindingHintFocusAttr = tcase.hintFocus
+			cfg.KeyBindingHint = func(line string) string {
+				switch line {
+				case "edit":
+					return "<ctrl-e>"
+				case "quit":
+					return "<ctrl-q>"
+				}
+				return ""
+			}
 
-	dispatchFn, cleanup := nopDispatch()
-	defer cleanup(t)
-	completeFn, cleanupComplete := nopComplete()
-	defer cleanupComplete(t)
-	p := NewPrompt(
-		storagestub.NewInMemoryService(), FuncCompleter(completeFn),
-		FuncDispatcher(dispatchFn), term.NopInterrupter(),
-		keybindingTestCommands, cfg,
-	)
-	defer p.Close()
+			dispatchFn, cleanup := nopDispatch()
+			defer cleanup(t)
+			completeFn, cleanupComplete := nopComplete()
+			defer cleanupComplete(t)
+			p := NewPrompt(
+				storagestub.NewInMemoryService(), FuncCompleter(completeFn),
+				FuncDispatcher(dispatchFn), term.NopInterrupter(),
+				keybindingTestCommands, cfg,
+			)
+			defer p.Close()
 
-	// empty input keeps focus on the first row (edit)
-	w := term.NewStringWriter(40, 8)
-	p.Resize(40, 8)
-	p.Wait()
-	p.Draw(w)
-	require.NoError(t, w.Flush())
-	assert.Equal(t, term.ColorSilver, hintFgAt(t, w, 40, "edit"),
-		"focused row hint must use the focus color")
-	assert.Equal(t, term.ColorGray, hintFgAt(t, w, 40, "quit"),
-		"non-focused row hint must use the default color")
+			// empty input keeps focus on the first row (edit)
+			w := term.NewStringWriter(40, 8)
+			p.Resize(40, 8)
+			p.Wait()
+			p.Draw(w)
+			require.NoError(t, w.Flush())
+			focused := hintCellAt(t, w, 40, "edit")
+			assert.Equal(t, tcase.wantFocus.Fg, focused.Fg, "focused hint fg")
+			assert.Equal(t, tcase.wantFocus.Bg, focused.Bg, "focused hint bg")
+			unfocused := hintCellAt(t, w, 40, "quit")
+			assert.Equal(t, tcase.wantUnfocused.Fg, unfocused.Fg, "unfocused hint fg")
+			assert.Equal(t, tcase.wantUnfocused.Bg, unfocused.Bg, "unfocused hint bg")
+		})
+	}
 }
 
 func TestKeyBindingHintHistoryMode(t *testing.T) {

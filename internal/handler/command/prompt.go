@@ -1561,9 +1561,14 @@ func (h *Prompt) drawKeyBindingHints(w term.Writer, listHeight int) {
 		if labelW >= h.width || startX <= dataW {
 			return
 		}
-		attr := h.config.KeyBindingHintAttr
+		attr, rowAttr := h.config.KeyBindingHintAttr, h.config.ElementAttr
 		if scrollOffset+row == focusOffset {
-			attr = h.config.KeyBindingHintFocusAttr
+			attr, rowAttr = h.config.KeyBindingHintFocusAttr, h.config.FocusElementAttr
+		}
+		// SetCell replaces the whole cell, so without this the hint punches
+		// a hole in a themed row background.
+		if attr.Bg == term.ColorDefault {
+			attr.Bg = rowAttr.Bg
 		}
 		for i, ch := range runes {
 			w.SetCell(term.Coordinates{X: startX + i, Y: y}, term.NewCell(ch, 1, attr))
