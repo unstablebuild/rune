@@ -83,12 +83,21 @@ type FrameMasks struct {
 }
 
 type frameMaskKey struct {
-	id       term.ImageID
-	version  uint64
-	crop     image.Rectangle
-	outside  Sides
-	enclosed bool
+	id      term.ImageID
+	version uint64
+	crop    image.Rectangle
+	outside Sides
+	kind    maskKind
 }
+
+// maskKind is which part of a sprite's cell a mask covers.
+type maskKind uint8
+
+const (
+	maskInside maskKind = iota
+	maskEnclosed
+	maskOutside
+)
 
 // frameMask is the mask of a sprite, or a nil src when its line does not
 // part its inside from its outside.
@@ -107,7 +116,16 @@ type frameMask struct {
 // to an outside one, as those of a sprite that draws no line across its
 // cell do.
 func (m *FrameMasks) Inside(sprite term.Image, outside Sides, c term.Color) (term.Image, bool) {
-	return m.fill(sprite, outside, false, c)
+	return m.fill(sprite, outside, maskInside, c)
+}
+
+// Outside returns a fill of c over the part of sprite that Inside leaves
+// out: the side of the line away from the frame and the line itself, but
+// for the edge of the line that Inside's fill goes under. It is for a
+// picture under the cell to show only inside the line. It reports false
+// when Inside does.
+func (m *FrameMasks) Outside(sprite term.Image, outside Sides, c term.Color) (term.Image, bool) {
+	return m.fill(sprite, outside, maskOutside, c)
 }
 
 // Enclosed returns a fill of c over the clear pixels of sprite, the image
@@ -119,12 +137,11 @@ func (m *FrameMasks) Inside(sprite term.Image, outside Sides, c term.Color) (ter
 // picture stretched over a single cell, when outside is empty and when
 // sprite encloses no clear pixel.
 func (m *FrameMasks) Enclosed(sprite term.Image, outside Sides, c term.Color) (term.Image, bool) {
-	return m.fill(sprite, outside, true, c)
+	return m.fill(sprite, outside, maskEnclosed, c)
 }
 
-// fill returns the fill of c over the mask of sprite that Inside, or
-// Enclosed when enclosed is set, derives.
-func (m *FrameMasks) fill(sprite term.Image, outside Sides, enclosed bool, c term.Color) (term.Image, bool) {
+// fill returns the fill of c over the mask of kind of sprite.
+func (m *FrameMasks) fill(sprite term.Image, outside Sides, kind maskKind, c term.Color) (term.Image, bool) {
 	if sprite.Src == nil || sprite.Fill || sprite.Fit != term.ImageFitFill ||
 		sprite.Width != 1 || sprite.Height != 1 {
 		return term.Image{}, false
@@ -133,12 +150,15 @@ func (m *FrameMasks) fill(sprite term.Image, outside Sides, enclosed bool, c ter
 	if !sprite.Crop.Empty() {
 		crop = sprite.Crop.Intersect(crop)
 	}
-	key := frameMaskKey{id: sprite.ID, version: sprite.Version, crop: crop, outside: outside, enclosed: enclosed}
+	key := frameMaskKey{id: sprite.ID, version: sprite.Version, crop: crop, outside: outside, kind: kind}
 	mask, ok := m.masks[key]
 	if !ok || sprite.ID == 0 {
-		if enclosed {
+		switch kind {
+		case maskEnclosed:
 			mask = frameMask{src: enclosedMask(sprite.Src, crop, outside)}
-		} else {
+		case maskOutside:
+			mask = frameMask{src: invertedMask(insideMask(sprite.Src, crop, outside))}
+		default:
 			mask = frameMask{src: insideMask(sprite.Src, crop, outside)}
 		}
 		if mask.src != nil {
@@ -184,7 +204,11 @@ func (w *FrameInsideWriter) DrawImage(img term.Image) bool {
 	if sides == 0 {
 		return true
 	}
-	if fill, ok := w.Masks.fill(img, sides, w.Enclosed, w.Inside); ok {
+	kind := maskInside
+	if w.Enclosed {
+		kind = maskEnclosed
+	}
+	if fill, ok := w.Masks.fill(img, sides, kind, w.Inside); ok {
 		w.Writer.DrawImage(fill)
 	}
 	return true
@@ -334,6 +358,21 @@ func dilatedMask(in []bool, w, h int) *image.RGBA {
 		}
 	}
 	return mask
+}
+
+// invertedMask returns the mask of the pixels mask leaves out, or nil
+// when mask is nil.
+func invertedMask(mask *image.RGBA) *image.RGBA {
+	if mask == nil {
+		return nil
+	}
+	ret := image.NewRGBA(mask.Rect)
+	for i := 3; i < len(mask.Pix); i += 4 {
+		if mask.Pix[i] == 0 {
+			copy(ret.Pix[i-3:i+1], []uint8{0xff, 0xff, 0xff, 0xff})
+		}
+	}
+	return ret
 }
 
 // pixelRow returns the points of row y of a picture w pixels wide.

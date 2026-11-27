@@ -472,6 +472,9 @@ workspace:
 - `duration`: one loop of an animation, `10s` by default. `fps`: 30 by
   default, 120 at most. `animate: false` freezes an animation on its first
   frame. `seed`: a whole number, or `random` for a new one at every load.
+- `under_frame`: `true` by default, so the shader reaches the frame's line.
+  Set it to `false` when `frame_charset` draws its lines through the middle
+  of the cell, such as `│` and `─`, or the shader shows past them.
 - `focus_wallpaper_shader` is the focused window's: the same file with the
   focused state's colours.
 
@@ -612,6 +615,8 @@ Animate with care:
 - Capture empty windows in both states, focused and not: the wallpaper shows
   nowhere else. `["exec", "windownew right"]` adds a second empty tile, so the
   capture shows one of each.
+- Crop the frame's corners and bottom edge at 4× or more: the shader reaches
+  the frame's line and stops there.
 - Capture an animation twice, a few seconds apart, and compare. Zoom into a
   crop of a gradient and look for bands.
 
@@ -683,7 +688,7 @@ Abbreviations:
 | Quick menu | `gui.quick_menu[i].sprite` | `idle` `hover` `pressed` | square, each side as wide as 4 text columns | contain |
 | Wallpaper | `workspace.wallpaper_image` | a path, or `{path, width, height, fit}` | `width`/`height` in cells or `N%`, default 60% | `contain` (default), `cover` or `fill` |
 | Focused wallpaper | `workspace.focus_wallpaper_image` | same as the wallpaper | same | same |
-| Shader wallpaper | `workspace.wallpaper_shader`, `workspace.focus_wallpaper_shader` | a built-in (`gradient`, `inferno`) or a `.kage` path, or `{shader, uniforms, duration, fps, animate, seed}` | the window inside its frame, in pixels | computed at the window's size; replaces `wallpaper_image` |
+| Shader wallpaper | `workspace.wallpaper_shader`, `workspace.focus_wallpaper_shader` | a built-in (`gradient`, `inferno`) or a `.kage` path, or `{shader, uniforms, duration, fps, animate, seed, under_frame}` | the whole window, frame included unless `under_frame` is `false` | computed at the window's size; replaces `wallpaper_image` |
 | App icon | `gui.app_icon` | a path | none: a square image, 256 px or larger | `contain`, centered on a transparent square |
 
 ### Floating-only styling

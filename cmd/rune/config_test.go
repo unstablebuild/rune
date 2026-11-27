@@ -137,6 +137,9 @@ func TestDefaultConfigShowsTheLogoWithItsIntro(t *testing.T) {
 	animate, err := shader.GetBool("animate")
 	require.NoError(t, err)
 	assert.True(t, animate)
+	underFrame, err := shader.GetBool("under_frame")
+	require.NoError(t, err)
+	assert.True(t, underFrame, "the GUI's frame draws its lines along the outer edge of its cells")
 
 	animations, err := cfg.GetConfig("animations")
 	require.NoError(t, err)

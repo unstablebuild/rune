@@ -249,6 +249,80 @@ func TestFrameMasksInsideReusesMasks(t *testing.T) {
 	assert.Equal(t, "\nxxx.\nxxx.", maskArt(part.Src), "the mask is of the crop")
 }
 
+func TestFrameMasksOutside(t *testing.T) {
+	sprite := func(art string) term.Image {
+		return term.Image{
+			Src: spritePixels(art), ID: term.NewImageID(), Width: 1, Height: 1,
+			Pos: term.Coordinates{X: 3, Y: 2},
+		}
+	}
+	tests := []struct {
+		name    string
+		sprite  term.Image
+		outside Sides
+		// want is the mask, or empty for none.
+		want string
+	}{
+		{
+			name: "above the line of a top edge and the line, but for its inner edge",
+			sprite: sprite(`
+....
+####
+####
+....`),
+			outside: SideTop,
+			want: `
+xxxx
+xxxx
+....
+....`,
+		},
+		{
+			name: "outside the bend of a bottom-right corner",
+			sprite: sprite(`
+.#..
+.#..
+##..
+....`),
+			outside: SideBottom | SideRight,
+			want: `
+..xx
+..xx
+.xxx
+xxxx`,
+		},
+		{
+			name: "none for a line across the other way",
+			sprite: sprite(`
+....
+####
+....
+....`),
+			outside: SideLeft,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var m FrameMasks
+			got, ok := m.Outside(tt.sprite, tt.outside, term.ColorDefault)
+			if tt.want == "" {
+				assert.False(t, ok)
+				return
+			}
+			require.True(t, ok)
+			assert.Equal(t, tt.want, maskArt(got.Src))
+			want := tt.sprite
+			want.Src, want.ID = got.Src, got.ID
+			want.Fill, want.FillColor, want.Layer = true, term.ColorDefault, term.ImageLayerBelowText
+			assert.Equal(t, want, got, "the fill goes where the sprite does, under the text")
+
+			inside, ok := m.Inside(tt.sprite, tt.outside, term.ColorDefault)
+			require.True(t, ok)
+			assert.NotEqual(t, inside.ID, got.ID, "the outside has a mask of its own")
+		})
+	}
+}
+
 func TestFrameMasksEnclosed(t *testing.T) {
 	sprite := func(art string) term.Image {
 		return term.Image{

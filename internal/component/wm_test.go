@@ -4013,6 +4013,147 @@ func BenchmarkWindowManagerDrawFramed(b *testing.B) {
 	}
 }
 
+// backdropContent records whether its window's frame shows a picture
+// under it and, when it does, draws one there, as a wallpaper does.
+type backdropContent struct {
+	width, height int
+	backdrop      bool
+}
+
+func (c *backdropContent) Resize(width, height int) { c.width, c.height = width, height }
+
+func (c *backdropContent) Dimensions() (int, int) { return 3, 2 }
+
+func (c *backdropContent) Draw(w term.Writer) {
+	c.backdrop = FrameBackdropFromContext(w.Context())
+	if !c.backdrop {
+		return
+	}
+	w.DrawImage(term.Image{
+		Src: image.NewRGBA(image.Rect(0, 0, 1, 1)), ID: term.NewImageID(),
+		Pos:   term.Coordinates{X: -1, Y: -1},
+		Width: c.width + 2, Height: c.height + 2,
+		Layer: term.ImageLayerBelowBackground, Overflow: true,
+	})
+}
+
+func TestWindowManagerFrameBackdrop(t *testing.T) {
+	navy := WindowBackground{Attr: term.Attributes{Bg: term.ColorNavy}}
+	none := `
+........
+........
+........
+........
+........`
+	tests := []struct {
+		name       string
+		background WindowBackground
+		// glyphs frames the tile with characters rather than images.
+		glyphs   bool
+		noFrame  bool
+		floating bool
+		backdrop bool
+		// fills and bg are the maps of the screen, unchecked when empty.
+		fills, bg string
+	}{
+		{
+			name:       "a tile with a background shows the picture inside its frame's lines",
+			background: navy,
+			backdrop:   true,
+			// Default fills outside the lines.
+			fills: `
+????????
+?......?
+?......?
+?......?
+????????`,
+			bg: `
+........
+.nnnnnn.
+.nnnnnn.
+.nnnnnn.
+........`,
+		},
+		{
+			name:     "a tile without a background shows the picture inside its frame's lines",
+			backdrop: true,
+			fills: `
+????????
+?......?
+?......?
+?......?
+????????`,
+			bg: none,
+		},
+		{
+			name:       "a frame of characters shows the picture under its whole cells",
+			background: navy,
+			glyphs:     true,
+			backdrop:   true,
+			fills:      none,
+			bg: `
+........
+.nnnnnn.
+.nnnnnn.
+.nnnnnn.
+........`,
+		},
+		{
+			name:     "a frame of characters without a background",
+			glyphs:   true,
+			backdrop: true,
+			fills:    none,
+			bg:       none,
+		},
+		{name: "a tile without a frame", background: navy, noFrame: true, fills: none},
+		{name: "a floating window", background: navy, floating: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testWindowManagerConfig()
+			cfg.Frame = !tt.noFrame
+			cfg.Background = tt.background
+			if !tt.glyphs {
+				cfg.FrameCharSet.Graphics = lineSprites(t)
+			}
+			cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			irq := make(interruptCounter, 16)
+			cfg.Interrupter = irq
+			content := &backdropContent{}
+			var root tui.Component = content
+			if tt.floating {
+				root = &stripedContent{}
+			}
+			wm, _ := NewWindowManager(root, cfg)
+			t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+			wm.Resize(8, 5)
+			if tt.floating {
+				wm.FloatingWindow(content, FloatingConfig{Offset: term.Coordinates{X: 2, Y: 1}})
+			}
+			wm.Draw(term.NewStringWriter(8, 5))
+			if cfg.Frame && !tt.glyphs {
+				irq.wait(t, 3)
+			}
+
+			s := newImageScreen(8, 5)
+			wm.Draw(s)
+			require.NoError(t, s.Flush())
+			assert.Equal(t, tt.backdrop, content.backdrop)
+			if tt.fills != "" {
+				assert.Equal(t, tt.fills, fillMap(t, s))
+			}
+			if tt.bg != "" {
+				assert.Equal(t, tt.bg, colorMap(s, func(c term.Cell) term.Color { return c.Bg }))
+			}
+			for _, img := range s.images {
+				if img.Fill && tt.backdrop {
+					assert.Equal(t, term.ColorDefault, img.FillColor, "the fill at %v", img.Pos)
+				}
+			}
+		})
+	}
+}
+
 // ownBorderContent draws a border of line sprites of its own around
 // blank cells, over the background under it, and fills the inside of
 // its top-left corner in teal itself.

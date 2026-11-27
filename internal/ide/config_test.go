@@ -5582,6 +5582,56 @@ func TestConfigWallpaperShaderReportsRuntimeErrorsOnce(t *testing.T) {
 		"once, however many windows show it")
 }
 
+func TestConfigWallpaperShaderUnderFrame(t *testing.T) {
+	still, err := filepath.Abs("testdata/wallpaper_still.kage")
+	require.NoError(t, err)
+	tests := []struct {
+		name    string
+		section map[string]any
+		// wantSize is the picture the shader renders in a framed tile of
+		// 8x5 cells.
+		wantSize image.Point
+		wantErrs map[string]string
+	}{
+		{name: "covers the frame by default", section: map[string]any{}, wantSize: image.Pt(8, 5)},
+		{name: "stops inside the frame when turned off", section: map[string]any{"under_frame": false}, wantSize: image.Pt(6, 3)},
+		{
+			name:     "an invalid value keeps the default",
+			section:  map[string]any{"under_frame": "no"},
+			wantSize: image.Pt(8, 5),
+			wantErrs: map[string]string{"workspace.wallpaper_shader.under_frame": "type is invalid"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.section["shader"] = still
+			cfg := &ideConfig{
+				cfg:    map[string]any{"workspace": map[string]any{"wallpaper_shader": tt.section}},
+				errors: map[string]error{},
+			}
+			comp := cfg.wallpaper().NewComponent()
+			t.Cleanup(func() { _ = comp.Close() })
+			wantErrs := tt.wantErrs
+			if wantErrs == nil {
+				wantErrs = map[string]string{}
+			}
+			assert.Equal(t, wantErrs, configErrs(cfg.errors))
+
+			wm, _ := tcomponent.NewWindowManager(comp, tcomponent.WindowManagerConfig{
+				Frame:                true,
+				FrameGraphicsStorage: storagestub.NewInMemoryService(),
+				Interrupter:          term.NopInterrupter(),
+			})
+			t.Cleanup(func() { _ = wm.Close() })
+			wm.Resize(8, 5)
+			dev := &gshadertest.Device{}
+			wm.Draw(&gshadertest.Writer{Ctx: dev.Context(context.Background())})
+			require.Len(t, dev.Calls, 1)
+			assert.Equal(t, tt.wantSize, dev.Calls[0].Size)
+		})
+	}
+}
+
 func TestConfigFocusWallpaperShader(t *testing.T) {
 	still, err := filepath.Abs("testdata/wallpaper_still.kage")
 	require.NoError(t, err)

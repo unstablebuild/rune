@@ -5535,6 +5535,14 @@ func (c ideConfig) wallpaperShaderConfig(
 	if seed, ok := c.wallpaperShaderSeed(section, errKey); ok {
 		uniforms[gshader.UniformSeed] = seed
 	}
+	// On by default, as the default frame characters draw their lines at
+	// the outer edge of their cells.
+	gcfg.Backdrop = true
+	if underFrame, err := section.GetBool("under_frame"); err == nil {
+		gcfg.Backdrop = underFrame
+	} else if err != config.ErrNotFound {
+		c.errors[errKey+".under_frame"] = err
+	}
 	c.wallpaperShaderUniforms(section, errKey, program, uniforms)
 	return gcfg
 }

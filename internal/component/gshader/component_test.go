@@ -19,6 +19,7 @@ package gshader_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"sync/atomic"
 	"testing"
@@ -26,9 +27,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/component/comptest"
 	"github.com/unstablebuild/rune-go-sdk/term"
+	"github.com/unstablebuild/rune-go-sdk/tui"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/gshader"
 	"unstable.build/rune/internal/component/gshader/gshadertest"
 )
@@ -129,6 +133,92 @@ func TestComponentSharedKey(t *testing.T) {
 	require.Len(t, w.Images, 2)
 	assert.Equal(t, w.Images[0], w.Images[1], "components sharing a key share the rendering")
 	assert.Equal(t, key, dev.Calls[0].Key)
+}
+
+func TestComponentBackdrop(t *testing.T) {
+	placements := func(w *gshadertest.Writer) []string {
+		var ret []string
+		for _, img := range w.Images {
+			if img.Src == nil {
+				continue
+			}
+			ret = append(ret, fmt.Sprintf("%v %dx%d layer %d clip %v overflow %t",
+				img.Pos, img.Width, img.Height, img.Layer, img.Clip, img.Overflow))
+		}
+		return ret
+	}
+	tests := []struct {
+		name     string
+		backdrop bool
+		root     bool
+		// framed draws the component as the content of a framed tile
+		// with a background, 8x5 cells, rather than on its own.
+		framed   bool
+		wantSize image.Point
+		want     []string
+	}{
+		{
+			name:     "a wallpaper shades the frame of its tile under the backgrounds",
+			backdrop: true,
+			framed:   true,
+			wantSize: image.Pt(8, 5),
+			want: []string{
+				"{0 0} 8x5 layer 0 clip (1,1)-(7,4) overflow false",
+				"{0 0} 8x5 layer 2 clip (0,0)-(8,1) overflow true",
+				"{0 0} 8x5 layer 2 clip (0,4)-(8,5) overflow true",
+				"{0 0} 8x5 layer 2 clip (0,1)-(1,4) overflow true",
+				"{0 0} 8x5 layer 2 clip (7,1)-(8,4) overflow true",
+			},
+		},
+		{
+			name:     "without Backdrop it shades its own cells",
+			framed:   true,
+			wantSize: image.Pt(6, 3),
+			want:     []string{"{1 1} 6x3 layer 0 clip (1,1)-(7,4) overflow false"},
+		},
+		{
+			name:     "a component with a root shades its own cells",
+			backdrop: true,
+			root:     true,
+			framed:   true,
+			wantSize: image.Pt(6, 3),
+			want:     []string{"{1 1} 6x3 layer 0 clip (1,1)-(7,4) overflow false"},
+		},
+		{
+			name:     "a frame that does not show it",
+			backdrop: true,
+			wantSize: image.Pt(6, 3),
+			want:     []string{"{0 0} 6x3 layer 0 clip (0,0)-(0,0) overflow false"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dev := &gshadertest.Device{CellSize: image.Pt(2, 4)}
+			var root tui.Component
+			if tt.root {
+				root = component.NewString("r")
+			}
+			c := gshader.New(root, gshader.FromProgram(testProgram, nil), gshader.Config{Backdrop: tt.backdrop})
+			w := &gshadertest.Writer{Ctx: dev.Context(context.Background())}
+			if tt.framed {
+				wm, _ := tcomponent.NewWindowManager(c, tcomponent.WindowManagerConfig{
+					Frame:                true,
+					Background:           tcomponent.WindowBackground{Attr: term.Attributes{Bg: term.ColorNavy}},
+					FrameGraphicsStorage: storagestub.NewInMemoryService(),
+					Interrupter:          new(interrupter),
+				})
+				t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+				wm.Resize(8, 5)
+				wm.Draw(w)
+			} else {
+				c.Resize(6, 3)
+				c.Draw(w)
+			}
+			require.Len(t, dev.Calls, 1)
+			assert.Equal(t, tt.wantSize, dev.Calls[0].Size)
+			assert.Equal(t, tt.want, placements(w))
+		})
+	}
 }
 
 func TestComponentFallback(t *testing.T) {

@@ -1260,11 +1260,13 @@ config = {
         # .kage file. The terminal UI shows the next wallpaper instead. It
         # animates, looping over duration, when the shader declares Frame or
         # Progress and animate is True.
+        # under_frame runs the shader on the frame cells as well.
         "wallpaper_shader": { # this takes a built-in name or .kage file path string, or the following object
-            "shader":   "",
-            "fps":      30,
-            "duration": "10s",
-            "animate":  True,
+            "shader":      "",
+            "fps":         30,
+            "duration":    "10s",
+            "animate":     True,
+            "under_frame": True,
             # "seed":   0,  # or "random": sets the Seed uniform
             # "uniforms": {"Tint": "blue"},  # numbers, lists or colours
         },

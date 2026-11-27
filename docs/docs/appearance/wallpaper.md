@@ -340,7 +340,7 @@ them:
 
 | Uniform | Type | Value |
 | --- | --- | --- |
-| `Resolution` | `vec2` | The size of the window in pixels. |
+| `Resolution` | `vec2` | The size of the window in pixels, its frame included unless `under_frame` is `false`. |
 | `CellSize` | `vec2` | The size of a cell in pixels. |
 | `Background` | `vec4` | The theme's background color, as the window paints it. |
 | `Foreground` | `vec4` | The theme's foreground color. |
@@ -400,6 +400,7 @@ To set how it runs, or the values of the shader's own uniforms, set
 | `duration` | How long one loop of an animation lasts, such as `"10s"`. Defaults to `"10s"`. |
 | `animate` | `false` shows the first frame of an animated shader as a still. Defaults to `true`. |
 | `seed` | The `Seed` uniform: a whole number, or `"random"` for a new one each time Rune loads your configuration. |
+| `under_frame` | Whether the shader also runs under the frame of a tiled window, up to its line, so it fills the window to the edge. Defaults to `true`, as the default frame draws its lines along the outer edge of its cells. Set it to `false` with a `frame_charset` whose lines run through the middle of the cell, such as `│` and `─`, where the shader would show past the line; it then stops inside the frame. Frame images show the shader inside their lines only either way. |
 | `uniforms` | Values for the uniforms the shader declares: a number for a `float` or an `int`, a list of numbers for a vector, a matrix or an array, and a color, such as `"blue"` or `"#D34728"`, for a `vec4`. Colors follow the theme. |
 
 ```yaml tab
@@ -437,7 +438,7 @@ through.
 
 | Setting | What it does |
 | --- | --- |
-| `workspace.wallpaper_shader` | A [built-in shader](#built-in-shaders), or the path to a Kage shader, that the GUI draws over every empty window, or a section with its `shader`, `fps`, `duration`, `animate`, `seed` and `uniforms` (see [Run a shader](#run-a-shader)). The terminal UI shows the next wallpaper instead. Defaults to a section whose `shader` is `""`, no shader. |
+| `workspace.wallpaper_shader` | A [built-in shader](#built-in-shaders), or the path to a Kage shader, that the GUI draws over every empty window, or a section with its `shader`, `fps`, `duration`, `animate`, `seed`, `under_frame` and `uniforms` (see [Run a shader](#run-a-shader)). The terminal UI shows the next wallpaper instead. Defaults to a section whose `shader` is `""`, no shader. |
 | `workspace.wallpaper_image` | Path to a PNG that Rune shows as a picture, or a section with its `path`, `width`, `height` and `fit` (see [Show an image](#show-an-image)). Defaults to a section whose `path` is `""`, no picture. |
 | `workspace.wallpaper_image_ascii` | Path to a PNG that Rune encodes as colored ASCII art. Relative paths start from the directory Rune was started in. Defaults to `""`, no image. |
 | `workspace.wallpaper_ascii` | ASCII art drawn as written and centered as a block. Defaults to `""`, no art. |

@@ -28,6 +28,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/cell"
+	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/debug"
 )
 
@@ -51,6 +52,12 @@ type Config struct {
 	// Layer is where the picture is composited relative to the cells it
 	// covers.
 	Layer term.ImageLayer
+	// Backdrop lets a component without a root, which fills a window,
+	// shade the frame around it as well, where
+	// component.FrameBackdropFromContext reports that the frame shows it,
+	// so that the picture reaches the frame's lines. The shader then sees
+	// the window as its picture, one cell wider on every side.
+	Backdrop bool
 	// Key identifies the rendering to the device: components sharing a
 	// key and a size render once per draw. Zero gives the component its
 	// own.
@@ -159,23 +166,53 @@ func (c *Component) Draw(w term.Writer) {
 		return
 	}
 	src := c.drawRoot(w)
-	f, err := device.Render(c.key, image.Pt(c.width, c.height), src,
+	out := 0
+	if c.cfg.Backdrop && c.root == nil && tcomponent.FrameBackdropFromContext(w.Context()) {
+		out = 1
+	}
+	f, err := device.Render(c.key, image.Pt(c.width+2*out, c.height+2*out), src,
 		c.shader.Shade(frame, total, Source()))
 	if err != nil {
 		c.report(err)
 		c.drawFallback(w, src)
 		return
 	}
-	if !w.DrawImage(term.Image{
+	img := term.Image{
 		Src: f.Src, ID: f.ID, Version: f.Version,
-		Width: c.width, Height: c.height,
+		Pos:   term.Coordinates{X: -out, Y: -out},
+		Width: c.width + 2*out, Height: c.height + 2*out,
 		Layer: c.cfg.Layer, Fit: term.ImageFitFill,
-	}) {
+	}
+	if out > 0 {
+		img.Clip = image.Rect(0, 0, c.width, c.height)
+	}
+	if !w.DrawImage(img) {
 		c.drawFallback(w, src)
 		return
 	}
+	if out > 0 {
+		c.drawBackdrop(w, img)
+	}
 	if c.cfg.Duration > 0 && !over {
 		c.arm(next)
+	}
+}
+
+// drawBackdrop draws img, the picture of the component and the cell
+// around it, under the backgrounds of that cell alone: under the
+// component's own cells it would show only through their default
+// backgrounds, and the renderer would draw every cell it goes under
+// again.
+func (c *Component) drawBackdrop(w term.Writer, img term.Image) {
+	img.Layer, img.Overflow = term.ImageLayerBelowBackground, true
+	for _, clip := range [4]image.Rectangle{
+		image.Rect(-1, -1, c.width+1, 0),
+		image.Rect(-1, c.height, c.width+1, c.height+1),
+		image.Rect(-1, 0, 0, c.height),
+		image.Rect(c.width, 0, c.width+1, c.height),
+	} {
+		img.Clip = clip
+		w.DrawImage(img)
 	}
 }
 
