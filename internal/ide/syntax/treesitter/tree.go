@@ -84,11 +84,14 @@ func New(
 
 	go debug.CapturePanicReport(func() {
 		files, err := ret.downloadFiles(ctx)
+		loaded := ret.loadGrammar(files, err)
 		// The buffer is installed and live, so it is parsed on the
 		// event loop that edits it.
-		config.ScheduleNextTick(func() {
-			ret.finishInit(ctx, ret.initParserFromFiles(files, err))
-		})
+		if !config.ScheduleNextTick(func() {
+			ret.finishInit(ctx, ret.initParserFromGrammar(loaded))
+		}) && loaded.g != nil {
+			_ = loaded.g.close()
+		}
 	})
 	return ret
 }
@@ -103,7 +106,7 @@ func Parse(
 ) syntax.ParsedTree {
 	t := newTree(pkg, uri, buf, config)
 	files, err := t.downloadFiles(ctx)
-	return &parsedTree{t: t, init: t.initParserFromFiles(files, err)}
+	return &parsedTree{t: t, init: t.initParserFromGrammar(t.loadGrammar(files, err))}
 }
 
 // parsedTree is a Tree that Parse initialized, waiting to be installed.
@@ -142,7 +145,7 @@ func newTree(
 		buf:          buf,
 		uri:          uri,
 		pkg:          pkg,
-		loader:       nativeGrammarLoader{},
+		loader:       grammars,
 		statesubs:    make(map[chan syntax.State]struct{}),
 		waitingReady: make(chan struct{}),
 	}
@@ -492,25 +495,45 @@ type initResult struct {
 	highlighted bool
 }
 
-// initParserFromFiles loads the grammar in f and parses and highlights t's
-// buffer with it, publishing nothing. It may run on any goroutine that may
-// read the buffer.
-func (t *Tree) initParserFromFiles(f files, err error) initResult {
-	langID := f.grammar.langID
-	res := initResult{langID: langID, err: err, notAvail: f.notAvail}
-	if err != nil || !f.packageFound {
-		return res
-	}
+// loadedGrammar is the grammar of a tree's language, or why it has none.
+type loadedGrammar struct {
+	langID   string
+	g        *grammar
+	err      error
+	notAvail bool
+}
 
+// loadGrammar loads the grammar in f through t's loader. It may run on any
+// goroutine.
+func (t *Tree) loadGrammar(f files, err error) loadedGrammar {
+	l := loadedGrammar{langID: f.grammar.langID, err: err, notAvail: f.notAvail}
+	if err != nil || !f.packageFound {
+		return l
+	}
 	if f.grammar.parser == "" {
-		msg := fmt.Sprintf("parser file not found in language %q package", langID)
+		msg := fmt.Sprintf("parser file not found in language %q package", l.langID)
 		t.log(log.InfoLevel, "language not available: %s", msg)
-		res.err, res.notAvail = errors.New(msg), true
+		l.err, l.notAvail = errors.New(msg), true
+		return l
+	}
+	if l.g, l.err = t.loader.load(f.grammar); l.err != nil {
+		t.log(log.ErrorLevel, "initialize language %s: %v", l.langID, l.err)
+		l.notAvail = true
+	}
+	return l
+}
+
+// initParserFromGrammar parses and highlights t's buffer with the grammar
+// l loaded, publishing nothing. It may run on any goroutine that may read
+// the buffer.
+func (t *Tree) initParserFromGrammar(l loadedGrammar) initResult {
+	res := initResult{langID: l.langID, err: l.err, notAvail: l.notAvail}
+	if l.g == nil {
 		return res
 	}
-	res.highlighted, res.err = t.initParser(f.grammar)
+	res.highlighted, res.err = t.initParser(l.g)
 	if res.err != nil {
-		t.log(log.ErrorLevel, "initialize language %s: %v", langID, res.err)
+		t.log(log.ErrorLevel, "initialize language %s: %v", l.langID, res.err)
 		res.notAvail = true
 		return res
 	}
@@ -518,7 +541,7 @@ func (t *Tree) initParserFromFiles(f files, err error) initResult {
 	return res
 }
 
-// finishInit reports res, publishes the highlights initParserFromFiles left
+// finishInit reports res, publishes the highlights initParserFromGrammar left
 // pending and releases the callers waiting for t to be initialized. It runs
 // on the event loop.
 func (t *Tree) finishInit(ctx context.Context, res initResult) {
@@ -545,19 +568,16 @@ func (t *Tree) finishInit(ctx context.Context, res initResult) {
 }
 
 // initParser reports whether it left a full highlight pending in
-// highlightBuf.
-func (t *Tree) initParser(f grammarFiles) (bool, error) {
+// highlightBuf. It takes ownership of g, which it closes when t is closed.
+func (t *Tree) initParser(g *grammar) (bool, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if t.closed {
+		_ = g.close()
 		return false, nil
 	}
 
-	g, err := t.loader.load(f)
-	if err != nil {
-		return false, err
-	}
 	parser := tree_sitter.NewParser()
 	if err := parser.SetLanguage(g.language); err != nil {
 		parser.Close()
@@ -572,7 +592,7 @@ func (t *Tree) initParser(f grammarFiles) (bool, error) {
 	t.persistCells()
 	start := time.Now()
 	t.parseTree(nil, "initial parse error")
-	t.updateCurrentState(f.langID)
+	t.updateCurrentState(g.langID)
 
 	// set ready to true, even if tree is nil
 	t.ready = true
@@ -588,7 +608,7 @@ func (t *Tree) initParser(f grammarFiles) (bool, error) {
 	}
 	// do not return highlight errors so we don't
 	// show initialize SO failure notification to user.
-	err = t.computeHighlights()
+	err := t.computeHighlights()
 	t.fullPassTook = time.Since(start)
 	if err != nil {
 		t.log(log.ErrorLevel, "highlight: %v", err)

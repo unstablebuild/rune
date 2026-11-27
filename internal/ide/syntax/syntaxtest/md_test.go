@@ -350,6 +350,15 @@ func TestMarkdownCompositeEnterIndentsIntegration(t *testing.T) {
 	assert.Empty(t, notis.messages)
 }
 
+func TestMarkdownCompositeLoadsEachGrammarOnceIntegration(t *testing.T) {
+	before := treesitter.GrammarLoads("markdown_inline")
+	var clock loopClock
+	s := openMarkdownTree(t, &clock, newAllMarkdownPackages(t), largeMarkdownDocument(60, 20))
+	require.Greater(t, len(s.tree.Sections()), 100)
+	assert.Equal(t, int64(1), treesitter.GrammarLoads("markdown_inline")-before,
+		"every paragraph shares one markdown_inline grammar")
+}
+
 // The attributes the markdown suites tell the host's and markdown_inline's
 // captures apart by; their defaults share a color.
 var (

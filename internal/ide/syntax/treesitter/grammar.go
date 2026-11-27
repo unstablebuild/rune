@@ -20,6 +20,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -71,9 +75,145 @@ type grammarLoader interface {
 	load(f grammarFiles) (*grammar, error)
 }
 
+// grammars is the loader of every tree, so the files and sections of a
+// language share its grammar across workspaces. Switching it back to
+// nativeGrammarLoader loads a grammar per tree again.
+var grammars grammarLoader = &sharedGrammarLoader{next: nativeGrammarLoader{}}
+
+// sharedGrammarLoader loads one grammar per set of resolved files through
+// next and shares it: each load returns a reference whose close releases
+// it, and the grammar is closed with its last reference. A package upgrade
+// resolves to other files, so it gets a new grammar while trees on the old
+// one keep it alive.
+type sharedGrammarLoader struct {
+	next grammarLoader
+
+	mu      sync.Mutex
+	entries map[string]*sharedGrammar
+}
+
+// sharedGrammar is a grammar loaded, or being loaded, by
+// sharedGrammarLoader.
+type sharedGrammar struct {
+	// done is closed once g or err is set.
+	done chan struct{}
+	g    *grammar
+	err  error
+	// refs is guarded by sharedGrammarLoader.mu.
+	refs int
+}
+
+func (l *sharedGrammarLoader) load(f grammarFiles) (*grammar, error) {
+	key, err := grammarKey(f)
+	if err != nil {
+		// next reports the file that is missing.
+		return l.next.load(f)
+	}
+
+	l.mu.Lock()
+	if l.entries == nil {
+		l.entries = make(map[string]*sharedGrammar)
+	}
+	e, ok := l.entries[key]
+	if !ok {
+		e = &sharedGrammar{done: make(chan struct{})}
+		l.entries[key] = e
+	}
+	e.refs++
+	l.mu.Unlock()
+
+	if ok {
+		<-e.done
+	} else {
+		g, err := l.next.load(f)
+		l.mu.Lock()
+		e.g, e.err = g, err
+		if err != nil {
+			l.deleteLocked(key, e)
+		}
+		close(e.done)
+		l.mu.Unlock()
+	}
+	if e.err != nil {
+		return nil, e.err
+	}
+
+	ref := *e.g
+	var once sync.Once
+	ref.close = func() (err error) {
+		once.Do(func() { err = l.release(key, e) })
+		return err
+	}
+	return &ref, nil
+}
+
+// release drops a reference to e, closing its grammar with the last one.
+// Holding mu while closing keeps a load from taking a reference to a
+// grammar being closed.
+func (l *sharedGrammarLoader) release(key string, e *sharedGrammar) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	e.refs--
+	if e.refs > 0 {
+		return nil
+	}
+	l.deleteLocked(key, e)
+	return e.g.close()
+}
+
+func (l *sharedGrammarLoader) deleteLocked(key string, e *sharedGrammar) {
+	if l.entries[key] == e {
+		delete(l.entries, key)
+	}
+}
+
+// grammarKey identifies the grammar f loads: the language, and the path
+// each file resolves to with its modification time and size. Switching
+// versions changes the paths; reinstalling a version changes the times.
+func grammarKey(f grammarFiles) (string, error) {
+	var b strings.Builder
+	b.WriteString(f.langID)
+	for _, file := range []string{
+		f.parser, f.highlights, f.indents, f.folds, f.locals, f.injections,
+	} {
+		b.WriteByte(0)
+		if file == "" {
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(file)
+		if err != nil {
+			return "", err
+		}
+		info, err := os.Stat(resolved)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(resolved)
+		b.WriteByte(0)
+		b.WriteString(strconv.FormatInt(info.ModTime().UnixNano(), 10))
+		b.WriteByte(0)
+		b.WriteString(strconv.FormatInt(info.Size(), 10))
+	}
+	return b.String(), nil
+}
+
 // nativeGrammarLoader loads a grammar each time it is asked; closing it
 // frees the queries and dlcloses the library.
 type nativeGrammarLoader struct{}
+
+// grammarLoads counts the grammars nativeGrammarLoader loaded, by
+// language: map[string]*atomic.Int64.
+var grammarLoads sync.Map
+
+// GrammarLoads returns how many times this process loaded the grammar of
+// langID: opened its parser library and compiled its queries.
+func GrammarLoads(langID string) int64 {
+	n, ok := grammarLoads.Load(langID)
+	if !ok {
+		return 0
+	}
+	return n.(*atomic.Int64).Load()
+}
 
 func (nativeGrammarLoader) load(f grammarFiles) (*grammar, error) {
 	lib, err := dlopenGrammar(f.parser)
@@ -154,6 +294,8 @@ func (nativeGrammarLoader) load(f grammarFiles) (*grammar, error) {
 			logGrammar(f.langID, log.ErrorLevel, "initialize injections: %v", err)
 		}
 	}
+	n, _ := grammarLoads.LoadOrStore(f.langID, new(atomic.Int64))
+	n.(*atomic.Int64).Add(1)
 	return g, nil
 }
 
