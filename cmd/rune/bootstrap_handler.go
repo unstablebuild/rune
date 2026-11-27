@@ -68,21 +68,24 @@ type bootstrapPrompter interface {
 }
 
 type bootstrapHandler struct {
-	inner             tui.Handler
-	dataDir           string
-	storage           storageapi.Service
-	configPath        string
-	workspace         string
-	shellRCDir        string
-	host              *hostenv.Host
-	filenames         []string
-	launchCmd         []string
-	runner            ide.ExtensionsRunner
-	trust             *pkgtrust.Store
-	mu                *sync.Mutex
-	publishEvent      func(term.Event) bool
-	cellPixelSize     func() (int, int)
-	openBrowser       func(*url.URL) error
+	inner         tui.Handler
+	dataDir       string
+	storage       storageapi.Service
+	configPath    string
+	workspace     string
+	shellRCDir    string
+	host          *hostenv.Host
+	filenames     []string
+	launchCmd     []string
+	runner        ide.ExtensionsRunner
+	trust         *pkgtrust.Store
+	mu            *sync.Mutex
+	publishEvent  func(term.Event) bool
+	cellPixelSize func() (int, int)
+	openBrowser   func(*url.URL) error
+	// notify reports a bootstrap failure. Tests set it to observe the
+	// notification; when it is nil the error goes to the IDE.
+	notify            func(context string, err error)
 	clip              clipboard.Register
 	soundOutput       *gui.Sounds
 	installBackupDir  string
@@ -405,15 +408,33 @@ func (b *bootstrapHandler) dragObserver(ev gui.DragEvent) {
 	}
 }
 
-// linkObserver shows a URL the user meta-clicked in the rendered frame.
-func (b *bootstrapHandler) linkObserver(u *url.URL) {
-	uri, err := workspaceapi.ParseURI(u.String())
-	if err != nil {
+// linkObserver opens the link the user meta-clicked in the rendered
+// frame. A URL opens the way the browser opens one, a file link opens
+// the file at the position it names, and a bare path reference is
+// resolved against the focused workspace.
+func (b *bootstrapHandler) linkObserver(link gui.Link) {
+	if err := b.openLink(link); err != nil {
 		b.notifyError("open link", err)
-		return
 	}
-	if err := b.currentIDE().Show(uri); err != nil {
-		b.notifyError("open link", err)
+}
+
+// openLink opens a link and reports why it could not be opened.
+func (b *bootstrapHandler) openLink(link gui.Link) error {
+	switch {
+	case link.URL != nil && link.URL.Scheme != "file":
+		uri, err := workspaceapi.ParseURI(link.URL.String())
+		if err != nil {
+			return err
+		}
+		return b.currentIDE().Show(uri)
+	case link.URL != nil:
+		uri, err := workspaceapi.ParseURI(link.URL.String())
+		if err != nil {
+			return err
+		}
+		return b.currentIDE().OpenAt(uri, link.Line, link.Col)
+	default:
+		return b.currentIDE().OpenPathAt(link.Path, link.Line, link.Col)
 	}
 }
 
@@ -424,6 +445,10 @@ func (b *bootstrapHandler) notifications() browserapi.Notifications {
 // notifyError surfaces a bootstrap-flow failure to the user. The
 // bootstrap UI has no log pane, so log-only reporting is invisible.
 func (b *bootstrapHandler) notifyError(context string, err error) {
+	if b.notify != nil {
+		b.notify(context, err)
+		return
+	}
 	log.Errorf("bootstrap %s: %v", context, err)
 	_, nerr := b.notifications().Notify(browserapi.LevelError, "%s: %v", context, err)
 	if nerr != nil {

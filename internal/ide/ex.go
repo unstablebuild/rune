@@ -82,6 +82,7 @@ import (
 	"unstable.build/rune/internal/text/exoeditor"
 	"unstable.build/rune/internal/text/textrpc"
 	"unstable.build/rune/internal/workspace"
+	"unstable.build/rune/internal/workspace/linecol"
 )
 
 const (
@@ -1381,6 +1382,25 @@ func (e *ex) onLinkClick(link *url.URL) bool {
 		_, _ = e.notifications.Notify(browserapi.LevelError, "open %s: %v", link, err)
 	}
 	return true
+}
+
+// openFileAt opens a file in the editor and places the cursor at the
+// given 1-based line and column. A line of zero opens the file and
+// leaves the cursor where it is.
+func (e *ex) openFileAt(uri workspaceapi.URI, line, col int) error {
+	tab, err := e.editFileURI(uri, e.invokeWindow(), false)
+	if err != nil {
+		return err
+	}
+	if line <= 0 {
+		return nil
+	}
+	ed, ok := tab.Handler().(text.Handler)
+	if !ok {
+		return nil
+	}
+	ed.SetCursorAtScroll(linecol.Coord(line, col))
+	return nil
 }
 
 // dispatchLeaf expands a non-alias command's args and dispatches it.
