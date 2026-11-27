@@ -2240,27 +2240,26 @@ func (c *Component) wallpaper() browserapi.Handler {
 
 // newWallpaperComponent returns a new component of wallpaper, on its
 // BackgroundAttr.
-func newWallpaperComponent(wallpaper Wallpaper) tui.Component {
+func newWallpaperComponent(wallpaper Wallpaper) ComponentCloser {
 	if wallpaper.NewComponent == nil {
-		wallpaper.NewComponent = component.Nop
+		return NopCloser(component.Nop())
 	}
 	instance := wallpaper.NewComponent()
-	// if background attrs were passed try to re-construct string wallpaper
-	// or set a background via component.Background.
-	if wallpaper.BackgroundAttr != (term.Attributes{}) {
-		if str, ok := instance.(component.String); ok {
-			cfg := str.Config()
-			cfg.BackgroundAttributes = wallpaper.BackgroundAttr
-			cfg.Attributes.Bg = wallpaper.BackgroundAttr.Bg
-			instance = component.NewStringWithConfig(str.String(), cfg)
-		} else {
-			// activate override behaviour
-			nonZeroCh := ' '
-			instance = component.NewBackground(instance,
-				term.NewCell(nonZeroCh, 0, wallpaper.BackgroundAttr))
-		}
+	if wallpaper.BackgroundAttr == (term.Attributes{}) {
+		return instance
 	}
-	return instance
+	// A non-zero character makes the background override all but the
+	// characters and foreground colours of instance.
+	return onBackground{
+		Background: component.NewBackground(instance, term.NewCell(' ', 0, wallpaper.BackgroundAttr)),
+		Closer:     instance,
+	}
+}
+
+// onBackground is a ComponentCloser drawn by a component.Background.
+type onBackground struct {
+	*component.Background
+	io.Closer
 }
 
 // wallpaper is the content of a window with nothing else to show. It
@@ -2269,7 +2268,7 @@ func newWallpaperComponent(wallpaper Wallpaper) tui.Component {
 // floating window, it asks for the size its components need, or keeps
 // the size it was given when they don't know it.
 type wallpaper struct {
-	normal, focused tui.Component
+	normal, focused ComponentCloser
 	width, height   int
 }
 
@@ -2319,7 +2318,13 @@ func (*wallpaper) Cursor() (c term.Coordinates, s term.CursorStyle, show bool) {
 func (*wallpaper) Selection() (string, bool) { return "", false }
 
 // Close satisfies browserapi.Handler.
-func (*wallpaper) Close() error { return nil }
+func (w *wallpaper) Close() error {
+	var err error
+	if w.focused != nil {
+		err = w.focused.Close()
+	}
+	return errors.Join(w.normal.Close(), err)
+}
 
 func isWallpaper(h browserapi.Handler) bool {
 	bc, ok := h.(*browserContent)

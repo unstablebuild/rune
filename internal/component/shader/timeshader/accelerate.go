@@ -68,13 +68,16 @@ func Accelerate(baseShader shader.Shader) shader.Shader {
 }
 
 func accelerate(baseShader shader.Shader) *timeShader {
-	return &timeShader{baseShader, funcTimeRemapper(
-		func(frame, total int) int {
-			dur := float64(total - 1)
-			t := float64(frame) / dur
-			tt := t * t
-			ret := int(math.Round(dur * tt))
-			return ret
-		},
-	)}
+	return &timeShader{baseShader, funcTimeRemapper(AccelerateTime())}
+}
+
+// AccelerateTime returns the frame Accelerate plays at frame of total, for
+// shaders other than shader.Shader to remap their time with.
+func AccelerateTime() func(frame, total int) int {
+	return func(frame, total int) int {
+		dur := float64(total - 1)
+		t := float64(frame) / dur
+		tt := t * t
+		return int(math.Round(dur * tt))
+	}
 }

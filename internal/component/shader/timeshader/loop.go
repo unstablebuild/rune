@@ -62,19 +62,24 @@ func Loop(baseShader shader.Shader, cycles int) shader.Shader {
 }
 
 func loop(baseShader shader.Shader, cycles int) *timeShader {
-	return &timeShader{baseShader, funcTimeRemapper(
-		func(frame, total int) int {
-			framesPerLoop := total / cycles
-			loopedFrame := frame
-			if cycles > 1 {
-				loopedFrame = cycles * (frame % (framesPerLoop))
+	return &timeShader{baseShader, funcTimeRemapper(LoopTime(cycles))}
+}
 
-				// prevent the very last frame of the looped animation to be
-				// the first input frame.
-				if frame == total-1 && total%2 == 1 {
-					loopedFrame = total - 1
-				}
+// LoopTime returns the frame Loop plays at frame of total, for shaders
+// other than shader.Shader to remap their time with.
+func LoopTime(cycles int) func(frame, total int) int {
+	return func(frame, total int) int {
+		framesPerLoop := total / cycles
+		loopedFrame := frame
+		if cycles > 1 {
+			loopedFrame = cycles * (frame % (framesPerLoop))
+
+			// prevent the very last frame of the looped animation to be
+			// the first input frame.
+			if frame == total-1 && total%2 == 1 {
+				loopedFrame = total - 1
 			}
-			return loopedFrame
-		})}
+		}
+		return loopedFrame
+	}
 }

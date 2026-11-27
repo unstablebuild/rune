@@ -217,7 +217,7 @@ func TestRepaintOverRedrawsTheCellsThatReachTheRects(t *testing.T) {
 
 			benchdraw.BeginFrame(t)
 			defer benchdraw.EndFrame(t)
-			r.repaintOver(screen, cells, rects, passGlyphs)
+			r.repaintOver(screen, &r.clips, cells, rects, passGlyphs)
 			assert.ElementsMatch(t, tt.want, spy.drawn)
 		})
 	}
@@ -290,6 +290,33 @@ func TestRectUnion(t *testing.T) {
 			assert.ElementsMatch(t, tt.want, got)
 		})
 	}
+}
+
+func TestRendererRenderCellsKeepsItsPicturesForDraw(t *testing.T) {
+	manager, err := font.NewManager(1, 1)
+	require.NoError(t, err)
+	r := newRenderer(200, 100, 1, manager, 1, 1, false, term.Attributes{}, term.Attributes{})
+	t.Cleanup(r.deallocate)
+	cells := [][]term.Cell{{{Ch: 'a', Bg: term.ColorRed}, {Ch: 'b'}}}
+	pic := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	images := []term.Image{{Src: pic, ID: 9, Version: 1, Width: 1, Height: 1}}
+	dst := ebiten.NewImage(manager.ImageWidth(2), manager.ImageHeight(1))
+	t.Cleanup(dst.Deallocate)
+	screen := ebiten.NewImage(200, 100)
+	t.Cleanup(screen.Deallocate)
+	draw := func(source bool) {
+		benchdraw.BeginFrame(t)
+		defer benchdraw.EndFrame(t)
+		if source {
+			r.renderCells(dst, cells, images)
+		}
+		r.Draw(screen, cells, nil, false, term.Coordinates{}, term.CursorStyleDefault)
+	}
+
+	draw(true)
+	assert.Contains(t, r.images.textures, textureKey{id: 9}, "a draw that rendered it keeps its picture")
+	draw(false)
+	assert.NotContains(t, r.images.textures, textureKey{id: 9}, "and the first draw that did not frees it")
 }
 
 func BenchmarkRenderLigaturesHD(b *testing.B) {

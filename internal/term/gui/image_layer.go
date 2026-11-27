@@ -27,6 +27,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/term/gui/font"
+	"unstable.build/rune/internal/term/gui/shaderdevice"
 )
 
 // texture is the GPU-side copy of a picture's pixels. It is keyed by
@@ -163,13 +164,9 @@ func (l *imageLayer) drawOne(
 		l.batch.add(dst, batchRun{src: l.whitePixel(), solid: true}, solidQuad(p.clip, fill))
 		return p.clip
 	}
-	tex := l.upload(img)
-	if tex == nil {
+	src, ok := l.source(img, p.src)
+	if !ok {
 		return image.Rectangle{}
-	}
-	src := tex.img
-	if !p.src.Eq(src.Bounds()) {
-		src = tex.crops.of(src, p.src)
 	}
 	tile := img.Fit == term.ImageFitTile
 	var quad [4]ebiten.Vertex
@@ -183,6 +180,28 @@ func (l *imageLayer) drawOne(
 	}
 	l.batch.add(dst, batchRun{src: src, tile: tile}, quad)
 	return p.clip
+}
+
+// source returns the region crop of the GPU image img is drawn from, or
+// false when it has none.
+func (l *imageLayer) source(img term.Image, crop image.Rectangle) (*ebiten.Image, bool) {
+	// A device's rendering is already on the GPU: it is drawn as it is,
+	// with nothing to upload or to evict. Components place renderings
+	// whole, so a crop is rare enough not to keep its sub-image.
+	if src, ok := shaderdevice.Texture(img.Src); ok {
+		if !crop.Eq(src.Bounds()) {
+			src = src.SubImage(crop).(*ebiten.Image)
+		}
+		return src, true
+	}
+	tex := l.upload(img)
+	if tex == nil {
+		return nil, false
+	}
+	if !crop.Eq(tex.img.Bounds()) {
+		return tex.crops.of(tex.img, crop), true
+	}
+	return tex.img, true
 }
 
 // flush paints the placements queued since the last flush.

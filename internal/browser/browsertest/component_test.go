@@ -2097,10 +2097,10 @@ func TestComponentSplitNil(t *testing.T) {
 		w := term.NewStringWriter(24, 8)
 		cfg := browser.DefaultConfig()
 		cfg.Wallpaper = browser.Wallpaper{
-			NewComponent: func() tui.Component {
-				return component.NewStringWithConfig("BART", component.StringConfig{
+			NewComponent: func() browser.ComponentCloser {
+				return browser.NopCloser(component.NewStringWithConfig("BART", component.StringConfig{
 					Alignment: component.AlignmentCentered,
-				})
+				}))
 			},
 		}
 		c := browser.NewComponent(cfg)
@@ -2130,10 +2130,10 @@ func TestComponentRestyle(t *testing.T) {
 		HorizontalTop: '-', HorizontalBottom: '-', VerticalLeft: '|', VerticalRight: '|',
 	}
 	wallpaper := func(text string) browser.Wallpaper {
-		return browser.Wallpaper{NewComponent: func() tui.Component {
-			return component.NewStringWithConfig(text, component.StringConfig{
+		return browser.Wallpaper{NewComponent: func() browser.ComponentCloser {
+			return browser.NopCloser(component.NewStringWithConfig(text, component.StringConfig{
 				Alignment: component.AlignmentCentered,
-			})
+			}))
 		}}
 	}
 	path := filepath.Join(t.TempDir(), "button.png")

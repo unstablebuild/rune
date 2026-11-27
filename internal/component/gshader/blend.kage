@@ -1,0 +1,9 @@
+//kage:unit pixels
+
+package main
+
+var Weight float
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	return mix(imageSrc0At(srcPos), imageSrc1At(srcPos), Weight)
+}

@@ -29,7 +29,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/component/gshader"
 	"unstable.build/rune/internal/term/gui/font"
+	"unstable.build/rune/internal/term/gui/shaderdevice"
 )
 
 func testFontManager(t testing.TB) *font.Manager {
@@ -237,6 +239,37 @@ func TestSubImagesKeepsRegionsAcrossFrames(t *testing.T) {
 	s.deallocate()
 	assert.Empty(t, s.regions)
 	assert.Nil(t, s.parent)
+}
+
+func TestImageLayerDrawsDeviceRenderingsFromTheGPU(t *testing.T) {
+	m := testFontManager(t)
+	dst := ebiten.NewImage(200, 200)
+	t.Cleanup(dst.Deallocate)
+	d := shaderdevice.New(nil)
+	t.Cleanup(d.Close)
+
+	benchdraw.BeginFrame(t)
+	defer benchdraw.EndFrame(t)
+	d.Begin(pixelSize(m), shaderdevice.Theme{})
+	f, err := d.Render(term.NewImageID(), image.Pt(3, 2), nil, gshader.Solid(term.ColorRed))
+	require.NoError(t, err)
+	d.End()
+
+	var l imageLayer
+	defer l.deallocate()
+	img := term.Image{
+		Src: f.Src, ID: f.ID, Version: f.Version,
+		Pos: term.Coordinates{X: 1, Y: 1}, Width: 3, Height: 2,
+	}
+	assert.Equal(t, cellRectToPixels(image.Rect(1, 1, 4, 3), m), l.drawOne(dst, img, m, 0, color.RGBA{}),
+		"it lands on its cells")
+	assert.Empty(t, l.textures, "nothing is uploaded")
+
+	clipped, ok := img.Clipped(image.Rect(2, 1, 4, 2))
+	require.True(t, ok)
+	assert.Equal(t, cellRectToPixels(image.Rect(2, 1, 4, 2), m), l.drawOne(dst, clipped, m, 0, color.RGBA{}),
+		"and is clipped like any picture")
+	assert.Empty(t, l.textures)
 }
 
 func TestImageLayerEvictsUnplacedPictures(t *testing.T) {

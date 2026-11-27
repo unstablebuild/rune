@@ -123,6 +123,20 @@ func TestDefaultConfigShowsTheLogoWithItsIntro(t *testing.T) {
 	assert.Equal(t, map[string]any{
 		"path": "", "width": "60%", "height": "60%", "fit": "contain",
 	}, image)
+	shader, err := workspace.GetConfig("wallpaper_shader")
+	require.NoError(t, err)
+	name, err := shader.GetString("shader")
+	require.NoError(t, err)
+	assert.Empty(t, name, "no shader, so the logo shows")
+	fps, err := shader.GetInt("fps")
+	require.NoError(t, err)
+	assert.Equal(t, 30, fps)
+	duration, err := shader.GetString("duration")
+	require.NoError(t, err)
+	assert.Equal(t, "10s", duration)
+	animate, err := shader.GetBool("animate")
+	require.NoError(t, err)
+	assert.True(t, animate)
 
 	animations, err := cfg.GetConfig("animations")
 	require.NoError(t, err)

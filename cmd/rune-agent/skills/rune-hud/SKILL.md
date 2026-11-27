@@ -8,9 +8,10 @@ description: >
   and focus styles (including marking the focused window by its background
   instead of a frame, for a smoother or more modern look), scroll bars,
   command prompts, editor
-  and agent status-bar layouts, the quick menu, prompt buttons, wallpaper, the
-  app icon and sounds. Discover the configuration, stage a new version of the
-  theme, check it in a private Rune instance with rune_gui and inspect the
+  and agent status-bar layouts, the quick menu, prompt buttons, wallpaper (an
+  image, or a shader for gradients, grids, textures and animated backgrounds),
+  the app icon and sounds. Discover the configuration, stage a new version of
+  the theme, check it in a private Rune instance with rune_gui and inspect the
   result yourself, then add it as the last entry of the user's config include
   list. This is configuration and asset editing, not Rune source development.
   Use when the user wants to create, restyle or iterate on Rune's appearance
@@ -58,6 +59,10 @@ run diagnostic commands or provide screenshots you can capture yourself.
   corner ornaments larger than a cell are a supported config surface:
   `corner_width` and `corner_height`. Follow "Corners larger than a cell"
   below rather than squeezing the curve into a one-cell corner sprite.
+- Gradients, grids, textures, glows and animated backgrounds are a supported
+  config surface: `workspace.wallpaper_shader` with a `.kage` file you write
+  as a theme asset. Follow "Wallpaper" below. Writing the shader is asset
+  work, not a change to Rune.
 
 ## Checking your work
 Take a baseline screenshot before editing, and another after each revision.
@@ -118,8 +123,8 @@ these keys to every open workspace:
   `progress_bar` and `progress_format`;
 - `program_status`, every key;
 - `terminal.bell`;
-- `workspace`: `wallpaper_image`, `wallpaper_image_ascii`, `wallpaper_ascii`,
-  `wallpaper`, `wallpaper_attr`, `wallpaper_background_attr`,
+- `workspace`: `wallpaper_shader`, `wallpaper_image`, `wallpaper_image_ascii`,
+  `wallpaper_ascii`, `wallpaper`, `wallpaper_attr`, `wallpaper_background_attr`,
   `wallpaper_density_characters`, the `focus_` version of each of those
   wallpaper keys, `focus_tab_highlight_char`, `tab_images`,
   `focus_tab_highlight_graphics` and `tab_sounds`;
@@ -210,6 +215,7 @@ Layout of a theme:
 hud/<theme>/
   manifest.yaml
   wallpaper.png
+  wallpaper.kage
   sources/<name>.png, <name>.prompt.txt
   sounds/<cue>.wav
 etc/hud-<theme>-v<N>/
@@ -365,18 +371,6 @@ text or other images. Use that intentionally for status-bar ornaments.
 - Built-in focus backgrounds: pike `#fffff3`, ritchie `#ffffff`. The other
   built-in themes set none, so their focused window keeps the theme
   background unless the config sets one.
-- The wallpaper's own background must be that colour, not a nearby one, and
-  its edges must fade to it exactly. With `contain` the image's edges sit
-  inside the window, so any step shows as a rectangle.
-- Leave `workspace.wallpaper_background_attr` unset, or give it the same `bg`.
-- Opaque fills in frames, bars and buttons follow the same rule.
-- The focused state has its own canvas: the `bg` of
-  `browser.window_manager.focus_background_attr`, or else the theme's
-  `focus_background`, and the panel of `focus_background_graphics` drawn over
-  it. Opaque fills in focused sprites,
-  the focused wallpaper and the `focus` blocks' backgrounds must match it
-  exactly, and the panel's own fill must be that `bg`, so a slice that hasn't
-  loaded leaves no step.
 - A pixel painted in a canvas colour is right only where that canvas is
   behind it in every state it's drawn in. A sprite shared by both states
   can't bake either canvas into a pixel the pane shows around.
@@ -427,7 +421,199 @@ bevels, buttons, the scroll bar and icons.
   `magick in.png -filter Lanczos -resize WxH! -unsharp 0x0.6+0.6+0 out.png`.
   Start with `height 3` and `alt ""`. Add `overflow` only when the image must
   cross the editor or chat component's outer bounds.
-- Wallpaper: sample a corner and confirm the background matches.
+- Wallpaper: remove the background to alpha too, so the window's background
+  shows around the figure. Don't paint a backdrop behind it or fade its edges.
+
+## Wallpaper
+The wallpaper fills every window with nothing open: an empty tile, or the
+whole workspace before any file is opened. Editors, terminals and chats draw
+over the window background instead, so the wallpaper never shows behind them.
+
+Design it for the look the user describes, with the simplest of these that
+gets there:
+
+| The look | Use |
+|---|---|
+| A plain colour | `browser.window_manager.background_attr` and `focus_background_attr`. No wallpaper key. |
+| A figure, logo or emblem on that colour | `workspace.wallpaper_image`: a PNG with a transparent background and `fit: contain`. Its transparent pixels show the window's background, so there is nothing to match and no edge to fade. |
+| Anything that covers the whole window: a gradient, a grid, dots, lines, noise, a texture, a vignette or a glow, or anything animated | `workspace.wallpaper_shader`: a shader the GPU runs for every pixel of the window. |
+
+Never use a whole-window PNG for any of the looks in the last row. Windows
+come in every shape: `cover` crops the picture, `fill` stretches it, its edges
+would have to fade into the background, and it cannot move. A shader is
+computed at each window's size, so a gradient spans the window, a grid keeps
+its spacing at any size and an animation loops.
+
+A shader and an image don't stack: while `wallpaper_shader` is set,
+`wallpaper_image` doesn't show. When the brief wants a figure over a
+gradient, ask which of the two matters more.
+
+### Shader wallpapers
+A shader is a theme asset like a sprite: a text file you write,
+`hud/<theme>/wallpaper.kage`, in
+[Kage](https://ebitengine.org/en/documents/shader.html), which is Go syntax
+with GLSL types and functions. Name it in the theme's config, once per state:
+
+```yaml
+workspace:
+  wallpaper_shader:
+    shader: $RUNE_DATADIR/hud/<theme>/wallpaper.kage
+    uniforms: {Top: "#0f1011", Bottom: "#171922"}
+  focus_wallpaper_shader:
+    shader: $RUNE_DATADIR/hud/<theme>/wallpaper.kage
+    uniforms: {Top: "#191a1b", Bottom: "#21232c"}
+```
+
+- `shader`: a `.kage` path, which may use `~` and environment variables, or
+  the name of a built-in.
+- `uniforms`: values for the shader's own uniforms: a colour such as
+  `"#171922"` or `"blue"` for a `vec4`, a number for a `float`, a list of
+  numbers for any other vector.
+- `duration`: one loop of an animation, `10s` by default. `fps`: 30 by
+  default, 120 at most. `animate: false` freezes an animation on its first
+  frame. `seed`: a whole number, or `random` for a new one at every load.
+- `focus_wallpaper_shader` is the focused window's: the same file with the
+  focused state's colours.
+
+Rune ships these built-in shaders, which `shader` takes by name:
+
+| Name | Draws | Uniforms |
+|---|---|---|
+| `gradient` | a still gradient | `From`, `To`; `Angle` in degrees clockwise from left-to-right, 90 (the default) for top to bottom |
+| `inferno` | fire | `Speed`, `Hue`, `SwapRedBlue`, `Strength` |
+
+```yaml
+workspace:
+  wallpaper_shader:
+    shader: gradient
+    uniforms: {From: "#0f1011", To: "#171922"}
+```
+
+**Writing one:**
+- The file starts with `//kage:unit pixels` and `package main`, and declares
+  `func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4`. It returns the
+  colour of the pixel at `dstPos.xy`, in device pixels from the window's
+  top-left corner, premultiplied by its alpha: alpha 1 for an opaque
+  wallpaper.
+- Rune sets these uniforms when the shader declares them: `Resolution vec2`,
+  the window in pixels; `CellSize vec2`, a cell in pixels; `Background vec4`
+  and `Foreground vec4`, the theme's; `Progress float`, from 0 to just under
+  1 over each loop; `Frame float` and `Total float`; `Seed float`.
+- Every other exported `var` is a uniform of your own, set from `uniforms`.
+  One the config leaves out is zero, transparent black for a colour, so set
+  them all.
+- Take the colours from uniforms rather than writing them in the shader, so
+  one file serves both states and the colours change in config.
+- Size patterns in `CellSize`, never in fixed pixel counts, so they keep
+  their size across font sizes and Retina displays.
+
+**Example: a light gradient**, from `Top` to `Bottom` as the config above sets
+them. A dark gradient spans few colour levels and shows bands, so it adds
+noise smaller than one level:
+
+```go
+//kage:unit pixels
+
+package main
+
+var Resolution vec2
+var Top vec4
+var Bottom vec4
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	c := mix(Top, Bottom, dstPos.y/Resolution.y)
+	p3 := fract(vec3(dstPos.x, dstPos.y, dstPos.x) * 0.1031)
+	p3 += dot(p3, p3.yzx+33.33)
+	dither := fract((p3.x+p3.y)*p3.z) - 0.5
+	return vec4(c.rgb+dither/255, c.a)
+}
+```
+
+**Example: a grid that fades out**, with square tiles three rows tall and
+lines one pixel wide, fading into the base colour two thirds of the way down:
+
+```go
+//kage:unit pixels
+
+package main
+
+var Resolution vec2
+var CellSize vec2
+var Base vec4
+var Line vec4
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	p := mod(dstPos.xy, vec2(CellSize.y*3))
+	// 1 on the first pixel column and row of each tile.
+	line := 1 - step(1, p.x)*step(1, p.y)
+	fade := 1 - smoothstep(0, 0.7, dstPos.y/Resolution.y)
+	return mix(Base, Line, line*fade)
+}
+```
+
+```yaml
+workspace:
+  wallpaper_shader:
+    shader: $RUNE_DATADIR/hud/<theme>/wallpaper.kage
+    uniforms: {Base: "#0f1011", Line: "#26272b"}
+  focus_wallpaper_shader:
+    shader: $RUNE_DATADIR/hud/<theme>/wallpaper.kage
+    uniforms: {Base: "#191a1b", Line: "#303136"}
+```
+
+**Example: an animation**, a soft glow that circles the window once a loop:
+
+```go
+//kage:unit pixels
+
+package main
+
+var Resolution vec2
+var Progress float
+var Base vec4
+var Glow vec4
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	t := 6.2831853 * Progress
+	center := Resolution * (0.5 + 0.3*vec2(cos(t), sin(t)))
+	d := length(dstPos.xy-center) / length(Resolution)
+	return mix(Base, Glow, 1-smoothstep(0, 0.5, d))
+}
+```
+
+```yaml
+workspace:
+  wallpaper_shader:
+    shader: $RUNE_DATADIR/hud/<theme>/wallpaper.kage
+    duration: 30s
+    uniforms: {Base: "#0f1011", Glow: "#1d2033"}
+  focus_wallpaper_shader:
+    shader: $RUNE_DATADIR/hud/<theme>/wallpaper.kage
+    duration: 30s
+    uniforms: {Base: "#191a1b", Glow: "#272b45"}
+```
+
+Animate with care:
+- Declaring `Progress` or `Frame` makes the shader an animation. Without
+  them it's a still, drawn once and free afterwards.
+- It loops every `duration`, so make the last frame meet the first: move in
+  whole turns, with `sin` and `cos` of `6.2831853*Progress` times a whole
+  number.
+- It plays in every empty window all day: keep the motion slow, with a
+  `duration` of 20 to 60 seconds, the contrast low and the maths light.
+
+**Checking it:**
+- `rune_gui`'s `["screenshot"]` reads the config and the `.kage` file again,
+  so edit and capture.
+- A file that isn't a shader is a config error, shown in a notification. A
+  shader the GPU rejects is reported once in a notification, and the window
+  shows the wallpaper it would show without the shader meanwhile: when a
+  capture shows that wallpaper instead, read the notification.
+- Capture empty windows in both states, focused and not: the wallpaper shows
+  nowhere else. `["exec", "windownew right"]` adds a second empty tile, so the
+  capture shows one of each.
+- Capture an animation twice, a few seconds apart, and compare. Zoom into a
+  crop of a gradient and look for bands.
 
 ## Surfaces
 Abbreviations:
@@ -497,6 +683,7 @@ Abbreviations:
 | Quick menu | `gui.quick_menu[i].sprite` | `idle` `hover` `pressed` | square, each side as wide as 4 text columns | contain |
 | Wallpaper | `workspace.wallpaper_image` | a path, or `{path, width, height, fit}` | `width`/`height` in cells or `N%`, default 60% | `contain` (default), `cover` or `fill` |
 | Focused wallpaper | `workspace.focus_wallpaper_image` | same as the wallpaper | same | same |
+| Shader wallpaper | `workspace.wallpaper_shader`, `workspace.focus_wallpaper_shader` | a built-in (`gradient`, `inferno`) or a `.kage` path, or `{shader, uniforms, duration, fps, animate, seed}` | the window inside its frame, in pixels | computed at the window's size; replaces `wallpaper_image` |
 | App icon | `gui.app_icon` | a path | none: a square image, 256 px or larger | `contain`, centered on a transparent square |
 
 ### Floating-only styling
@@ -1736,7 +1923,7 @@ square corner or lighter rectangle in any crop means the work isn't done.
 | Any other `browser.*`, `command.*` or `extensions.*` key | `workspacereload` in the focused workspace, or `rune_gui` `stop` and `start` |
 | Any other `gui.*` key, `animations.*` | `rune_gui` `stop` and `start`. Once included, the user's Rune needs a restart, or `:guiwindownew` for a fresh process |
 | A sound file overwritten at the same path | The next time it plays |
-| The wallpaper file overwritten at the same path | The next screenshot or `workspacereload` |
+| The wallpaper image or shader file overwritten at the same path | The next screenshot or `workspacereload` |
 | Any other image overwritten at the same URI | Never: give it a new URI |
 
 Check a change that needs a restart with `rune_gui` `stop` and `start`. Once
@@ -1751,7 +1938,8 @@ do not claim to have verified what no `rune_gui` capture showed.
   `rune_gui` instance's log.
 - An invalid URI rejects its whole `graphics` table. Correct the URI instead
   of assuming the previous images will remain.
-- An unreadable wallpaper is a config error.
+- An unreadable wallpaper image or shader file is a config error. A shader
+  the GPU rejects is reported in a notification.
 - An unreadable app icon shows a notification and restores the default icon.
 - Other missing or unreadable images use their slot fallback; separator
   junctions try the vertical side image before the rune, as described above.

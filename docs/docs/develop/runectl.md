@@ -105,7 +105,7 @@ keys to every open workspace, as `themereload` does:
   `progress_bar` and `progress_format`;
 - `program_status`, every key;
 - `terminal.bell`;
-- `workspace`: `wallpaper_image`, `wallpaper_image_ascii`,
+- `workspace`: `wallpaper_shader`, `wallpaper_image`, `wallpaper_image_ascii`,
   `wallpaper_ascii`, `wallpaper`, `wallpaper_attr`,
   `wallpaper_background_attr`, `wallpaper_density_characters`, their
   `focus_` versions such as `focus_wallpaper_image`,

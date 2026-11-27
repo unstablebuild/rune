@@ -63,17 +63,21 @@ func PingPong(baseShader shader.Shader) shader.Shader {
 }
 
 func pingPong(baseShader shader.Shader) *timeShader {
-	return &timeShader{baseShader, funcTimeRemapper(
-		func(frame, total int) int {
-			halfTotal := total / 2
-			bouncedFrame := frame % (halfTotal)
+	return &timeShader{baseShader, funcTimeRemapper(PingPongTime())}
+}
 
-			// on the second half reverse the frame
-			whichHalf := frame / (halfTotal)
-			if whichHalf == 1 {
-				return total - 2*bouncedFrame - 1
-			} else {
-				return 2 * bouncedFrame
-			}
-		})}
+// PingPongTime returns the frame PingPong plays at frame of total, for
+// shaders other than shader.Shader to remap their time with.
+func PingPongTime() func(frame, total int) int {
+	return func(frame, total int) int {
+		halfTotal := total / 2
+		bouncedFrame := frame % (halfTotal)
+
+		// on the second half reverse the frame
+		whichHalf := frame / (halfTotal)
+		if whichHalf == 1 {
+			return total - 2*bouncedFrame - 1
+		}
+		return 2 * bouncedFrame
+	}
 }

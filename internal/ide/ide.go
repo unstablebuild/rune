@@ -624,6 +624,7 @@ func (i *IDE) init(
 	var configErr error
 	i.ideConfig, configErr = loadIDEConfig(cfgfilename, op, i.soundRegistry)
 	i.ideConfig.applySounds(i.soundRegistry, dataDir)
+	i.ideConfig.notifyError = i.notifyError
 
 	i.storage = storage
 	i.ideConfig.storage = storageapi.WithPartition(i.storage, "ide")
@@ -764,6 +765,7 @@ func (i *IDE) init(
 			cfg.cellPixelSize = op.cellPixelSize
 			cfg.clip = op.clip
 			cfg.systemOpenURL = op.systemOpenURL
+			cfg.notifyError = i.notifyError
 			return cfg, err
 		}, op.workspaceConfig, op.tabBarOffset,
 		op.rightInset, op.tabBarHeight, op.workspacesIcon, op.workspacesBarHeight,
@@ -907,6 +909,20 @@ func (i *IDE) initRunning() {
 	i.locker.Lock()
 	defer i.locker.Unlock()
 	i.root.runInitShader()
+}
+
+// notifyError shows err to the user from the next tick, so it is safe to
+// call from any goroutine and while drawing.
+func (i *IDE) notifyError(err error) {
+	if i.options.scheduleFn == nil {
+		return
+	}
+	i.options.scheduleFn(func() {
+		if i.workspaceHandler == nil || i.workspaceHandler.notifications == nil {
+			return
+		}
+		_, _ = i.workspaceHandler.notifications.current().Notify(browserapi.LevelError, "%v", err)
+	})
 }
 
 // startupIntro returns the intro Ready plays, reporting false when it

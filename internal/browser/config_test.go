@@ -217,3 +217,25 @@ func TestTabImagesImages(t *testing.T) {
 		})
 	}
 }
+
+func TestNopCloser(t *testing.T) {
+	tests := []struct {
+		name         string
+		c            tui.Component
+		wantFloating bool
+	}{
+		{name: "keeps a floating component floating", c: component.NewString("abc"), wantFloating: true},
+		{name: "leaves another component not floating", c: component.Nop()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := NopCloser(tt.c)
+			assert.NoError(t, c.Close())
+			f, ok := c.(component.Floating)
+			if assert.Equal(t, tt.wantFloating, ok) && ok {
+				width, height := f.Dimensions()
+				assert.Equal(t, []int{3, 1}, []int{width, height})
+			}
+		})
+	}
+}

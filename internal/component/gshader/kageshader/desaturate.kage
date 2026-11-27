@@ -1,0 +1,12 @@
+//kage:unit pixels
+
+package main
+
+// Amount is how far the colours turn grey, from 0 to 1.
+var Amount float
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	c := imageSrc0At(srcPos)
+	grey := dot(c.rgb, vec3(0.2126, 0.7152, 0.0722))
+	return vec4(mix(c.rgb, vec3(grey), Amount), c.a)
+}

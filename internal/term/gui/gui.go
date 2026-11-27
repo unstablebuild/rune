@@ -40,10 +40,12 @@ import (
 	"github.com/unstablebuild/tcell/v3"
 	xdraw "golang.org/x/image/draw"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/component/gshader"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/term/gui/appicon"
 	"unstable.build/rune/internal/term/gui/drawrect"
 	"unstable.build/rune/internal/term/gui/font"
+	"unstable.build/rune/internal/term/gui/shaderdevice"
 )
 
 var (
@@ -109,6 +111,10 @@ type GUI struct {
 	cursorAttributes  term.Attributes
 	defaultAttr       term.Attributes
 	renderer          *renderer
+	// shaders renders the gshader trees the handler draws. Its textures
+	// outlive the renderer, which a resize replaces.
+	shaders     *shaderdevice.Device
+	shaderTheme shaderdevice.Theme
 
 	originalColorValues map[tcell.Color]int32
 	originalValuesColor map[int32]tcell.Color
@@ -307,6 +313,7 @@ func newGUI(handler tui.Handler, offscreen *offscreenSize, options []Option) (*G
 		defaultHeight:    defaultHeight,
 		setAppIcon:       showAppIcon,
 	}
+	ret.shaders = shaderdevice.New(ret.renderCells)
 	ret.input = newInput(ret.fontManager)
 	ret.mouse = newMouse(ret.fontManager)
 	ret.drag = newDragPoller(ret.mouse)
@@ -403,6 +410,7 @@ func (g *GUI) Close() error {
 		g.runAcceptedUserFuncs()
 		g.cancelCtx()
 		g.cursorEffect.close()
+		g.shaders.Close()
 		if g.renderer != nil {
 			g.renderer.deallocate()
 			g.renderer = nil
@@ -998,9 +1006,14 @@ func (g *GUI) LastPosition() (x, y int) {
 }
 
 func (g *GUI) drawHandler(ctx context.Context) {
-	g.writer.SetContext(frameContext(ctx, g.fontManager))
+	// Every draw redraws the whole handler, so whatever the device
+	// rendered for an earlier draw and not for this one is no longer
+	// placed, and End can free it.
+	g.shaders.Begin(pixelSize(g.fontManager), g.shaderTheme)
+	g.writer.SetContext(gshader.ContextWithDevice(frameContext(ctx, g.fontManager), g.shaders))
 	_ = g.writer.Clear(g.defaultAttr)
 	g.handler.Draw(g.writer)
+	g.shaders.End()
 	g.cursor.pos, g.cursor.style, g.cursor.show = g.handler.Cursor()
 	g.hasContent = true
 	g.needsDraw = false
@@ -1033,8 +1046,18 @@ func (g *GUI) resize(width, height int, deviceScale float64) {
 		g.cursorAttributes, g.defaultAttr)
 	g.renderer.forceFullRepaint = g.forceFullRepaint
 	g.renderer.cursorEffect = &g.cursorEffect
+	g.shaderTheme = g.renderer.shaderTheme()
+	// The palette may have changed with the theme, which Begin cannot
+	// tell from the default colours alone.
+	g.shaders.Invalidate()
 	g.cursorEffect.reset()
 	g.needsDraw = true
+}
+
+// renderCells is the shaderdevice.CellRenderer of the GUI's device: cells
+// drawn as the current renderer draws the window.
+func (g *GUI) renderCells(dst *ebiten.Image, cells [][]term.Cell, images []term.Image) {
+	g.renderer.renderCells(dst, cells, images)
 }
 
 // SetAltModifier selects which Alt key produces layout characters. It must

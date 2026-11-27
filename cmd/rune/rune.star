@@ -1252,9 +1252,22 @@ config = {
         # Automatically restore the previous session's files, terminals, and
         # window layout.
         "auto_restore": True,
-        # Precedence: wallpaper_image, then wallpaper_image_ascii, then
-        # wallpaper_ascii. The first non-empty one is shown; when all three
-        # are "" the built-in Rune logo is.
+        # Precedence: wallpaper_shader, then wallpaper_image, then
+        # wallpaper_image_ascii, then wallpaper_ascii. The first non-empty one
+        # is shown; when all four are "" the built-in Rune logo is.
+        # wallpaper_shader is a Kage shader the GUI draws over the whole
+        # window: a built-in (gradient, noise, plasma, blaze or inferno) or a
+        # .kage file. The terminal UI shows the next wallpaper instead. It
+        # animates, looping over duration, when the shader declares Frame or
+        # Progress and animate is True.
+        "wallpaper_shader": { # this takes a built-in name or .kage file path string, or the following object
+            "shader":   "",
+            "fps":      30,
+            "duration": "10s",
+            "animate":  True,
+            # "seed":   0,  # or "random": sets the Seed uniform
+            # "uniforms": {"Tint": "blue"},  # numbers, lists or colours
+        },
         "wallpaper_image": { # this takes a file path string, or the following object
             "path":   "",
             "width":  "60%", # or number of cells
@@ -1277,6 +1290,7 @@ config = {
         # focus_ picture, art or text, it shows the picture, art or text
         # above; the attributes and density characters left out inherit
         # theirs. With no focus_ key set, it is the wallpaper above.
+        # "focus_wallpaper_shader":             "",
         # "focus_wallpaper_image":              "",
         # "focus_wallpaper_image_ascii":        "",
         # "focus_wallpaper_ascii":              "",

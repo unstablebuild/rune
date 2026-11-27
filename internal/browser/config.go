@@ -17,6 +17,7 @@
 package browser
 
 import (
+	"io"
 	"net/url"
 	"time"
 
@@ -287,12 +288,39 @@ func (i PromptButtonImage) image(g *tcomponent.FrameGraphics) component.ButtonIm
 	}
 }
 
-// Wallpaper is a tui.Component wallpaper factory.
+// ComponentCloser is a tui.Component that holds resources until it is
+// closed.
+type ComponentCloser interface {
+	tui.Component
+	io.Closer
+}
+
+// NopCloser returns c with a Close that does nothing. The result is a
+// component.Floating when c is one.
+func NopCloser(c tui.Component) ComponentCloser {
+	if f, ok := c.(component.Floating); ok {
+		return nopFloatingCloser{f}
+	}
+	return nopCloser{c}
+}
+
+type nopCloser struct{ tui.Component }
+
+func (nopCloser) Close() error { return nil }
+
+type nopFloatingCloser struct{ component.Floating }
+
+func (nopFloatingCloser) Close() error { return nil }
+
+// Wallpaper is a wallpaper factory. The browser closes each component
+// NewComponent returns once its window shows something else or closes.
 // NOTE: we might want to move it to the component package
 // and call it a Factory.
 type Wallpaper struct {
+	// BackgroundAttr, when set, is drawn under the component, which keeps
+	// only its characters and foreground colours on it.
 	BackgroundAttr term.Attributes
-	NewComponent   func() tui.Component
+	NewComponent   func() ComponentCloser
 	// Focus is the wallpaper of the window holding the window manager's
 	// focus style. Nil shows this one there too. Its own Focus is
 	// ignored.
@@ -302,8 +330,8 @@ type Wallpaper struct {
 // NopWallpaper is a Wallpaper of component.Nop.
 func NopWallpaper() Wallpaper {
 	return Wallpaper{
-		NewComponent: func() tui.Component {
-			return component.Nop()
+		NewComponent: func() ComponentCloser {
+			return NopCloser(component.Nop())
 		},
 	}
 }

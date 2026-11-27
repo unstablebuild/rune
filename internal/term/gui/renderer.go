@@ -29,6 +29,7 @@ import (
 	"unstable.build/rune/internal/term/gui/drawrect"
 	"unstable.build/rune/internal/term/gui/drawtext"
 	"unstable.build/rune/internal/term/gui/font"
+	"unstable.build/rune/internal/term/gui/shaderdevice"
 )
 
 const (
@@ -92,6 +93,10 @@ type renderer struct {
 	// clips are the regions of the screen the cells over placements are
 	// repainted into.
 	clips subImages
+	// cellRendererClips are the regions of renderCells' destination the
+	// cells over placements are repainted into, apart from clips so that
+	// drawing both in a frame does not release the other's.
+	cellRendererClips subImages
 
 	// Reusable scratch for a cell's cluster so routing to the color path
 	// does not allocate per frame; valid only within one cell's handling.
@@ -219,6 +224,21 @@ func (r *renderer) deallocate() {
 	}
 	r.images.deallocate()
 	r.clips.deallocate()
+	r.cellRendererClips.deallocate()
+}
+
+// shaderTheme returns the colours shaders resolve: the default colours as
+// the frame paints them, translucent with the window, and other colours
+// opaque, as a shader's alpha already composites over the window.
+func (r *renderer) shaderTheme() shaderdevice.Theme {
+	bg := r.bgColor
+	return shaderdevice.Theme{
+		Background: bg,
+		Foreground: r.fgColor,
+		Resolve: func(c term.Color) color.RGBA {
+			return tcellToColor(c, bg, 1)
+		},
+	}
 }
 
 func (r *renderer) Draw(
@@ -264,13 +284,35 @@ func (r *renderer) drawImages(
 	if len(images) == 0 && len(r.images.textures) == 0 {
 		return
 	}
-	r.covered = r.drawImageLayer(r.covered[:0], screen, images, term.ImageLayerBelowBackground)
-	r.repaintOver(screen, cells, r.covered, passRects)
-	r.covered = r.drawImageLayer(r.covered, screen, images, term.ImageLayerBelowText)
-	r.repaintOver(screen, cells, r.covered, passGlyphs, passGlyphsBackground)
-	r.covered = r.drawImageLayer(r.covered[:0], screen, images, term.ImageLayerAboveText)
+	r.composeImages(screen, &r.clips, cells, images)
 	r.images.evictUnused()
 	r.clips.evictUnused()
+	r.cellRendererClips.evictUnused()
+}
+
+// composeImages composites the image placements over cells already drawn
+// into screen, as drawImages does, repainting the cells over them into
+// the regions of screen that clips keeps. It leaves the textures it
+// uploads for drawImages to evict when no draw uses them.
+func (r *renderer) composeImages(
+	screen *ebiten.Image, clips *subImages, cells [][]term.Cell, images []term.Image,
+) {
+	r.covered = r.drawImageLayer(r.covered[:0], screen, images, term.ImageLayerBelowBackground)
+	r.repaintOver(screen, clips, cells, r.covered, passRects)
+	r.covered = r.drawImageLayer(r.covered, screen, images, term.ImageLayerBelowText)
+	r.repaintOver(screen, clips, cells, r.covered, passGlyphs, passGlyphsBackground)
+	r.covered = r.drawImageLayer(r.covered[:0], screen, images, term.ImageLayerAboveText)
+}
+
+// renderCells draws cells and the image placements over them into dst, a
+// shaderdevice.CellRenderer, as Draw draws them into the window but for
+// the cursor. Draw keeps the textures it uploads while draws use them.
+func (r *renderer) renderCells(dst *ebiten.Image, cells [][]term.Cell, images []term.Image) {
+	dst.Fill(r.bgColor)
+	r.renderContent(dst, cells)
+	if len(images) > 0 {
+		r.composeImages(dst, &r.cellRendererClips, cells, images)
+	}
 }
 
 // drawImageLayer paints the placements belonging to one layer, all of
@@ -315,13 +357,14 @@ func (r *renderer) halfCell() float64 {
 
 // repaintOver redraws the given passes of the cells that can paint into
 // rects, clipped to them so the rest of the frame is not composited
-// twice. Where rects overlap, the cells are redrawn there once.
+// twice, into the regions of screen that clips keeps. Where rects
+// overlap, the cells are redrawn there once.
 func (r *renderer) repaintOver(
-	screen *ebiten.Image, cells [][]term.Cell,
+	screen *ebiten.Image, clips *subImages, cells [][]term.Cell,
 	rects []image.Rectangle, passes ...renderPass,
 ) {
 	for _, clip := range r.union.of(rects, screen.Bounds()) {
-		dst := r.clips.of(screen, clip)
+		dst := clips.of(screen, clip)
 		first, last := r.rowsCovering(clip, len(cells))
 		left, right := r.columnsCovering(clip)
 		for _, pass := range passes {

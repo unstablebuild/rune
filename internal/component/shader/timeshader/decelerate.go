@@ -70,13 +70,16 @@ func Decelerate(baseShader shader.Shader) shader.Shader {
 }
 
 func decelerate(baseShader shader.Shader) *timeShader {
-	return &timeShader{baseShader, funcTimeRemapper(
-		func(frame, total int) int {
-			dur := float64(total - 1)
-			t := float64(frame) / dur
-			tt := 1.0 - (t-1.0)*(t-1.0)
-			ret := int(math.Round(dur * tt))
-			return ret
-		},
-	)}
+	return &timeShader{baseShader, funcTimeRemapper(DecelerateTime())}
+}
+
+// DecelerateTime returns the frame Decelerate plays at frame of total, for
+// shaders other than shader.Shader to remap their time with.
+func DecelerateTime() func(frame, total int) int {
+	return func(frame, total int) int {
+		dur := float64(total - 1)
+		t := float64(frame) / dur
+		tt := 1.0 - (t-1.0)*(t-1.0)
+		return int(math.Round(dur * tt))
+	}
 }

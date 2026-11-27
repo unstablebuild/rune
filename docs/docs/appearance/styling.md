@@ -1566,12 +1566,12 @@ every cell the chat draws with it.
 
 An empty window in focus shows the focused wallpaper. Its keys live under
 `workspace` and take the same forms as the [wallpaper](./wallpaper.md) keys:
-`focus_wallpaper_image`, `focus_wallpaper_image_ascii`,
+`focus_wallpaper_shader`, `focus_wallpaper_image`, `focus_wallpaper_image_ascii`,
 `focus_wallpaper_ascii`, `focus_wallpaper_attr`,
 `focus_wallpaper_background_attr` and `focus_wallpaper_density_characters`.
 Without any of them, a focused window shows the normal wallpaper. The
-focused wallpaper keeps the normal picture, art or text unless one of the
-first three is set, and takes each attribute, and the density characters, the
+focused wallpaper keeps the normal shader, picture, art or text unless one of
+the first four is set, and takes each attribute, and the density characters, the
 focus keys leave out from the normal ones.
 
 ## Tab bar

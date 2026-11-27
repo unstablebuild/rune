@@ -62,9 +62,13 @@ func Reverse(baseShader shader.Shader) shader.Shader {
 }
 
 func reverse(baseShader shader.Shader) *timeShader {
-	return &timeShader{baseShader, funcTimeRemapper(
-		func(frame, total int) int {
-			return total - frame - 1
-		},
-	)}
+	return &timeShader{baseShader, funcTimeRemapper(ReverseTime())}
+}
+
+// ReverseTime returns the frame Reverse plays at frame of total, for
+// shaders other than shader.Shader to remap their time with.
+func ReverseTime() func(frame, total int) int {
+	return func(frame, total int) int {
+		return total - frame - 1
+	}
 }

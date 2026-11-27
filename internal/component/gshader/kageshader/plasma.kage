@@ -1,0 +1,30 @@
+//kage:unit pixels
+
+package main
+
+var Progress float
+var Resolution vec2
+var Background vec4
+
+// Scale is how many waves span the height.
+var Scale float
+
+// Speed is how many times the waves turn over a run, rounded to a whole
+// number so that the run ends where it starts.
+var Speed float
+
+// Hue turns the colours, in turns.
+var Hue float
+
+// Strength is how far the colours stand out from the background, from 0
+// to 1.
+var Strength float
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	t := 6.28318530718 * Progress * floor(Speed+0.5)
+	p := (dstPos.xy - Resolution/2) / Resolution.y * Scale
+	c := vec2(cos(t), sin(t)) * Scale / 3
+	v := sin(p.x+t) + sin(p.y-t) + sin(p.x*cos(t)/2+p.y*sin(t)/2+t) + sin(length(p-c)*1.5-t)
+	rgb := 0.5 + 0.5*cos(6.28318530718*(v/4+Hue+vec3(0, 1.0/3.0, 2.0/3.0)))
+	return mix(Background, vec4(rgb, 1), Strength)
+}
