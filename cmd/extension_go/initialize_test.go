@@ -70,7 +70,7 @@ func TestGoplsInitializeParamsCommandAndTrace(t *testing.T) {
 		LogFile:   "/tmp/gopls.log",
 		DebugAddr: "localhost:6060",
 		Trace:     semanticapi.TraceValueVerbose,
-	}, "")
+	}, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, semanticapi.TraceValueVerbose, params.Trace)
 
@@ -79,6 +79,121 @@ func TestGoplsInitializeParamsCommandAndTrace(t *testing.T) {
 	assert.Equal(t,
 		"gopls -rpc.trace -logfile=/tmp/gopls.log -debug=localhost:6060 serve",
 		initOpts["command"])
+}
+
+func TestGoplsInitializeParamsUserSettings(t *testing.T) {
+	defaults := func(t *testing.T, initOpts map[string]any) {
+		t.Helper()
+		assert.Equal(t, true, initOpts["semanticTokens"])
+		assert.Equal(t, "go", initOpts["langID"])
+		assert.Equal(t, goplsCommand(goplsDebugOptions{}, ""), initOpts["command"])
+	}
+
+	suite := []struct {
+		description string
+		settings    map[string]any
+		check       func(t *testing.T, initOpts map[string]any)
+	}{
+		{
+			description: "no user settings keeps Rune's defaults",
+			check:       defaults,
+		},
+		{
+			description: "an empty map is the same as no settings",
+			settings:    map[string]any{},
+			check:       defaults,
+		},
+		{
+			description: "a top-level key wins",
+			settings: map[string]any{
+				"vulncheck":   "Off",
+				"fileWatcher": "poll",
+			},
+			check: func(t *testing.T, initOpts map[string]any) {
+				assert.Equal(t, "Off", initOpts["vulncheck"])
+				assert.Equal(t, "poll", initOpts["fileWatcher"])
+			},
+		},
+		{
+			description: "codelenses merge key by key",
+			settings: map[string]any{
+				"codelenses": map[string]any{
+					"gc_details": false,
+					"tidy":       false,
+				},
+			},
+			check: func(t *testing.T, initOpts map[string]any) {
+				lenses, ok := initOpts["codelenses"].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, false, lenses["gc_details"])
+				assert.Equal(t, false, lenses["tidy"])
+				// Unmentioned lenses keep Rune's default.
+				assert.Equal(t, true, lenses["generate"])
+				assert.Equal(t, true, lenses["test"])
+			},
+		},
+		{
+			description: "hints merge key by key",
+			settings: map[string]any{
+				"hints": map[string]any{
+					"parameterNames": false,
+				},
+			},
+			check: func(t *testing.T, initOpts map[string]any) {
+				hints, ok := initOpts["hints"].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, false, hints["parameterNames"])
+				// Unmentioned hints keep Rune's default.
+				assert.Equal(t, true, hints["assignVariableTypes"])
+				assert.Equal(t, true, hints["compositeLiteralFields"])
+			},
+		},
+		{
+			description: "a scalar where a map is expected keeps Rune's defaults",
+			settings: map[string]any{
+				"codelenses": true,
+			},
+			check: func(t *testing.T, initOpts map[string]any) {
+				lenses, ok := initOpts["codelenses"].(map[string]any)
+				require.True(t, ok, "codelenses must stay a map")
+				assert.Equal(t, true, lenses["gc_details"])
+				assert.Equal(t, true, lenses["test"])
+			},
+		},
+		{
+			description: "reserved keys are never taken from user config",
+			settings: map[string]any{
+				"langID":  "rust",
+				"command": "not-a-gopls-command",
+			},
+			check: func(t *testing.T, initOpts map[string]any) {
+				assert.Equal(t, "go", initOpts["langID"])
+				assert.Equal(t, goplsCommand(goplsDebugOptions{}, ""),
+					initOpts["command"])
+			},
+		},
+		{
+			description: "a gopls setting Rune also sets is still the user's",
+			settings: map[string]any{
+				"semanticTokens": false,
+			},
+			check: func(t *testing.T, initOpts map[string]any) {
+				assert.Equal(t, false, initOpts["semanticTokens"])
+			},
+		},
+	}
+
+	for _, tc := range suite {
+		t.Run(tc.description, func(t *testing.T) {
+			params, err := goplsInitializeParams(
+				"file:///tmp/repo", goplsDebugOptions{}, "", tc.settings)
+			require.NoError(t, err)
+
+			var initOpts map[string]any
+			require.NoError(t, json.Unmarshal(params.InitializeOptions, &initOpts))
+			tc.check(t, initOpts)
+		})
+	}
 }
 
 func TestReadGoplsDebugOptions(t *testing.T) {
@@ -190,4 +305,51 @@ func TestReadGoplsDebugOptionsLogFileTildeExpansion(t *testing.T) {
 	assert.Equal(t,
 		filepath.Join(tmp, ".rune", "logs", "lsp", "gopls.log"),
 		got.LogFile)
+}
+
+func TestReadGoplsSettings(t *testing.T) {
+	suite := []struct {
+		description string
+		cfg         config.Config
+		want        map[string]any
+		wantWarn    bool
+	}{
+		{
+			description: "no config",
+			cfg:         nil,
+		},
+		{
+			description: "absent key",
+			cfg:         config.JSONFromMap(map[string]any{"other": "value"}),
+		},
+		{
+			description: "a map is returned as written",
+			cfg: config.JSONFromMap(map[string]any{
+				"gopls": map[string]any{
+					"fileWatcher": "poll",
+					"vulncheck":   "Off",
+				},
+			}),
+			want: map[string]any{
+				"fileWatcher": "poll",
+				"vulncheck":   "Off",
+			},
+		},
+		{
+			description: "a value that is not a map warns and is ignored",
+			cfg:         config.JSONFromMap(map[string]any{"gopls": "foo"}),
+			wantWarn:    true,
+		},
+	}
+
+	for _, tc := range suite {
+		t.Run(tc.description, func(t *testing.T) {
+			notify := &mockNotifications{}
+			got := readGoplsSettings(tc.cfg, notify)
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.wantWarn,
+				notify.hasMessage("extensions.go.config.gopls must be a map"),
+				"messages: %v", notify.getMessages())
+		})
+	}
 }

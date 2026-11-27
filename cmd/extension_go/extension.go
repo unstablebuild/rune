@@ -173,8 +173,9 @@ func initializeGoRoot(
 	root langext.Root,
 ) error {
 	dbg := readGoplsDebugOptions(cfg)
+	userSettings := readGoplsSettings(cfg, notify)
 	goplsBin := resolveGoplsForRoot(ctx, fs, exec, tools, cfg, notify, scheme)
-	params, err := goplsInitializeParams(root.URI, dbg, goplsBin)
+	params, err := goplsInitializeParams(root.URI, dbg, goplsBin, userSettings)
 	if err != nil {
 		return fmt.Errorf("build init params: %w", err)
 	}
@@ -270,4 +271,29 @@ func readGoplsLspPath(cfg config.Config, notify browserapi.Notifications) (strin
 		return "", false
 	}
 	return v, v != ""
+}
+
+// readGoplsSettings reads user-supplied gopls settings from
+// extensions.go.config.gopls. An absent config and an absent key both
+// return a nil map, which leaves Rune's defaults in place. A value that
+// is not a map is reported through notify and also returns nil, so a
+// malformed entry never silently changes the initialization options.
+func readGoplsSettings(
+	cfg config.Config, notify browserapi.Notifications,
+) map[string]any {
+	if cfg == nil {
+		return nil
+	}
+	raw, err := cfg.GetMap("gopls")
+	if err != nil {
+		if errors.Is(err, config.ErrNotFound) {
+			return nil
+		}
+		if notify != nil {
+			_, _ = notify.Notify(browserapi.LevelWarn,
+				"extensions.go.config.gopls must be a map: %v", err)
+		}
+		return nil
+	}
+	return raw
 }

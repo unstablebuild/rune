@@ -494,3 +494,36 @@ config["gui"]["app_icon"] = "~/.rune/icon.png"
   ```python tab
   config["meta_open_url"] = "browser $URL" # or "clipboard", or "! open $URL"
   ```
+
+## Language server settings
+
+- `lsp.servers.<section>`: settings a language server asks for with a
+  `workspace/configuration` request. Rune answers that request from this map,
+  so a key here reaches the server the way it would in the server's own
+  config file. gopls asks for the section `gopls`; see
+  [Go](./languages/go.md#gopls-server-settings) for the settings it reads.
+
+  ```yaml tab
+  lsp:
+    icons:
+      error: "✖"
+      warning: "▲"
+      information: "◉"
+      hint: "󰌵"
+    servers:
+      gopls:
+        analyses:
+          fieldalignment: true
+        renameMovesSubpackages: true
+  ```
+
+  ```python tab
+  config["lsp"]["servers"] = {"gopls": {"analyses": {"fieldalignment": True}}}
+  ```
+
+  `lsp` already exists in the default config with its `icons`, so add the
+  `servers` key to it rather than replacing the whole table.
+
+  Keys gopls reads only at startup, such as `fileWatcher`, are not answered
+  here. Set those under `extensions.go.config.gopls` instead; changing them
+  needs `workspacereload` before they take effect.

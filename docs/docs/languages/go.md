@@ -116,6 +116,156 @@ add the full JSON-RPC trace when protocol messages are needed.
 Setting `debug.logfile` tells gopls to write its logs to that file instead of
 stderr, so those logs do not appear in `process stdio`.
 
+### gopls server settings
+
+Rune bundles gopls **v0.23.0** through `rune-language-go`. See the
+[gopls release notes](https://github.com/golang/tools/releases/tag/gopls%2Fv0.23.0) for what
+changed. Some behaviors are opt-in settings that Rune forwards to the server.
+You can supply any gopls setting except the two reserved keys below under
+`extensions.go.config.gopls` in your `config.yaml`:
+
+```yaml tab
+extensions:
+  go:
+    config:
+      gopls:
+        fileWatcher: "poll"
+        vulncheck: "Imports"
+        codelenses:
+          gc_details: false
+          tidy: true
+        hints:
+          parameterNames: false
+```
+
+User keys win over Rune's built-in defaults. The `codelenses` and `hints`
+maps are merged key by key, so setting `gc_details: false` disables just that
+lens without clearing every other lens Rune enables by default.
+
+Two keys are reserved and never taken from your config: `langID` and
+`command` are how Rune routes the session to gopls. To point Rune at a
+different gopls binary, set `extensions.go.config.lsp_path` instead of
+`command`.
+
+The settings under `extensions.go.config.gopls` split into two groups.
+
+**Session-level** settings go to gopls in `initializationOptions` when it
+starts, and gopls ignores the same keys under `workspace/configuration`, so
+every workspace folder in the session shares them. Two settings are in this
+group: `fileWatcher`, and the `vulncheck` prompt (`"Prompt"`, the default).
+Changing either takes effect after `workspacereload`, which restarts the
+server.
+
+Everything else is read per folder: `analyses`, `codelenses`, `hints`,
+`renameMovesSubpackages`, and the `vulncheck` diagnostics modes `"Imports"`
+and `"Off"`. gopls asks for those with `workspace/configuration`, once per
+workspace folder, so a multi-root workspace can give each root its own values
+through `lsp.servers.<section>`.
+
+Settings you are likely to adjust:
+
+| Setting | What it does |
+|---------|--------------|
+| `fileWatcher` | Watch strategy: `"off"` (default), `"poll"`, `"fsnotify"`. |
+| [`vulncheck`](https://github.com/golang/tools/blob/gopls/v0.23.0/gopls/doc/settings.md#vulncheck) | Vulnerability analysis mode: `"Prompt"` (default), `"Imports"`, or `"Off"`. |
+| `codelenses.<name>` | Per-code-lens toggle (e.g. `gc_details`, `tidy`, `test`, `vendor`). |
+| `hints.<name>` | Per-inlay-hint toggle (e.g. `parameterNames`, `constantValues`, `rangeVariableTypes`). |
+
+See the [gopls settings reference](https://github.com/golang/tools/blob/gopls/v0.23.0/gopls/doc/settings.md)
+for the full list of supported settings and their defaults.
+
+Rune enables these codelenses by default: `gc_details`, `generate`,
+`regenerate_cgo`, `run_govulncheck`, `test`, `tidy`, `upgrade_dependency`,
+`vendor`. It enables these hints: `assignVariableTypes`,
+`compositeLiteralFields`, `compositeLiteralTypes`, `constantValues`,
+`rangeVariableTypes`, `parameterNames`, `functionTypeParameters`.
+
+The two routes behave differently. Under `extensions.go.config.gopls`, the
+`codelenses` and `hints` maps merge key by key with Rune's defaults, so
+setting one key leaves the rest alone.
+
+Under `lsp.servers.gopls` the map is passed to gopls as it is written, so
+setting `codelenses` or `hints` there replaces Rune's whole default map for
+that folder. To change one lens that way, write out every key you want to
+keep:
+
+```yaml tab
+lsp:
+  servers:
+    gopls:
+      codelenses:
+        gc_details: false
+        generate: true
+        regenerate_cgo: true
+        run_govulncheck: true
+        test: true
+        tidy: true
+        upgrade_dependency: true
+        vendor: true
+```
+
+#### Analyzers
+
+The `analyses` map lets you enable or disable individual gopls analyzers by
+name. Unknown analyzer names are silently ignored by gopls, so the name must
+match exactly.
+
+| Analyzer | Notes |
+|----------|-------|
+| `fieldalignment` | Reports structs whose fields could be reordered to use less memory. Off by default. The name is `fieldalignment`, and an unknown name is ignored silently. |
+| `atomictypes` | Suggests typed atomics such as `atomic.Int32` instead of the `sync/atomic` functions. On by default. |
+| `embedlit` | Drops redundant embedded-struct literals under Go 1.27. On by default. |
+| `scannererr` | Flags missing `Err()` after a `bufio.Scanner` loop. On by default. |
+| `writestring` | Flags `WriteString(a+b)`. On by default. |
+| `sqlrowserr` | Flags missing `Err()` after a `sql.Rows` loop. On by default. |
+
+Renamed analyzers: the `waitgroup` modernizer is now `waitgroupgo`
+(`waitgroup` remains the misuse checker), and the `errorsastype` shadowing
+analyzer is now `errorsastypeshadow` (`errorsastype` remains the modernizer).
+
+Go 1.27 brings editing features that need no config: completion of promoted
+fields in struct literals, `compositeLiteralFields` hints showing the promoted
+path, `go fill-struct` filling promoted fields, a "declare missing methods"
+quick fix for generic interfaces, and `go add-test` using `t.Context()` on
+Go 1.24+ modules. `embedlit` drops the redundant literals that Go 1.27 lets
+you set directly.
+
+Staticcheck is bundled at **2026.2rc1** (module `v0.8.0-rc1`), not a stable
+release. Its checks follow the `staticcheck` analyzer names rather than the
+gopls ones, and they are configured the same way under `analyses`.
+
+To turn off a noisy analyzer, set it to `false` under `analyses`. To turn
+on one that is off by default, such as `fieldalignment`, set it to `true`.
+
+Example:
+
+```yaml tab
+extensions:
+  go:
+    config:
+      gopls:
+        analyses:
+          fieldalignment: true
+```
+
+#### Experimental settings
+
+| Setting | Values | Notes |
+|---------|--------|-------|
+| `renameMovesSubpackages` | `true`/`false` | Renaming a package also moves its subdirectories. Off by default. |
+
+Rune sends `workspace/didChangeWatchedFiles` for edits made through its own
+tools, such as `apply_patch`, so those reach gopls without `fileWatcher`. For
+edits Rune does not see, through a formatter or a build script that rewrites
+files, set `fileWatcher` to `"poll"` or `"fsnotify"`. With `"off"`, the
+default, gopls relies on the editor's notifications. Use `"poll"` over a
+remote or network filesystem, or when an external tool rewrites files.
+`"fsnotify"` uses OS watchers and can exhaust file descriptors on macOS.
+
+See the [gopls settings reference](https://github.com/golang/tools/blob/gopls/v0.23.0/gopls/doc/settings.md)
+and [analyzers reference](https://github.com/golang/tools/blob/gopls/v0.23.0/gopls/doc/analyzers.md)
+for the full list.
+
 ### Interesting queries
 
 Some `lsp` queries are more powerful than they first appear. The
@@ -161,6 +311,12 @@ what to do when nothing applicable is under the cursor.
 | `go organize-imports` | Remove unused imports, add missing ones, and sort them. |
 | `go add-import` | Add a package import to the current file. |
 | `go eliminate-dot-import` | Remove a dot import and qualify all references with the package name. |
+
+### REPL
+
+| Command | What it does |
+| --- | --- |
+| `go repl` | Open an interactive Go REPL that runs via `go run` in the project's module. |
 
 ### Tests and benchmarks
 
@@ -237,6 +393,30 @@ All of these act on the cursor or the current selection.
 | `go vulncheck` | Run govulncheck for known vulnerabilities reachable by the code. |
 | `go generate` | Run `go generate` for the `//go:generate` directive nearest the cursor. |
 | `go regenerate-cgo` | Re-run cgo to regenerate Go declarations after editing C code. |
+
+### Vulnerability checks
+
+gopls v0.22+ shows a vulnerability prompt when a `go.mod` or `go.work` is
+created or saved with changed require/exclude/replace directives:
+
+> "Dependencies changed in ... Run govulncheck to check for vulnerabilities?"
+
+You can answer **Yes**, **No**, **Always**, or **Never**. After a scan that
+finds issues, a second prompt offers **Upgrade All** (runs `go get`, then
+`go mod tidy`) or **Ignore**.
+
+Always/Never is persisted in `gopls/vulncheck/settings.json` under your user
+config directory:
+
+- macOS: `~/Library/Application Support/gopls/vulncheck/settings.json`
+- Linux: `$XDG_CONFIG_HOME/gopls/vulncheck/settings.json`, which defaults to
+  `~/.config/gopls/vulncheck/settings.json`
+- Overridable with `GOPLS_CONFIG_DIR`; delete the file to reset.
+
+To opt out of the prompt entirely, set `vulncheck` to `"Imports"` or `"Off"`
+as an initialization option under `extensions.go.config.gopls` (see gopls server
+settings above). Rune's `go vulncheck` command runs govulncheck on demand and is
+separate from the automatic prompt.
 
 ## Key bindings
 
