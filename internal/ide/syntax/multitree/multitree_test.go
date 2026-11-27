@@ -682,6 +682,7 @@ func TestHighlightsAreMergedInHostCoordinates(t *testing.T) {
 	assert.Equal(t, []textapi.Location{hostLoc}, got)
 
 	sec.loc.SetLocationList(textapi.LocationSlice([]textapi.Location{sectionLoc}))
+	h.sched.tick(t)
 	_, got = h.loc.snapshot()
 	want := sectionLoc
 	want.From, want.To = xy(0, 2), xy(5, 2)
@@ -719,6 +720,36 @@ func TestHighlightsAreMergedInHostCoordinates(t *testing.T) {
 		_, got := h.loc.snapshot()
 		assert.Equal(t, []textapi.Location{hostLoc, hostLoc}, got)
 	})
+}
+
+func TestSectionHighlightsPublishedInOneTickAreMergedOnce(t *testing.T) {
+	const n = 100
+	var content strings.Builder
+	injections := make([]treesitter.Injection, n)
+	for i := range n {
+		content.WriteString("const a = 1;\n")
+		injections[i] = treesitter.Injection{Language: "javascript", Range: rng(0, i, 12, i)}
+	}
+	h := newHarness(t, content.String(), injections...)
+	sections := h.f.sectionList()
+	require.Len(t, sections, n)
+	calls, _ := h.loc.snapshot()
+
+	local := textapi.Location{From: xy(0, 0), To: xy(5, 0), Attr: sectionLoc.Attr}
+	var want []textapi.Location
+	for i, s := range sections {
+		s.loc.SetLocationList(textapi.LocationSlice([]textapi.Location{local}))
+		inHost := local
+		inHost.From, inHost.To = xy(0, i), xy(5, i)
+		want = append(want, inHost)
+	}
+	after, _ := h.loc.snapshot()
+	assert.Equal(t, calls, after, "the sections' highlights wait for the next tick")
+
+	h.sched.tick(t)
+	after, got := h.loc.snapshot()
+	assert.Equal(t, calls+1, after, "one merged publish for every section")
+	assert.Equal(t, want, got)
 }
 
 func TestIndentationAt(t *testing.T) {

@@ -449,6 +449,8 @@ func largeMarkdownDocument(paragraphs, tableRows int) string {
 type loopClock struct {
 	busy      atomic.Int64 // time.Duration
 	callbacks atomic.Int64
+	// queued counts the callbacks scheduled that have not run yet.
+	queued atomic.Int64
 }
 
 func (c *loopClock) config(cfg func(*sync.Mutex) syntax.Config) func(*sync.Mutex) syntax.Config {
@@ -456,10 +458,16 @@ func (c *loopClock) config(cfg func(*sync.Mutex) syntax.Config) func(*sync.Mutex
 		ret := cfg(mu)
 		schedule := ret.ScheduleNextTick
 		ret.ScheduleNextTick = func(fn func()) bool {
-			return schedule(func() {
+			c.queued.Add(1)
+			ok := schedule(func() {
+				defer c.queued.Add(-1)
 				c.callbacks.Add(1)
 				c.time(fn)
 			})
+			if !ok {
+				c.queued.Add(-1)
+			}
+			return ok
 		}
 		return ret
 	}
@@ -470,6 +478,14 @@ func (c *loopClock) time(fn func()) {
 	start := time.Now()
 	fn()
 	c.busy.Add(int64(time.Since(start)))
+}
+
+// settle waits for the callbacks scheduled to run, including those they
+// schedule.
+func (c *loopClock) settle(t testing.TB) {
+	t.Helper()
+	require.Eventually(t, func() bool { return c.queued.Load() == 0 },
+		compositeWait, time.Millisecond, "waiting for the event loop to settle")
 }
 
 // loopSample is what one operation cost the event loop.
@@ -532,6 +548,7 @@ func openMarkdownTree(
 	require.True(t, ok)
 	_, err := iterator.ToSlice(context.Background(), it)
 	require.NoError(t, err)
+	clock.settle(t)
 	return s
 }
 
@@ -543,6 +560,7 @@ func (s *compositeTree) reload(clock *loopClock, content string) {
 		clock.time(func() { s.buf.ReloadContents(context.Background(), content) })
 	})
 	s.waitSectionTrees()
+	clock.settle(s.t)
 }
 
 // The size of the benchmarked document: about 1,600 sections, as many as

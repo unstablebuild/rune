@@ -193,11 +193,19 @@ func (p *promptingPackages) answer(pkgID string) {
 }
 
 // serializedSyntaxConfig serializes every tree's event-loop work through mu,
-// which the test holds while it edits or reads.
+// which the test holds while it edits or reads. A callback scheduled while
+// mu is held, as one scheduled from the loop is, runs once it is released.
 func serializedSyntaxConfig(mu *sync.Mutex) syntax.Config {
 	cfg := syntax.DefaultConfig()
 	cfg.ScheduleNextTick = func(fn func()) bool {
-		mu.Lock()
+		if !mu.TryLock() {
+			go func() {
+				mu.Lock()
+				defer mu.Unlock()
+				fn()
+			}()
+			return true
+		}
 		defer mu.Unlock()
 		fn()
 		return true

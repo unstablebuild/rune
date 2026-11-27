@@ -158,11 +158,15 @@ type Tree struct {
 	// keeps the last one until the next call.
 	merged      []textapi.Location
 	mergedSpare []textapi.Location
-	// publishing suppresses the publishes the trees trigger while an edit
-	// is replayed and reconciled, so loc sees one merged list per edit;
-	// pending records that one was suppressed.
-	publishing bool
-	pending    bool
+	// pending records that a tree published since loc was last handed the
+	// merged list. publishing suppresses the publishes the trees trigger
+	// while an edit is replayed and reconciled, so loc sees one merged
+	// list per edit. publishScheduled records that the sections'
+	// publishes are merged on the next tick, so the sections that publish
+	// in one frame cost one merge.
+	pending          bool
+	publishing       bool
+	publishScheduled bool
 	// notified holds the languages whose missing grammar has been
 	// reported, so every section of that language does not repeat it.
 	notified map[string]bool
@@ -457,7 +461,6 @@ func (c *Tree) OnDidEdit(ctx context.Context, from, to term.Coordinates, old str
 	// Sections after the edit moved with it, so their highlights must
 	// be re-translated even when no tree published.
 	if c.pending || len(c.sections) > 0 {
-		c.pending = false
 		c.publishLocked()
 	}
 	c.mu.Unlock()
@@ -610,14 +613,33 @@ func (c *Tree) setHostHighlights(ll textapi.LocationList) {
 
 func (c *Tree) setSectionHighlights(s *section, ll textapi.LocationList) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	s.hl = appendLocations(s.hl, ll)
-	c.publishLocked()
+	schedule := false
+	if !c.closed && c.loc != nil {
+		c.pending = true
+		schedule = !c.publishing && !c.publishScheduled
+		c.publishScheduled = c.publishScheduled || schedule
+	}
+	c.mu.Unlock()
+	if schedule && !c.config.ScheduleNextTick(c.publishPending) {
+		c.publishPending()
+	}
+}
+
+// publishPending hands loc the merged list if a tree published since it
+// last did.
+func (c *Tree) publishPending() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.publishScheduled = false
+	if c.pending {
+		c.publishLocked()
+	}
 }
 
 // publishLocked hands loc the host's highlights followed by every section's
 // in host coordinates, so a section's attributes are layered over the
-// host's. mu must be held.
+// host's. During an edit it waits for the edit to end. mu must be held.
 func (c *Tree) publishLocked() {
 	if c.closed || c.loc == nil {
 		return
@@ -626,6 +648,7 @@ func (c *Tree) publishLocked() {
 		c.pending = true
 		return
 	}
+	c.pending = false
 	clear(c.merged)
 	merged := append(c.merged[:0], c.hostHL...)
 	for _, s := range c.sections {
