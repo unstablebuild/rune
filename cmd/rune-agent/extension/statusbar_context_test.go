@@ -247,6 +247,34 @@ func TestSyncStatusBarModelResolvesProviderDefaultEffort(t *testing.T) {
 	}
 }
 
+func TestSyncStatusBarModelPublishesSupportedSpeed(t *testing.T) {
+	opus := llmapi.ModelEntry{Provider: anthropic.LLMProvider, Name: anthropic.ClaudeOpus5Dot5}
+	sonnet := llmapi.ModelEntry{Provider: anthropic.LLMProvider, Name: anthropic.ClaudeSonnet5Dot5}
+
+	s := newStatusBarSyncComponent()
+	t.Cleanup(func() { _ = s.comp.Close() })
+	svc := llmtest.New([]llmapi.ModelEntry{opus, sonnet})
+	ag := agent.NewAgent(svc, agent.NewRegistry(),
+		skills.NewRegistry(nopFileSystem{}, dirURI(""), nil, nil),
+		newMemDialogueStore(), agent.NoMemory(),
+		agent.Config{Model: opus})
+	ag.SetSpeed(llmapi.SpeedFast)
+	a := &commandAdapter{agent: ag, statusBarFn: s.setStatusBarState}
+
+	a.syncStatusBarModel()
+	assert.Equal(t, "fast", s.comp.StatusBarState().Speed)
+
+	ag.SwapService(svc, sonnet)
+	a.syncStatusBarModel()
+	assert.Empty(t, s.comp.StatusBarState().Speed,
+		"a model without the speed runs at standard, so the bar must not show it")
+	assert.Equal(t, llmapi.SpeedFast, ag.Speed(), "the chat keeps its choice across models")
+
+	ag.SwapService(svc, opus)
+	a.syncStatusBarModel()
+	assert.Equal(t, "fast", s.comp.StatusBarState().Speed)
+}
+
 func TestHandleCompactReportsCompactingPhase(t *testing.T) {
 	a := &commandAdapter{dialogueID: "d1"}
 	res, err := a.handleCompact(context.Background(), nil)

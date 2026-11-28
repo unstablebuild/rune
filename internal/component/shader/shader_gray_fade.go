@@ -28,10 +28,9 @@ import (
 
 // GrayFadeParams configures the [GrayFade] effect.
 //
-// GrayFade has no color parameters: it desaturates each cell's foreground
-// toward its own per-channel luminance, so every cell keeps its relative
-// brightness instead of collapsing to a single shared gray. Background
-// attributes are left untouched.
+// GrayFade has no color parameters: it desaturates each color toward its
+// own per-channel luminance, so every cell keeps its relative brightness
+// instead of collapsing to a single shared gray.
 type GrayFadeParams struct {
 	// FadeFrames decouples the visual fade length from the shader's
 	// containing-component lifetime.
@@ -58,12 +57,20 @@ type GrayFadeParams struct {
 // fade-then-hold behavior set it explicitly.
 func DefaultGrayFadeParams() GrayFadeParams { return GrayFadeParams{} }
 
-// GrayFade is a Shader that progressively removes color from every cell's
-// foreground by desaturating it toward its own luminance gray. It is
-// intended to be used as the "loading" stage of a transition; the next
-// shader can query [GrayFadeShader.Progress] to find out how far the
-// desaturation has gone and apply the same amount to its own snapshot,
-// so the two effects compose without a visible seam.
+// GrayFade is a Shader that progressively removes color from the screen
+// by desaturating every color toward its own luminance gray: those of the
+// cells, of fills and of pictures. It is intended to be used as the
+// "loading" stage of a transition; the next shader can query
+// [GrayFadeShader.Progress] to find out how far the desaturation has gone
+// and apply the same amount to its own snapshot, so the two effects
+// compose without a visible seam.
+//
+// The default background is resolved with defaultAttr's. As an
+// [ImageShader] it desaturates it under a fill of the whole screen below
+// every picture, rather than in the cells, so that the pictures drawn
+// under the backgrounds of cells still show through them. Writers that
+// cannot paint fills, and a defaultAttr background that is not RGB, leave
+// it as the writer draws it.
 //
 // It is an [ImageShader] that desaturates placements alike, through
 // copies of their pixels.
@@ -140,12 +147,15 @@ func (s *GrayFadeShader) ShadeImages(
 	}
 	for y, row := range cells {
 		for x := range row {
-			cells[y][x].Fg = shaderutils.DesaturateColor(
-				row[x].Fg, progress, s.defaultAttr.Fg,
-			)
+			desaturateCell(&cells[y][x], progress, s.defaultAttr)
 		}
 	}
 	for i, img := range images {
+		if img.Fill {
+			// The colours of a fill's mask are not its own.
+			images[i].FillColor = shaderutils.DesaturateColor(img.FillColor, progress, s.defaultAttr.Bg)
+			continue
+		}
 		images[i] = s.gray(img, progress)
 	}
 	for id, g := range s.grays {
@@ -154,7 +164,35 @@ func (s *GrayFadeShader) ShadeImages(
 		}
 		g.used = false
 	}
-	return images
+	return underCanvas(images, cells, progress, s.defaultAttr.Bg)
+}
+
+// desaturateCell desaturates the colors of c by amount as [GrayFade]
+// does. A default background is left for the canvas [underCanvas] puts
+// under it, but where reversing c makes it the color of the text.
+func desaturateCell(c *term.Cell, amount float64, defaultAttr term.Attributes) {
+	c.Fg = shaderutils.DesaturateColor(c.Fg, amount, defaultAttr.Fg)
+	if c.Bg != term.ColorDefault || c.Attrs&term.AttrReverse != 0 {
+		c.Bg = shaderutils.DesaturateColor(c.Bg, amount, defaultAttr.Bg)
+	}
+}
+
+// underCanvas returns images over a fill, below the backgrounds of the
+// cells and every picture, of the screen of cells in defaultBg
+// desaturated by amount, which shows through the cells whose background
+// is the default. It returns images as they are when that leaves
+// defaultBg as the default background.
+func underCanvas(images []term.Image, cells [][]term.Cell, amount float64, defaultBg term.Color) []term.Image {
+	bg := shaderutils.DesaturateColor(term.ColorDefault, amount, defaultBg)
+	rows, cols := canvasSize(cells)
+	if bg == term.ColorDefault || rows == 0 || cols == 0 {
+		return images
+	}
+	canvas := term.Image{
+		Fill: true, FillColor: bg, Width: cols, Height: rows,
+		Layer: term.ImageLayerBelowBackground,
+	}
+	return append([]term.Image{canvas}, images...)
 }
 
 // gray returns img showing its picture desaturated by amount.

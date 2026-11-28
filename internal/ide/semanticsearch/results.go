@@ -29,7 +29,7 @@ import (
 )
 
 // weakRatio is the share of the top score below which hits are weaker
-// matches, as the `search` console command lists them.
+// matches.
 const weakRatio = 0.5
 
 // fallbackStatus leads the status of the results of a search by words

@@ -249,6 +249,159 @@ func TestFrameMasksInsideReusesMasks(t *testing.T) {
 	assert.Equal(t, "\nxxx.\nxxx.", maskArt(part.Src), "the mask is of the crop")
 }
 
+func TestFrameMasksOutside(t *testing.T) {
+	sprite := func(art string) term.Image {
+		return term.Image{
+			Src: spritePixels(art), ID: term.NewImageID(), Width: 1, Height: 1,
+			Pos: term.Coordinates{X: 3, Y: 2},
+		}
+	}
+	tests := []struct {
+		name    string
+		sprite  term.Image
+		outside Sides
+		// want is the mask, or empty for none.
+		want string
+	}{
+		{
+			name: "above the line of a top edge and the line, but for its inner edge",
+			sprite: sprite(`
+....
+####
+####
+....`),
+			outside: SideTop,
+			want: `
+xxxx
+xxxx
+....
+....`,
+		},
+		{
+			name: "outside the bend of a bottom-right corner",
+			sprite: sprite(`
+.#..
+.#..
+##..
+....`),
+			outside: SideBottom | SideRight,
+			want: `
+..xx
+..xx
+.xxx
+xxxx`,
+		},
+		{
+			name: "none for a line across the other way",
+			sprite: sprite(`
+....
+####
+....
+....`),
+			outside: SideLeft,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var m FrameMasks
+			got, ok := m.Outside(tt.sprite, tt.outside, term.ColorDefault)
+			if tt.want == "" {
+				assert.False(t, ok)
+				return
+			}
+			require.True(t, ok)
+			assert.Equal(t, tt.want, maskArt(got.Src))
+			want := tt.sprite
+			want.Src, want.ID = got.Src, got.ID
+			want.Fill, want.FillColor, want.Layer = true, term.ColorDefault, term.ImageLayerBelowText
+			assert.Equal(t, want, got, "the fill goes where the sprite does, under the text")
+
+			inside, ok := m.Inside(tt.sprite, tt.outside, term.ColorDefault)
+			require.True(t, ok)
+			assert.NotEqual(t, inside.ID, got.ID, "the outside has a mask of its own")
+		})
+	}
+}
+
+func TestFrameMasksEnclosed(t *testing.T) {
+	sprite := func(art string) term.Image {
+		return term.Image{
+			Src: spritePixels(art), ID: term.NewImageID(), Width: 1, Height: 1,
+			Pos: term.Coordinates{X: 3, Y: 2}, Offset: image.Pt(1, 2),
+			Clip: image.Rect(0, 0, 9, 9), VerticalRenderOffset: true,
+		}
+	}
+	channel := `
+####
+....
+++++
+....`
+	tests := []struct {
+		name    string
+		sprite  term.Image
+		outside Sides
+		// want is the mask, or empty for none.
+		want string
+	}{
+		{
+			name:    "the channel between a face and a shadow",
+			sprite:  sprite(channel),
+			outside: SideBottom,
+			want: `
+xxxx
+xxxx
+xxxx
+....`,
+		},
+		{
+			name: "the side of a line away from the outside",
+			sprite: sprite(`
+....
+....
+####
+....`),
+			outside: SideBottom,
+			want: `
+xxxx
+xxxx
+xxxx
+....`,
+		},
+		{name: "none for a channel open to an outside side", sprite: sprite(channel), outside: SideBottom | SideLeft},
+		{name: "none for a sprite without a line", sprite: sprite("....\n....\n....\n...."), outside: SideBottom},
+		{name: "none for an opaque sprite", sprite: sprite("####\n####\n####\n####"), outside: SideBottom},
+		{name: "none off the ring", sprite: sprite(channel)},
+		{
+			name:    "none for a sprite over more than a cell",
+			sprite:  func() term.Image { s := sprite(channel); s.Width = 2; return s }(),
+			outside: SideBottom,
+		},
+		{
+			name:    "none for a fill",
+			sprite:  func() term.Image { s := sprite(channel); s.Fill = true; return s }(),
+			outside: SideBottom,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var m FrameMasks
+			// The inside of the same sprite must not stand in for it.
+			m.Inside(tt.sprite, tt.outside, term.ColorNavy)
+			got, ok := m.Enclosed(tt.sprite, tt.outside, term.ColorYellow)
+			if tt.want == "" {
+				assert.False(t, ok)
+				return
+			}
+			require.True(t, ok)
+			assert.Equal(t, tt.want, maskArt(got.Src))
+			want := tt.sprite
+			want.Src, want.ID, want.Crop = got.Src, got.ID, image.Rectangle{}
+			want.Fill, want.FillColor, want.Layer = true, term.ColorYellow, term.ImageLayerBelowText
+			assert.Equal(t, want, got, "the fill goes where the sprite does, under the text")
+		})
+	}
+}
+
 // imageRecorder is a string writer that records the images drawn into
 // it, or reports that it cannot draw them when noImages is set.
 type imageRecorder struct {
@@ -277,10 +430,12 @@ func TestFrameInsideWriter(t *testing.T) {
 		name     string
 		img      term.Image
 		noImages bool
+		enclosed bool
 		// fill reports that a fill follows the image.
 		fill bool
 	}{
 		{name: "a sprite on the top of the frame", img: sprite(3, 1, term.ImageLayerAboveText), fill: true},
+		{name: "the clear pixels a sprite encloses", img: sprite(3, 1, term.ImageLayerAboveText), enclosed: true, fill: true},
 		{name: "a sprite inside the frame", img: sprite(3, 2, term.ImageLayerAboveText)},
 		{name: "a sprite outside the frame", img: sprite(3, 0, term.ImageLayerAboveText)},
 		{name: "a sprite under the text", img: sprite(3, 1, term.ImageLayerBelowText)},
@@ -293,6 +448,7 @@ func TestFrameInsideWriter(t *testing.T) {
 			var masks FrameMasks
 			w := FrameInsideWriter{
 				Writer: rec, Area: image.Rect(1, 1, 7, 5), Inside: term.ColorNavy, Masks: &masks,
+				Enclosed: tt.enclosed,
 			}
 			assert.Equal(t, !tt.noImages, w.DrawImage(tt.img))
 			if tt.noImages {
@@ -306,7 +462,11 @@ func TestFrameInsideWriter(t *testing.T) {
 				return
 			}
 			require.Len(t, rec.images, 2)
-			want, ok := masks.Inside(tt.img, SideTop, term.ColorNavy)
+			fill := masks.Inside
+			if tt.enclosed {
+				fill = masks.Enclosed
+			}
+			want, ok := fill(tt.img, SideTop, term.ColorNavy)
 			require.True(t, ok)
 			assert.Equal(t, want, rec.images[1])
 		})

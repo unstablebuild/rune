@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -534,6 +535,59 @@ func TestStatusBarUnsetEffortRendersModelDefault(t *testing.T) {
 	bar := newTestStatusBar(t)
 	bar.SetState(func(s *StatusBarState) { s.Effort = "" })
 	assert.Contains(t, render(t, bar, 60), "default")
+}
+
+func TestStatusBarShippedLayoutShowsPaidSpeed(t *testing.T) {
+	tests := []struct {
+		speed string
+		want  string
+	}{
+		{"", ""},
+		{"standard", ""},
+		{"fast", "high  󱐋 fast"},
+		{"ultrafast", "high  󱐋 ultrafast"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.speed, func(t *testing.T) {
+			bar := shippedStatusBar(t)
+			bar.SetState(func(s *StatusBarState) {
+				s.Model = "claude-opus-5-5"
+				s.Effort = "high"
+				s.Speed = tt.speed
+			})
+			row := render(t, bar, 100)
+			require.Contains(t, row, "high")
+			if tt.want == "" {
+				assert.NotContains(t, row, "󱐋", "standard speed must not leave its icon behind")
+				assert.NotContains(t, row, "standard")
+				return
+			}
+			assert.Contains(t, row, tt.want)
+		})
+	}
+}
+
+func TestStatusBarSpeedDropsAfterEffort(t *testing.T) {
+	layout, err := ParseStatusBarLayout(`{{ .Effort }}|{{ .Speed }}`)
+	require.NoError(t, err)
+	bar := NewStatusBar(StatusBarConfig{Enabled: true, Layout: layout}, nil)
+	bar.SetState(func(s *StatusBarState) {
+		s.Effort = "high"
+		s.Speed = "fast"
+	})
+	tests := []struct {
+		width int
+		want  string
+	}{
+		{9, "high|fast"},
+		{8, "fast"},
+		{3, ""},
+	}
+	for _, tt := range tests {
+		t.Run(strconv.Itoa(tt.width), func(t *testing.T) {
+			assert.Equal(t, tt.want, strings.TrimRight(render(t, bar, tt.width), " "))
+		})
+	}
 }
 
 func TestStatusBarGaugeKeepsSurroundingText(t *testing.T) {

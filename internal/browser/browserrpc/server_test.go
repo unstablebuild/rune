@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
@@ -35,6 +36,7 @@ import (
 	gomock "go.uber.org/mock/gomock"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/debug"
@@ -390,6 +392,76 @@ func TestServerPromptFails(t *testing.T) {
 			}
 			assert.Contains(t, err.Error(), tt.wantErr)
 			assert.Equal(t, 1, opened)
+		})
+	}
+}
+
+func TestPromptEvents(t *testing.T) {
+	selected := func(answers ...string) *browserrpc.PromptEvent {
+		return &browserrpc.PromptEvent{Event: &browserrpc.PromptEvent_Selected_{
+			Selected: &browserrpc.PromptEvent_Selected{Index: 1, Option: "OK", Answers: answers},
+		}}
+	}
+	closed := &browserrpc.PromptEvent{Event: &browserrpc.PromptEvent_Closed_{
+		Closed: new(browserrpc.PromptEvent_Closed),
+	}}
+	tests := []struct {
+		name        string
+		do          func(promptEvents)
+		want        []*browserrpc.PromptEvent
+		wantDropped int
+	}{
+		{
+			name: "an answer then the close",
+			do: func(e promptEvents) {
+				e.OnAnswer(1, "OK", []string{"me", "s3cret"})
+				_ = e.OnClose()
+			},
+			want: []*browserrpc.PromptEvent{selected("me", "s3cret"), closed},
+		},
+		{
+			name: "a selection without answers",
+			do: func(e promptEvents) {
+				e.OnSelect(1, "OK")
+			},
+			want: []*browserrpc.PromptEvent{selected()},
+		},
+		{
+			name: "drops what does not fit",
+			do: func(e promptEvents) {
+				e.OnAnswer(1, "OK", []string{"me", "s3cret"})
+				_ = e.OnClose()
+				e.OnAnswer(1, "OK", []string{"me", "s3cret"})
+			},
+			want:        []*browserrpc.PromptEvent{selected("me", "s3cret"), closed},
+			wantDropped: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hook := logtest.NewGlobal()
+			defer hook.Reset()
+			e := make(promptEvents, 2)
+			tt.do(e)
+			close(e)
+			var got []*browserrpc.PromptEvent
+			for ev := range e {
+				got = append(got, ev)
+			}
+			require.Len(t, got, len(tt.want))
+			for i := range tt.want {
+				assert.True(t, proto.Equal(tt.want[i], got[i]), "event %d: %v", i, got[i])
+			}
+			dropped := 0
+			for _, entry := range hook.AllEntries() {
+				line, err := entry.String()
+				require.NoError(t, err)
+				assert.NotContains(t, line, "s3cret", "a log carries an answer")
+				if strings.Contains(entry.Message, "prompt event dropped") {
+					dropped++
+				}
+			}
+			assert.Equal(t, tt.wantDropped, dropped)
 		})
 	}
 }

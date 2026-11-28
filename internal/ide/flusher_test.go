@@ -18,6 +18,7 @@ package ide
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"sync"
 	"testing"
@@ -25,21 +26,29 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/text/textrpc"
 )
 
 // immediateFlusherTarget completes every async op from its own
 // goroutine so the flusher's awaiter stays in flight long enough for a
 // concurrent wait to block, which is the interleaving the workspace
-// handler hits when the FS watcher starts a reload mid-drain.
-type immediateFlusherTarget struct{}
+// handler hits when the FS watcher starts a reload mid-drain. An op fails
+// to start with startErr, and completes with err.
+type immediateFlusherTarget struct {
+	startErr, err error
+}
 
-func (immediateFlusherTarget) done() (<-chan error, error) {
+func (t immediateFlusherTarget) done() (<-chan error, error) {
+	if t.startErr != nil {
+		return nil, t.startErr
+	}
 	ch := make(chan error, 1)
 	go debug.CapturePanicReport(func() {
 		runtime.Gosched()
-		ch <- nil
+		ch <- t.err
 		close(ch)
 	})
 	return ch, nil
@@ -101,4 +110,56 @@ func TestFlusherWaitConcurrentWithStart(t *testing.T) {
 	f.wait()
 	assert.Zero(t, f.inFlightCount(),
 		"every awaiter must be accounted for once wait returns")
+}
+
+func TestFlusherReportsASaveToItsWaiter(t *testing.T) {
+	saveErr := errors.New("disk full")
+	cases := []struct {
+		name   string
+		target immediateFlusherTarget
+		waiter bool
+		// wantErr is what flush returns.
+		wantErr error
+		// wantResult is what the claimed waiter receives.
+		wantResult error
+		wantNotes  int
+	}{
+		{name: "saved", waiter: true},
+		{name: "failed", target: immediateFlusherTarget{err: saveErr}, waiter: true,
+			wantResult: saveErr},
+		{name: "failed with no waiter", target: immediateFlusherTarget{err: saveErr},
+			wantNotes: 1},
+		{name: "not started", target: immediateFlusherTarget{startErr: textapi.ErrInvalidSave},
+			waiter: true, wantErr: textapi.ErrInvalidSave},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			notes := &fakeNotifications{}
+			s := newQueueSched()
+			f := newFlusher(tc.target, notes, s.sched)
+			uri, err := workspaceapi.ParseURI("memory:///saved.go")
+			require.NoError(t, err)
+			var w *textrpc.Waiter
+			if tc.waiter {
+				w = &textrpc.Waiter{Ch: make(chan error, 1)}
+			}
+
+			err = f.flush(uri, nil, w)
+			require.ErrorIs(t, err, tc.wantErr)
+			if err == nil {
+				s.drain(t)
+			}
+			f.wait()
+
+			assert.Len(t, notes.notes, tc.wantNotes)
+			if w == nil {
+				return
+			}
+			require.Equal(t, err == nil, w.Claimed, "the waiter is claimed when the save starts")
+			if w.Claimed {
+				assert.Equal(t, tc.wantResult, <-w.Ch)
+			}
+			assert.Empty(t, w.Ch)
+		})
+	}
 }

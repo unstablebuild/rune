@@ -49,7 +49,7 @@ type Packages struct {
 
 // NewPackages returns a package manager with nothing installed whose
 // release server offers each package ID at the listed versions.
-func NewPackages(t *testing.T, versions map[string][]string) *Packages {
+func NewPackages(t testing.TB, versions map[string][]string) *Packages {
 	t.Helper()
 	dataDir := t.TempDir()
 	uri, err := workspaceapi.ParseURI("file://" + dataDir)
@@ -81,7 +81,7 @@ func (p *Packages) LibDir(ctx context.Context, pkgID string) (iterator.Iterator[
 // Install installs version of pkgID and makes it the version in use.
 // files maps slash-separated paths relative to the package root to
 // their contents.
-func (p *Packages) Install(t *testing.T, pkgID, version string, files map[string][]byte) {
+func (p *Packages) Install(t testing.TB, pkgID, version string, files map[string][]byte) {
 	t.Helper()
 	p.releases.SetTarball(pkgID, tarball(t, files))
 	require.NoError(t, p.m.InstallPackageVersion(

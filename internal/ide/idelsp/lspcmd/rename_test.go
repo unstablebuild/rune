@@ -19,15 +19,13 @@ package lspcmd
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"sync/atomic"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,271 +33,119 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
-	"github.com/unstablebuild/rune-go-sdk/handler/inputbox"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	runehandlertest "unstable.build/rune/internal/handler/handlertest"
 	idelsp "unstable.build/rune/internal/ide/idelsp"
+	"unstable.build/rune/internal/ide/idelsp/goplstest"
 )
 
-func newTestRenameFloating(
-	t *testing.T, text string, lsp *mockLSP, editor *mockEditor,
-) *renameFloatingHandler {
-	t.Helper()
-	ib := inputbox.New(
-		inputbox.WithPrompt(""),
-		inputbox.WithText(text),
-	)
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	return &renameFloatingHandler{
-		ib:       ib,
-		lsp:      lsp,
-		editor:   editor,
-		uri:      testURI(t, "file:///test.go"),
-		position: semanticapi.Position{Line: 5, Character: 4},
-		ctx:      ctx,
-		cancel:   cancel,
-		log:      slog.Default(),
-	}
-}
-
-func TestRenameFloatingHandlerEsc(t *testing.T) {
+func TestRenameHandler(t *testing.T) {
 	t.Parallel()
-
-	renameCalled := false
-	lsp := &mockLSP{
-		renameFn: func(
-			_ context.Context, _ semanticapi.RenameParams,
-		) (*semanticapi.WorkspaceEdit, error) {
-			renameCalled = true
-			return nil, nil
+	editAt := func(line uint32) []semanticapi.TextEdit {
+		return []semanticapi.TextEdit{{
+			Range: semanticapi.Range{
+				Start: semanticapi.Position{Line: line, Character: 0},
+				End:   semanticapi.Position{Line: line, Character: 3},
+			},
+			NewText: "new",
+		}}
+	}
+	twoFiles := &semanticapi.WorkspaceEdit{Changes: map[string][]semanticapi.TextEdit{
+		"file:///a.go": editAt(1),
+		"file:///b.go": editAt(2),
+	}}
+	for _, tt := range []struct {
+		name      string
+		keys      string
+		edit      *semanticapi.WorkspaceEdit
+		renameErr error
+		// wantName is the name the server is asked to rename to, none
+		// when it is not asked.
+		wantName string
+		// wantEdits are the files edited, by URI.
+		wantEdits []string
+		// wantOpen is whether the prompt stays open.
+		wantOpen bool
+	}{
+		{name: "esc dismisses", keys: "<esc>"},
+		{name: "ctrl-c dismisses", keys: "<c-c>"},
+		{
+			name: "enter keeps the current name", keys: "<enter>", edit: twoFiles,
+			wantName: "old", wantEdits: []string{"file:///a.go", "file:///b.go"},
 		},
-	}
-
-	h := newTestRenameFloating(t, "oldName", lsp, &mockEditor{})
-	exit, handled := h.Handle(term.Event{
-		Type: term.EventKey, Key: term.KeyEsc,
-	})
-
-	assert.True(t, exit)
-	assert.True(t, handled)
-	assert.False(t, renameCalled, "Rename must not be called on Esc")
-}
-
-func TestRenameFloatingHandlerEnter(t *testing.T) {
-	t.Parallel()
-
-	var gotParams semanticapi.RenameParams
-	lsp := &mockLSP{
-		renameFn: func(
-			_ context.Context, params semanticapi.RenameParams,
-		) (*semanticapi.WorkspaceEdit, error) {
-			gotParams = params
-			return &semanticapi.WorkspaceEdit{
-				Changes: map[string][]semanticapi.TextEdit{
-					"file:///test.go": {
-						{
-							Range: semanticapi.Range{
-								Start: semanticapi.Position{Line: 5, Character: 4},
-								End:   semanticapi.Position{Line: 5, Character: 11},
-							},
-							NewText: "newName",
-						},
-					},
+		{
+			name: "edited name", keys: "<backspace><backspace><backspace>new<enter>", edit: twoFiles,
+			wantName: "new", wantEdits: []string{"file:///a.go", "file:///b.go"},
+		},
+		{
+			name: "by option", keys: "<tab><enter>", edit: twoFiles,
+			wantName: "old", wantEdits: []string{"file:///a.go", "file:///b.go"},
+		},
+		{name: "empty name is required", keys: "<backspace><backspace><backspace><enter>", wantOpen: true},
+		{name: "server error", keys: "<enter>", renameErr: errors.New("server error"), wantName: "old"},
+		{name: "no edit", keys: "<enter>", wantName: "old"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var params []semanticapi.RenameParams
+			lsp := &mockLSP{
+				prepareRenameFn: func(
+					_ context.Context, _ semanticapi.PrepareRenameParams,
+				) (*semanticapi.PrepareRenameResult, error) {
+					return &semanticapi.PrepareRenameResult{Placeholder: "old"}, nil
 				},
-			}, nil
-		},
-	}
-
-	var editCalls []string
-	editor := &mockEditor{
-		editorFn: func(uri workspaceapi.URI) (textapi.Handler, error) {
-			return &mockHandler{uri: uri}, nil
-		},
-		cellEditorFn: func(_ textapi.Handler) textapi.CellEditor {
-			return &mockCellEditor{
-				editFn: func(
-					_ context.Context,
-					s, e term.Coordinates,
-					text string,
-				) (term.Coordinates, term.Coordinates, string, error) {
-					editCalls = append(editCalls, text)
-					return s, e, text, nil
+				renameFn: func(
+					_ context.Context, p semanticapi.RenameParams,
+				) (*semanticapi.WorkspaceEdit, error) {
+					params = append(params, p)
+					return tt.edit, tt.renameErr
 				},
 			}
-		},
-	}
+			var edited []string
+			editor := &mockEditor{
+				editorFn: func(uri workspaceapi.URI) (textapi.Handler, error) {
+					return &mockHandler{uri: uri}, nil
+				},
+				cellEditorFn: func(h textapi.Handler) textapi.CellEditor {
+					return &mockCellEditor{
+						editFn: func(
+							_ context.Context, s, e term.Coordinates, text string,
+						) (term.Coordinates, term.Coordinates, string, error) {
+							edited = append(edited, h.(*mockHandler).uri.String())
+							return s, e, text, nil
+						},
+					}
+				},
+			}
+			prompter := &mockPrompter{}
+			uri := testURI(t, "file:///test.go")
+			cmd := textapi.Command{Name: "rename", URI: uri, Resource: &mockHandler{uri: uri}}
+			cmd.Cursor.Content = term.Coordinates{X: 4, Y: 5}
 
-	h := newTestRenameFloating(t, "newName", lsp, editor)
-	exit, handled := h.Handle(term.Event{
-		Type: term.EventKey, Key: term.KeyEnter,
-	})
+			h := RenameHandler(lsp, editor, prompter, nil, nil)
+			require.NoError(t, h.HandleCommand(context.Background(), cmd))
+			require.Len(t, prompter.configs, 1)
+			assert.Equal(t, browserapi.PromptConfig{
+				Message: "Rename `old` to:",
+				Options: []string{"Rename"},
+				Fields: []browserapi.Field{
+					{Answer: "old", Placeholder: "New name", Mandatory: true},
+				},
+			}, prompter.configs[0])
 
-	assert.True(t, exit)
-	assert.True(t, handled)
-	assert.Equal(t, "newName", gotParams.NewName)
-	assert.Equal(t, uint32(5), gotParams.Position.Line)
-	assert.Equal(t, uint32(4), gotParams.Position.Character)
-	require.Len(t, editCalls, 1)
-	assert.Equal(t, "newName", editCalls[0])
-}
-
-func TestRenameFloatingHandlerRenameError(t *testing.T) {
-	t.Parallel()
-
-	lsp := &mockLSP{
-		renameFn: func(
-			_ context.Context, _ semanticapi.RenameParams,
-		) (*semanticapi.WorkspaceEdit, error) {
-			return nil, errors.New("server error")
-		},
-	}
-
-	h := newTestRenameFloating(t, "newName", lsp, &mockEditor{})
-	exit, handled := h.Handle(term.Event{
-		Type: term.EventKey, Key: term.KeyEnter,
-	})
-
-	assert.True(t, exit, "should exit even on error")
-	assert.True(t, handled)
-}
-
-func TestRenameFloatingHandlerNilEdit(t *testing.T) {
-	t.Parallel()
-
-	lsp := &mockLSP{
-		renameFn: func(
-			_ context.Context, _ semanticapi.RenameParams,
-		) (*semanticapi.WorkspaceEdit, error) {
-			return nil, nil
-		},
-	}
-
-	h := newTestRenameFloating(t, "newName", lsp, &mockEditor{})
-	exit, handled := h.Handle(term.Event{
-		Type: term.EventKey, Key: term.KeyEnter,
-	})
-
-	assert.True(t, exit)
-	assert.True(t, handled)
-}
-
-func TestRenameFloatingHandlerTyping(t *testing.T) {
-	t.Parallel()
-
-	h := newTestRenameFloating(t, "", &mockLSP{}, &mockEditor{})
-
-	exit, handled := h.Handle(term.Event{
-		Type: term.EventKey, Ch: 'a',
-	})
-	assert.False(t, exit, "typing should not exit")
-	assert.True(t, handled)
-}
-
-func TestRenameFloatingHandlerDimensions(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		text     string
-		wantMinW int
-	}{
-		{
-			name:     "short text uses minimum width",
-			text:     "x",
-			wantMinW: 30,
-		},
-		{
-			name:     "long text expands width",
-			text:     "aVeryLongSymbolNameThatExceedsMinimum",
-			wantMinW: 30,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			h := newTestRenameFloating(
-				t, test.text, &mockLSP{}, &mockEditor{},
-			)
-			w, ht := h.Dimensions()
-			assert.GreaterOrEqual(t, w, test.wantMinW)
-			assert.Equal(t, 1, ht)
+			exited := prompter.keys(t, tt.keys)
+			assert.Equal(t, tt.wantOpen, !exited, "whether the prompt is open")
+			if tt.wantName == "" {
+				assert.Empty(t, params, "the server was asked to rename")
+			} else {
+				require.Len(t, params, 1)
+				assert.Equal(t, tt.wantName, params[0].NewName)
+				assert.Equal(t, semanticapi.Position{Line: 5, Character: 4}, params[0].Position)
+				assert.Equal(t, TextDocID(uri), params[0].TextDocument)
+			}
+			slices.Sort(edited)
+			assert.Equal(t, tt.wantEdits, edited)
 		})
 	}
-}
-
-func TestRenameFloatingHandlerCursor(t *testing.T) {
-	t.Parallel()
-
-	h := newTestRenameFloating(t, "test", &mockLSP{}, &mockEditor{})
-	h.Resize(30, 1)
-
-	_, _, visible := h.Cursor()
-	assert.True(t, visible, "inputbox cursor should be visible")
-}
-
-func TestRenameFloatingHandlerMultiFileEdit(t *testing.T) {
-	t.Parallel()
-
-	lsp := &mockLSP{
-		renameFn: func(
-			_ context.Context, _ semanticapi.RenameParams,
-		) (*semanticapi.WorkspaceEdit, error) {
-			return &semanticapi.WorkspaceEdit{
-				Changes: map[string][]semanticapi.TextEdit{
-					"file:///a.go": {
-						{
-							Range: semanticapi.Range{
-								Start: semanticapi.Position{Line: 1, Character: 0},
-								End:   semanticapi.Position{Line: 1, Character: 3},
-							},
-							NewText: "bar",
-						},
-					},
-					"file:///b.go": {
-						{
-							Range: semanticapi.Range{
-								Start: semanticapi.Position{Line: 2, Character: 5},
-								End:   semanticapi.Position{Line: 2, Character: 8},
-							},
-							NewText: "bar",
-						},
-					},
-				},
-			}, nil
-		},
-	}
-
-	editedURIs := map[string]bool{}
-	editor := &mockEditor{
-		editorFn: func(uri workspaceapi.URI) (textapi.Handler, error) {
-			return &mockHandler{uri: uri}, nil
-		},
-		cellEditorFn: func(h textapi.Handler) textapi.CellEditor {
-			rh, ok := h.(*mockHandler)
-			if ok {
-				editedURIs[rh.uri.String()] = true
-			}
-			return &mockCellEditor{
-				editFn: func(
-					_ context.Context,
-					s, e term.Coordinates,
-					text string,
-				) (term.Coordinates, term.Coordinates, string, error) {
-					return s, e, text, nil
-				},
-			}
-		},
-	}
-
-	h := newTestRenameFloating(t, "bar", lsp, editor)
-	exit, _ := h.Handle(term.Event{
-		Type: term.EventKey, Key: term.KeyEnter,
-	})
-
-	assert.True(t, exit)
-	assert.True(t, editedURIs["file:///a.go"], "a.go should be edited")
-	assert.True(t, editedURIs["file:///b.go"], "b.go should be edited")
 }
 
 func TestApplyEditsOpensUnopenedFile(t *testing.T) {
@@ -353,6 +199,30 @@ func TestApplyEditsOpensUnopenedFile(t *testing.T) {
 		"opener should be called for files not already open")
 }
 
+func TestRenameHandlerWithoutTheCurrentName(t *testing.T) {
+	t.Parallel()
+
+	lsp := &mockLSP{
+		prepareRenameFn: func(
+			_ context.Context, _ semanticapi.PrepareRenameParams,
+		) (*semanticapi.PrepareRenameResult, error) {
+			return &semanticapi.PrepareRenameResult{IsRangeOnly: true}, nil
+		},
+	}
+	prompter := &mockPrompter{}
+	uri := testURI(t, "file:///test.go")
+	h := RenameHandler(lsp, &mockEditor{}, prompter, nil, nil)
+	require.NoError(t, h.HandleCommand(context.Background(), textapi.Command{
+		Name: "rename", URI: uri, Resource: &mockHandler{uri: uri},
+	}))
+	require.Len(t, prompter.configs, 1)
+	assert.Equal(t, browserapi.PromptConfig{
+		Message: "Rename the symbol to:",
+		Options: []string{"Rename"},
+		Fields:  []browserapi.Field{{Placeholder: "New name", Mandatory: true}},
+	}, prompter.configs[0])
+}
+
 func TestRenameHandlerPrepareRenameNil(t *testing.T) {
 	t.Parallel()
 
@@ -364,7 +234,7 @@ func TestRenameHandlerPrepareRenameNil(t *testing.T) {
 		},
 	}
 
-	h := RenameHandler(lsp, &mockEditor{}, &mockWindowManager{}, nil, nil)
+	h := RenameHandler(lsp, &mockEditor{}, &mockPrompter{}, nil, nil)
 	uri := testURI(t, "file:///test.go")
 	err := h.HandleCommand(context.Background(), textapi.Command{
 		Name:     "rename",
@@ -386,7 +256,7 @@ func TestRenameHandlerPrepareRenameError(t *testing.T) {
 		},
 	}
 
-	h := RenameHandler(lsp, &mockEditor{}, &mockWindowManager{}, nil, nil)
+	h := RenameHandler(lsp, &mockEditor{}, &mockPrompter{}, nil, nil)
 	uri := testURI(t, "file:///test.go")
 	err := h.HandleCommand(context.Background(), textapi.Command{
 		Name:     "rename",
@@ -395,88 +265,6 @@ func TestRenameHandlerPrepareRenameError(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "prepare rename")
-}
-
-func TestRenameHandlerSuccess(t *testing.T) {
-	t.Parallel()
-
-	lsp := &mockLSP{
-		prepareRenameFn: func(
-			_ context.Context, _ semanticapi.PrepareRenameParams,
-		) (*semanticapi.PrepareRenameResult, error) {
-			return &semanticapi.PrepareRenameResult{
-				Range: semanticapi.Range{
-					Start: semanticapi.Position{Line: 5, Character: 4},
-					End:   semanticapi.Position{Line: 5, Character: 11},
-				},
-				Placeholder: "oldName",
-			}, nil
-		},
-	}
-
-	var floatingH browserapi.Floating
-	var floatingCfg browserapi.FloatingConfig
-	wm := &mockWindowManager{
-		floatingFn: func(
-			h browserapi.Floating, cfg browserapi.FloatingConfig,
-		) (browserapi.Window, error) {
-			floatingH = h
-			floatingCfg = cfg
-			return &mockWindow{id: 1}, nil
-		},
-	}
-
-	h := RenameHandler(lsp, &mockEditor{}, wm, nil, nil)
-	uri := testURI(t, "file:///test.go")
-	cmd := textapi.Command{
-		Name:     "rename",
-		URI:      uri,
-		Resource: &mockHandler{uri: uri},
-	}
-	cmd.Cursor.Content = term.Coordinates{X: 4, Y: 5}
-	cmd.Cursor.Window = term.Coordinates{X: 10, Y: 3}
-
-	err := h.HandleCommand(context.Background(), cmd)
-	require.NoError(t, err)
-	require.NotNil(t, floatingH)
-
-	rh, ok := floatingH.(*renameFloatingHandler)
-	require.True(t, ok)
-	assert.Equal(t, "oldName", rh.ib.Text())
-
-	assert.Equal(t, 11, floatingCfg.Offset.X)
-	assert.Equal(t, 5, floatingCfg.Offset.Y)
-}
-
-func TestRenameCloseLeavesItsWindow(t *testing.T) {
-	t.Parallel()
-	lsp := &mockLSP{
-		prepareRenameFn: func(
-			_ context.Context, _ semanticapi.PrepareRenameParams,
-		) (*semanticapi.PrepareRenameResult, error) {
-			return &semanticapi.PrepareRenameResult{Placeholder: "oldName"}, nil
-		},
-	}
-	var floatingH browserapi.Floating
-	wm := &mockWindowManager{
-		floatingFn: func(
-			h browserapi.Floating, _ browserapi.FloatingConfig,
-		) (browserapi.Window, error) {
-			floatingH = h
-			return &mockWindow{id: 1}, nil
-		},
-	}
-	uri := testURI(t, "file:///test.go")
-	h := RenameHandler(lsp, &mockEditor{}, wm, nil, nil)
-	require.NoError(t, h.HandleCommand(context.Background(), textapi.Command{
-		Name: "rename", URI: uri, Resource: &mockHandler{uri: uri},
-	}))
-	require.NotNil(t, floatingH)
-
-	require.NoError(t, floatingH.Close())
-
-	assert.Zero(t, wm.closeWindowCalls,
-		"the window may already show other content when the rename box is released")
 }
 
 func TestApplyWorkspaceEditDocumentChanges(t *testing.T) {
@@ -609,7 +397,7 @@ func TestApplyWorkspaceEdit(t *testing.T) {
 
 func TestE2ERename(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	tmpDir := setupTestWorkspace(t, "../testdata")
 
 	rootURI, err := workspaceapi.ParseURI("file://" + tmpDir)
@@ -707,21 +495,13 @@ func TestE2ERename(t *testing.T) {
 		},
 	}
 
-	var floatingH browserapi.Floating
-	wm := &mockWindowManager{
-		floatingFn: func(
-			h browserapi.Floating, _ browserapi.FloatingConfig,
-		) (browserapi.Window, error) {
-			floatingH = h
-			return &mockWindow{id: 1}, nil
-		},
-	}
+	prompter := &mockPrompter{}
 
 	cfg := DefaultConfig()
 	cfg.RootURI = rootURI
 	cfg.ScheduleNextTick = syncTick
 	router, err := AllHandler(
-		mgr, editor, wm, &mockResourceOpener{},
+		mgr, editor, &mockWindowManager{}, prompter, &mockResourceOpener{},
 		&mockNotifications{}, &mockFileSystem{
 			openFileFn: func(
 				path string, flag int, mode os.FileMode,
@@ -744,26 +524,12 @@ func TestE2ERename(t *testing.T) {
 
 	err = router.HandleCommand(ctx, cmd)
 	require.NoError(t, err)
-	require.NotNil(t, floatingH, "floating must be shown")
+	require.Len(t, prompter.configs, 1, "the rename prompt must be shown")
+	require.Len(t, prompter.configs[0].Fields, 1)
+	assert.Equal(t, "Add", prompter.configs[0].Fields[0].Answer,
+		"the new name should start from the current name")
 
-	rh, ok := floatingH.(*renameFloatingHandler)
-	require.True(t, ok)
-	assert.Equal(t, "Add", rh.ib.Text(),
-		"inputbox should be pre-filled with current name")
-
-	// Clear and type the new name "Sum".
-	rh.ib.Clear()
-	for _, ch := range "Sum" {
-		rh.Handle(term.Event{Type: term.EventKey, Ch: ch})
-	}
-	require.Equal(t, "Sum", rh.ib.Text())
-
-	// Confirm the rename.
-	exit, handled := rh.Handle(term.Event{
-		Type: term.EventKey, Key: term.KeyEnter,
-	})
-	assert.True(t, exit)
-	assert.True(t, handled)
+	assert.True(t, prompter.keys(t, "<backspace><backspace><backspace>Sum<enter>"))
 
 	// Verify edits were applied.
 	mu.Lock()
@@ -828,23 +594,4 @@ func TestE2ERename(t *testing.T) {
 		return true
 	}, 5*time.Second, 100*time.Millisecond,
 		"gopls should no longer know about 'Add' in the workspace after rename")
-}
-
-func TestRenameFloatingHandlerPointerLeaves(t *testing.T) {
-	t.Parallel()
-	var renames atomic.Int32
-	lsp := &mockLSP{
-		renameFn: func(
-			_ context.Context, _ semanticapi.RenameParams,
-		) (*semanticapi.WorkspaceEdit, error) {
-			renames.Add(1)
-			return nil, nil
-		},
-	}
-	for _, size := range []struct{ w, h int }{{60, 15}, {30, 1}, {1, 1}} {
-		h := newTestRenameFloating(t, "someRatherLongIdentifierName", lsp, &mockEditor{})
-		runehandlertest.RunPointerLeaves(t, h, size.w, size.h)
-		assert.Equal(t, "someRatherLongIdentifierName", h.ib.Text())
-		assert.Zero(t, renames.Load(), "the pointer must not confirm the rename")
-	}
 }

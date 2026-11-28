@@ -60,6 +60,8 @@ type rawCells struct {
 	blank       term.Cell
 	zwj         bool
 	zwjPos      term.Coordinates
+	// gen counts the changes to cells for Buffer.Generation.
+	gen uint64
 }
 
 type rawRowMeta struct {
@@ -94,6 +96,7 @@ func (c *rawCells) reset() {
 }
 
 func (c *rawCells) resetWithCap(rowCap, columnCap int) {
+	c.gen++
 	if columnCap <= 0 {
 		columnCap = defColumnCap
 	}
@@ -115,6 +118,7 @@ func (c *rawCells) adoptCells(cells [][]term.Cell) {
 	if len(cells) == 0 {
 		panic("rawCells.adoptCells: cells must contain at least one row")
 	}
+	c.gen++
 	c.cells = cells
 	c.rowMeta = make([]rawRowMeta, len(cells))
 	for i, row := range cells {
@@ -182,6 +186,7 @@ func (c *rawCells) linearize() {
 
 func (c *rawCells) insertNewRow(pos term.Coordinates) {
 	assertValidCoords(pos)
+	c.gen++
 	sourceRow := c.cells[pos.Y]
 	targetY := pos.Y + 1
 
@@ -201,6 +206,7 @@ func (c *rawCells) insertNewRow(pos term.Coordinates) {
 }
 
 func (c *rawCells) splitRowsBatch(splits []RowSplit, padToWidth int, fill term.Cell) (added int) {
+	c.gen++
 	if len(splits) == 0 {
 		return 0
 	}
@@ -438,6 +444,7 @@ func (c *rawCells) fillInColumns(pos term.Coordinates) (n int) {
 }
 
 func (c *rawCells) extendRowToWidth(y, width int) (added int) {
+	c.gen++
 	if y < 0 || y >= len(c.cells) {
 		return 0
 	}
@@ -469,6 +476,7 @@ func (c *rawCells) extendRowToWidth(y, width int) (added int) {
 // at least one row (matches the invariant maintained elsewhere). It is
 // allocation-free.
 func (c *rawCells) trimRowsFromEnd(count int) (removed int) {
+	c.gen++
 	c.normalizeRows()
 	if count <= 0 {
 		return 0
@@ -492,6 +500,7 @@ func (c *rawCells) trimRowsFromEnd(count int) (removed int) {
 }
 
 func (c *rawCells) trimRowsFromStart(count int) (removed int) {
+	c.gen++
 	c.normalizeRows()
 	if count <= 0 {
 		return 0
@@ -519,6 +528,7 @@ func (c *rawCells) trimRowsFromStart(count int) (removed int) {
 }
 
 func (c *rawCells) appendBlankRows(count, width int) {
+	c.gen++
 	c.normalizeRows()
 	if count <= 0 || width < 0 {
 		return
@@ -539,6 +549,7 @@ func (c *rawCells) appendBlankRows(count, width int) {
 }
 
 func (c *rawCells) appendBlankRowsBounded(count, width, limit int) {
+	c.gen++
 	if count <= 0 || width < 0 || limit <= 0 {
 		return
 	}
@@ -586,6 +597,7 @@ func fillCells(row []term.Cell, fill term.Cell) {
 }
 
 func (c *rawCells) resetRowRange(y, start, end int, fill term.Cell) {
+	c.gen++
 	if y < 0 || y >= c.Rows() || start < 0 || start >= end {
 		return
 	}
@@ -612,6 +624,7 @@ func (c *rawCells) resetRowRange(y, start, end int, fill term.Cell) {
 }
 
 func (c *rawCells) rotateRows(start, end, count int) {
+	c.gen++
 	c.ensureRowMeta()
 	start = max(0, start)
 	end = min(end, len(c.cells))
@@ -790,6 +803,7 @@ func copyRowToBuffer(builder *bytes.Buffer, cells []term.Cell) {
 }
 
 func (c *rawCells) conflate(row int) {
+	c.gen++
 	// copy cells from next row into current row
 	rlen := len(c.cells[row+1])
 	if rlen != 0 {
@@ -810,6 +824,7 @@ func (c *rawCells) mergeMarkedRows(
 	isMark func(term.Cell) bool,
 	clearMark func(*term.Cell),
 ) (merged int) {
+	c.gen++
 	n := len(c.cells)
 	if end > n {
 		end = n
@@ -964,6 +979,7 @@ func (c *rawCells) delete(from, to term.Coordinates) (
 func (c *rawCells) Edit(_ context.Context, start, end term.Coordinates, str string) (
 	from, to term.Coordinates, old string,
 ) {
+	c.gen++
 	c.normalizeRows()
 	defer func() { c.rowMeta = nil }()
 	// Merge a grapheme-cluster continuation typed one keystroke after its
@@ -1057,6 +1073,7 @@ func (c *rawCells) ReadFrom(r io.Reader) (int64, error) {
 }
 
 func (c *rawCells) readFromWithView(r io.Reader, view View) (int64, error) {
+	c.gen++
 	rowY := nextWrite(view).Y
 	reader := bufio.NewReader(r)
 	n := int64(0)

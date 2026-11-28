@@ -23,7 +23,6 @@ import (
 	"image/png"
 
 	"github.com/unstablebuild/rune-go-sdk/component"
-	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/component/asciiart"
 )
@@ -46,17 +45,17 @@ func init() {
 // shares the editor's look.
 func makeWallpaper() browser.Wallpaper {
 	return browser.Wallpaper{
-		NewComponent: func() tui.Component {
+		NewComponent: func() browser.ComponentCloser {
 			cfg := asciiart.DefaultConfig()
 			cfg.Color = true
 			cfg.MaintainAspectRatio = true
 			cfg.DensityCharacters = "\u2009▓▓▓▓▓▓▓▓▓"
 			img := asciiart.NewComponent(logo, cfg)
-			return component.NewSpan(img, component.SpanConfig{
+			return browser.NopCloser(component.NewSpan(img, component.SpanConfig{
 				PadHorizontalPerc: 0.4,
 				PadVerticalPerc:   0.2,
 				ContentAlignment:  component.AlignmentCentered,
-			})
+			}))
 		},
 	}
 }

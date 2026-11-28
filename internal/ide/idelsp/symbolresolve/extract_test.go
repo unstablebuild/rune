@@ -151,6 +151,36 @@ func TestExtractFileGo(t *testing.T) {
 	})
 }
 
+func TestExtractDefinitions(t *testing.T) {
+	t.Parallel()
+
+	env := setupResolveEnv(t)
+	uri, err := workspaceapi.ParseURI(env.fileURI("mylib/mylib.go"))
+	require.NoError(t, err)
+	q := env.parser.NewQuerySession()
+	defer func() { require.NoError(t, q.Close()) }()
+
+	defs, err := symbolresolve.ExtractDefinitions(context.Background(), q, uri)
+	require.NoError(t, err)
+	got := map[string]string{}
+	for _, d := range defs {
+		got[d.Name] = d.Capture
+	}
+	for name, capture := range map[string]string{
+		"MyType":           "local.definition.type",
+		"String":           "local.definition.method",
+		"MyFunc":           "local.definition.function",
+		"unexportedHelper": "local.definition.function",
+		"v":                "local.definition.var",
+	} {
+		assert.Equalf(t, capture, got[name], "definition %q", name)
+	}
+
+	ext, _ := extractFileT(t, env, symbolresolve.Go, "mylib/mylib.go")
+	assert.ElementsMatch(t, defs, ext.Definitions,
+		"ExtractFile lists the definitions from the same parse")
+}
+
 func TestExtractFilePython(t *testing.T) {
 	t.Parallel()
 

@@ -94,7 +94,7 @@ func makeThemedWallpaper(
 	themeName func() string, cellPixelSize func() (width, height int),
 ) browser.Wallpaper {
 	return browser.Wallpaper{
-		NewComponent: func() tui.Component {
+		NewComponent: func() browser.ComponentCloser {
 			return &themedWallpaper{themeName: themeName, newLogo: func(theme string) tui.Component {
 				return newLogoSpan(logoForTheme(theme), logoPictureForTheme(theme), cellPixelSize, braille.Blocks)
 			}}
@@ -106,7 +106,7 @@ func makeThemedWallpaper(
 // logo, which is drawn as ascii art.
 func makeUnstableBuildWallpaper(themeName func() string) browser.Wallpaper {
 	return browser.Wallpaper{
-		NewComponent: func() tui.Component {
+		NewComponent: func() browser.ComponentCloser {
 			return &themedWallpaper{themeName: themeName, newLogo: func(theme string) tui.Component {
 				return newUnstableBuildSpan(unstableBuildLogoForTheme(theme))
 			}}
@@ -172,3 +172,6 @@ func (w *themedWallpaper) Draw(writer term.Writer) {
 	}
 	w.child.Draw(writer)
 }
+
+// Close satisfies browser.ComponentCloser.
+func (*themedWallpaper) Close() error { return nil }

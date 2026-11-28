@@ -46,11 +46,7 @@ finder opens in its own window so your editor layout stays put.
 - `searchfile`: fuzzy-find **files** by name.""" + keyhint("searchfile") + """
 - `searchtext`: fuzzy-find **file contents**, line by line.""" + keyhint("searchtext") + """
 - `searchast`: fuzzy-find **syntax nodes** with a tree-sitter query. It
-  takes query arguments, so it has no key of its own; the aliases below
-  bind the common queries:
-    - `searchfunc`: functions and methods.""" + keyhint("searchfunc") + """
-    - `searchvar`: variables.""" + keyhint("searchvar") + """
-    - `searchtype`: types.""" + keyhint("searchtype") + """
+  takes query arguments, so it has no key of its own.
 
 ## Inside a finder
 
@@ -86,31 +82,9 @@ Open the text finder now: """ + keypress("searchtext") + """. Inside any
 finder, `<esc>` cancels without opening a result.
 """
 
-searchfunc_md = """\
-`searchast` searches **syntax nodes** with a tree-sitter query, and its
-aliases bind the common queries so you don't have to remember them.
-
-For example, if you know you're looking for a function or method,
-`searchfunc` finds **function and method definitions** across the workspace. Run
-it, then type to filter, navigate with the arrow keys, and press
-`<enter>` to jump straight to a definition.
-
-Run it now: """ + keypress("searchfunc") + """.
-"""
-
-searchtype_md = """\
-`searchtype` is the same capability but for **types**: structs, classes, enums,
-and the like.""" + keyhint("searchtype") + """
-
-Run it now: """ + keypress("searchtype") + """.
-
-(`searchvar` rounds out the set for **variables**.""" + keyhint("searchvar") + """)
-"""
-
 wrap_up_msg = ("That's Fuzzy Search: `searchfile` for file names, `searchtext` " +
-               "for file contents, `searchast` (and `searchfunc` / `searchvar` / " +
-               "`searchtype`) for syntax nodes. Replay this tour any time with " +
-               "`tutorial start fuzzy_search`. Happy searching!")
+               "for file contents, `searchast` for syntax nodes. Replay this tour " +
+               "any time with `tutorial start fuzzy_search`. Happy searching!")
 
 def teach_file_search():
     wait_command(
@@ -140,28 +114,11 @@ def teach_text_search():
     notify(level = success, message = "Text finder open.")
 
 
-def teach_ast_search():
-    wait_command(
-        title   = "Search functions",
-        command = "searchfunc",
-        text    = searchfunc_md,
-    )
-    notify(level = success, message = "You searched for functions.")
-
-    wait_command(
-        title   = "Search types",
-        command = "searchtype",
-        text    = searchtype_md,
-    )
-    notify(level = success, message = "You searched for types.")
-
-
 def run():
     teach_file_search()
     teach_text_search()
-    teach_ast_search()
     notify(level = success, message = wrap_up_msg)
 
 
-tutorial(id = "fuzzy_search", title = "Fuzzy Search", version = "3",
+tutorial(id = "fuzzy_search", title = "Fuzzy Search", version = "4",
          entry = run)

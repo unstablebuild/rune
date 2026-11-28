@@ -1160,9 +1160,9 @@ func loadLanguage(
 		query = string(data)
 	}
 
-	lib, err := purego.Dlopen(langfile, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	lib, err := dlopenGrammar(langfile)
 	if err != nil {
-		return nil, "", fmt.Errorf("dlopen %q: %w", langfile, err)
+		return nil, "", err
 	}
 
 	parserID := fmt.Sprintf("tree_sitter_%s", langID)

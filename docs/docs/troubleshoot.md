@@ -146,6 +146,13 @@ not reachable. `X11: Failed to load libX11` means the X11 client
 libraries are missing: install your distribution's Mesa and X11 client
 library packages.
 
+Scripting Rune with [`--exec`](./develop/runectl.md#automating-rune-with---exec)
+also runs it in GUI mode, so it needs a display too, unless you add
+`--offscreen` to run it without a window. On Linux, `--offscreen` needs
+Mesa's EGL: if Rune exits with `offscreen mode needs libEGL` or `needs
+Mesa's EGL`, install your distribution's Mesa EGL package, such as
+`libegl-mesa0` on Debian and Ubuntu.
+
 ## The command prompt will not open iwth an external editor
 
 When `editor.mode` is `exo`, Rune embeds a guest editor (such as `vim` or

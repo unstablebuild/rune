@@ -102,6 +102,13 @@ func anthropicParamsFromRequest(model string, request llmapi.Request, config Con
 		params.OutputConfig.Effort = ant.OutputConfigEffort(effort)
 	}
 
+	// MessageNewParams has no typed speed field (only the beta params do).
+	// The fast-mode anthropic-beta header is deliberately never sent, even for
+	// models whose fast mode is still documented as requiring it.
+	if request.Speed == llmapi.SpeedFast {
+		params.SetExtraFields(map[string]any{"speed": string(llmapi.SpeedFast)})
+	}
+
 	// Tool routing. Anthropic exposes a richer ToolChoice union than the
 	// llmapi cross-provider literal; map "auto"/"required"/"none" onto
 	// the matching variants. ParallelToolCalls maps onto

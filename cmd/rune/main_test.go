@@ -27,6 +27,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -43,6 +44,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
 
+	"unstable.build/rune/cmd/rune/crashreport"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/ide"
 	"unstable.build/rune/internal/ide/hostenv"
@@ -85,6 +87,51 @@ func TestCheckModeArgs(t *testing.T) {
 			files:   []string{"a.go"},
 			wantErr: "--headless does not take file arguments",
 		},
+		{name: "exec with gui", args: []string{"--gui", "-e", "windownew", "-e", "-", "--exec", "quit"}},
+		{name: "exec with tui", args: []string{"--tui", "-e", "-"}, wantErr: "--exec needs --gui"},
+		{
+			name:    "exec with headless",
+			args:    []string{"--headless", "-e", "-"},
+			wantErr: "--headless does not take --exec",
+		},
+		{
+			name:    "exec reads stdin once",
+			args:    []string{"--gui", "-e", "-", "-e", "-"},
+			wantErr: "--exec - can be passed only once",
+		},
+		{name: "offscreen", args: []string{"--gui", "--offscreen", "--geometry", "640x480@1", "-e", "-"}},
+		{name: "offscreen off without exec", args: []string{"--gui", "--offscreen=false"}},
+		{name: "geometry for a window", args: []string{"--gui", "--geometry", "640x480"}},
+		{
+			name:    "offscreen without a mode",
+			args:    []string{"--offscreen"},
+			wantErr: "--offscreen and --geometry need --gui",
+		},
+		{
+			name:    "geometry with tui",
+			args:    []string{"--tui", "--geometry", "640x480"},
+			wantErr: "--offscreen and --geometry need --gui",
+		},
+		{
+			name:    "offscreen without exec",
+			args:    []string{"--gui", "--offscreen"},
+			wantErr: "--offscreen needs --exec",
+		},
+		{
+			name:    "malformed geometry",
+			args:    []string{"--gui", "--geometry", "640"},
+			wantErr: "--geometry: expected WxH or WxH@SCALE",
+		},
+		{
+			name:    "geometry scale for a window",
+			args:    []string{"--gui", "--geometry", "640x480@2"},
+			wantErr: "--geometry: a scale needs --offscreen",
+		},
+		{
+			name:    "headless offscreen",
+			args:    []string{"--headless", "--offscreen"},
+			wantErr: "--headless does not take --offscreen",
+		},
 	}
 
 	for _, tt := range tests {
@@ -99,6 +146,52 @@ func TestCheckModeArgs(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("checkModeArgs() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// runMainEnv makes the test binary run main with its arguments instead of
+// the tests.
+const runMainEnv = "RUNE_TEST_RUN_MAIN"
+
+func TestMainReportsArgumentErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantErr    string
+		wantLogged bool
+	}{
+		{name: "without a mode", args: []string{"--offscreen"}, wantErr: "--offscreen needs --exec",
+			wantLogged: true},
+		{name: "malformed geometry without a mode", args: []string{"--geometry", "640"},
+			wantErr: "--geometry: expected WxH or WxH@SCALE", wantLogged: true},
+		{name: "exec without a mode", args: []string{"-e", "-", "--geometry", "640x480@2"},
+			wantErr: "--geometry: a scale needs --offscreen"},
+		{name: "gui", args: []string{"--gui", "--offscreen"}, wantErr: "--offscreen needs --exec"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			cmd := exec.Command(os.Args[0], append([]string{"-d", dataDir}, tt.args...)...)
+			cmd.Env = append(os.Environ(), runMainEnv+"=1")
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+
+			err := cmd.Run()
+
+			var exitErr *exec.ExitError
+			require.ErrorAs(t, err, &exitErr)
+			assert.Equal(t, 1, exitErr.ExitCode())
+			assert.Contains(t, stderr.String(), tt.wantErr)
+			launchLog, err := os.ReadFile(crashreport.DefaultLaunchLogPath(dataDir))
+			if !errors.Is(err, os.ErrNotExist) {
+				require.NoError(t, err)
+			}
+			if tt.wantLogged {
+				assert.Contains(t, string(launchLog), tt.wantErr)
+			} else {
+				assert.NotContains(t, string(launchLog), tt.wantErr)
 			}
 		})
 	}
@@ -160,10 +253,57 @@ func parseModeFlags(
 	fs.StringP("datadir", "d", "", "")
 	fs.StringP("workspace", "w", "", "")
 	fs.BoolP("fps", "f", false, "")
+	fs.StringArrayP("exec", "e", nil, "")
+	fs.Bool("offscreen", false, "")
+	fs.String("geometry", "", "")
 	if err := fs.Parse(args); err != nil {
 		t.Fatalf("parse %v: %v", args, err)
 	}
 	return fs, *guiFlag, *tuiFlag, *headlessFlag
+}
+
+func TestWindowGeometry(t *testing.T) {
+	tests := []struct {
+		name      string
+		spec      string
+		offscreen bool
+		want      geometry
+		wantErr   string
+	}{
+		{name: "unset", want: geometry{}},
+		{name: "window size", spec: "1024x768", want: geometry{1024, 768, 0}},
+		{
+			name: "offscreen default", offscreen: true,
+			want: geometry{defaultOffscreenWidth, defaultOffscreenHeight, defaultOffscreenScale},
+		},
+		{
+			name: "offscreen default scale", spec: "640x480", offscreen: true,
+			want: geometry{640, 480, defaultOffscreenScale},
+		},
+		{name: "offscreen scale", spec: "640x480@1.5", offscreen: true, want: geometry{640, 480, 1.5}},
+		{name: "largest", spec: "4096x10@2", offscreen: true, want: geometry{4096, 10, 2}},
+		{name: "no height", spec: "640", wantErr: "expected WxH or WxH@SCALE"},
+		{name: "zero width", spec: "0x480", wantErr: "width must be a positive integer"},
+		{name: "negative height", spec: "640x-1", wantErr: "height must be a positive integer"},
+		{name: "extra dimension", spec: "640x480x2", wantErr: "height must be a positive integer"},
+		{name: "zero scale", spec: "640x480@0", offscreen: true, wantErr: "scale must be a positive number"},
+		{name: "nan scale", spec: "640x480@NaN", offscreen: true, wantErr: "scale must be a positive number"},
+		{name: "scale for a window", spec: "640x480@1", wantErr: "a scale needs --offscreen"},
+		{name: "too wide", spec: "8193x10", wantErr: "exceeds 8192 device pixels per side"},
+		{name: "too tall when scaled", spec: "10x4097@2", offscreen: true, wantErr: "exceeds"},
+		{name: "too wide at default scale", spec: "4097x10", offscreen: true, wantErr: "exceeds"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := windowGeometry(tt.spec, tt.offscreen)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestHeadlessFlagsAreRuneFlags(t *testing.T) {
@@ -183,6 +323,15 @@ func TestVersionStringUsesBuildStampLayout(t *testing.T) {
 	if !strings.Contains(got, stamp) {
 		t.Errorf("versionString() = %q, want it to contain the stamp %q", got, stamp)
 	}
+}
+
+func TestReleaseHTTPClientCapsConnectionsPerHost(t *testing.T) {
+	transport, ok := newReleaseHTTPClient().Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.Equal(t, releaseMaxConnsPerHost, transport.MaxConnsPerHost)
+	assert.NotNil(t, transport.Proxy, "it keeps the default transport's settings")
+	assert.Zero(t, http.DefaultTransport.(*http.Transport).MaxConnsPerHost,
+		"the default transport is left as is")
 }
 
 func TestAppLaunchArgs(t *testing.T) {

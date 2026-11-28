@@ -118,7 +118,7 @@ func (noMemory) Recall(_ context.Context, _ []string, _ string, _ string) ([]Mem
 
 // Agent orchestrates the agentic loop: LLM → tool call → result → repeat.
 type Agent struct {
-	mu              sync.Mutex // protects svc, config.Model, effort, and maxOutputTokens
+	mu              sync.Mutex // protects svc, config.Model, effort, speed, and maxOutputTokens
 	svc             llmapi.Service
 	registry        *Registry
 	skillRegistry   *skills.SkillRegistry
@@ -126,6 +126,7 @@ type Agent struct {
 	resources       sync.Map
 	config          Config
 	effort          llmapi.ReasoningEffort // session-level effort override
+	speed           llmapi.Speed           // session-level inference speed
 	maxOutputTokens int                    // session-level max-output-token override
 	memory          MemoryRecaller
 	// autoDiagDisabled records language ids (keyed by string) for which
@@ -199,6 +200,22 @@ func (a *Agent) Effort() llmapi.ReasoningEffort {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.effort
+}
+
+// SetSpeed sets the session-level inference speed. It survives model
+// switches; a model that lacks the speed runs at standard speed. An empty
+// string means standard.
+func (a *Agent) SetSpeed(speed llmapi.Speed) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.speed = speed
+}
+
+// Speed returns the current session-level inference speed.
+func (a *Agent) Speed() llmapi.Speed {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.speed
 }
 
 // SetMaxOutputTokens sets the session-level max-output-token override.
@@ -856,6 +873,7 @@ func (a *Agent) run(
 			PromptCacheKey:  dialogueID,
 			Tools:           tools,
 			ReasoningEffort: a.Effort(),
+			Speed:           a.Speed(),
 			MaxOutputTokens: a.MaxOutputTokens(),
 			TokenCount:      lastAPITokensSent,
 		}

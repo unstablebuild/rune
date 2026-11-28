@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 )
 
 func TestFlagshipModelInCatalog(t *testing.T) {
@@ -156,6 +157,28 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
 			assert.Equal(t, tt.want, SupportsAdaptiveThinking(tt.model))
+		})
+	}
+}
+
+func TestSupportsSpeed(t *testing.T) {
+	tests := []struct {
+		model string
+		speed llmapi.Speed
+		want  bool
+	}{
+		{ClaudeFable5Dot2, llmapi.SpeedFast, true},
+		{ClaudeOpus5Dot5, llmapi.SpeedFast, true},
+		{ClaudeOpus5, llmapi.SpeedFast, true},
+		{ClaudeSonnet5Dot5, llmapi.SpeedFast, false},
+		{ClaudeOpus4Dot8, llmapi.SpeedFast, false},
+		{ClaudeOpus5Dot5, llmapi.SpeedUltrafast, false},
+		{ClaudeSonnet5Dot5, llmapi.SpeedStandard, true},
+		{ClaudeSonnet5Dot5, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model+"/"+string(tt.speed), func(t *testing.T) {
+			assert.Equal(t, tt.want, SupportsSpeed(tt.model, tt.speed))
 		})
 	}
 }

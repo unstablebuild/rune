@@ -21,11 +21,25 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"unstable.build/rune/internal/llm/llamaserver"
 )
 
 func TestCodexClientConfigDisablesMaxOutputTokens(t *testing.T) {
 	assert.True(t, (Config{}).CodexClientConfig().DisableMaxOutputTokens)
+}
+
+func TestClientConfigSupportsSpeed(t *testing.T) {
+	codexCfg := (Config{}).CodexClientConfig()
+	if assert.NotNil(t, codexCfg.SupportsSpeed) {
+		assert.True(t, codexCfg.SupportsSpeed("gpt-6.1-sol", llmapi.SpeedUltrafast))
+		assert.False(t, codexCfg.SupportsSpeed("gpt-6.1-terra", llmapi.SpeedUltrafast))
+	}
+	openaiCfg := (Config{}).OpenAIClientConfig()
+	if assert.NotNil(t, openaiCfg.SupportsSpeed) {
+		assert.True(t, openaiCfg.SupportsSpeed("gpt-6.1-terra", llmapi.SpeedFast))
+		assert.False(t, openaiCfg.SupportsSpeed("gpt-5.4-nano", llmapi.SpeedFast))
+	}
 }
 
 func TestLocalConfigEmbeddingService(t *testing.T) {

@@ -1433,8 +1433,8 @@ func (t *Component) cursorAtScroll() term.Coordinates {
 	return t.parserHandler.sync.buf.CursorAtScroll()
 }
 
-func (t *Component) scheduleBellCallback(callback func()) (ok bool) {
-	return t.waitParserHandler.scheduleBellCallback(callback)
+func (t *Component) scheduleBellCallback(callback, dropped func()) (ok bool) {
+	return t.waitParserHandler.scheduleBellCallbackOrDrop(callback, dropped)
 }
 
 func (t *Component) systemCanDispatchBell(callback func(error)) {

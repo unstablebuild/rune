@@ -14,7 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-package codesearch
+// Package searchfilter decides which workspace files a search covers,
+// so every workspace search covers the same files. Paths are
+// workspace-relative slash paths, "." being the whole workspace.
+package searchfilter
 
 import (
 	"context"
@@ -31,15 +34,17 @@ import (
 	"unstable.build/rune/internal/workspace/walkdir"
 )
 
-// filter is what a search leaves out: hidden folders, excluded folders
+// Filter is what a search leaves out: hidden folders, excluded folders
 // and what git ignores.
-type filter struct {
+type Filter struct {
 	ignore   vctrl.Matcher
 	excluded []string
 }
 
-func newFilter(fsys workspaceapi.FileSystem, excluded []string) *filter {
-	f := &filter{}
+// New returns the filter of fsys, leaving out the excluded folders,
+// workspace-relative, and what the workspace .gitignore files ignore.
+func New(fsys workspaceapi.FileSystem, excluded []string) *Filter {
+	f := &Filter{}
 	if m, err := vctrl.LoadGitignore(fsys); err == nil {
 		f.ignore = m
 	}
@@ -52,7 +57,7 @@ func newFilter(fsys workspaceapi.FileSystem, excluded []string) *filter {
 }
 
 // MatchRelPath implements walkdir.Filter.
-func (f *filter) MatchRelPath(rel string, isDir bool) bool {
+func (f *Filter) MatchRelPath(rel string, isDir bool) bool {
 	rel = filepath.ToSlash(rel)
 	if isDir {
 		if strings.HasPrefix(path.Base(rel), ".") || slices.ContainsFunc(f.excluded, func(dir string) bool {
@@ -64,8 +69,8 @@ func (f *filter) MatchRelPath(rel string, isDir bool) bool {
 	return f.ignore != nil && f.ignore.MatchRelPath(rel, isDir)
 }
 
-// skips reports whether a walk of the workspace leaves out the file rel.
-func (f *filter) skips(rel string) bool {
+// Skips reports whether a walk of the workspace leaves out the file rel.
+func (f *Filter) Skips(rel string) bool {
 	parts := strings.Split(rel, "/")
 	for i := 1; i < len(parts); i++ {
 		if f.MatchRelPath(strings.Join(parts[:i], "/"), true) {
@@ -75,35 +80,35 @@ func (f *filter) skips(rel string) bool {
 	return f.MatchRelPath(rel, false)
 }
 
-// leavesOut reports whether a walk of the workspace leaves out root, a
+// LeavesOut reports whether a walk of the workspace leaves out root, a
 // folder or file, or what is in it.
-func (f *filter) leavesOut(root string) bool {
-	return root != "." && (f.skips(root) || f.MatchRelPath(root, true))
+func (f *Filter) LeavesOut(root string) bool {
+	return root != "." && (f.Skips(root) || f.MatchRelPath(root, true))
 }
 
-// below returns the filter of a walk of root, a folder f leaves out. As
+// Below returns the filter of a walk of root, a folder f leaves out. As
 // ripgrep does, it filters only what is below root: hidden folders, the
 // excluded folders in root and, unless git ignores root, what git
 // ignores. Git cannot tell whether it ignores a path for itself or for
 // root, so below a root it ignores nothing is.
-func (f *filter) below(root string) walkdir.Filter {
-	b := &filter{}
+func (f *Filter) Below(root string) walkdir.Filter {
+	b := &Filter{}
 	if f.ignore != nil && !f.ignore.MatchRelPath(root, true) {
 		b.ignore = f.ignore
 	}
 	for _, dir := range f.excluded {
-		if dir != root && under(dir, []string{root}) {
+		if dir != root && Under(dir, []string{root}) {
 			b.excluded = append(b.excluded, dir)
 		}
 	}
 	return b
 }
 
-// walk lists the files under roots, workspace-relative folders or files
+// Walk lists the files under roots, workspace-relative folders or files
 // ("." for the whole workspace), sorted in index order. A root that does
 // not exist has no files. A root the filter leaves out is walked all
 // the same: only what is below it is filtered, as ripgrep does.
-func (f *filter) walk(ctx context.Context, fsys workspaceapi.FileSystem, roots []string) ([]string, error) {
+func (f *Filter) Walk(ctx context.Context, fsys workspaceapi.FileSystem, roots []string) ([]string, error) {
 	var out []string
 	var walkErr error
 	for _, root := range roots {
@@ -122,8 +127,8 @@ func (f *filter) walk(ctx context.Context, fsys workspaceapi.FileSystem, roots [
 				}
 				continue
 			}
-			if f.leavesOut(root) {
-				flt = f.below(root)
+			if f.LeavesOut(root) {
+				flt = f.Below(root)
 			}
 		}
 		wctx := walkdir.WithContextFilter(ctx, flt)
@@ -144,17 +149,19 @@ func (f *filter) walk(ctx context.Context, fsys workspaceapi.FileSystem, roots [
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	slices.SortFunc(out, comparePaths)
+	slices.SortFunc(out, ComparePaths)
 	return slices.Compact(out), walkErr
 }
 
-func comparePaths(a, b string) int {
+// ComparePaths orders paths as the trigram index does: by path
+// components, so a folder sorts right before what is in it.
+func ComparePaths(a, b string) int {
 	return index.MakePath(a).Compare(index.MakePath(b))
 }
 
-// cleanRoots returns roots as workspace-relative slash paths, "." for
+// CleanRoots returns roots as workspace-relative slash paths, "." for
 // the whole workspace, which is what no roots search.
-func cleanRoots(roots []string) []string {
+func CleanRoots(roots []string) []string {
 	var out []string
 	for _, r := range roots {
 		r = strings.Trim(path.Clean(filepath.ToSlash(r)), "/")
@@ -169,8 +176,8 @@ func cleanRoots(roots []string) []string {
 	return out
 }
 
-// outermost returns roots without those in another of them.
-func outermost(roots []string) []string {
+// Outermost returns roots without those in another of them.
+func Outermost(roots []string) []string {
 	if slices.Contains(roots, ".") {
 		return []string{"."}
 	}
@@ -178,15 +185,15 @@ func outermost(roots []string) []string {
 	sorted := slices.Sorted(slices.Values(roots))
 	var kept []string
 	for _, r := range sorted {
-		if !under(r, kept) {
+		if !Under(r, kept) {
 			kept = append(kept, r)
 		}
 	}
 	return kept
 }
 
-// under reports whether rel is one of roots or in one of them.
-func under(rel string, roots []string) bool {
+// Under reports whether rel is one of roots or in one of them.
+func Under(rel string, roots []string) bool {
 	for _, r := range roots {
 		if r == "." || rel == r || strings.HasPrefix(rel, r+"/") {
 			return true

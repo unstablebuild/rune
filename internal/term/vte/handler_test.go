@@ -17,12 +17,14 @@
 package vte
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -38,6 +40,7 @@ import (
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/term/programstatus"
 	"unstable.build/rune/internal/term/vsh"
+	"unstable.build/rune/internal/term/vsh/coreutils"
 	"unstable.build/rune/internal/term/vsh/vshtest"
 	"unstable.build/rune/internal/term/vte/vtetest"
 	"unstable.build/rune/internal/workspace/workspacetest"
@@ -482,6 +485,46 @@ func testSequenceVsh(
 ) (*Handler, chan struct{}) {
 	f := vshtest.New(t, opts)
 	return newTestSequence(t, cfg, timeout, f.Exec, f.Exec, commandAndArgs, cases)
+}
+
+// vshCommands are the Rune shell's programs and two that suites run on
+// it and on real shells alike: seq, and fullscreen, which stands in for
+// a full-screen program such as vi. fullscreen draws "first row" and
+// "second row" on the alternate screen, with its cursor on the third
+// cell of the second, until it reads a line, which it prints on leaving
+// the alternate screen.
+func vshCommands() []vsh.Command {
+	return append(coreutils.Commands(),
+		vsh.Command{Name: "seq", Synopsis: "seq LAST", Run: seq},
+		vsh.Command{Name: "fullscreen", Synopsis: "fullscreen", Run: fullScreen})
+}
+
+func seq(_ context.Context, inv *vsh.Invocation) error {
+	if len(inv.Args) != 1 {
+		return errors.New("usage: seq LAST")
+	}
+	last, err := strconv.Atoi(inv.Args[0])
+	if err != nil {
+		return err
+	}
+	for i := 1; i <= last; i++ {
+		if _, err := fmt.Fprintln(inv.Stdout, i); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func fullScreen(_ context.Context, inv *vsh.Invocation) error {
+	if _, err := io.WriteString(inv.Stdout, "\x1b[?1049h\x1b[Hfirst row\r\nsecond row\x1b[2;3H"); err != nil {
+		return err
+	}
+	line, err := bufio.NewReader(inv.Stdin).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	_, err = fmt.Fprintf(inv.Stdout, "\x1b[?1049lread %q\n", strings.TrimSuffix(line, "\n"))
+	return err
 }
 
 // newTestSequence builds a 20x10 Handler running commandAndArgs on

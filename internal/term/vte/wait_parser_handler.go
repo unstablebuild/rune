@@ -30,7 +30,7 @@ import (
 var _ vteparser.Handler = (*waitParserHandler)(nil)
 
 type waitParserHandler struct {
-	ch      chan func()
+	ch      chan bellCallback
 	trigger func()
 	vteparser.Handler
 	// pending counts the callbacks scheduled and not yet done, queued or
@@ -42,13 +42,19 @@ type waitParserHandler struct {
 	pending atomic.Int32
 }
 
+type bellCallback struct {
+	run func()
+	// dropped, if set, is called instead of run when drop discards it.
+	dropped func()
+}
+
 func newWaitParserHandler(ctx context.Context, h vteparser.Handler) *waitParserHandler {
 	ret := &waitParserHandler{
 		// NOTE: The channel size MUST BE smaller than the default
 		// event-loop channel size so we stop processing callbacks
 		// before event loop callbacks get backed up and bell
 		// cannot be triggered anymore.
-		ch:      make(chan func(), 50),
+		ch:      make(chan bellCallback, 50),
 		Handler: h,
 	}
 	go debug.CapturePanicReport(func() {
@@ -85,12 +91,16 @@ func (w *waitParserHandler) monitorStarvation(ctx context.Context) {
 
 // drop discards every callback waiting for a bell, so that the next
 // scheduleBellCallback rings the shell again, and a bell that arrives
-// late runs none of them.
+// late runs none of them. It tells those scheduled with
+// scheduleBellCallbackOrDrop.
 func (w *waitParserHandler) drop() {
 	for {
 		select {
-		case <-w.ch:
+		case cb := <-w.ch:
 			w.pending.Add(-1)
+			if cb.dropped != nil {
+				cb.dropped()
+			}
 			continue
 		default:
 		}
@@ -103,12 +113,18 @@ func (w *waitParserHandler) pendingCallbacks() int {
 }
 
 func (w *waitParserHandler) scheduleBellCallback(callback func()) (ok bool) {
+	return w.scheduleBellCallbackOrDrop(callback, nil)
+}
+
+// scheduleBellCallbackOrDrop is scheduleBellCallback, but drop calls
+// dropped instead of callback.
+func (w *waitParserHandler) scheduleBellCallbackOrDrop(callback, dropped func()) (ok bool) {
 	if w.trigger == nil {
 		panic("must install first a trigger via useTrigger")
 	}
 
 	select {
-	case w.ch <- callback:
+	case w.ch <- bellCallback{run: callback, dropped: dropped}:
 	default:
 		// don't block
 		return false
@@ -123,7 +139,7 @@ func (w *waitParserHandler) scheduleBellCallback(callback func()) (ok bool) {
 func (w *waitParserHandler) Bell() {
 	select {
 	case cb := <-w.ch:
-		cb()
+		cb.run()
 		// After cb, so the bell is ordered after what it wrote to the pty.
 		if w.pending.Add(-1) > 0 {
 			w.trigger()

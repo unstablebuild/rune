@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 )
 
 func TestFlagshipModelInCatalog(t *testing.T) {
@@ -177,6 +178,36 @@ func TestSupportsReasoning(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
 			assert.Equal(t, tt.want, SupportsReasoning(tt.model))
+		})
+	}
+}
+
+func TestSupportsSpeed(t *testing.T) {
+	tests := []struct {
+		model string
+		speed llmapi.Speed
+		want  bool
+	}{
+		{GPT6Dot2Astra, llmapi.SpeedFast, true},
+		{GPT6Dot1Terra, llmapi.SpeedFast, true},
+		{GPT5Dot6, llmapi.SpeedFast, true},
+		{GPT5Dot4Mini, llmapi.SpeedFast, true},
+		{GPT4o, llmapi.SpeedFast, true},
+		{GPT5Dot4Nano, llmapi.SpeedFast, false},
+		{GPT5Dot5Pro, llmapi.SpeedFast, false},
+		{GPT5Dot3Codex, llmapi.SpeedFast, false},
+		{GPT6Dot2Astra, llmapi.SpeedUltrafast, true},
+		{GPT6Dot2Sol, llmapi.SpeedUltrafast, true},
+		{GPT6Astra, llmapi.SpeedUltrafast, true},
+		{GPT6Dot1Sol, llmapi.SpeedUltrafast, true},
+		{GPT6Dot1Terra, llmapi.SpeedUltrafast, false},
+		{GPT5Dot4Nano, llmapi.SpeedStandard, true},
+		{GPT5Dot4Nano, "", true},
+		{"unknown", llmapi.Speed("warp"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model+"/"+string(tt.speed), func(t *testing.T) {
+			assert.Equal(t, tt.want, SupportsSpeed(tt.model, tt.speed))
 		})
 	}
 }

@@ -2065,13 +2065,15 @@ func TestCommandProgramStatusPreviewsTab(t *testing.T) {
 }
 
 // statusInboxSidebarWidth returns the columns the sidebar of the
-// status inbox drawn takes, its divider included.
+// status inbox drawn takes: those before the first character on its
+// top row, which the sidebar pads with blanks and the preview starts
+// with one.
 func statusInboxSidebarWidth(t *testing.T, drawn string) int {
 	t.Helper()
 	first, _, _ := strings.Cut(drawn, "\n")
-	i := slices.Index([]rune(first), idestatus.DefaultInboxStyle().Divider.Vertical)
-	require.GreaterOrEqual(t, i, 0, "the sidebar ends with a divider")
-	return i + 1
+	i := slices.IndexFunc([]rune(first), func(r rune) bool { return r != ' ' })
+	require.Positive(t, i, "the preview starts past the sidebar")
+	return i
 }
 
 func TestCommandProgramStatusPreviewsWindowedTerminal(t *testing.T) {
@@ -2247,7 +2249,7 @@ func TestCommandProgramStatusDetachedTerminals(t *testing.T) {
 		require.True(t, ok)
 		av = h.(*asyncVTE)
 		exe.fg.Store(job)
-		require.NoError(t, e.closeWindowContent(e.invokeWindow()))
+		require.NoError(t, e.terminaldetach(ctx))
 	})
 	m.quiesce()
 	uri := av.real.URI()
@@ -2267,7 +2269,7 @@ func TestCommandProgramStatusDetachedTerminals(t *testing.T) {
 	}, 5*time.Second, 5*time.Millisecond)
 	m.locked(func() {
 		sum, ok := m.status.Status(w.uri, uri)
-		require.True(t, ok, "closing the tab of a job lists the terminal")
+		require.True(t, ok, "detaching a job lists the terminal")
 		assert.Equal(t, programstatus.Working, sum.State)
 		preview, ok := statusWorkspaces{m.workspaceManagerHandler}.Preview(w.uri, uri)
 		require.True(t, ok, "a detached terminal is previewed")
@@ -2301,6 +2303,116 @@ func TestCommandProgramStatusDetachedTerminals(t *testing.T) {
 	})
 	m.quiesce()
 	m.locked(func() { assert.Equal(t, -1, attachments(), "closing it from the inbox ends it") })
+}
+
+func TestCommandProgramStatusClosesTerminalTab(t *testing.T) {
+	const job = 99
+	ctx := context.Background()
+	type fixture struct {
+		e   *ex
+		exe *fgPtyExecutor
+		av  *asyncVTE
+		p   *workspacetest.Process
+	}
+	cases := []struct {
+		desc string
+		// window shows the terminal in a window rather than in a tab.
+		window bool
+		setup  func(t *testing.T, f fixture)
+		// answer is the key answering the question asked before closing,
+		// if any.
+		answer rune
+		// want is how many views the terminal is left with, -1 once it
+		// ends.
+		want int
+	}{{
+		desc:   "a job asks before it ends",
+		setup:  func(_ *testing.T, f fixture) { f.exe.fg.Store(job) },
+		answer: 'y',
+		want:   -1,
+	}, {
+		desc:  "an idle shell ends",
+		setup: func(_ *testing.T, f fixture) { f.exe.fg.Store(int64(f.p.Pid)) },
+		want:  -1,
+	}, {
+		desc: "a terminal another tab shows only loses the tab",
+		setup: func(t *testing.T, f fixture) {
+			f.exe.fg.Store(job)
+			info, ok := f.e.terminals.info(f.av.ID())
+			require.True(t, ok)
+			require.NoError(t, f.e.attachTerminalTab(info, f.e.invokeWindow()))
+		},
+		want: 1,
+	}, {
+		desc: "a job reading working is not asked about again",
+		setup: func(t *testing.T, f fixture) {
+			f.exe.fg.Store(job)
+			require.NoError(t, f.e.tm.SetTabStatus(f.av.URI(), programstatus.Report{
+				State: programstatus.Working, Progress: -1, App: "make",
+			}))
+		},
+		want: -1,
+	}, {
+		desc:   "a job in a window asks before it ends",
+		window: true,
+		setup:  func(_ *testing.T, f fixture) { f.exe.fg.Store(job) },
+		answer: 'y',
+		want:   -1,
+	}}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			m, slot := newActivityTestManager(t, defaultConfigWithWrap(false))
+			t.Cleanup(func() { _ = m.Close() })
+			ws := m.workspaces[slot].uri
+			var f fixture
+			m.locked(func() {
+				f.e = m.workspaces[slot].ex
+				f.e.Resize(60, 30)
+				f.exe = useTestVTEs(t, f.e)
+				if tc.window {
+					require.NoError(t, f.e.terminalneworsplit(ctx))
+				} else {
+					require.NoError(t, f.e.terminalnewtab(ctx))
+				}
+			})
+			m.quiesce()
+			f.p = <-f.exe.Started()
+			m.locked(func() {
+				h, ok := f.e.terminalInFocus()
+				require.True(t, ok)
+				f.av = h.(*asyncVTE)
+				tc.setup(t, f)
+			})
+			m.quiesce()
+			attachments := func() int {
+				info, ok := f.e.terminals.info(f.av.ID())
+				if !ok {
+					return -1
+				}
+				return info.Attachments
+			}
+			floating := func() int { return m.focusEx().comp.Browser().FloatingWindows() }
+			m.locked(func() { require.NoError(t, m.closeStatusSource(ws, f.av.URI())) })
+			m.quiesce()
+			if tc.answer != 0 {
+				m.locked(func() {
+					require.Equal(t, 1, floating(), "it asks")
+					assert.NotEqual(t, -1, attachments(), "nothing ends before the answer")
+					m.Handle(term.Event{Type: term.EventKey, Ch: tc.answer})
+				})
+				m.quiesce()
+			}
+			m.locked(func() {
+				assert.Zero(t, floating(), "nothing else is asked")
+				_, shown := f.e.comp.Browser().Tab(f.av.URI())
+				_, inWindow := statusWindowOf(f.e, f.av.URI())
+				assert.False(t, shown || inWindow, "no tab or window shows it")
+				assert.Equal(t, tc.want, attachments())
+				_, listed := f.e.terminals.detached(f.av.real.URI())
+				assert.False(t, listed, "the terminal is not listed as detached")
+			})
+		})
+	}
 }
 
 func TestCommandProgramStatusPreviewsTerminalTab(t *testing.T) {
@@ -5782,7 +5894,7 @@ func TestWorkspaceManagerRestoresOpenTerminalSessions(t *testing.T) {
 			{"windownew", "left"},
 			{"terminalnewtab", "this run"},
 		} {
-			require.NoError(t, m.commandWorkspaceReady(cmd...))
+			require.NoError(t, m.commandWorkspaceReady(context.Background(), cmd...))
 		}
 		m.mu.Unlock()
 		m.waitForWorkspace(t, uri)
@@ -8426,7 +8538,7 @@ func defaultCfg() ideConfig {
 		},
 		// keep goldens deterministic: indexing runs in the background and
 		// posts its progress whenever it gets to it.
-		"search": map[string]any{"regex_enabled": false, "semantic_enabled": false},
+		"search": map[string]any{"regex_enabled": false, "semantic_enabled": false, "symbols_enabled": false},
 	},
 		configPath: "not-empty",
 		sounds:     sounds.Silent,
@@ -10119,7 +10231,7 @@ func TestWorkspaceReadyCommand(t *testing.T) {
 		defer m.mu.Unlock()
 		require.Nil(t, m.lastReservedPending)
 		require.NoError(t,
-			m.commandWorkspaceReady(cmdRenameWorkspace, "inline"))
+			m.commandWorkspaceReady(context.Background(), cmdRenameWorkspace, "inline"))
 		require.Equal(t, "inline", m.workspaces[m.focus].tabname,
 			"workspaceready with no pending must dispatch inline "+
 				"against the focused workspace")
@@ -10139,7 +10251,7 @@ func TestWorkspaceReadyCommand(t *testing.T) {
 
 		m.mu.Lock()
 		require.NoError(t,
-			m.commandExtensionReady("ext-id", extCmd))
+			m.commandExtensionReady(context.Background(), "ext-id", extCmd))
 		m.mu.Unlock()
 
 		// The extension is ready, but extcmd has not been registered
@@ -10186,7 +10298,7 @@ func TestWorkspaceReadyCommand(t *testing.T) {
 		require.Equal(t, uri2.String(),
 			m.lastReservedPending.uri.String())
 		require.NoError(t,
-			m.commandWorkspaceReady(cmdRenameWorkspace, "deferred"))
+			m.commandWorkspaceReady(context.Background(), cmdRenameWorkspace, "deferred"))
 		// The previously focused workspace must NOT be renamed
 		// while the new build is still pending — that is the
 		// whole point of `workspaceready`.
@@ -10231,7 +10343,7 @@ func TestWorkspaceReadyCommand(t *testing.T) {
 		require.Same(t, pending, m.lastReservedPending)
 
 		require.NoError(t,
-			m.commandWorkspaceReady(cmdRenameWorkspace, "dropped"))
+			m.commandWorkspaceReady(context.Background(), cmdRenameWorkspace, "dropped"))
 		require.Len(t, pending.onReady, 1)
 
 		// Focus the pending slot so closeWorkspace cancels the
@@ -10275,7 +10387,7 @@ func TestWorkspaceReadyCommand(t *testing.T) {
 		require.Same(t, pendingB, m.lastReservedPending)
 
 		require.NoError(t,
-			m.commandWorkspaceReady(cmdRenameWorkspace, "onB"))
+			m.commandWorkspaceReady(context.Background(), cmdRenameWorkspace, "onB"))
 		require.Empty(t, pendingA.onReady,
 			"the older pending workspace must not receive the queued "+
 				"command")
@@ -10293,6 +10405,144 @@ func TestWorkspaceReadyCommand(t *testing.T) {
 		m.lastReservedPending = nil
 		m.mu.Unlock()
 	})
+
+	t.Run("waiting callers", func(t *testing.T) {
+		cases := []struct {
+			name string
+			args []string
+			// wantErr is a substring of the result; empty means nil.
+			wantErr  string
+			wantName string
+		}{
+			{name: "answered after the queued command ran",
+				args: []string{cmdRenameWorkspace, "deferred"}, wantName: "deferred"},
+			{name: "bare barrier answered once the workspace opens"},
+			{name: "queued command error forwarded",
+				args: []string{cmdRenameWorkspace}, wantErr: "expected one argument"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				m := newTestWorkspaceManagerHandlerWithDir(t,
+					defaultConfigWithWrap(false), t.TempDir(), nopShutdownShaderConfig())
+				t.Cleanup(func() { _ = m.Close() })
+				m.quiesce()
+				uri, err := workspaceapi.ParseURI("memory://" + t.TempDir())
+				require.NoError(t, err)
+
+				ctx, w := resultWaitCtx()
+				m.mu.Lock()
+				require.NoError(t, m.workspaceManagerHandler.addOrCreateWorkspace(uri))
+				require.NoError(t, m.commandWorkspaceReady(ctx, tc.args...))
+				require.True(t, w.Claimed, "a queued command must claim the waiter")
+				m.mu.Unlock()
+
+				err = awaitWaiter(t, m, w)
+				if tc.wantErr != "" {
+					require.ErrorContains(t, err, tc.wantErr)
+				} else {
+					require.NoError(t, err)
+				}
+				m.mu.Lock()
+				defer m.mu.Unlock()
+				slot, ok := m.findInstalledSlot(uri)
+				require.True(t, ok, "the waiter must be answered after the install")
+				require.Equal(t, tc.wantName, m.workspaces[slot].tabname)
+			})
+		}
+	})
+
+	t.Run("bare barrier with nothing pending returns at once", func(t *testing.T) {
+		m := newTestWorkspaceManagerHandlerWithDir(t,
+			defaultConfigWithWrap(false), t.TempDir(), nopShutdownShaderConfig())
+		t.Cleanup(func() { _ = m.Close() })
+		m.quiesce()
+
+		ctx, w := resultWaitCtx()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		require.NoError(t, m.commandWorkspaceReady(ctx))
+		require.False(t, w.Claimed)
+	})
+
+	t.Run("waiter of a dropped pending workspace gets an error", func(t *testing.T) {
+		m := newTestWorkspaceManagerHandlerWithDir(t,
+			defaultConfigWithWrap(false), t.TempDir(), nopShutdownShaderConfig())
+		t.Cleanup(func() { _ = m.Close() })
+		m.quiesce()
+		firstSlot := m.focus
+		uri, err := workspaceapi.ParseURI("memory://" + t.TempDir())
+		require.NoError(t, err)
+
+		ctx, w := resultWaitCtx()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		_, cancel := context.WithCancel(context.Background())
+		pending, err := m.reservePendingSlot(uri, -1, cancel)
+		require.NoError(t, err)
+		require.NoError(t, m.commandWorkspaceReady(ctx, cmdRenameWorkspace, "dropped"))
+		require.True(t, w.Claimed)
+
+		m.focus = pending.slot
+		_, _, err = m.closeWorkspace()
+		require.NoError(t, err)
+		m.focus = firstSlot
+		select {
+		case err := <-w.Ch:
+			require.ErrorContains(t, err, "did not open")
+		default:
+			t.Fatal("closing the pending workspace must answer its waiter")
+		}
+	})
+
+	t.Run("unmarked waiter is left to the caller", func(t *testing.T) {
+		m := newTestWorkspaceManagerHandlerWithDir(t,
+			defaultConfigWithWrap(false), t.TempDir(), nopShutdownShaderConfig())
+		t.Cleanup(func() { _ = m.Close() })
+		m.quiesce()
+		uri, err := workspaceapi.ParseURI("memory://" + t.TempDir())
+		require.NoError(t, err)
+
+		// Alias steps carry a waiter on every dispatch; claiming it
+		// would hold the alias run until the workspace opens.
+		w := &textrpc.Waiter{Ch: make(chan error, 1)}
+		ctx := textrpc.ContextWithWaiter(context.Background(), w)
+		m.mu.Lock()
+		require.NoError(t, m.workspaceManagerHandler.addOrCreateWorkspace(uri))
+		require.NoError(t, m.commandWorkspaceReady(ctx, cmdRenameWorkspace, "alias"))
+		require.False(t, w.Claimed)
+		m.mu.Unlock()
+
+		m.quiesce()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		slot, ok := m.findInstalledSlot(uri)
+		require.True(t, ok)
+		require.Equal(t, "alias", m.workspaces[slot].tabname)
+		require.Empty(t, w.Ch)
+	})
+}
+
+// resultWaitCtx returns a dispatch context marked as IDE.DispatchCommandLine
+// marks it, with the waiter it carries.
+func resultWaitCtx() (context.Context, *textrpc.Waiter) {
+	w := &textrpc.Waiter{Ch: make(chan error, 1)}
+	return withResultWait(textrpc.ContextWithWaiter(context.Background(), w)), w
+}
+
+// awaitWaiter drives m until w reports, and returns the result.
+func awaitWaiter(t *testing.T, m *testWorkspaceManagerHandler, w *textrpc.Waiter) error {
+	t.Helper()
+	var err error
+	require.Eventually(t, func() bool {
+		m.quiesce()
+		select {
+		case err = <-w.Ch:
+			return true
+		default:
+			return false
+		}
+	}, 2*time.Second, 10*time.Millisecond, "the waiter must be answered")
+	return err
 }
 
 // waitReadyRunner is a fake extension.Runner that resolves WaitReady
@@ -10482,7 +10732,7 @@ func TestExtensionReadyCommand(t *testing.T) {
 		m.mu.Lock()
 		require.Nil(t, m.lastReservedPending)
 		require.NoError(t,
-			m.commandExtensionReady("ext-id", cmdRenameWorkspace, "inline"))
+			m.commandExtensionReady(context.Background(), "ext-id", cmdRenameWorkspace, "inline"))
 		// The follow-up command must NOT run before the extension is
 		// ready.
 		require.Equal(t, "", m.workspaces[m.focus].tabname)
@@ -10514,7 +10764,7 @@ func TestExtensionReadyCommand(t *testing.T) {
 		var dispatched atomic.Bool
 
 		m.mu.Lock()
-		require.NoError(t, m.commandExtensionReady("ext-id", extCmd))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", extCmd))
 		m.mu.Unlock()
 
 		// The extension is ready, but extcmd has not been registered
@@ -10559,11 +10809,11 @@ func TestExtensionReadyCommand(t *testing.T) {
 		require.NotNil(t, m.lastReservedPending)
 		pending := m.lastReservedPending
 		require.NoError(t,
-			m.commandExtensionReady("ext-id", cmdRenameWorkspace, "deferred"))
+			m.commandExtensionReady(context.Background(), "ext-id", cmdRenameWorkspace, "deferred"))
 		require.Len(t, pending.onReady, 1)
 		require.Equal(t,
 			[]string{cmdExtensionReady, "ext-id", cmdRenameWorkspace, "deferred"},
-			pending.onReady[0],
+			pending.onReady[0].cmd,
 			"the queued command must preserve the extensionready envelope")
 		require.Equal(t, "", m.workspaces[firstSlot].tabname)
 		m.mu.Unlock()
@@ -10604,7 +10854,7 @@ func TestExtensionReadyCommand(t *testing.T) {
 
 		m.mu.Lock()
 		require.NoError(t,
-			m.commandExtensionReady("ext-id", cmdRenameWorkspace, "never"))
+			m.commandExtensionReady(context.Background(), "ext-id", cmdRenameWorkspace, "never"))
 		focus := m.focus
 		m.mu.Unlock()
 
@@ -10635,7 +10885,7 @@ func TestExtensionReadyCommand(t *testing.T) {
 		notes := &recordingNotifications{inner: m.workspaces[focus].notifications}
 		m.workspaces[focus].notifications = notes
 		require.NoError(t,
-			m.commandExtensionReady("ext-id", cmdRenameWorkspace, "never"))
+			m.commandExtensionReady(context.Background(), "ext-id", cmdRenameWorkspace, "never"))
 		m.mu.Unlock()
 
 		require.Eventually(t, func() bool {
@@ -10675,7 +10925,7 @@ func TestExtensionReadyCommand(t *testing.T) {
 		focus := m.focus
 		notes := &recordingNotifications{inner: m.workspaces[focus].notifications}
 		m.workspaces[focus].notifications = notes
-		require.NoError(t, m.commandExtensionReady("ext-id", "neverregistered"))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", "neverregistered"))
 		m.mu.Unlock()
 
 		require.Eventually(t, func() bool {
@@ -10711,7 +10961,7 @@ func TestExtensionReadyCommand(t *testing.T) {
 		require.Same(t, pending, m.lastReservedPending)
 
 		require.NoError(t,
-			m.commandExtensionReady("ext-id", cmdRenameWorkspace, "dropped"))
+			m.commandExtensionReady(context.Background(), "ext-id", cmdRenameWorkspace, "dropped"))
 		require.Len(t, pending.onReady, 1)
 
 		m.focus = pending.slot
@@ -10750,8 +11000,8 @@ func TestExtensionReadyCommand(t *testing.T) {
 			textapi.CommandManual{Name: cmdA2}, record(cmdA2)))
 
 		m.mu.Lock()
-		require.NoError(t, m.commandExtensionReady("ext-A", cmdA1))
-		require.NoError(t, m.commandExtensionReady("ext-A", cmdA2))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-A", cmdA1))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-A", cmdA2))
 		m.mu.Unlock()
 
 		runner.release("ext-A")
@@ -10797,8 +11047,8 @@ func TestExtensionReadyCommand(t *testing.T) {
 			textapi.CommandManual{Name: cmdFast}, record(cmdFast)))
 
 		m.mu.Lock()
-		require.NoError(t, m.commandExtensionReady("ext-slow", cmdSlow))
-		require.NoError(t, m.commandExtensionReady("ext-fast", cmdFast))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-slow", cmdSlow))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-fast", cmdFast))
 		m.mu.Unlock()
 
 		// Release only the fast extension; ext-slow stays unready.
@@ -10838,9 +11088,9 @@ func TestExtensionReadyCommand(t *testing.T) {
 		m.mu.Lock()
 		for i := 0; i < extReadyQueueLimit; i++ {
 			require.NoError(t,
-				m.commandExtensionReady("ext-full", "ext-full-cmd"))
+				m.commandExtensionReady(context.Background(), "ext-full", "ext-full-cmd"))
 		}
-		err := m.commandExtensionReady("ext-full", "ext-full-cmd")
+		err := m.commandExtensionReady(context.Background(), "ext-full", "ext-full-cmd")
 		m.mu.Unlock()
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "too many extensionready commands queued")
@@ -10877,8 +11127,8 @@ func TestExtensionReadyCommand(t *testing.T) {
 			textapi.CommandManual{Name: cmd1}, record(cmd1)))
 
 		m.mu.Lock()
-		require.NoError(t, m.commandExtensionReady("ext-close", cmd1))
-		require.NoError(t, m.commandExtensionReady("ext-close", cmd2))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-close", cmd1))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-close", cmd2))
 		m.mu.Unlock()
 
 		runner.release("ext-close")
@@ -10933,8 +11183,8 @@ func TestExtensionReadyCommand(t *testing.T) {
 				name: cmdSecond, release: releaseSecond, mu: &mu, order: &order}))
 
 		m.mu.Lock()
-		require.NoError(t, m.commandExtensionReady("ext-id", cmdFirst))
-		require.NoError(t, m.commandExtensionReady("ext-id", cmdSecond))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", cmdFirst))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", cmdSecond))
 		m.mu.Unlock()
 
 		// cmdFirst is in flight (its waiter has not reported completion);
@@ -11005,8 +11255,8 @@ func TestExtensionReadyCommand(t *testing.T) {
 			textapi.CommandManual{Name: cmd2}, record(cmd2)))
 
 		m.mu.Lock()
-		require.NoError(t, m.commandExtensionReady("ext-id", cmd1))
-		require.NoError(t, m.commandExtensionReady("ext-id", cmd2))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", cmd1))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", cmd2))
 		m.mu.Unlock()
 
 		require.Eventually(t, func() bool {
@@ -11051,8 +11301,8 @@ func TestExtensionReadyCommand(t *testing.T) {
 		focus := m.focus
 		notes := &recordingNotifications{inner: m.workspaces[focus].notifications}
 		m.workspaces[focus].notifications = notes
-		require.NoError(t, m.commandExtensionReady("ext-id", cmdSilent))
-		require.NoError(t, m.commandExtensionReady("ext-id", cmdNext))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", cmdSilent))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", cmdNext))
 		m.mu.Unlock()
 
 		// cmdSilent claims the waiter but never reports completion, so the
@@ -11078,6 +11328,138 @@ func TestExtensionReadyCommand(t *testing.T) {
 			return dispatched
 		}, 2*time.Second, 10*time.Millisecond,
 			"the next follow-up must dispatch after a dropped reply times out")
+	})
+
+	t.Run("waiting callers", func(t *testing.T) {
+		cases := []struct {
+			name string
+			// args follow the extension id.
+			args []string
+			// neverReady keeps the extension from becoming ready.
+			neverReady bool
+			// wantErr is a substring of the result; empty means nil.
+			wantErr  string
+			wantName string
+		}{
+			{name: "answered after the follow-up ran",
+				args: []string{cmdRenameWorkspace, "waited"}, wantName: "waited"},
+			{name: "bare barrier answered once ready"},
+			{name: "follow-up error forwarded",
+				args: []string{cmdRenameWorkspace}, wantErr: "expected one argument"},
+			{name: "readiness timeout forwarded instead of notified",
+				args: []string{cmdRenameWorkspace, "never"}, neverReady: true,
+				wantErr: "not ready within"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				runner := newPerIDReadyRunner("ext-id")
+				m := newTestWorkspaceManagerHandlerWithRunner(t,
+					defaultConfigWithWrap(false), t.TempDir(), runner)
+				t.Cleanup(func() { _ = m.Close() })
+				m.quiesce()
+
+				ctx, w := resultWaitCtx()
+				m.mu.Lock()
+				m.extReadyWait = 50 * time.Millisecond
+				focus := m.focus
+				notes := &recordingNotifications{inner: m.workspaces[focus].notifications}
+				m.workspaces[focus].notifications = notes
+				require.NoError(t, m.commandExtensionReady(ctx, append([]string{"ext-id"}, tc.args...)...))
+				require.True(t, w.Claimed, "a queued follow-up must claim the waiter")
+				m.mu.Unlock()
+
+				if !tc.neverReady {
+					m.quiesce()
+					require.Empty(t, w.Ch, "the waiter must not be answered before the extension is ready")
+					runner.release("ext-id")
+				}
+				err := awaitWaiter(t, m, w)
+				if tc.wantErr != "" {
+					require.ErrorContains(t, err, tc.wantErr)
+				} else {
+					require.NoError(t, err)
+				}
+				for _, n := range notes.snapshot() {
+					assert.NotEqual(t, browserapi.LevelError, n.level,
+						"a waiter's error must not also be notified: %s", n.msg)
+				}
+				m.mu.Lock()
+				defer m.mu.Unlock()
+				require.Equal(t, tc.wantName, m.workspaces[focus].tabname)
+			})
+		}
+	})
+
+	t.Run("full queue does not claim the waiter", func(t *testing.T) {
+		runner := newPerIDReadyRunner("ext-full")
+		m := newTestWorkspaceManagerHandlerWithRunner(t,
+			defaultConfigWithWrap(false), t.TempDir(), runner)
+		t.Cleanup(func() { _ = m.Close() })
+		m.quiesce()
+
+		ctx, w := resultWaitCtx()
+		m.mu.Lock()
+		for range extReadyQueueLimit {
+			require.NoError(t,
+				m.commandExtensionReady(context.Background(), "ext-full", "ext-full-cmd"))
+		}
+		err := m.commandExtensionReady(ctx, "ext-full", "ext-full-cmd")
+		m.mu.Unlock()
+		require.ErrorContains(t, err, "too many extensionready commands queued")
+		require.False(t, w.Claimed)
+
+		runner.release("ext-full")
+		m.quiesce()
+	})
+
+	t.Run("close answers queued waiters", func(t *testing.T) {
+		runner := newPerIDReadyRunner("ext-close")
+		m := newTestWorkspaceManagerHandlerWithRunner(t,
+			defaultConfigWithWrap(false), t.TempDir(), runner)
+		t.Cleanup(func() { _ = m.Close() })
+		m.quiesce()
+
+		ctx1, w1 := resultWaitCtx()
+		ctx2, w2 := resultWaitCtx()
+		m.mu.Lock()
+		require.NoError(t, m.commandExtensionReady(ctx1, "ext-close"))
+		require.NoError(t, m.commandExtensionReady(ctx2, "ext-close", cmdRenameWorkspace, "x"))
+		m.mu.Unlock()
+
+		require.NoError(t, m.Close())
+		for _, w := range []*textrpc.Waiter{w1, w2} {
+			select {
+			case err := <-w.Ch:
+				require.ErrorContains(t, err, "workspace closed")
+			case <-time.After(2 * time.Second):
+				t.Fatal("Close must answer every queued waiter")
+			}
+		}
+	})
+
+	t.Run("waiter queued behind a pending workspace", func(t *testing.T) {
+		m := newTestWorkspaceManagerHandlerWithDir(t,
+			defaultConfigWithWrap(false), t.TempDir(), nopShutdownShaderConfig())
+		t.Cleanup(func() { _ = m.Close() })
+		m.quiesce()
+		uri, err := workspaceapi.ParseURI("memory://" + t.TempDir())
+		require.NoError(t, err)
+
+		ctx, w := resultWaitCtx()
+		m.mu.Lock()
+		require.NoError(t, m.workspaceManagerHandler.addOrCreateWorkspace(uri))
+		require.NoError(t,
+			m.commandExtensionReady(ctx, "ext-id", cmdRenameWorkspace, "pendingwait"))
+		require.True(t, w.Claimed)
+		m.mu.Unlock()
+
+		require.NoError(t, awaitWaiter(t, m, w))
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		slot, ok := m.findInstalledSlot(uri)
+		require.True(t, ok)
+		require.Equal(t, "pendingwait", m.workspaces[slot].tabname,
+			"the waiter must be answered only after the follow-up ran")
 	})
 }
 
@@ -12337,7 +12719,8 @@ func TestTextOptsInstallSyntaxTrees(t *testing.T) {
 	require.NoError(t, err)
 
 	textCfg := text.DefaultConfig()
-	for _, opt := range (&workspaceManagerHandler{}).textOpts(cfg, nil, uri, nil) {
+	for _, opt := range (&workspaceManagerHandler{pkgmanager: new(localPkgManager)}).
+		textOpts(cfg, nil, uri, nil) {
 		opt(&textCfg)
 	}
 	assert.NotNil(t, textCfg.SyntaxTree,
@@ -12352,7 +12735,8 @@ func TestTextOptsEnableMarkdownImages(t *testing.T) {
 	require.NoError(t, err)
 
 	textCfg := text.DefaultConfig()
-	for _, opt := range (&workspaceManagerHandler{}).textOpts(cfg, nil, uri, nil) {
+	for _, opt := range (&workspaceManagerHandler{pkgmanager: new(localPkgManager)}).
+		textOpts(cfg, nil, uri, nil) {
 		opt(&textCfg)
 	}
 	// Images are cached in a partition of their own.
@@ -13088,7 +13472,7 @@ func TestWorkspaceNotificationsTakeItsConfig(t *testing.T) {
 		"workspace:\n  home: "+home+"\n  wallpaper_ascii: wallpaper\n"+
 		"notifications:\n  progress_bar: false\n"+
 		// Indexing would post notifications of its own.
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"), 0o644))
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"), 0o644))
 	i, mu := newHUDTestIDE(t, ws, configPath, WithTrustedWorkspaceConfig(overlay))
 	mu.Lock()
 	defer mu.Unlock()
@@ -13161,7 +13545,7 @@ func TestTabBarGraphicsIntegration(t *testing.T) {
 		"  focus_tab_highlight_char: \"\"\n"+
 		"  tab_images:\n    focus:\n"+slices(wsFocus)+"    non_focus:\n"+slices(wsIdle)+
 		"  focus_tab_highlight_graphics:\n    horizontal: "+wsHighlight+"\n"+
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"+
 		"browser:\n"+
 		"  tab_images:\n    focus:\n"+slices(focus)+
 		"  focus_tab_highlight_graphics:\n    horizontal: "+highlight+"\n"), 0o644))
@@ -13256,7 +13640,7 @@ func TestTabBarHoverIntegration(t *testing.T) {
 		"workspace:\n  home: "+home+"\n  wallpaper_ascii: wallpaper\n"+
 		"  focus_tab_highlight_char: \"\"\n"+images+
 		"  tab_sounds:\n    hover: ws-hover\n    click: ws-click\n"+
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"+
 		"browser:\n  focus_tab_highlight_char: \"\"\n"+images+
 		"  tab_sounds:\n    hover: tab-hover\n    click: tab-click\n"), 0o644))
 	var soundsMu sync.Mutex
@@ -13362,7 +13746,7 @@ func TestStatusInboxGraphicsIntegration(t *testing.T) {
 	configPath := filepath.Join(home, "rune.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
 		"workspace:\n  home: "+home+"\n"+
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
+		"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"+
 		"program_status:\n  images:\n    selected:\n      middle: file://"+selected+"\n"), 0o644))
 	i, mu := newHUDTestIDE(t, ws, configPath)
 	agent := mustURI(t, "rune-agent://model/agent")
@@ -13389,12 +13773,12 @@ func TestStatusInboxGraphicsIntegration(t *testing.T) {
 	view := &safeHandler{mu: mu, Component: inbox}
 	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
 
-	awaitFrame(t, view, w, nil, `                        │AAAAA
- ▌6661666666666666666   │AAAAA
- ▌6󰹇6agent66666666666   │AAAAA
- ▌666blocked666666666   │AAAAA
-                        │AAAAA
-                        │AAAAA`)
+	awaitFrame(t, view, w, nil, `                         AAAAA
+ ▌6661666666666666666    AAAAA
+ ▌6󰹇6agent66666666666    AAAAA
+ ▌666blocked666666666    AAAAA
+                         AAAAA
+                         AAAAA`)
 
 	writeHUDTestPNG(t, selected, color.Gray{Y: 40})
 	hud, err := i.LoadHUD(ctx)
@@ -13406,61 +13790,93 @@ func TestStatusInboxGraphicsIntegration(t *testing.T) {
 	require.NoError(t, w.Clear(term.Attributes{}))
 	view.Draw(w)
 	require.NoError(t, w.Flush())
-	assert.Equal(t, `                        │AAAAA
- ▌___1_______________   │AAAAA
- ▌_󰹇_agent___________   │AAAAA
- ▌___blocked_________   │AAAAA
-                        │AAAAA
-                        │AAAAA`, w.String(), "the open inbox draws the reloaded image at once")
+	assert.Equal(t, `                         AAAAA
+ ▌___1_______________    AAAAA
+ ▌_󰹇_agent___________    AAAAA
+ ▌___blocked_________    AAAAA
+                         AAAAA
+                         AAAAA`, w.String(), "the open inbox draws the reloaded image at once")
 }
 
-func TestStatusInboxDividerIntegration(t *testing.T) {
-	const width, height = 50, 12
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	require.NoError(t, err)
-	ws, err := filepath.EvalSymlinks(t.TempDir())
-	require.NoError(t, err)
-	bottom := filepath.Join(home, "bottom.png")
-	writeHUDTestPNG(t, bottom, color.Gray{Y: 255})
-	configPath := filepath.Join(home, "rune.yaml")
-	require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
-		"workspace:\n  home: "+home+"\n"+
-		"search:\n  regex_enabled: false\n  semantic_enabled: false\n"+
-		"program_status:\n  divider_charset:\n"+
-		"    top: T\n    vertical_top: t\n    vertical: v\n    vertical_bottom: b\n    bottom: B\n"+
-		"    graphics:\n      bottom: file://"+bottom+"\n"), 0o644))
-	i, mu := newHUDTestIDE(t, ws, configPath)
-	agent := mustURI(t, "rune-agent://model/agent")
-	mu.Lock()
-	h := i.workspaceHandler
-	focused := h.focusEx()
-	_, err = focused.comp.Tab(agent, 'x', "agent", browsertest.NewTestHandler())
-	require.NoError(t, err)
-	// The chat's extension opens it a view of its own for the inbox.
-	require.NoError(t, focused.comp.RegisterResourceOpener("rune-agent",
-		&recordingOpener{h: browsertest.NewTestHandler()}))
-	require.NoError(t, focused.comp.SetTabStatus(agent, programstatus.Report{
-		State: programstatus.Blocked, Progress: -1,
-	}))
-	require.NoError(t, h.commandProgramStatus())
-	mu.Unlock()
-	root := &safeHandler{mu: mu, Component: &i.root}
-	root.Resize(width, height)
-	w := asciiart.NewStringWriter(width, height, asciiart.DefaultConfig())
+func TestStatusInboxSidebarIntegration(t *testing.T) {
+	const width, height = 40, 8
+	dark := term.Attributes{Fg: term.NewRGBColor(220, 220, 220), Bg: term.NewRGBColor(20, 20, 20)}
+	light := term.Attributes{Fg: term.NewRGBColor(0, 0, 0), Bg: term.NewHexColor(0xffffea)}
+	for _, tc := range []struct {
+		name   string
+		config string
+		// wantDark and wantLight are the sidebar's background under the
+		// dark and the light theme.
+		wantDark, wantLight term.Color
+	}{
+		{
+			name:     "sidebar_attr fills the sidebar whatever the theme",
+			config:   "program_status:\n  sidebar_attr:\n    bg: navy\n",
+			wantDark: term.ColorNavy, wantLight: term.ColorNavy,
+		},
+		{
+			name:     "without it, the sidebar follows the theme's shade",
+			wantDark: term.NewRGBColor(36, 36, 36), wantLight: term.NewHexColor(0xebebd7),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			ws, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			configPath := filepath.Join(home, "rune.yaml")
+			require.NoError(t, os.WriteFile(configPath, []byte("clipboard: memory\n"+
+				"workspace:\n  home: "+home+"\n"+
+				"search:\n  regex_enabled: false\n  semantic_enabled: false\n  symbols_enabled: false\n"+
+				tc.config), 0o644))
+			i, mu := newHUDTestIDE(t, ws, configPath)
+			agent := mustURI(t, "rune-agent://model/agent")
+			mu.Lock()
+			defer mu.Unlock()
+			h := i.workspaceHandler
+			focused := h.focusEx()
+			_, err = focused.comp.Tab(agent, 'x', "agent", browsertest.NewTestHandler())
+			require.NoError(t, err)
+			require.NoError(t, focused.comp.RegisterResourceOpener("rune-agent",
+				&recordingOpener{h: browsertest.NewTestHandler()}))
+			require.NoError(t, focused.comp.SetTabStatus(agent, programstatus.Report{
+				State: programstatus.Blocked, Progress: -1,
+			}))
+			require.NoError(t, h.commandProgramStatus())
+			win, err := focused.comp.Focus()
+			require.NoError(t, err)
+			content, err := win.Content()
+			require.NoError(t, err)
+			inbox, ok := content.(*idestatus.View)
+			require.True(t, ok)
+			inbox.Resize(width, height)
 
-	// The window bar takes the top join's place.
-	awaitFrame(t, root, w, nil, `┌────────────────────────────────────────────────┐
-│󰹇  agent                                        │
-├█●██████████████████████████████████████████████┤
-││                        vAAAAAAAAAAAAAAAAAAAAA││
-││ ▌   1                  vAAAAAAAAAAAAAAAAAAAAA││
-││ ▌ 󰹇 agent              vAAAAAAAAAAAAAAAAAAAAA││
-││ ▌   blocked            vAAAAAAAAAAAAAAAAAAAAA││
-││                        vAAAAAAAAAAAAAAAAAAAAA││
-││                        bAAAAAAAAAAAAAAAAAAAAA││
-│└────────────────────────@─────────────────────┘│
-│                                                │
-└────────────────────────────────────────────────┘`)
+			for _, theme := range []struct {
+				name string
+				def  term.Attributes
+				want term.Color
+			}{
+				{"dark", dark, tc.wantDark},
+				{"light", light, tc.wantLight},
+			} {
+				i.SetThemeColors(ThemeColors{Default: theme.def})
+				w := cell.NewBufferWriter(context.Background(), width, height)
+				inbox.Draw(w)
+				cells := w.RawCells()
+				// The padding above the program and the rows below it.
+				for _, y := range []int{0, height - 1} {
+					fillW := slices.IndexFunc(cells[y], func(c term.Cell) bool { return c.Attributes().Bg != theme.want })
+					require.Positive(t, fillW, "the open inbox's sidebar is filled from its left edge on row %d "+
+						"under the %s theme", y, theme.name)
+					for x, c := range cells[y][fillW:] {
+						assert.Equal(t, term.ColorDefault, c.Attributes().Bg,
+							"the margin and the preview keep the window's background at %d,%d under the %s theme",
+							fillW+x, y, theme.name)
+					}
+				}
+			}
+		})
+	}
 }
 
 func TestNotificationGraphicsIntegration(t *testing.T) {

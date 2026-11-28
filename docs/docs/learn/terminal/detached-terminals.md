@@ -5,24 +5,34 @@ description: How Rune keeps a terminal running after you close its tab, and how 
 
 # Detached terminals
 
-Closing the tab of a terminal that is still running something does not end
-it. Rune detaches the terminal instead: the program keeps running, Rune keeps
-reading its output so it never stalls, and the [status
-inbox](./program-status.md#the-status-inbox) tells you when it is done.
+Closing the tab of a terminal that is still running something does not have
+to end it. Rune asks whether to detach the terminal or terminate it. A
+detached terminal keeps running its program, Rune keeps reading its output so
+it never stalls, and the [status inbox](./program-status.md#the-status-inbox)
+tells you when it is done.
 
-## When closing a tab detaches
+## Closing a terminal's tab
 
-When you close a tab, a split, or a window that shows a terminal, Rune looks
-at what the terminal is doing:
+When you close the tab of a terminal, with `tabclose`, `tabcloseall`,
+`tabcloseinactive`, or the tab's close icon, Rune looks at what the terminal
+is doing:
 
 - **A shell waiting at its prompt**, or a terminal whose program exited, is
-  closed, as it always was.
+  closed without asking.
 - **A terminal running a program** in the foreground of its shell, such as a
-  build, a server, or an `ssh` session, or showing a full-screen program, is
-  detached.
-- **When Rune cannot tell**, it detaches. This happens on a Windows host, or
-  one running an older Rune, whose shell does not mark its prompts with OSC
-  133.
+  build, a server, or an `ssh` session, or showing a full-screen program,
+  asks what to do with it:
+  - **Cancel** (`c`, `<enter>`, or `<esc>`) keeps the tab open.
+  - **Detach** (`d`) closes the tab and keeps the terminal running.
+  - **Terminate** (`t`) closes the tab and ends the terminal and its program.
+- **When Rune cannot tell** what the terminal runs, it asks too. This happens
+  on a Windows host, or one running an older Rune, whose shell does not mark
+  its prompts with OSC 133.
+
+A terminal that another tab still shows, on this machine or on another one,
+is closed without asking: the other tabs keep it. `tabcloseall` and
+`tabcloseinactive` close every other tab at once and ask a single question
+about the terminals running programs; cancelling keeps only those tabs.
 
 Rune tells a running program from the process group that holds the terminal,
 and from the OSC 133 marks that zsh, fish, and bash 4.4 or later put around
@@ -32,8 +42,19 @@ which some plugin managers leave set: every command then runs in the shell's
 own process group. A shell without job control that does not mark its
 commands, such as macOS's bash 3.2, looks idle while it runs one.
 
-`terminaldetach` detaches the terminal in the current window even when its
-shell is idle, and `terminalclose` ends it even when it is running something.
+Closing a terminal's tab from the status inbox ends the terminal, asking first
+when it is running a program: a detached terminal would only be listed in the
+inbox again.
+
+`terminaldetach` and `terminalclose` skip the question: `terminaldetach`
+detaches the terminal in the current window even when its shell is idle, and
+`terminalclose` ends it.
+
+A few closes detach a terminal that may be running something without asking:
+
+- A terminal outside a tab, opened with `terminalnew`, whose window shows
+  something else, for example after `tabnext`.
+- A tab an extension closes.
 
 ## Getting back to a detached terminal
 

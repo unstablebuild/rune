@@ -24,49 +24,54 @@ import (
 	"math"
 
 	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hajimehoshi/ebiten/v2/colorm"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/term/gui/font"
+	"unstable.build/rune/internal/term/gui/shaderdevice"
 )
 
 // texture is the GPU-side copy of a picture's pixels. It is keyed by
 // term.ImageID and re-uploaded only when the placement's Version or the
-// source bounds change, so a static picture costs a single draw call
-// per frame. A new Version of the same size is uploaded into the same
-// GPU image: a client streaming frames replaces its picture hundreds of
-// times a second, and allocating a texture each time costs more than
-// the upload.
+// source bounds change, so a static picture costs no upload per frame.
+// A new Version of the same size is uploaded into the same GPU image: a
+// client streaming frames replaces its picture hundreds of times a
+// second, and allocating a texture each time costs more than the
+// upload.
 type texture struct {
 	img     *ebiten.Image
 	version uint64
 	bounds  image.Rectangle
 	used    bool
+	// crops are the parts of img placements with a Crop draw from.
+	crops subImages
+}
+
+// textureKey keys the upload of a picture, which is uploaded once as
+// itself and once as the coverage of a mask, so that each placement
+// samples the pixels its Fill asks for.
+type textureKey struct {
+	id   term.ImageID
+	mask bool
 }
 
 // imageLayer composites image placements over the cell frame. It
 // retains one texture per term.ImageID and evicts the textures that
-// were not placed in the frame just drawn.
+// were not placed in the frame just drawn. Placements are queued into
+// batch and drawn when it is flushed.
 type imageLayer struct {
-	textures map[term.ImageID]*texture
+	textures map[textureKey]*texture
 
 	// scratch backs the conversion of sources that are not already a
-	// tightly packed RGBA. It is reused across frames and across
-	// pictures within a frame.
+	// tightly packed RGBA, and of masks. It is reused across frames and
+	// across pictures within a frame.
 	scratch *image.RGBA
 
-	// quad backs the vertices of tiled placements, which would
-	// otherwise be allocated for every one drawn.
-	quad [4]ebiten.Vertex
-}
+	// white is the opaque picture solid fills are drawn from, in their
+	// colour.
+	white *ebiten.Image
 
-var (
-	// quadIndices are the two triangles of a quad's vertices in the
-	// order tileQuad returns them.
-	quadIndices = []uint16{0, 1, 2, 1, 2, 3}
-	tileOptions = ebiten.DrawTrianglesOptions{Address: ebiten.AddressRepeat}
-	maskOptions = colorm.DrawTrianglesOptions{Address: ebiten.AddressRepeat}
-)
+	batch imageBatch
+}
 
 // placement is the pixel geometry of one image placement: src selects
 // the texels in the picture's texture, area is where the whole picture
@@ -120,18 +125,13 @@ func solidFill(img term.Image) bool {
 	return img.Fill && img.Src == nil
 }
 
-// fillColorM paints a mask's coverage in fill, a premultiplied colour,
-// whatever colour the mask's pixels are.
-func fillColorM(fill color.RGBA) colorm.ColorM {
-	var cm colorm.ColorM
-	if fill.A == 0 {
-		cm.Scale(0, 0, 0, 0)
-		return cm
+// fillScale is the vertex colour that paints fill, a premultiplied
+// colour, over a picture of opaque white or a mask's coverage.
+func fillScale(fill color.RGBA) [4]float32 {
+	return [4]float32{
+		float32(fill.R) / 0xff, float32(fill.G) / 0xff,
+		float32(fill.B) / 0xff, float32(fill.A) / 0xff,
 	}
-	a := float64(fill.A)
-	cm.Scale(0, 0, 0, a/0xff)
-	cm.Translate(float64(fill.R)/a, float64(fill.G)/a, float64(fill.B)/a, 0)
-	return cm
 }
 
 // pixelSize is the size of the font manager's cell, which is what the
@@ -146,10 +146,10 @@ func frameContext(ctx context.Context, m *font.Manager) context.Context {
 	return cell.ContextWithPixelSize(ctx, pixelSize(m))
 }
 
-// drawOne paints one placement and reports the pixel rectangle it
-// covered, which is empty when the placement painted nothing. shift
-// moves it down as resolvePlacement does, and fill is the premultiplied
-// colour of a Fill placement.
+// drawOne queues one placement to be painted into dst by the next
+// flush, and reports the pixel rectangle it covers, which is empty when
+// the placement paints nothing. shift moves it down as resolvePlacement
+// does, and fill is the premultiplied colour of a Fill placement.
 func (l *imageLayer) drawOne(
 	dst *ebiten.Image, img term.Image, m *font.Manager, shift int, fill color.RGBA,
 ) image.Rectangle {
@@ -161,58 +161,98 @@ func (l *imageLayer) drawOne(
 		// Fill replaces the pixels rather than blending over them, as a
 		// cell's background does, so a translucent window background is
 		// not composited twice.
-		dst.SubImage(p.clip).(*ebiten.Image).Fill(fill)
+		l.batch.add(dst, batchRun{src: l.whitePixel(), solid: true}, solidQuad(p.clip, fill))
 		return p.clip
 	}
-	tex := l.texture(img)
-	if tex == nil {
+	src, ok := l.source(img, p.src)
+	if !ok {
 		return image.Rectangle{}
 	}
-	src := tex.SubImage(p.src).(*ebiten.Image)
-	if img.Fit == term.ImageFitTile {
-		l.quad = tileQuad(p)
-		if img.Fill {
-			colorm.DrawTriangles(dst, l.quad[:], quadIndices, src, fillColorM(fill), &maskOptions)
-		} else {
-			dst.DrawTriangles(l.quad[:], quadIndices, src, &tileOptions)
-		}
-		return p.clip
-	}
-
-	var op ebiten.DrawImageOptions
-	op.GeoM.Scale(
-		float64(p.area.Dx())/float64(p.src.Dx()),
-		float64(p.area.Dy())/float64(p.src.Dy()),
-	)
-	op.GeoM.Translate(float64(p.area.Min.X), float64(p.area.Min.Y))
-	op.Filter = ebiten.FilterLinear
-
-	target := dst
-	if !p.clip.Eq(dst.Bounds()) {
-		target = dst.SubImage(p.clip).(*ebiten.Image)
+	tile := img.Fit == term.ImageFitTile
+	var quad [4]ebiten.Vertex
+	if tile {
+		quad = tileQuad(p)
+	} else {
+		quad = placementQuad(p)
 	}
 	if img.Fill {
-		colorm.DrawImage(target, src, fillColorM(fill),
-			&colorm.DrawImageOptions{GeoM: op.GeoM, Filter: op.Filter})
-	} else {
-		target.DrawImage(src, &op)
+		setColor(&quad, fillScale(fill))
 	}
+	l.batch.add(dst, batchRun{src: src, tile: tile}, quad)
 	return p.clip
 }
 
-// tileQuad returns the corners of p.clip, top-left, top-right,
-// bottom-left and bottom-right, each sampling the texel of p.src that
-// tiles repeated one texel to a pixel from p.area's top-left corner put
-// there. The texels run past p.src for the sampler to wrap them, so
-// placements of one area clipped to adjacent pixels continue each
-// other's tiles.
-func tileQuad(p placement) [4]ebiten.Vertex {
-	corners := [4]image.Point{
-		p.clip.Min, {X: p.clip.Max.X, Y: p.clip.Min.Y},
-		{X: p.clip.Min.X, Y: p.clip.Max.Y}, p.clip.Max,
+// source returns the region crop of the GPU image img is drawn from, or
+// false when it has none.
+func (l *imageLayer) source(img term.Image, crop image.Rectangle) (*ebiten.Image, bool) {
+	// A device's rendering is already on the GPU: it is drawn as it is,
+	// with nothing to upload or to evict. Components place renderings
+	// whole, so a crop is rare enough not to keep its sub-image.
+	if src, ok := shaderdevice.Texture(img.Src); ok {
+		if !crop.Eq(src.Bounds()) {
+			src = src.SubImage(crop).(*ebiten.Image)
+		}
+		return src, true
 	}
+	tex := l.upload(img)
+	if tex == nil {
+		return nil, false
+	}
+	if !crop.Eq(tex.img.Bounds()) {
+		return tex.crops.of(tex.img, crop), true
+	}
+	return tex.img, true
+}
+
+// flush paints the placements queued since the last flush.
+func (l *imageLayer) flush() {
+	l.batch.flush()
+}
+
+// whitePixel returns the image solid fills are drawn from, whose middle
+// pixel is opaque white and surrounded by more of it, so that sampling
+// there takes no other colour.
+func (l *imageLayer) whitePixel() *ebiten.Image {
+	if l.white == nil {
+		l.white = ebiten.NewImage(3, 3)
+		l.white.Fill(color.White)
+	}
+	return l.white
+}
+
+// corners returns r's corners, top-left, top-right, bottom-left and
+// bottom-right, which is the order imageBatch.add joins them in.
+func corners(r image.Rectangle) [4]image.Point {
+	return [4]image.Point{r.Min, {X: r.Max.X, Y: r.Min.Y}, {X: r.Min.X, Y: r.Max.Y}, r.Max}
+}
+
+// placementQuad returns the corners of p.clip, each sampling the texel
+// of p.src that stretching p.src over p.area puts there. Clipping the
+// quad rather than the destination draws placements clipped to
+// different pixels in one call.
+func placementQuad(p placement) [4]ebiten.Vertex {
+	sx := float64(p.src.Dx()) / float64(p.area.Dx())
+	sy := float64(p.src.Dy()) / float64(p.area.Dy())
 	var quad [4]ebiten.Vertex
-	for i, corner := range corners {
+	for i, corner := range corners(p.clip) {
+		quad[i] = ebiten.Vertex{
+			DstX: float32(corner.X), DstY: float32(corner.Y),
+			SrcX:   float32(float64(p.src.Min.X) + float64(corner.X-p.area.Min.X)*sx),
+			SrcY:   float32(float64(p.src.Min.Y) + float64(corner.Y-p.area.Min.Y)*sy),
+			ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1,
+		}
+	}
+	return quad
+}
+
+// tileQuad returns the corners of p.clip, each sampling the texel of
+// p.src that tiles repeated one texel to a pixel from p.area's top-left
+// corner put there. The texels run past p.src for the sampler to wrap
+// them, so placements of one area clipped to adjacent pixels continue
+// each other's tiles.
+func tileQuad(p placement) [4]ebiten.Vertex {
+	var quad [4]ebiten.Vertex
+	for i, corner := range corners(p.clip) {
 		texel := corner.Sub(p.area.Min).Add(p.src.Min)
 		quad[i] = ebiten.Vertex{
 			DstX: float32(corner.X), DstY: float32(corner.Y),
@@ -223,10 +263,30 @@ func tileQuad(p placement) [4]ebiten.Vertex {
 	return quad
 }
 
-// texture returns the uploaded pixels for img, uploading them when the
+// solidQuad returns the corners of clip painted in fill, a premultiplied
+// colour, from the middle pixel of whitePixel.
+func solidQuad(clip image.Rectangle, fill color.RGBA) [4]ebiten.Vertex {
+	var quad [4]ebiten.Vertex
+	for i, corner := range corners(clip) {
+		quad[i] = ebiten.Vertex{
+			DstX: float32(corner.X), DstY: float32(corner.Y),
+			SrcX: 1.5, SrcY: 1.5,
+		}
+	}
+	setColor(&quad, fillScale(fill))
+	return quad
+}
+
+func setColor(quad *[4]ebiten.Vertex, c [4]float32) {
+	for i := range quad {
+		quad[i].ColorR, quad[i].ColorG, quad[i].ColorB, quad[i].ColorA = c[0], c[1], c[2], c[3]
+	}
+}
+
+// upload returns the texture for img, uploading its pixels when the
 // picture is new or its Version changed, and marks it as used this
-// frame.
-func (l *imageLayer) texture(img term.Image) *ebiten.Image {
+// frame. The texture of a Fill placement holds its mask's coverage.
+func (l *imageLayer) upload(img term.Image) *texture {
 	if img.Src == nil {
 		return nil
 	}
@@ -235,16 +295,17 @@ func (l *imageLayer) texture(img term.Image) *ebiten.Image {
 		return nil
 	}
 	if l.textures == nil {
-		l.textures = make(map[term.ImageID]*texture)
+		l.textures = make(map[textureKey]*texture)
 	}
-	tex, ok := l.textures[img.ID]
+	key := textureKey{id: img.ID, mask: img.Fill}
+	tex, ok := l.textures[key]
 	if ok && tex.version == img.Version && tex.bounds.Eq(bounds) {
 		tex.used = true
-		return tex.img
+		return tex
 	}
 	if !ok {
 		tex = new(texture)
-		l.textures[img.ID] = tex
+		l.textures[key] = tex
 	} else if !tex.bounds.Eq(bounds) {
 		tex.img.Deallocate()
 		tex.img = nil
@@ -252,11 +313,15 @@ func (l *imageLayer) texture(img term.Image) *ebiten.Image {
 	if tex.img == nil {
 		tex.img = ebiten.NewImage(bounds.Dx(), bounds.Dy())
 	}
-	tex.img.WritePixels(l.pixels(img.Src, bounds))
+	if img.Fill {
+		tex.img.WritePixels(l.coverage(img.Src, bounds))
+	} else {
+		tex.img.WritePixels(l.pixels(img.Src, bounds))
+	}
 	tex.version = img.Version
 	tex.bounds = bounds
 	tex.used = true
-	return tex.img
+	return tex
 }
 
 // pixels returns b's worth of RGBA bytes for src. The returned slice
@@ -268,6 +333,27 @@ func (l *imageLayer) pixels(src image.Image, b image.Rectangle) []byte {
 		rgba.Rect.Min == (image.Point{}) && rgba.Stride == 4*w {
 		return rgba.Pix[:4*w*h]
 	}
+	return l.copyPixels(src, b)
+}
+
+// coverage returns b's worth of src as the coverage of a mask: RGBA
+// bytes holding each pixel's alpha in all four channels, which painted
+// in a premultiplied vertex colour is that colour at the pixel's alpha.
+// The returned slice is the layer's scratch buffer, valid until the
+// next call.
+func (l *imageLayer) coverage(src image.Image, b image.Rectangle) []byte {
+	pix := l.copyPixels(src, b)
+	for i := 0; i < len(pix); i += 4 {
+		a := pix[i+3]
+		pix[i], pix[i+1], pix[i+2] = a, a, a
+	}
+	return pix
+}
+
+// copyPixels copies b's worth of src into the layer's scratch buffer as
+// RGBA bytes.
+func (l *imageLayer) copyPixels(src image.Image, b image.Rectangle) []byte {
+	w, h := b.Dx(), b.Dy()
 	if l.scratch == nil || l.scratch.Rect.Dx() != w || l.scratch.Rect.Dy() != h {
 		l.scratch = image.NewRGBA(image.Rect(0, 0, w, h))
 	}
@@ -276,22 +362,155 @@ func (l *imageLayer) pixels(src image.Image, b image.Rectangle) []byte {
 }
 
 func (l *imageLayer) evictUnused() {
-	for id, tex := range l.textures {
+	for key, tex := range l.textures {
 		if tex.used {
 			tex.used = false
+			tex.crops.evictUnused()
 			continue
 		}
 		tex.img.Deallocate()
-		delete(l.textures, id)
+		delete(l.textures, key)
 	}
 }
 
 func (l *imageLayer) deallocate() {
-	for id, tex := range l.textures {
+	for key, tex := range l.textures {
 		tex.img.Deallocate()
-		delete(l.textures, id)
+		delete(l.textures, key)
 	}
 	l.scratch = nil
+	if l.white != nil {
+		l.white.Deallocate()
+		l.white = nil
+	}
+	l.batch = imageBatch{}
+}
+
+// triangleDrawer is what an imageBatch draws its runs into.
+type triangleDrawer interface {
+	DrawTriangles(
+		vertices []ebiten.Vertex, indices []uint16, img *ebiten.Image,
+		options *ebiten.DrawTrianglesOptions,
+	)
+}
+
+// imageBatch accumulates the quads of consecutive placements that draw
+// from one source in one way, and draws each such run in a single call
+// once a placement of another run is added or it is flushed, so that
+// placements are painted in the order they were added.
+type imageBatch struct {
+	dst      triangleDrawer
+	run      batchRun
+	vertices []ebiten.Vertex
+	indices  []uint16
+}
+
+// batchRun is what the placements of a run share: their source, and
+// whether it tiles across them or is the white of a solid fill, which
+// replaces the pixels under it.
+type batchRun struct {
+	src   *ebiten.Image
+	tile  bool
+	solid bool
+}
+
+// maxBatchVertices is how many vertices uint16 indices address.
+const maxBatchVertices = 1 << 16
+
+var (
+	// Vertex colours are premultiplied, which is what fills are, and
+	// is the same as straight colours for the opaque white of pictures.
+	pictureOptions = ebiten.DrawTrianglesOptions{
+		ColorScaleMode: ebiten.ColorScaleModePremultipliedAlpha,
+		Filter:         ebiten.FilterLinear,
+	}
+	tileOptions = ebiten.DrawTrianglesOptions{
+		ColorScaleMode: ebiten.ColorScaleModePremultipliedAlpha,
+		Address:        ebiten.AddressRepeat,
+	}
+	solidOptions = ebiten.DrawTrianglesOptions{
+		ColorScaleMode: ebiten.ColorScaleModePremultipliedAlpha,
+		Blend:          ebiten.BlendCopy,
+	}
+)
+
+func (r batchRun) options() *ebiten.DrawTrianglesOptions {
+	switch {
+	case r.solid:
+		return &solidOptions
+	case r.tile:
+		return &tileOptions
+	default:
+		return &pictureOptions
+	}
+}
+
+// add queues quad to be drawn into dst as part of run.
+func (b *imageBatch) add(dst triangleDrawer, run batchRun, quad [4]ebiten.Vertex) {
+	if dst != b.dst || run != b.run || len(b.vertices)+len(quad) > maxBatchVertices {
+		b.flush()
+		b.dst, b.run = dst, run
+	}
+	n := uint16(len(b.vertices))
+	b.vertices = append(b.vertices, quad[:]...)
+	b.indices = append(b.indices, n, n+1, n+2, n+1, n+2, n+3)
+}
+
+// flush draws the run being accumulated.
+func (b *imageBatch) flush() {
+	if len(b.vertices) > 0 {
+		b.dst.DrawTriangles(b.vertices, b.indices, b.run.src, b.run.options())
+	}
+	b.dst, b.run = nil, batchRun{}
+	b.vertices, b.indices = b.vertices[:0], b.indices[:0]
+}
+
+// subImages keeps the sub-images of one image across frames, so that a
+// region drawn into every frame reuses its sub-image, and the vertex
+// buffer ebiten grows for each image, instead of allocating both again.
+type subImages struct {
+	parent  *ebiten.Image
+	regions map[image.Rectangle]*subImage
+}
+
+type subImage struct {
+	img  *ebiten.Image
+	used bool
+}
+
+// of returns the sub-image of parent covering r. Asking for a region of
+// another parent releases the regions of the previous one.
+func (s *subImages) of(parent *ebiten.Image, r image.Rectangle) *ebiten.Image {
+	if parent != s.parent {
+		clear(s.regions)
+		s.parent = parent
+	}
+	if s.regions == nil {
+		s.regions = make(map[image.Rectangle]*subImage)
+	}
+	sub, ok := s.regions[r]
+	if !ok {
+		sub = &subImage{img: parent.SubImage(r).(*ebiten.Image)}
+		s.regions[r] = sub
+	}
+	sub.used = true
+	return sub.img
+}
+
+// evictUnused releases the regions not asked for since the last call.
+func (s *subImages) evictUnused() {
+	for r, sub := range s.regions {
+		if !sub.used {
+			delete(s.regions, r)
+			continue
+		}
+		sub.used = false
+	}
+}
+
+func (s *subImages) deallocate() {
+	s.parent = nil
+	s.regions = nil
 }
 
 // cropRect resolves a placement's source rectangle in Src's coordinate

@@ -1,0 +1,64 @@
+//kage:unit pixels
+
+package main
+
+var Progress float
+var Resolution vec2
+var Background vec4
+var Seed float
+
+// Speed is how many times the fire's noise changes over a run.
+var Speed float
+
+// Hue turns the fire's colours, in turns: at 0 it burns red.
+var Hue float
+
+// SwapRedBlue, when 1, swaps red and blue after turning the hue.
+var SwapRedBlue float
+
+// Strength is how far the fire stands out from the background, from 0 to
+// 1.
+var Strength float
+
+// Remixed from CaliCoastReplay's 301's Fire Shader - Remix 2
+// (https://www.shadertoy.com/view/MtcGD7).
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	// Its sway, zoom and wobble all turn a whole number of times a run.
+	iTime := Progress * 10 * 3.14159265358979
+	frag := vec2(dstPos.x, Resolution.y-dstPos.y)
+	seed := seedOffset(Seed)
+
+	shift := 1.327 + sin(iTime*2)/2.4
+	dist := 3.5 - sin(iTime*0.4)/1.89
+	p := frag * dist / Resolution.x
+
+	q := layer(p+sin(iTime)/10, 0, seed)
+	qb := layer(p+0.1*cos(iTime)/5, 1, seed)
+	q2 := layer(p-5*cos(iTime)/7, 2, seed) - 6
+	q3 := layer(p-10*cos(iTime)/30, 3, seed) - 4
+	q4 := layer(p-20*sin(iTime)/20, 4, seed) + 2
+	q = (q + qb - 0.4*q2 - 2*q3 + 0.6*q4) / 3.8
+
+	r := vec2(layer(vec2(q/2-p.y, q/2-p.x), 5, seed), layer(p+q, 6, seed))
+	c := mix(vec3(0.5, 0, 0.1), vec3(0.9, 0.1, 0), layer(p+r, 7, seed)) +
+		mix(vec3(0.2, 0.1, 0.7), vec3(1, 0.9, 0.1), r.x) -
+		mix(vec3(0.1), vec3(0.9), r.y)
+	col := c*cos(shift*frag.y/Resolution.y) + 0.05
+	col.x *= 0.8
+
+	hsv := rgb2hsv(col)
+	hsv.y *= hsv.z * 1.1
+	hsv.z *= hsv.y * 1.13
+	hsv.y = (2.2 - hsv.z*0.9) * 1.2
+	hsv.x = fract(hsv.x + Hue)
+	col = clamp(hsv2rgb(hsv), 0, 1)
+	if SwapRedBlue > 0.5 {
+		col = col.zyx
+	}
+	return mix(Background, vec4(col, 1), Strength)
+}
+
+// layer is the noise of the i-th of the layers the fire is made of.
+func layer(p vec2, i float, seed float) float {
+	return fbm(p, Progress, Speed, seed+i*101, 5, 2.7, 0.47)
+}

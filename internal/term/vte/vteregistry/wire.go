@@ -33,12 +33,6 @@ import (
 	"unstable.build/rune/internal/term/vte/vtewire"
 )
 
-// dropGrace is how long a member dropped for falling behind is given
-// to read why before its connection is closed under it. A client that
-// is reading at all drains a socket in far less; one that is not is
-// not waited on.
-const dropGrace = time.Second
-
 // Resolver names the registry owning the terminals of the workspace
 // rooted at root, as the HELLO of an attachment names it.
 type Resolver func(ctx context.Context, root string) (*Registry, error)
@@ -166,7 +160,7 @@ func newSession(conn *vtewire.Conn, a *attachment) *session {
 		// keep its attachment, and the pty's size, forever.
 		onDrop: func() {
 			s.ended.Store(true)
-			time.AfterFunc(dropGrace, func() { _ = conn.Close() })
+			time.AfterFunc(a.c.r.cfg.DropGrace, func() { _ = conn.Close() })
 		},
 	}
 	return s

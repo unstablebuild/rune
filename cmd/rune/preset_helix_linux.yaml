@@ -272,8 +272,8 @@ command:
     "<ctrl-meta-s>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>"
     "<ctrl-meta-v>": "echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>"
     "<ctrl-space>": "lsp complete"
-    # The fuzzy_search package binds its symbol pickers on <alt-shift>;
-    # free that layer for the editor and the terminal. Package installs
+    # Older fuzzy_search packages bound their symbol pickers on <alt-shift>;
+    # keep that layer free for the editor and the terminal. Package installs
     # match keys by spelling, so these repeat the package's own spelling.
     "<a-s-f>": ""
     "<a-s-v>": ""
@@ -285,6 +285,12 @@ command:
 # ---------------------------------------------------------------------------
 # The Rune logo shows unless one of these is set.
 # workspace:
+#   wallpaper_shader:                     # GUI only
+#     shader:   plasma                    # a built-in, or ~/.rune/wallpaper.kage
+#     fps:      30
+#     duration: 10s                       # one loop of an animated shader
+#     seed:     random                    # or a whole number
+#     uniforms: {Strength: 0.5}
 #   wallpaper_image:
 #     path:   ~/Pictures/wallpaper.png
 #     width:  100%                        # cells, or a percentage of the window

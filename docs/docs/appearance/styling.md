@@ -151,18 +151,23 @@ For example:
 
 From there, the agent:
 
-- Finds your config and backs it up before its first change. It then edits
-  only the keys it needs, and leaves a comment next to each value it replaces
-  that names the one before.
+- Writes each version of the theme, its config and its images, to a new
+  folder, `$RUNE_DATADIR/etc/hud-<theme>-v<N>/`, and keeps the earlier ones.
 - Draws the images, starting with the window frames, and keeps every surface
   in one style: one accent color, light from one side, and buttons and tabs
-  of the same shape. It saves each revision to a new folder under
-  `$RUNE_DATADIR/hud/<theme>/` and keeps the earlier ones, so you can roll
-  back.
-- Takes a screenshot with
-  [`runectl screenshot`](../develop/runectl.md#screenshots) after each change,
-  looks at it, and fixes what doesn't line up, such as the seams between
-  tiles, the joins between surfaces and the padding around labels.
+  of the same shape.
+- Checks each change in a Rune of its own, which runs without a window and
+  leaves yours as it is: it takes a screenshot, looks at it, and fixes what
+  doesn't line up, such as the seams between tiles, the joins between
+  surfaces and the padding around labels.
+- Once the version is ready, adds its `config.yaml` as the last entry of your
+  config's [`include`](../config.md#including-other-files) list, so it
+  overrides the files included before it, and leaves the rest of your config
+  alone. Put the previous version's entry back to roll back.
+
+The agent's own Rune needs macOS, or Linux with Mesa's EGL. When it can't
+start one, the agent tells you why and leaves your config and your Rune as
+they are.
 
 Once you have a theme, ask for one change at a time: a brighter frame around
 the focused window, a badge behind the mode in the status bar, or a new icon
@@ -198,6 +203,8 @@ frame_charset:
   transparent pixels.
 - Each image fills one cell and is stretched to it. Slots along an edge repeat
   once per cell, so their images must tile without a seam.
+- A frame's corner images can also cover more than one cell, in place of the
+  edges' images next to them. See [Corners larger than a cell](#corners-larger-than-a-cell).
 - An `outset` lets images reach past their cells, into the cells around them,
   in whole cells. Which sides it takes depends on the surface.
 - Buttons, tabs and inbox entries are not charsets: they take `left`, `middle`
@@ -317,6 +324,67 @@ wm["focus_frame_charset"] = {"graphics": images("frame/focused")}
 ```
 
 <Shot name="vl-overview-editor" alt="The editor focused with a rounded lavender frame, next to the agent chat with a thin dark outline">With the editor in focus: a lavender outline around it, and a thin dark one around the chat. The interiors are transparent, so the frames never cover what is inside.</Shot>
+
+### Corners larger than a cell
+
+A corner slot covers one cell, about twice as tall as it is wide, so a curve
+drawn in it alone is at most one cell wide. That leaves little room for a
+round corner, and less still once the line moves in from the cell's edge to
+leave a wider gap between windows. For a rounder corner, or a corner
+ornament, set `corner_width` and `corner_height` in the `graphics` table.
+Each corner image then covers that many cells along the top and bottom rows,
+and that many rows down the left and right sides. Both are 1 by default, and
+0 means 1.
+
+- Rune cuts each corner image into `corner_width` by `corner_height` cells
+  and draws only the ones on the frame: the corner's own cell, and the edge
+  cells next to it, in place of the edges' images. Draw the line along the
+  image's two outer sides, and leave the rest transparent.
+- Size each corner image in proportion to the cells it covers. Over cells 14
+  by 34 pixels, a corner 2 cells wide and 1 tall is 28 by 34 pixels, or any
+  multiple of that.
+- Each image is drawn as it is, in its own corner. Draw the top-left corner,
+  then flip it for the other three.
+- With `corner_height` and `corner_width` both above 1, the cells off the
+  frame's row and column aren't drawn, so keep the curve out of them.
+- In a window too narrow or short for both corners of an edge, each cell
+  takes the nearer corner's image, or the top or left one when it's halfway
+  between them.
+
+A quarter circle 22 pixels across, over a corner 2 cells wide and 1 tall:
+
+```yaml tab
+browser:
+  window_manager:
+    frame_charset:
+      graphics:
+        corner_width: 2
+        corner_height: 1
+        topleft: file://$RUNE_DATADIR/hud/round/topleft.png
+        topright: file://$RUNE_DATADIR/hud/round/topright.png
+        bottomleft: file://$RUNE_DATADIR/hud/round/bottomleft.png
+        bottomright: file://$RUNE_DATADIR/hud/round/bottomright.png
+        # ...and the four edges, which draw the rest of each side
+```
+
+```python tab
+art = "file://$RUNE_DATADIR/hud/round/"
+slots = [
+    "topleft", "topright", "bottomleft", "bottomright",
+    "horizontaltop", "horizontalbottom", "verticalleft", "verticalright",
+]
+graphics = {"corner_width": 2, "corner_height": 1}
+for s in slots:
+    graphics[s] = art + s + ".png"
+config["browser"]["window_manager"]["frame_charset"] = {"graphics": graphics}
+```
+
+Every frame charset takes them: window frames, floating-only frames, the
+command prompt, notifications and the agent composer. A charset that inherits
+its slots, such as the command prompt's from the window frame, inherits the
+corner size too, and `corner_width: 1` with `corner_height: 1` sets it back.
+A floating window's bar replaces its top corners, and a notification's
+progress bar its bottom ones.
 
 The scroll bar works the same way, with `top_char`, `middle_char`,
 `bottom_char` and their `hover_` versions under
@@ -594,8 +662,12 @@ be cleared. Removing a field from a partial table restores inheritance.
 
 Violet Ledger draws notifications as rounded cards with
 `notifications.frame_charset.graphics`, and draws the progress bar with
-`notifications.progress_format.graphics` in `overlay` mode: its images are
-transparent where the bar is, so the level's color shows through:
+`notifications.progress_format.graphics` in `overlay` mode. Its images leave
+a clear channel where the bar is, closed in by the card's face above and its
+shadow below, and `overlay` fills that channel with the level's color.
+Transparent pixels that reach the card's outer edge, such as the corners
+outside the rounded cap or a translucent shadow, show what is under the
+notification:
 
 ```yaml tab
 notifications:
@@ -639,9 +711,30 @@ The [program status](../learn/terminal/program-status.md) inbox, opened with
 | Key | Images |
 | --- | --- |
 | `images` | Each entry: `left`, `middle` and `right` for `idle`, `hover` and `selected`, and an `outset` with `top`, `bottom` and `sides`. `selected` falls back to `hover`, and `hover` to `idle`. |
-| `divider_charset.graphics` | The line between the list and the preview: `vertical`, and the `top` and `bottom` joins. |
 | `progress_bar_graphics` | A working program's progress: `left`, `filled`, `empty` and `right`. |
 | `marker_graphics` | The marker down the selected entry: `top`, `vertical` and `bottom`. |
+
+The list sits on `program_status.sidebar_attr`, a shade of the theme's
+background unless you set one. Give entry images transparent corners, so the
+list's color shows through them.
+
+`program_status.sidebar_margin` adds cells of the window's background around
+that fill: `top`, `left` and `bottom` between the fill and the window's edges,
+and `right` between the fill and the preview. The GUI draws the list half a
+cell lower, so even at 0 the fill stands half a cell below the window bar and
+half a cell above the frame's bottom line, and the frame's left column leaves
+about as much on its left. The defaults are 0, 0, 0 and 1: a cell is about
+twice as tall as it is wide, so one column looks as wide as half a row. For
+more room around the list:
+
+```yaml tab
+program_status:
+  sidebar_margin: {top: 1, left: 2, bottom: 1, right: 2}
+```
+
+```python tab
+config["program_status"]["sidebar_margin"] = {"top": 1, "left": 2, "bottom": 1, "right": 2}
+```
 
 Violet Ledger draws its entries as cards and its progress bars in `overlay`
 mode, and sets `marker` to a space, since the selected card is marked by its
@@ -786,11 +879,14 @@ theme's surroundings.
 | Command prompt | `command.frame_charset.graphics`, `command.separator_charset.graphics` | The eight frame slots; the separator's `left`, `horizontal` and `right`. | separator: `top`, `bottom`, `inward` |
 | Dialog buttons | `browser.prompt.images` | `left`, `middle` and `right` for `idle`, `selected`, `hover` and `pressed`. | `top`, `bottom`, `sides` |
 | Notifications | `notifications.frame_charset.graphics`, `notifications.progress_format.graphics` | The eight frame slots; the progress bar's five. | |
-| Program status inbox | `program_status.images`, `divider_charset.graphics`, `progress_bar_graphics`, `marker_graphics`, and the same under `program_status.focus` | See [Program status inbox](#program-status-inbox). | entries: `top`, `bottom`, `sides` |
+| Program status inbox | `program_status.images`, `progress_bar_graphics`, `marker_graphics`, and the same under `program_status.focus` | See [Program status inbox](#program-status-inbox). | entries: `top`, `bottom`, `sides` |
 | Status bars | `{{ .Image }}` in `editor.status_bar.layout` and the agent's `status_bar.layout`, and in their `focus` blocks | An image of any size, placed in the layout. | |
 | Agent composer | `extensions.rune-agent.config.input_box_frame_charset.graphics`, and the same under `focus` | The eight frame slots. | |
 | Quick menu | `gui.quick_menu[].sprite` | `idle`, `hover` and `pressed`. | |
 | Wallpaper, app icon | `workspace.wallpaper_image`, `focus_wallpaper_image`, `gui.app_icon` | One image each. | |
+
+The surfaces that take the eight frame slots, other than window backgrounds,
+also take [`corner_width` and `corner_height`](#corners-larger-than-a-cell).
 
 ### Tips from Violet Ledger
 
@@ -1446,7 +1542,7 @@ style key the section has, without repeating the others:
 | Block | Keys it changes |
 | --- | --- |
 | `editor.status_bar.focus` | `layout`, `background_attr` and `foreground_error_attr`. |
-| `program_status.focus` | Any style key, such as `divider_charset`, `divider_attr`, `images`, `marker_graphics` and `progress_bar_graphics`. |
+| `program_status.focus` | Any style key, such as `sidebar_attr`, `selected_attr`, `images`, `marker_graphics` and `progress_bar_graphics`, except `sidebar_margin`, so the layout stays put as the focus moves. |
 | `extensions.rune-agent.config.focus` | `status_bar`, `input_box_frame_charset`, `input_box_frame_attr`, `input_box_attr`, `input_background_color` and `background_attr`. ACP chats share it. |
 
 ```yaml tab
@@ -1470,12 +1566,12 @@ every cell the chat draws with it.
 
 An empty window in focus shows the focused wallpaper. Its keys live under
 `workspace` and take the same forms as the [wallpaper](./wallpaper.md) keys:
-`focus_wallpaper_image`, `focus_wallpaper_image_ascii`,
+`focus_wallpaper_shader`, `focus_wallpaper_image`, `focus_wallpaper_image_ascii`,
 `focus_wallpaper_ascii`, `focus_wallpaper_attr`,
 `focus_wallpaper_background_attr` and `focus_wallpaper_density_characters`.
 Without any of them, a focused window shows the normal wallpaper. The
-focused wallpaper keeps the normal picture, art or text unless one of the
-first three is set, and takes each attribute, and the density characters, the
+focused wallpaper keeps the normal shader, picture, art or text unless one of
+the first four is set, and takes each attribute, and the density characters, the
 focus keys leave out from the normal ones.
 
 ## Tab bar
@@ -1827,7 +1923,8 @@ config["command"]["show_manual"] = False
 ## Dialogs
 
 When Rune asks you a question, such as whether to discard unsaved changes, it
-opens a dialog with a row of buttons. Its keys live under `browser.prompt`:
+opens a dialog with a row of buttons, and fields to type into when it needs
+text, such as a password. Its keys live under `browser.prompt`:
 
 | Key | Styles |
 | --- | --- |
@@ -1836,6 +1933,13 @@ opens a dialog with a row of buttons. Its keys live under `browser.prompt`:
 | `hover_attr` | A button under the pointer. |
 | `clicked_attr` | A button while you click it. |
 | `background_attr` | The dialog around its message and buttons. |
+| `field_attr` | Where you type the answers to the dialog's questions, on the colors of `background_attr`. |
+| `focus_field_attr` | The field your keys go to. Left empty, it is `field_attr`. |
+| `placeholder_attr` | The hint an empty field shows. Left empty, it is gray. |
+
+Each field is framed like a window, in the `frame_charset` and `frame_attr` of
+`browser.window_manager`, and the field your keys go to in its
+`focus_frame_charset` and `focus_frame_attr`.
 
 The message itself is drawn on the theme's background, whatever
 `background_attr` says, so a `background_attr` far from it leaves the
@@ -2038,7 +2142,7 @@ Its keys live under `status_bar`:
 
 | Key | Styles |
 | --- | --- |
-| `layout` | What the bar shows, as a template like the [editor's](#editor-status-bar): `{{ .Spinner }}`, `{{ .Status }}`, `{{ .Model }}`, `{{ .Effort }}`, `{{ .Conversation }}`, `{{ .Elapsed }}`, `{{ .Cache }}`, `{{ .ContextGauge }}`, `{{ .CacheGauge }}`, `{{ .Image }}` and more. |
+| `layout` | What the bar shows, as a template like the [editor's](#editor-status-bar): `{{ .Spinner }}`, `{{ .Status }}`, `{{ .Model }}`, `{{ .Effort }}`, `{{ .Speed }}`, `{{ .Conversation }}`, `{{ .Elapsed }}`, `{{ .Cache }}`, `{{ .ContextGauge }}`, `{{ .CacheGauge }}`, `{{ .Image }}` and more. |
 | `background_attr` | The bar. Its `fg` is the color of every element that names none. |
 | `status.<PHASE>.attr` | The spinner and the status in that phase. |
 | `status.<PHASE>.animation` | The spinner in that phase: `ch` lists its frames, one character each, and `attr` colors it alone. |

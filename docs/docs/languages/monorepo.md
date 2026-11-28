@@ -88,10 +88,9 @@ guide. Its main entry points in a monorepo are:
   project.
 - `searchtext` (<KeyBinding command="searchtext" />): fuzzy-search file contents across the
   workspace.
-- `searchast` (run `searchfunc`, `searchvar`, or `searchtype` from the command
-  prompt): find a function, type, or
-  variable definition anywhere in the workspace using structural Tree-sitter
-  queries.
+- `searchfunc`, `searchvar`, and `searchtype`: find a function, variable, or
+  type definition anywhere in the workspace from the
+  [symbol index](./symbol-index.md). `-r <dir>` limits them to one project.
 
 ### Very large workspaces
 

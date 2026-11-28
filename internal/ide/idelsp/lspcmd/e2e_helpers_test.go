@@ -35,30 +35,6 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 )
 
-// findGopls locates the gopls binary or skips the test.
-func findGopls(t *testing.T) string {
-	t.Helper()
-	goplsBin, err := exec.LookPath("gopls")
-	if err != nil {
-		for _, p := range []string{
-			filepath.Join(
-				os.Getenv("HOME"),
-				".rune", "bin", "gopls",
-			),
-			filepath.Join(
-				os.Getenv("HOME"),
-				"go", "bin", "gopls",
-			),
-		} {
-			if _, err := os.Stat(p); err == nil {
-				return p
-			}
-		}
-		t.Skip("gopls not found, skipping e2e test")
-	}
-	return goplsBin
-}
-
 // setupTestWorkspace copies testdata into a temp directory.
 func setupTestWorkspace(
 	t *testing.T, testdataDir string,

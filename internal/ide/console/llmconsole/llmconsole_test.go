@@ -27,13 +27,11 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi/storagestub"
-	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"github.com/unstablebuild/rune-go-sdk/tui"
-	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/llm"
 	"unstable.build/rune/internal/llm/llamacpp"
 	"unstable.build/rune/internal/llm/llmrouter"
@@ -111,10 +109,9 @@ func newHandlerForTest(t *testing.T) *Handler {
 		Router:           router,
 		LocalRegistry:    router.LocalRegistry(),
 		Storage:          stubStorageForTest(t),
-		WindowManager:    &stubWindowManager{},
 		Notifications:    &stubNotifications{},
 		ScheduleNextTick: syncSchedule,
-		PromptOpener:     &stubPromptOpener{},
+		Prompter:         &fakePrompter{},
 	})
 }
 
@@ -152,71 +149,54 @@ func (s *stubNotifications) UpdateNotificationProgress(_, _ string, _, _ int64) 
 	return nil
 }
 
-// stubWindowManager captures the most recent floating handler so tests
-// can drive it.
-type stubWindowManager struct {
-	lastFloating browserapi.Floating
-	floatErr     error
-}
-
-func (s *stubWindowManager) Focus() (browserapi.Window, error) { return nil, nil }
-func (s *stubWindowManager) Split(
-	browserapi.Orientation, browserapi.Window, browserapi.Handler,
-) (browserapi.Window, error) {
-	return nil, nil
-}
-func (s *stubWindowManager) Floating(
-	h browserapi.Floating, _ browserapi.FloatingConfig,
-) (browserapi.Window, error) {
-	if s.floatErr != nil {
-		return nil, s.floatErr
-	}
-	s.lastFloating = h
-	return stubWindow(1), nil
-}
-func (s *stubWindowManager) Bar(browserapi.BarConfig, tui.Handler) error { return nil }
-func (s *stubWindowManager) Tab(
-	workspaceapi.URI, rune, string, browserapi.Handler,
-) (browserapi.Handler, error) {
-	return nil, nil
-}
-func (s *stubWindowManager) SetWindowContent(browserapi.Window, browserapi.Handler) error {
-	return nil
-}
-func (s *stubWindowManager) CloseWindow(browserapi.Window) error { return nil }
-
-func (s *stubWindowManager) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
-
 type stubWindow uint64
 
 func (w stubWindow) WindowID() uint64 { return uint64(w) }
 
-// stubPromptOpener records the most recent prompt and, when selectIdx is
-// non-negative, immediately drives that option's handler so tests can
-// exercise the confirm flow without an event loop.
-type stubPromptOpener struct {
-	called    bool
-	message   string
-	options   []string
-	bindings  []term.KeyComb
-	handler   handler.PromptHandler
-	selectIdx int
+// fakePrompter opens real handler.Prompts that tests type into with
+// keys. Like a browser, it closes a prompt once the prompt exits.
+type fakePrompter struct {
+	configs []browserapi.PromptConfig
+	prompts []*handler.Prompt
 }
 
-func (s *stubPromptOpener) Prompt(
-	message string, options []string,
-	bindings []term.KeyComb,
-	promptHandler handler.PromptHandler,
-) browser.Window {
-	s.called = true
-	s.message = message
-	s.options = options
-	s.bindings = bindings
-	s.handler = promptHandler
-	if s.selectIdx >= 0 && s.selectIdx < len(options) {
-		promptHandler.OnSelect(s.selectIdx, options[s.selectIdx])
+func (p *fakePrompter) Prompt(
+	cfg browserapi.PromptConfig, h handler.PromptHandler,
+) (browserapi.Window, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
-	return nil
+	fields := make([]handler.PromptField, len(cfg.Fields))
+	for i, f := range cfg.Fields {
+		fields[i] = handler.PromptField{
+			Question: f.Question, Answer: f.Answer, Secret: f.Secret, Mandatory: f.Mandatory,
+		}
+	}
+	p.configs = append(p.configs, cfg)
+	p.prompts = append(p.prompts, handler.NewPrompt(handler.PromptConfig{
+		PromptConfig:   component.PromptConfig{Message: cfg.Message, Options: cfg.Options},
+		PromptHandler:  h,
+		Fields:         fields,
+		OptionBindings: cfg.Bindings,
+	}))
+	return stubWindow(len(p.prompts)), nil
+}
+
+// keys types keys, see term.ParseKeys, into the last prompt opened,
+// dropping those after it exits, and reports whether it exited.
+func (p *fakePrompter) keys(t *testing.T, keys string) (exited bool) {
+	t.Helper()
+	require.NotEmpty(t, p.prompts, "no prompt is open")
+	prompt := p.prompts[len(p.prompts)-1]
+	evs, err := term.ParseKeys(keys)
+	require.NoError(t, err)
+	for _, k := range evs {
+		if exit, _ := prompt.Handle(term.Event{Type: term.EventKey, Key: k.Key, Ch: k.Ch, Mod: k.Mod}); exit {
+			require.NoError(t, prompt.Close())
+			return true
+		}
+	}
+	return false
 }
 
 func TestManualHasRequiredSubcommands(t *testing.T) {

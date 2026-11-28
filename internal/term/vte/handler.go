@@ -424,7 +424,7 @@ func (e *Handler) Handle(ev term.Event) (exit, handled bool) {
 		return
 	}
 
-	err := e.comp.WriteToPty(raw)
+	err := e.writeToPty(raw)
 	if err != nil {
 		e.log(log.ErrorLevel, "write to pty: %s", err)
 		e.notify(browserapi.LevelError, "write to pty: %v", err)
@@ -481,10 +481,19 @@ func (e *Handler) sendEsc() {
 	if handled || len(raw) == 0 {
 		return
 	}
-	if err := e.comp.WriteToPty(raw); err != nil {
+	if err := e.writeToPty(raw); err != nil {
 		e.log(log.ErrorLevel, "write to pty: %s", err)
 		e.notify(browserapi.LevelError, "write to pty: %v", err)
 	}
+}
+
+// writeToPty writes raw, what a key the user pressed sends the program,
+// after what the keys that left modal mode before it send.
+func (e *Handler) writeToPty(raw []byte) error {
+	if e.vi.hold(raw) {
+		return nil
+	}
+	return e.comp.WriteToPty(raw)
 }
 
 // copyPassesThrough reports whether ev is cmd+c with nothing selected to

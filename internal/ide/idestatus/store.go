@@ -22,6 +22,7 @@ package idestatus
 import (
 	"cmp"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -140,7 +141,10 @@ type Store struct {
 	images, focusImages *component.ButtonImages
 	interrupter         term.Interrupter
 	schedule            func(func()) bool
-	sources             map[statusKey]*statusSource
+	// sidebarShade fills the sidebar of every inbox whose style leaves
+	// its background unset.
+	sidebarShade term.Color
+	sources      map[statusKey]*statusSource
 	// pendingNotify holds the sequence number of the deferred state
 	// notification of each source, for a superseded one to drop itself.
 	pendingNotify map[statusKey]uint64
@@ -197,6 +201,14 @@ func (s *Store) SetStyle(style InboxStyle) {
 	if style.Focus != nil {
 		s.focusImages = style.Focus.Images.ButtonImages(s.graphics)
 	}
+}
+
+// SetDefaultAttributes tells s the default colors of the theme, def,
+// which fill the sidebar of every inbox whose style leaves its
+// background unset with a shade between them, from its next draw on,
+// those open included. A def with a default color leaves it unfilled.
+func (s *Store) SetDefaultAttributes(def term.Attributes) {
+	s.sidebarShade = SidebarShade(def)
 }
 
 // SetTabStatus applies report, made by the program behind uri in the
@@ -688,4 +700,26 @@ func statusSourceLabel(name, app string) string {
 		return app
 	}
 	return name + " (" + app + ")"
+}
+
+// sidebarShadeRatio is how far from the background toward the
+// foreground the sidebar's shade is: enough to tell it from the
+// preview, little enough to stay clear of the selection's gray and of
+// muted text.
+const sidebarShadeRatio = 0.08
+
+// SidebarShade returns the color that fills the sidebar of an inbox on a
+// theme whose default colors are def: its background moved 8% of the way
+// to its foreground, lighter on a dark theme and darker on a light one.
+// It returns term.ColorDefault when either color of def is the default.
+func SidebarShade(def term.Attributes) term.Color {
+	br, bg, bb := def.Bg.RGB()
+	fr, fg, fb := def.Fg.RGB()
+	if br < 0 || fr < 0 {
+		return term.ColorDefault
+	}
+	mix := func(b, f int32) int32 {
+		return b + int32(math.Round(float64(f-b)*sidebarShadeRatio))
+	}
+	return term.NewRGBColor(mix(br, fr), mix(bg, fg), mix(bb, fb))
 }

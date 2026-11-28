@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-package codesearch
+package searchfilter
 
 import (
 	"testing"
@@ -34,7 +34,7 @@ func TestCleanRoots(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, cleanRoots(tt.roots))
+			assert.Equal(t, tt.want, CleanRoots(tt.roots))
 		})
 	}
 }
@@ -51,15 +51,15 @@ func TestOutermost(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, outermost(tt.roots))
+			assert.Equal(t, tt.want, Outermost(tt.roots))
 		})
 	}
 }
 
 func TestUnder(t *testing.T) {
-	assert.True(t, under("a/b", []string{"."}))
-	assert.True(t, under("a/b", []string{"a"}))
-	assert.True(t, under("a/b", []string{"a/b"}))
-	assert.False(t, under("ab/c", []string{"a"}))
-	assert.False(t, under("a", []string{"a/b"}))
+	assert.True(t, Under("a/b", []string{"."}))
+	assert.True(t, Under("a/b", []string{"a"}))
+	assert.True(t, Under("a/b", []string{"a/b"}))
+	assert.False(t, Under("ab/c", []string{"a"}))
+	assert.False(t, Under("a", []string{"a/b"}))
 }

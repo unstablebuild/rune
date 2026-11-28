@@ -20,6 +20,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"slices"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/unstablebuild/rune-go-sdk/term"
@@ -28,6 +29,7 @@ import (
 	"unstable.build/rune/internal/term/gui/drawrect"
 	"unstable.build/rune/internal/term/gui/drawtext"
 	"unstable.build/rune/internal/term/gui/font"
+	"unstable.build/rune/internal/term/gui/shaderdevice"
 )
 
 const (
@@ -82,6 +84,19 @@ type renderer struct {
 	// drawn straight onto the screen, so it neither participates in nor
 	// perturbs the frame's row-damage tracking.
 	images imageLayer
+
+	// union merges the rectangles placements covered before the cells
+	// over them are repainted.
+	union rectUnion
+	// covered backs the rectangles the image layers covered in a frame.
+	covered []image.Rectangle
+	// clips are the regions of the screen the cells over placements are
+	// repainted into.
+	clips subImages
+	// cellRendererClips are the regions of renderCells' destination the
+	// cells over placements are repainted into, apart from clips so that
+	// drawing both in a frame does not release the other's.
+	cellRendererClips subImages
 
 	// Reusable scratch for a cell's cluster so routing to the color path
 	// does not allocate per frame; valid only within one cell's handling.
@@ -208,6 +223,22 @@ func (r *renderer) deallocate() {
 		r.drawer = nil
 	}
 	r.images.deallocate()
+	r.clips.deallocate()
+	r.cellRendererClips.deallocate()
+}
+
+// shaderTheme returns the colours shaders resolve: the default colours as
+// the frame paints them, translucent with the window, and other colours
+// opaque, as a shader's alpha already composites over the window.
+func (r *renderer) shaderTheme() shaderdevice.Theme {
+	bg := r.bgColor
+	return shaderdevice.Theme{
+		Background: bg,
+		Foreground: r.fgColor,
+		Resolve: func(c term.Color) color.RGBA {
+			return tcellToColor(c, bg, 1)
+		},
+	}
 }
 
 func (r *renderer) Draw(
@@ -253,30 +284,54 @@ func (r *renderer) drawImages(
 	if len(images) == 0 && len(r.images.textures) == 0 {
 		return
 	}
-	belowBg := r.drawImageLayer(screen, images, term.ImageLayerBelowBackground)
-	r.repaintOver(screen, cells, belowBg, passRects)
-	belowText := r.drawImageLayer(screen, images, term.ImageLayerBelowText)
-	r.repaintOver(screen, cells, append(belowBg, belowText...), passGlyphs, passGlyphsBackground)
-	r.drawImageLayer(screen, images, term.ImageLayerAboveText)
+	r.composeImages(screen, &r.clips, cells, images)
 	r.images.evictUnused()
+	r.clips.evictUnused()
+	r.cellRendererClips.evictUnused()
 }
 
-// drawImageLayer paints the placements belonging to one layer and
-// returns the pixel rectangles they covered.
+// composeImages composites the image placements over cells already drawn
+// into screen, as drawImages does, repainting the cells over them into
+// the regions of screen that clips keeps. It leaves the textures it
+// uploads for drawImages to evict when no draw uses them.
+func (r *renderer) composeImages(
+	screen *ebiten.Image, clips *subImages, cells [][]term.Cell, images []term.Image,
+) {
+	r.covered = r.drawImageLayer(r.covered[:0], screen, images, term.ImageLayerBelowBackground)
+	r.repaintOver(screen, clips, cells, r.covered, passRects)
+	r.covered = r.drawImageLayer(r.covered, screen, images, term.ImageLayerBelowText)
+	r.repaintOver(screen, clips, cells, r.covered, passGlyphs, passGlyphsBackground)
+	r.covered = r.drawImageLayer(r.covered[:0], screen, images, term.ImageLayerAboveText)
+}
+
+// renderCells draws cells and the image placements over them into dst, a
+// shaderdevice.CellRenderer, as Draw draws them into the window but for
+// the cursor. Draw keeps the textures it uploads while draws use them.
+func (r *renderer) renderCells(dst *ebiten.Image, cells [][]term.Cell, images []term.Image) {
+	dst.Fill(r.bgColor)
+	r.renderContent(dst, cells)
+	if len(images) > 0 {
+		r.composeImages(dst, &r.cellRendererClips, cells, images)
+	}
+}
+
+// drawImageLayer paints the placements belonging to one layer, all of
+// them before it returns, and returns dst with the pixel rectangles
+// they covered appended.
 func (r *renderer) drawImageLayer(
-	screen *ebiten.Image, images []term.Image, layer term.ImageLayer,
+	dst []image.Rectangle, screen *ebiten.Image, images []term.Image, layer term.ImageLayer,
 ) []image.Rectangle {
-	var rects []image.Rectangle
 	for _, img := range images {
 		if img.Layer != layer {
 			continue
 		}
 		fill := tcellToColor(img.FillColor, r.bgColor, r.bgOpacity)
 		if rect := r.images.drawOne(screen, img, r.fontManager, r.imageShift(img), fill); !rect.Empty() {
-			rects = append(rects, rect)
+			dst = append(dst, rect)
 		}
 	}
-	return rects
+	r.images.flush()
+	return dst
 }
 
 // imageShift returns how many pixels down img is moved, which is as far
@@ -300,26 +355,81 @@ func (r *renderer) halfCell() float64 {
 	return math.Floor(r.font.CellSize.Y/2) - 2
 }
 
-// repaintOver redraws the given passes of the rows each rect covers,
-// clipped to that rect so the rest of the frame is not composited twice.
+// repaintOver redraws the given passes of the cells that can paint into
+// rects, clipped to them so the rest of the frame is not composited
+// twice, into the regions of screen that clips keeps. Where rects
+// overlap, the cells are redrawn there once.
 func (r *renderer) repaintOver(
-	screen *ebiten.Image, cells [][]term.Cell,
+	screen *ebiten.Image, clips *subImages, cells [][]term.Cell,
 	rects []image.Rectangle, passes ...renderPass,
 ) {
-	for _, rect := range rects {
-		clipped := rect.Intersect(screen.Bounds())
-		if clipped.Empty() {
-			continue
-		}
-		dst := screen.SubImage(clipped).(*ebiten.Image)
-		first, last := r.rowsCovering(clipped, len(cells))
+	for _, clip := range r.union.of(rects, screen.Bounds()) {
+		dst := clips.of(screen, clip)
+		first, last := r.rowsCovering(clip, len(cells))
+		left, right := r.columnsCovering(clip)
 		for _, pass := range passes {
 			for viewY := last; viewY >= first; viewY-- {
-				r.renderRow(dst, cells, viewY, pass)
+				r.renderRow(dst, cells, viewY, pass, left, right)
 			}
 			r.endPass(dst, pass)
 		}
 	}
+}
+
+// rectUnion splits the union of rectangles into disjoint ones, joining
+// those that line up. Its buffers are reused across calls.
+type rectUnion struct {
+	clipped, spans, out []image.Rectangle
+	ys, open, next      []int
+}
+
+// of returns the union of rects within bounds as disjoint rectangles,
+// which are valid until the next call.
+func (u *rectUnion) of(rects []image.Rectangle, bounds image.Rectangle) []image.Rectangle {
+	u.clipped, u.ys = u.clipped[:0], u.ys[:0]
+	for _, rect := range rects {
+		if rect = rect.Intersect(bounds); !rect.Empty() {
+			u.clipped = append(u.clipped, rect)
+			u.ys = append(u.ys, rect.Min.Y, rect.Max.Y)
+		}
+	}
+	slices.Sort(u.ys)
+	u.ys = slices.Compact(u.ys)
+
+	// Each band between consecutive edges is covered by disjoint spans;
+	// a span lined up with one of the band above extends it downwards.
+	u.out, u.open = u.out[:0], u.open[:0]
+	for i := 1; i < len(u.ys); i++ {
+		top, bottom := u.ys[i-1], u.ys[i]
+		u.spans = u.spans[:0]
+		for _, rect := range u.clipped {
+			if rect.Min.Y <= top && rect.Max.Y >= bottom {
+				u.spans = append(u.spans, image.Rect(rect.Min.X, top, rect.Max.X, bottom))
+			}
+		}
+		slices.SortFunc(u.spans, func(a, b image.Rectangle) int { return a.Min.X - b.Min.X })
+		u.next = u.next[:0]
+		above := 0
+		for k := 0; k < len(u.spans); {
+			span := u.spans[k]
+			for k++; k < len(u.spans) && u.spans[k].Min.X <= span.Max.X; k++ {
+				span.Max.X = max(span.Max.X, u.spans[k].Max.X)
+			}
+			for above < len(u.open) && u.out[u.open[above]].Min.X < span.Min.X {
+				above++
+			}
+			if above < len(u.open) && u.out[u.open[above]].Min.X == span.Min.X &&
+				u.out[u.open[above]].Max.X == span.Max.X {
+				u.out[u.open[above]].Max.Y = bottom
+				u.next = append(u.next, u.open[above])
+				continue
+			}
+			u.next = append(u.next, len(u.out))
+			u.out = append(u.out, span)
+		}
+		u.open, u.next = u.next, u.open
+	}
+	return u.out
 }
 
 // rowsCovering returns the rows that can paint into rect, widened by one
@@ -328,6 +438,15 @@ func (r *renderer) rowsCovering(rect image.Rectangle, height int) (first, last i
 	first = max(0, r.fontManager.CellY(float64(rect.Min.Y))-1)
 	last = min(height-1, r.fontManager.CellY(float64(rect.Max.Y-1))+1)
 	return first, last
+}
+
+// columnsCovering returns the right-exclusive range of columns whose
+// cells can paint into rect, widened by one column for glyphs that reach
+// past their own cells.
+func (r *renderer) columnsCovering(rect image.Rectangle) (left, right int) {
+	left = max(0, r.fontManager.CellX(float64(rect.Min.X))-1)
+	right = r.fontManager.CellX(float64(rect.Max.X-1)) + 2
+	return left, right
 }
 
 // computeDirtyRows marks r.dirtyRows for the rows that must be
@@ -516,7 +635,7 @@ func (r *renderer) renderContent(screen *ebiten.Image, cells [][]term.Cell) {
 	// atlas page batches into one DrawTriangles per blend.
 	for _, pass := range glyphPasses {
 		for viewY := len(cells) - 1; viewY >= 0; viewY-- {
-			r.renderRow(screen, cells, viewY, pass)
+			r.renderRow(screen, cells, viewY, pass, 0, len(cells[viewY]))
 		}
 		r.endPass(screen, pass)
 	}
@@ -534,7 +653,7 @@ func (r *renderer) repaintRows(cells [][]term.Cell) {
 			if pass == 0 {
 				r.clearRow(viewY)
 			}
-			r.renderRow(r.frame, cells, viewY, glyphPasses[pass])
+			r.renderRow(r.frame, cells, viewY, glyphPasses[pass], 0, len(cells[viewY]))
 		}
 		r.endPass(r.frame, glyphPasses[pass])
 	}
@@ -554,8 +673,13 @@ func (r *renderer) endPass(dst *ebiten.Image, pass renderPass) {
 	}
 }
 
+// renderRow draws the given pass of the cells of row viewY in the
+// right-exclusive range of columns from left to right. A cell left of
+// the range is drawn when it spans into it, as a wide cell or a ligature
+// does.
 func (r *renderer) renderRow(
 	screen *ebiten.Image, cells [][]term.Cell, viewY int, pass renderPass,
+	left, right int,
 ) {
 	row := cells[viewY]
 	pixelY := r.fontManager.PixelY(viewY)
@@ -568,10 +692,16 @@ func (r *renderer) renderRow(
 	var temp color.RGBA
 	var skipRunes int
 	// draw text content of each cell in row
-	for viewX := range len(row) {
+	for viewX := range min(right, len(row)) {
 		if skipRunes > 0 {
 			skipRunes--
 			continue
+		}
+		if viewX < left {
+			if span := r.cellSpan(cells, viewX, viewY); viewX+span <= left {
+				skipRunes = span - 1
+				continue
+			}
 		}
 		cell := row[viewX]
 		isBackground := graphemecluster.IsBackground(cell.Ch)
@@ -687,6 +817,19 @@ func (r *renderer) cellCluster(cell term.Cell) []rune {
 	r.emojiCluster = append(r.emojiCluster[:0], cell.Ch)
 	r.emojiCluster = append(r.emojiCluster, cell.CombiningRunes()...)
 	return r.emojiCluster
+}
+
+// cellSpan returns how many columns renderRow consumes for the cell at
+// (x, y): a ligature's length, a wide cell's width, or one.
+func (r *renderer) cellSpan(cells [][]term.Cell, x, y int) int {
+	cell := cells[y][x]
+	if cell.Ch == 0 || cell.Ch == '\t' {
+		return 1
+	}
+	if n := r.ligatureLength(cells, x, y); n > 0 {
+		return n
+	}
+	return max(1, int(cell.Width))
 }
 
 func (r *renderer) handleLigatures(

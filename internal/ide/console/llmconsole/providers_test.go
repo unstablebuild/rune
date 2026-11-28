@@ -37,22 +37,20 @@ import (
 // newProvidersHandlerForTest builds a providersHandler wired to a real
 // router (for the key store) plus UI stubs.
 func newProvidersHandlerForTest(t *testing.T) (
-	*providersHandler, *stubWindowManager, *stubNotifications, *stubPromptOpener,
+	*providersHandler, *stubNotifications, *fakePrompter,
 ) {
 	t.Helper()
-	wm := &stubWindowManager{}
 	notifs := &stubNotifications{}
-	prompt := &stubPromptOpener{selectIdx: -1}
+	prompt := &fakePrompter{}
 	h := newProvidersHandler(providersConfig{
 		storage:  storagestub.NewInMemoryService(),
 		router:   newRouterForTest(t),
-		wm:       wm,
 		notifs:   notifs,
 		schedule: syncSchedule,
 		prompt:   prompt,
 	})
 	h.spawn = func(fn func()) { fn() }
-	return h, wm, notifs, prompt
+	return h, notifs, prompt
 }
 
 func TestProvidersNilDependencyPanics(t *testing.T) {
@@ -65,7 +63,6 @@ func TestProvidersNilDependencyPanics(t *testing.T) {
 		Router:           router,
 		LocalRegistry:    newRegistryForTest(t),
 		Storage:          nil,
-		WindowManager:    &stubWindowManager{},
 		Notifications:    &stubNotifications{},
 		ScheduleNextTick: syncSchedule,
 	})
@@ -85,35 +82,35 @@ func renderedOnce(
 }
 
 func TestProvidersNoArgsShowsHelp(t *testing.T) {
-	h, _, _, _ := newProvidersHandlerForTest(t)
+	h, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
 		repl.Command{Name: "models providers", Args: nil}, nil)
 	renderedOnce(t, it, err)
 }
 
 func TestProvidersUnknownProviderShowsHelp(t *testing.T) {
-	h, _, _, _ := newProvidersHandlerForTest(t)
+	h, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
 		repl.Command{Name: "models providers", Args: []string{"bogus", "status"}}, nil)
 	renderedOnce(t, it, err)
 }
 
 func TestProvidersCodexNoArgsShowsHelp(t *testing.T) {
-	h, _, _, _ := newProvidersHandlerForTest(t)
+	h, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
 		repl.Command{Name: "models providers", Args: []string{"codex"}}, nil)
 	renderedOnce(t, it, err)
 }
 
 func TestProvidersClaudeNoArgsShowsHelp(t *testing.T) {
-	h, _, _, _ := newProvidersHandlerForTest(t)
+	h, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
 		repl.Command{Name: "models providers", Args: []string{"claude"}}, nil)
 	renderedOnce(t, it, err)
 }
 
 func TestProvidersClaudeStatusDispatches(t *testing.T) {
-	h, _, _, _ := newProvidersHandlerForTest(t)
+	h, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
 		repl.Command{Name: "models providers", Args: []string{"claude", "status"}}, nil)
 	renderedOnce(t, it, err)
@@ -130,21 +127,21 @@ func TestFormatClaudeStatus(t *testing.T) {
 }
 
 func TestProvidersHostedNoArgsShowsHelp(t *testing.T) {
-	h, _, _, _ := newProvidersHandlerForTest(t)
+	h, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
 		repl.Command{Name: "models providers", Args: []string{"openai"}}, nil)
 	renderedOnce(t, it, err)
 }
 
 func TestProvidersHostedUnknownSubcommandShowsHelp(t *testing.T) {
-	h, _, _, _ := newProvidersHandlerForTest(t)
+	h, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
 		repl.Command{Name: "models providers", Args: []string{"openai", "frobnicate"}}, nil)
 	renderedOnce(t, it, err)
 }
 
 func TestProvidersHostedStatusEmpty(t *testing.T) {
-	h, _, _, _ := newProvidersHandlerForTest(t)
+	h, _, _ := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
 		repl.Command{Name: "providers", Args: []string{"anthropic", "status"}}, nil)
 	require.NoError(t, err)
@@ -155,7 +152,7 @@ func TestProvidersHostedStatusEmpty(t *testing.T) {
 
 func TestProvidersHostedUseAndRemove(t *testing.T) {
 	ctx := context.Background()
-	h, _, _, _ := newProvidersHandlerForTest(t)
+	h, _, _ := newProvidersHandlerForTest(t)
 	require.NoError(t, h.router.AddProviderKey(ctx, llmrouter.ProviderOpenAI, "work", "k1", ""))
 	require.NoError(t, h.router.AddProviderKey(ctx, llmrouter.ProviderOpenAI, "home", "k2", ""))
 
@@ -180,7 +177,7 @@ func TestProvidersHostedUseAndRemove(t *testing.T) {
 
 func TestProvidersComplete(t *testing.T) {
 	ctx := context.Background()
-	h, _, _, _ := newProvidersHandlerForTest(t)
+	h, _, _ := newProvidersHandlerForTest(t)
 	require.NoError(t, h.router.AddProviderKey(ctx, llmrouter.ProviderOpenAI, "work", "k1", ""))
 	require.NoError(t, h.router.AddProviderKey(ctx, llmrouter.ProviderOpenAI, "home", "k2", ""))
 
@@ -223,11 +220,11 @@ func TestProvidersComplete(t *testing.T) {
 }
 
 func TestProviderAddNoNameShowsHelp(t *testing.T) {
-	h, wm, _, _ := newProvidersHandlerForTest(t)
+	h, _, prompt := newProvidersHandlerForTest(t)
 	it, err := h.HandleCommand(context.Background(),
 		repl.Command{Name: "models providers", Args: []string{"openai", "add"}}, nil)
 	renderedOnce(t, it, err)
-	assert.Nil(t, wm.lastFloating, "no prompt should open without a key name")
+	assert.Empty(t, prompt.prompts, "no prompt should open without a key name")
 }
 
 func TestHostedProviderHelpIsRich(t *testing.T) {
@@ -246,26 +243,62 @@ func TestHostedProviderHelpIsRich(t *testing.T) {
 	assert.Contains(t, help, "models providers openai add work")
 }
 
-// submitKey drives the floating inputbox to type key and press Enter.
-func submitKey(t *testing.T, fl browserapi.Floating, key string) {
-	t.Helper()
-	for _, r := range key {
-		fl.Handle(term.Event{Type: term.EventKey, Ch: r})
+func TestProviderAddKeyPrompt(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		keys string
+		// want is the keys verified, none when the prompt does not submit.
+		want []string
+		// wantOpen is whether the prompt stays open, awaiting a key.
+		wantOpen bool
+	}{
+		{name: "submit", keys: "sk-secret<enter>", want: []string{"sk-secret"}},
+		{name: "submit by option", keys: "sk-secret<tab><enter>", want: []string{"sk-secret"}},
+		{name: "esc dismisses", keys: "sk-par<esc>"},
+		{name: "ctrl-c dismisses rather than submitting", keys: "sk-par<c-c>"},
+		{name: "ctrl-d on empty does not submit", keys: "<c-d>", wantOpen: true},
+		{name: "blank key is required", keys: "<space><space><enter>", wantOpen: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, prompt := newProvidersHandlerForTest(t)
+			var verified []string
+			h.verify = func(_ context.Context, _, key, _ string) error {
+				verified = append(verified, key)
+				return nil
+			}
+
+			it, err := h.HandleCommand(context.Background(),
+				repl.Command{Name: "providers", Args: []string{"openai", "add", "work"}}, nil)
+			require.NoError(t, err)
+			require.Len(t, prompt.configs, 1)
+			assert.Equal(t, "Paste your Openai API key", prompt.configs[0].Message)
+			assert.Equal(t, []string{"Add"}, prompt.configs[0].Options)
+			assert.Equal(t,
+				[]browserapi.Field{{Question: "API key", Secret: true, Mandatory: true}},
+				prompt.configs[0].Fields)
+
+			exited := prompt.keys(t, tt.keys)
+			assert.Equal(t, tt.want, verified)
+			assert.Equal(t, tt.wantOpen, !exited, "whether the prompt is open")
+			select {
+			case <-it.(*completionIter).done:
+				assert.False(t, tt.wantOpen, "add completed with the prompt open")
+			default:
+				assert.True(t, tt.wantOpen, "add did not complete")
+			}
+		})
 	}
-	fl.Handle(term.Event{Type: term.EventKey, Key: term.KeyEnter})
 }
 
 func TestProviderAddVerifySuccessStores(t *testing.T) {
 	ctx := context.Background()
-	h, wm, notifs, _ := newProvidersHandlerForTest(t)
+	h, notifs, prompt := newProvidersHandlerForTest(t)
 	h.verify = func(context.Context, string, string, string) error { return nil }
 
 	_, err := h.HandleCommand(ctx,
 		repl.Command{Name: "providers", Args: []string{"openai", "add", "work"}}, nil)
 	require.NoError(t, err)
-	require.NotNil(t, wm.lastFloating, "expected a floating prompt to open")
-
-	submitKey(t, wm.lastFloating, "sk-secret")
+	prompt.keys(t, "sk-secret<enter>")
 
 	active, err := h.router.ProviderKeyActive(ctx, llmrouter.ProviderOpenAI)
 	require.NoError(t, err)
@@ -276,7 +309,7 @@ func TestProviderAddVerifySuccessStores(t *testing.T) {
 
 func TestProviderAddBedrockRequiresRegion(t *testing.T) {
 	ctx := context.Background()
-	h, wm, _, _ := newProvidersHandlerForTest(t)
+	h, _, prompt := newProvidersHandlerForTest(t)
 	verifyCalled := false
 	h.verify = func(context.Context, string, string, string) error {
 		verifyCalled = true
@@ -286,13 +319,13 @@ func TestProviderAddBedrockRequiresRegion(t *testing.T) {
 	_, err := h.HandleCommand(ctx,
 		repl.Command{Name: "providers", Args: []string{"bedrock", "add", "work"}}, nil)
 	require.NoError(t, err)
-	assert.Nil(t, wm.lastFloating, "no key prompt without a region")
+	assert.Empty(t, prompt.prompts, "no key prompt without a region")
 	assert.False(t, verifyCalled)
 }
 
 func TestProviderAddBedrockStoresRegionWithKey(t *testing.T) {
 	ctx := context.Background()
-	h, wm, _, _ := newProvidersHandlerForTest(t)
+	h, _, prompt := newProvidersHandlerForTest(t)
 	var verifiedRegion string
 	h.verify = func(_ context.Context, _, _, region string) error {
 		verifiedRegion = region
@@ -302,9 +335,7 @@ func TestProviderAddBedrockStoresRegionWithKey(t *testing.T) {
 	_, err := h.HandleCommand(ctx,
 		repl.Command{Name: "providers", Args: []string{"bedrock", "add", "work", "eu-west-1"}}, nil)
 	require.NoError(t, err)
-	require.NotNil(t, wm.lastFloating)
-
-	submitKey(t, wm.lastFloating, "bedrock-api-key-abc")
+	prompt.keys(t, "bedrock-api-key-abc<enter>")
 
 	assert.Equal(t, "eu-west-1", verifiedRegion, "verification must probe the key's region")
 	regions, err := h.router.ProviderKeyRegions(ctx, llmrouter.ProviderBedrock)
@@ -314,7 +345,7 @@ func TestProviderAddBedrockStoresRegionWithKey(t *testing.T) {
 
 func TestProviderAddTrimsWhitespace(t *testing.T) {
 	ctx := context.Background()
-	h, wm, _, _ := newProvidersHandlerForTest(t)
+	h, _, prompt := newProvidersHandlerForTest(t)
 	var verified string
 	h.verify = func(_ context.Context, _, key, _ string) error {
 		verified = key
@@ -324,33 +355,12 @@ func TestProviderAddTrimsWhitespace(t *testing.T) {
 	_, err := h.HandleCommand(ctx,
 		repl.Command{Name: "providers", Args: []string{"openai", "add", "work"}}, nil)
 	require.NoError(t, err)
-	require.NotNil(t, wm.lastFloating)
-
-	submitKey(t, wm.lastFloating, "  sk-secret  ")
+	prompt.keys(t, "<space><space>sk-secret<space><space><enter>")
 
 	assert.Equal(t, "sk-secret", verified, "verification must use the trimmed key")
 	active, err := h.router.ProviderKeyActive(ctx, llmrouter.ProviderOpenAI)
 	require.NoError(t, err)
 	assert.Equal(t, "sk-secret", active, "stored key must be trimmed")
-}
-
-func TestProviderAddWhitespaceOnlyKeyAborts(t *testing.T) {
-	ctx := context.Background()
-	h, wm, _, _ := newProvidersHandlerForTest(t)
-	verifyCalled := false
-	h.verify = func(context.Context, string, string, string) error {
-		verifyCalled = true
-		return nil
-	}
-
-	_, err := h.HandleCommand(ctx,
-		repl.Command{Name: "providers", Args: []string{"openai", "add", "work"}}, nil)
-	require.NoError(t, err)
-	submitKey(t, wm.lastFloating, "   ")
-
-	assert.False(t, verifyCalled, "whitespace-only key must not be verified")
-	_, err = h.router.ProviderKeyActive(ctx, llmrouter.ProviderOpenAI)
-	require.ErrorIs(t, err, llmrouter.ErrAPIKeyNotSet)
 }
 
 // drainDone reports a channel that closes once it has been fully drained
@@ -375,13 +385,13 @@ func drainDone(
 
 func TestProviderAddIteratorBlocksUntilStore(t *testing.T) {
 	ctx := context.Background()
-	h, wm, _, _ := newProvidersHandlerForTest(t)
+	h, _, prompt := newProvidersHandlerForTest(t)
 	h.verify = func(context.Context, string, string, string) error { return nil }
 
 	it, err := h.HandleCommand(ctx,
 		repl.Command{Name: "providers", Args: []string{"openai", "add", "work"}}, nil)
 	require.NoError(t, err)
-	require.NotNil(t, wm.lastFloating, "expected a floating prompt to open")
+	require.Len(t, prompt.prompts, 1, "expected the key prompt to open")
 
 	done := drainDone(t, it)
 	select {
@@ -390,7 +400,7 @@ func TestProviderAddIteratorBlocksUntilStore(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	submitKey(t, wm.lastFloating, "sk-secret")
+	prompt.keys(t, "sk-secret<enter>")
 
 	select {
 	case <-done:
@@ -404,13 +414,13 @@ func TestProviderAddIteratorBlocksUntilStore(t *testing.T) {
 }
 
 func TestProviderAddIteratorUnblocksOnContextCancel(t *testing.T) {
-	h, wm, _, _ := newProvidersHandlerForTest(t)
+	h, _, prompt := newProvidersHandlerForTest(t)
 	h.verify = func(context.Context, string, string, string) error { return nil }
 
 	it, err := h.HandleCommand(context.Background(),
 		repl.Command{Name: "providers", Args: []string{"openai", "add", "work"}}, nil)
 	require.NoError(t, err)
-	require.NotNil(t, wm.lastFloating)
+	require.Len(t, prompt.prompts, 1)
 
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -432,13 +442,13 @@ func TestProviderAddIteratorUnblocksOnContextCancel(t *testing.T) {
 }
 
 func TestProviderAddIteratorCloseIsIdempotent(t *testing.T) {
-	h, wm, _, _ := newProvidersHandlerForTest(t)
+	h, _, prompt := newProvidersHandlerForTest(t)
 	h.verify = func(context.Context, string, string, string) error { return nil }
 
 	it, err := h.HandleCommand(context.Background(),
 		repl.Command{Name: "providers", Args: []string{"openai", "add", "work"}}, nil)
 	require.NoError(t, err)
-	require.NotNil(t, wm.lastFloating)
+	require.Len(t, prompt.prompts, 1)
 
 	require.NoError(t, it.Close())
 	require.NoError(t, it.Close())
@@ -447,56 +457,46 @@ func TestProviderAddIteratorCloseIsIdempotent(t *testing.T) {
 	assert.False(t, ok, "Next must report completion after Close")
 }
 
-func TestProviderAddVerifyFailOpensConfirm(t *testing.T) {
-	ctx := context.Background()
-	h, wm, _, prompt := newProvidersHandlerForTest(t)
-	prompt.selectIdx = -1 // capture the prompt without auto-selecting
-	h.verify = func(context.Context, string, string, string) error {
-		return errors.New("401 invalid api key")
+func TestProviderAddVerifyFailConfirm(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		keys      string
+		wantStore bool
+	}{
+		{name: "yes stores", keys: "y", wantStore: true},
+		{name: "no does not store", keys: "n"},
+		{name: "esc does not store", keys: "<esc>"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			h, _, prompt := newProvidersHandlerForTest(t)
+			h.verify = func(context.Context, string, string, string) error {
+				return errors.New("401 invalid api key")
+			}
+
+			it, err := h.HandleCommand(ctx,
+				repl.Command{Name: "providers", Args: []string{"openai", "add", "work"}}, nil)
+			require.NoError(t, err)
+			prompt.keys(t, "sk-bad<enter>")
+
+			require.Len(t, prompt.configs, 2, "a confirmation prompt should open")
+			confirm := prompt.configs[1]
+			assert.Equal(t, []string{" yes ", " no "}, confirm.Options)
+			assert.Equal(t, []term.KeyComb{{Ch: 'y'}, {Ch: 'n'}}, confirm.Bindings)
+			assert.Contains(t, confirm.Message, "401 invalid api key")
+			assert.Contains(t, confirm.Message, "Do you still want to add it?")
+			_, err = h.router.ProviderKeyActive(ctx, llmrouter.ProviderOpenAI)
+			require.ErrorIs(t, err, llmrouter.ErrAPIKeyNotSet, "stored before the user confirms")
+
+			assert.True(t, prompt.keys(t, tt.keys), "the confirmation did not close")
+			<-it.(*completionIter).done
+			active, err := h.router.ProviderKeyActive(ctx, llmrouter.ProviderOpenAI)
+			if tt.wantStore {
+				require.NoError(t, err)
+				assert.Equal(t, "sk-bad", active)
+			} else {
+				require.ErrorIs(t, err, llmrouter.ErrAPIKeyNotSet)
+			}
+		})
 	}
-
-	_, err := h.HandleCommand(ctx,
-		repl.Command{Name: "providers", Args: []string{"openai", "add", "work"}}, nil)
-	require.NoError(t, err)
-	require.NotNil(t, wm.lastFloating, "redacted key prompt should open")
-
-	submitKey(t, wm.lastFloating, "sk-bad")
-
-	// The confirmation prompt is opened through the shared PromptOpener,
-	// not as a hand-rolled floating window.
-	require.True(t, prompt.called, "a confirmation prompt should open")
-	assert.Equal(t, []string{" yes ", " no "}, prompt.options)
-	assert.Contains(t, prompt.message, "401 invalid api key")
-	assert.Contains(t, prompt.message, "Do you still want to add it?")
-
-	// Not stored until the user confirms.
-	_, err = h.router.ProviderKeyActive(ctx, llmrouter.ProviderOpenAI)
-	require.ErrorIs(t, err, llmrouter.ErrAPIKeyNotSet)
-
-	// Select "yes" (option index 0).
-	prompt.handler.OnSelect(0, prompt.options[0])
-
-	active, err := h.router.ProviderKeyActive(ctx, llmrouter.ProviderOpenAI)
-	require.NoError(t, err)
-	assert.Equal(t, "sk-bad", active)
-}
-
-func TestProviderAddVerifyFailConfirmNo(t *testing.T) {
-	ctx := context.Background()
-	h, wm, _, prompt := newProvidersHandlerForTest(t)
-	prompt.selectIdx = -1
-	h.verify = func(context.Context, string, string, string) error {
-		return errors.New("401 invalid api key")
-	}
-
-	_, err := h.HandleCommand(ctx,
-		repl.Command{Name: "providers", Args: []string{"openai", "add", "work"}}, nil)
-	require.NoError(t, err)
-	submitKey(t, wm.lastFloating, "sk-bad")
-
-	require.True(t, prompt.called)
-	prompt.handler.OnSelect(1, prompt.options[1]) // "no"
-
-	_, err = h.router.ProviderKeyActive(ctx, llmrouter.ProviderOpenAI)
-	require.ErrorIs(t, err, llmrouter.ErrAPIKeyNotSet)
 }

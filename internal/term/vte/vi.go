@@ -21,6 +21,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/logging"
@@ -71,6 +72,11 @@ type viHandler struct {
 	pending []viKey
 	// entry is where the cursor was put on entering modal mode.
 	entry term.Coordinates
+	// resumed is set while a session entered before the key that left
+	// the last one reached the shell has yet to send it a key: the
+	// shell's cursor goes where the keys typed after that key put it, so
+	// leaving again from entry sends nothing.
+	resumed bool
 	// bellAnswered is set while the keys that waited for the probe are
 	// sent: the bell that answered it left the shell's cursor at the
 	// start of its input, which is what the first of them waits for.
@@ -83,6 +89,18 @@ type viHandler struct {
 	// syncedCommand is the Component.ShellCommand seq of the last command
 	// a probe succeeded in, zero for none.
 	syncedCommand uint64
+
+	// typed holds what the keys pressed outside modal mode send the
+	// program while a key that left modal mode has yet to reach it, such
+	// as i, whose cursor move they must follow. It has a lock of its own:
+	// the tick that writes them may run while sync.mu is held.
+	typed struct {
+		mu   sync.Mutex
+		keys []*typedKeys
+		// holding is set while keys is not empty, so that typing
+		// outside modal mode takes no lock otherwise.
+		holding atomic.Bool
+	}
 
 	// keeep a copy of vi, which reads the same contents but edits
 	// nothing, so it can be accessed synchronously and provide
@@ -109,12 +127,15 @@ type parentComponent interface {
 	PrimaryScroll() (*component.Scroll, sync.Locker)
 	URI() workspaceapi.URI
 	cursorAtScroll() term.Coordinates
-	scheduleBellCallback(callback func()) bool
+	// scheduleBellCallback calls dropped instead of callback if it
+	// discards callback.
+	scheduleBellCallback(callback, dropped func()) bool
 	pendingCallbacks() int
 	systemCanDispatchBell(callback func(error))
 	// shellCommand is Component.ShellCommand for callers that hold the
 	// PrimaryScroll Locker.
 	shellCommand() (seq uint64, running, reportedStatus bool)
+	WriteToPty(data []byte) error
 }
 
 // viProbe is how far a modal session trusts the program with the keys
@@ -141,6 +162,18 @@ const (
 type viKey struct {
 	ev   term.Event
 	kind viKeyKind
+	// typed, for a key that leaves modal mode toward the program, is
+	// what the keys pressed after it send.
+	typed *typedKeys
+}
+
+// typedKeys is what the keys pressed after a key that left modal mode
+// send the program, in the order pressed.
+type typedKeys struct {
+	data []byte
+	// sent is set once the key that left reached the program, or once
+	// it never will.
+	sent bool
 }
 
 type viKeyKind int
@@ -152,6 +185,8 @@ const (
 	viKeyRead
 	viKeyEdit
 	viKeyEndOfLine
+	// viKeyAppend appends after the line, as A does.
+	viKeyAppend
 	viKeyEnter
 	viKeyUp
 	viKeyDown
@@ -566,11 +601,19 @@ func (v *viHandler) handle(ev term.Event) (exit, handled bool) {
 	if k.kind == viKeyNone {
 		return
 	}
+	if v.resumed {
+		if k.kind == viKeyExit && !v.reachesShell(k) {
+			// what is typed next joins what was typed after the key
+			// that left, behind its cursor move
+			return
+		}
+		v.resumed = false
+	}
 	switch v.probe {
 	case viSynced:
-		v.send(k)
+		v.send(v.leave(k))
 	case viProbing:
-		v.pending = append(v.pending, k)
+		v.pending = append(v.pending, v.leave(k))
 	case viUnprobed:
 		if !v.reachesShell(k) {
 			v.read(k)
@@ -584,7 +627,7 @@ func (v *viHandler) handle(ev term.Event) (exit, handled bool) {
 			return k.kind == viKeyExit, handled
 		}
 		v.probe = viProbing
-		v.pending = append(v.pending[:0], k)
+		v.pending = append(v.pending[:0], v.leave(k))
 		v.comp.systemCanDispatchBell(v.probed)
 	case viRefused:
 		if k.kind == viKeyExit || !v.reachesShell(k) {
@@ -596,6 +639,67 @@ func (v *viHandler) handle(ev term.Event) (exit, handled bool) {
 		return false, handled
 	}
 	return
+}
+
+// leave makes the keys pressed after k, if k leaves modal mode, wait for
+// k to reach the program. v.sync.mu must be held.
+func (v *viHandler) leave(k viKey) viKey {
+	if k.kind != viKeyExit && k.kind != viKeyEnter {
+		return k
+	}
+	k.typed = new(typedKeys)
+	v.typed.mu.Lock()
+	defer v.typed.mu.Unlock()
+	v.typed.keys = append(v.typed.keys, k.typed)
+	v.typed.holding.Store(true)
+	return k
+}
+
+// hold holds raw, what a key pressed outside modal mode sends the
+// program, behind the keys that left modal mode and have yet to reach
+// it, and reports whether it did.
+func (v *viHandler) hold(raw []byte) bool {
+	if !v.typed.holding.Load() {
+		return false
+	}
+	v.typed.mu.Lock()
+	defer v.typed.mu.Unlock()
+	last := len(v.typed.keys) - 1
+	if last < 0 {
+		return false
+	}
+	v.typed.keys[last].data = append(v.typed.keys[last].data, raw...)
+	return true
+}
+
+// sent tells that the key that left modal mode with typed reached the
+// program, or never will. What was typed after it is written on a tick,
+// which runs after those that write what the key sent, once what was
+// typed after the keys that left before it is.
+func (v *viHandler) sent(typed *typedKeys) {
+	v.typed.mu.Lock()
+	typed.sent = true
+	v.typed.mu.Unlock()
+	if !v.config.ScheduleNextTick(v.release) {
+		v.release()
+	}
+}
+
+// release writes, oldest first, what was typed after the keys that left
+// modal mode, up to the first of them yet to reach the program.
+func (v *viHandler) release() {
+	v.typed.mu.Lock()
+	defer v.typed.mu.Unlock()
+	for len(v.typed.keys) > 0 && v.typed.keys[0].sent {
+		if data := v.typed.keys[0].data; len(data) > 0 {
+			if err := v.comp.WriteToPty(data); err != nil {
+				v.log(log.ErrorLevel, "write to pty: %v", err)
+			}
+		}
+		v.typed.keys[0] = nil
+		v.typed.keys = v.typed.keys[1:]
+	}
+	v.typed.holding.Store(len(v.typed.keys) > 0)
 }
 
 // handleFrozen runs ev on the frozen screen, which nothing edits and
@@ -678,9 +782,14 @@ func (v *viHandler) classifyOn(vi *vi.Vi, ev term.Event) (k viKey, exit, handled
 		}
 	}
 
+	appends := ev.Mod == 0 && ev.Ch == 'A' && vi.IsNormalMode()
 	v.edited = false
 	_, handled = vi.Handle(ev)
 	k.kind = viKeyRead
+	if appends {
+		k.kind = viKeyAppend
+		appendAfterLine(vi)
+	}
 	if v.edited {
 		k.kind = viKeyEdit
 	}
@@ -691,7 +800,7 @@ func (v *viHandler) classifyOn(vi *vi.Vi, ev term.Event) (k viKey, exit, handled
 // its input.
 func (v *viHandler) reachesShell(k viKey) bool {
 	switch k.kind {
-	case viKeyRead, viKeyEndOfLine:
+	case viKeyRead, viKeyEndOfLine, viKeyAppend:
 		return false
 	case viKeyExit:
 		// leaving only moves the shell's cursor when the vi cursor was
@@ -706,10 +815,13 @@ func (v *viHandler) reachesShell(k viKey) bool {
 // read runs k, which must not reach the shell, on the vi alone.
 func (v *viHandler) read(k viKey) {
 	switch k.kind {
-	case viKeyRead:
+	case viKeyRead, viKeyAppend:
 		v.reading = true
 		v.sync.vi.Handle(k.ev)
 		v.reading = false
+		if k.kind == viKeyAppend {
+			appendAfterLine(v.sync.vi)
+		}
 		v.keepInContent()
 	case viKeyEndOfLine:
 		// unlike remoteMoveToEndOfLine, which clamps to the start of the
@@ -742,6 +854,24 @@ func blankRow(row []term.Cell) bool {
 	return true
 }
 
+// appendAfterLine puts the cursor of vi, which A left at the end of its
+// row, after the last cell a program wrote there: past it, the cells that
+// make the row as wide as the screen are no part of the line, and a shell
+// appends nothing there.
+func appendAfterLine(vi *vi.Vi) {
+	pos := vi.CursorAtScroll()
+	cells := vi.CellView().RawCells()
+	if pos.Y >= len(cells) {
+		return
+	}
+	row := cells[pos.Y]
+	x := min(pos.X, len(row))
+	for x > 0 && row[x-1].Ch == vtescreen.DefaultChar {
+		x--
+	}
+	vi.SetCursorAtScroll(term.Coordinates{Y: pos.Y, X: x})
+}
+
 // send runs k once the shell answered the probe: whatever reaches it
 // waits for a bell, which puts its cursor at the start of its input.
 func (v *viHandler) send(k viKey) {
@@ -751,14 +881,14 @@ func (v *viHandler) send(k viKey) {
 		// with end of line.
 		v.scheduleAfterBell(false, v.remoteMoveToEndOfLine)
 	case viKeyExit:
-		v.scheduleAfterBell(false, func() {
+		v.leaveAfterBell(k, func() {
 			pos := v.trimToLastValidColumn(v.sync.vi.CursorAtScroll())
 			v.log(log.TraceLevel, "call scheduled cleanup of vi position to comp: %+v", pos)
 			v.remoteMoveTo(pos)
 			v.remoteFlush()
 		})
 	case viKeyEnter:
-		v.scheduleAfterBell(false, func() {
+		v.leaveAfterBell(k, func() {
 			v.remote.linefeed()
 			v.remoteFlush()
 		})
@@ -774,7 +904,7 @@ func (v *viHandler) send(k viKey) {
 			v.remoteFlush()
 		})
 		v.scheduleAfterBell(false, v.moveViToLastLineCharacter)
-	case viKeyRead, viKeyEdit:
+	case viKeyRead, viKeyEdit, viKeyAppend:
 		// schedule any potential edits after finding the start of the prompt:
 		// this avoids race conditions when serializing handle with bell callbacks
 		// and also prevents the main loop goroutine to not deadlock with the vte parser
@@ -783,6 +913,9 @@ func (v *viHandler) send(k viKey) {
 		v.scheduleAfterBell(k.kind == viKeyEdit, func() {
 			v.vteParserEdited = false
 			v.sync.vi.Handle(k.ev)
+			if k.kind == viKeyAppend {
+				appendAfterLine(v.sync.vi)
+			}
 		})
 
 		// correct cursor coordinates beyond last line so
@@ -818,6 +951,9 @@ func (v *viHandler) probed(err error) {
 		// those that do not edit, from where the sync vi is
 		v.cancelCommand()
 		for _, k := range pending {
+			if k.typed != nil {
+				v.sent(k.typed)
+			}
 			k, _, _ = v.classify(k.ev)
 			if k.kind == viKeyExit || !v.reachesShell(k) {
 				v.read(k)
@@ -875,19 +1011,32 @@ func (v *viHandler) escReachesCommand() bool {
 func (v *viHandler) enterViMode(pos term.Coordinates) {
 	pos.X = int(math.Max(float64(pos.X-1), float64(0)))
 
-	// reset offset
-	v.sync.scroll.SetOffset(term.Coordinates{})
-	v.sync.scroll.Attributes = v.sync.vteScroll.Attributes
-
 	v.sync.mu.Lock()
 	defer v.sync.mu.Unlock()
 	v.active = true
+	v.sync.scroll.Attributes = v.sync.vteScroll.Attributes
+	v.resumed = v.leaving()
+	if v.resumed {
+		// pos is where the shell's cursor was before that key moves it
+		// to the vi cursor: the session goes on from there instead, and
+		// its keys wait for that key's as they did before it
+		v.entry = v.sync.vi.CursorAtScroll()
+		return
+	}
+	v.sync.scroll.SetOffset(term.Coordinates{})
 	v.viSetCursorAtScroll(pos)
 	v.entry = v.sync.vi.CursorAtScroll()
 	// a probe still waiting for its bell answers for this session too
 	if v.probe != viProbing {
 		v.probe = viUnprobed
 	}
+}
+
+// leaving reports whether a key that left modal mode, and the keys typed
+// after it, have yet to reach the shell, whose cursor it moves to the vi
+// cursor unless the session turned read-only. v.sync.mu must be held.
+func (v *viHandler) leaving() bool {
+	return (v.probe == viProbing || v.probe == viSynced) && v.typed.holding.Load()
 }
 
 // freeze enters modal mode over cells, a copy of the screen a full-screen
@@ -956,6 +1105,23 @@ func (v *viHandler) log(level log.Level, line string, params ...any) {
 }
 
 func (v *viHandler) scheduleAfterBell(forceSchedule bool, cb func()) {
+	v.scheduleAfterBellOrDrop(forceSchedule, cb, nil)
+}
+
+// leaveAfterBell runs cb, which sends k, a key that leaves modal mode, as
+// scheduleAfterBell does, then writes what was typed after k, which it
+// also writes if cb never runs.
+func (v *viHandler) leaveAfterBell(k viKey, cb func()) {
+	sent := func() { v.sent(k.typed) }
+	v.scheduleAfterBellOrDrop(false, func() {
+		cb()
+		sent()
+	}, sent)
+}
+
+// scheduleAfterBellOrDrop is scheduleAfterBell, but calls dropped, if
+// set, instead of cb if cb never runs.
+func (v *viHandler) scheduleAfterBellOrDrop(forceSchedule bool, cb, dropped func()) {
 	if v.bellAnswered && v.comp.pendingCallbacks() == 0 {
 		v.bellAnswered = false
 		cb()
@@ -979,9 +1145,12 @@ func (v *viHandler) scheduleAfterBell(forceSchedule bool, cb func()) {
 		// NOTE: this is scheduled as a user callback on the
 		// next event loop tick.
 		cb()
-	})
+	}, dropped)
 	if !ok {
 		v.log(log.WarnLevel, "could not schedule sync trigger: too many events")
+		if dropped != nil {
+			dropped()
+		}
 	}
 }
 

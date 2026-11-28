@@ -19,6 +19,7 @@ package component
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -224,6 +225,124 @@ LRRRRL`,
 	}
 }
 
+func TestFrameGraphicsDrawCornerParts(t *testing.T) {
+	const corner, edge = "file:///corner.png", "file:///edge.png"
+	every := component.FrameCharSetGraphics{
+		TopLeft: corner, TopRight: corner, BottomLeft: corner, BottomRight: corner,
+		HorizontalTop: edge, HorizontalBottom: edge, VerticalLeft: edge, VerticalRight: edge,
+		CornerWidth: 2, CornerHeight: 2,
+	}
+	noTopLeft := every
+	noTopLeft.TopLeft = ""
+	oneCell := every
+	oneCell.CornerWidth, oneCell.CornerHeight = 0, 0
+	wide := every
+	wide.CornerWidth, wide.CornerHeight = 3, 1
+	tests := []struct {
+		name          string
+		graphics      component.FrameCharSetGraphics
+		width, height int
+		// want shows the part of the corner picture each border cell
+		// shows, as its column and row, -- for the edge picture, ## for a
+		// whole corner picture and xx for no image.
+		want string
+	}{
+		{
+			name: "each corner shows its parts over the edge cells next to it", graphics: every,
+			width: 6, height: 5,
+			want: `
+00 10 -- -- 00 10
+01 .. .. .. .. 11
+-- .. .. .. .. --
+00 .. .. .. .. 10
+01 11 -- -- 01 11`,
+		},
+		{
+			name: "the nearer corner draws a cell, the top or left one halfway", graphics: every,
+			width: 3, height: 3,
+			want: `
+00 10 10
+01 .. 11
+01 11 11`,
+		},
+		{
+			name: "a corner without an image leaves its cells to the edges", graphics: noTopLeft,
+			width: 6, height: 5,
+			want: `
+xx -- -- -- 00 10
+-- .. .. .. .. 11
+-- .. .. .. .. --
+00 .. .. .. .. 10
+01 11 -- -- 01 11`,
+		},
+		{
+			name: "a corner of one cell shows its whole picture", graphics: oneCell,
+			width: 4, height: 3,
+			want: `
+## -- -- ##
+-- .. .. --
+## -- -- ##`,
+		},
+		{
+			name: "a corner as wide as half the frame", graphics: wide,
+			width: 6, height: 3,
+			want: `
+00 10 20 00 10 20
+-- .. .. .. .. --
+00 10 20 00 10 20`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Each part of the corner picture is 2 by 1 pixels.
+			cw, ch := max(1, tt.graphics.CornerWidth), max(1, tt.graphics.CornerHeight)
+			g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			g.Reload(map[string]image.Image{
+				corner: image.NewRGBA(image.Rect(0, 0, 2*cw, ch)),
+				edge:   image.NewRGBA(image.Rect(0, 0, 1, 1)),
+			})
+			f := component.NewFrame(&component.TestComponent{Ch: 'x'})
+			f.Graphics = tt.graphics
+			f.Resize(tt.width, tt.height)
+			s := newImageScreen(tt.width, tt.height)
+			f.Draw(s)
+			g.Draw(s, f, tt.width, tt.height)
+
+			area := image.Rect(0, 0, tt.width, tt.height)
+			grid := make([][]string, tt.height)
+			for y := range grid {
+				grid[y] = make([]string, tt.width)
+				for x := range grid[y] {
+					grid[y][x] = ".."
+					if RingSides(image.Pt(x, y), area) != 0 {
+						grid[y][x] = "xx"
+					}
+				}
+			}
+			for _, img := range s.images {
+				require.Equal(t, image.Pt(1, 1), image.Pt(img.Width, img.Height), "the image at %v", img.Pos)
+				part := "--"
+				switch {
+				case img.Src.Bounds().Dx() == 1:
+				case img.Crop.Empty():
+					part = "##"
+				default:
+					assert.Equal(t, image.Pt(2, 1), img.Crop.Size(), "the part at %v", img.Pos)
+					part = fmt.Sprintf("%d%d", img.Crop.Min.X/2, img.Crop.Min.Y)
+				}
+				grid[img.Pos.Y][img.Pos.X] = part
+			}
+			var b strings.Builder
+			for _, row := range grid {
+				b.WriteByte('\n')
+				b.WriteString(strings.Join(row, " "))
+			}
+			assert.Equal(t, tt.want, b.String())
+		})
+	}
+}
+
 func TestFrameGraphicsDrawSeparator(t *testing.T) {
 	pics := newFramePictures(t)
 	const width, height, y = 7, 5, 2
@@ -336,138 +455,6 @@ func TestFrameGraphicsSeparatorOutsets(t *testing.T) {
 				assert.Equal(t, tt.want[i], img.Visible(), "junction %d", i)
 				assert.Equal(t, 1+max(0, tt.outset.Inward), img.Width, "clipping must not rescale the image")
 				assert.Equal(t, 1+max(0, tt.outset.Top)+max(0, tt.outset.Bottom), img.Height)
-			}
-		})
-	}
-}
-
-func TestFrameGraphicsDrawDivider(t *testing.T) {
-	pics := newFramePictures(t)
-	const width, height, x = 5, 6, 2
-	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
-	full := DividerGraphics{Top: "L", Vertical: "R", Bottom: "L"}
-	overlay := full
-	overlay.Overlay = true
-	edges := component.FrameCharSetGraphics{HorizontalTop: "L", HorizontalBottom: "L"}
-	overlayEdges := edges
-	overlayEdges.Overlay = true
-	for _, tt := range []struct {
-		name                string
-		graphics            DividerGraphics
-		frame               component.FrameCharSetGraphics
-		noImages, underABar bool
-		column, under       string
-	}{
-		{name: "characters only", column: "┬t││b┴", under: "┬t││b┴"},
-		{name: "junctions and tiled rule", graphics: full, column: "LRRRRL", under: "      "},
-		{name: "overlay keeps divider glyphs", graphics: overlay, column: "LRRRRL", under: "┬t││b┴"},
-		{name: "terminal fallback", graphics: full, frame: edges, noImages: true, column: "┬t││b┴", under: "┬t││b┴"},
-		{name: "overlay terminal fallback", graphics: overlay, frame: edges, noImages: true, column: "┬t││b┴", under: "┬t││b┴"},
-		{name: "rule without edge images", graphics: DividerGraphics{Vertical: "R"}, column: "┬RRRR┴", under: "┬    ┴"},
-		{name: "missing junctions preserve rails", graphics: DividerGraphics{Vertical: "R"}, frame: edges, column: "LRRRRL", under: "      "},
-		{name: "no divider images preserves rails", frame: edges, column: "Lt││bL", under: " t││b "},
-		{name: "failed junctions preserve rails", graphics: DividerGraphics{Top: "missing", Vertical: "R", Bottom: "invalid"}, frame: edges, column: "LRRRRL", under: "      "},
-		{name: "failed images keep glyphs", graphics: DividerGraphics{Top: "missing", Vertical: "invalid", Bottom: "missing"}, column: "┬t││b┴", under: "┬t││b┴"},
-		{name: "frame overlay is independent", graphics: DividerGraphics{Vertical: "R"}, frame: overlayEdges, column: "LRRRRL", under: "┬    ┴"},
-		{name: "divider overlay is independent", graphics: DividerGraphics{Vertical: "R", Overlay: true}, frame: edges, column: "LRRRRL", under: " t││b "},
-		{name: "a window bar keeps the top row", graphics: full, underABar: true, column: "┬RRRRL", under: "┬     "},
-		{name: "under a window bar the rule starts with its middle", graphics: full, underABar: true, noImages: true, column: "┬│││b┴", under: "┬│││b┴"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			f := component.NewFrame(&component.TestComponent{Ch: 'x'})
-			f.Attributes = attr
-			f.Graphics = pics.resolve(tt.frame)
-			f.Resize(width, height)
-			cs := DividerCharSet{Top: '┬', VerticalTop: 't', Vertical: '│', VerticalBottom: 'b', Bottom: '┴', Graphics: tt.graphics}
-			for _, uri := range []*string{&cs.Graphics.Top, &cs.Graphics.Vertical, &cs.Graphics.Bottom} {
-				*uri = pics.uris[*uri]
-			}
-			g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
-			t.Cleanup(func() { assert.NoError(t, g.Close()) })
-			g.Reload(map[string]image.Image{pics.uris["L"]: pics.imgs['L'], pics.uris["R"]: pics.imgs['R']})
-			s := newImageScreen(width, height)
-			s.noImages = tt.noImages
-			f.Draw(s)
-			for y, ch := range []rune("┬t││b┴") {
-				s.SetCell(term.Coordinates{X: x, Y: y}, term.NewCell(ch, 1, attr))
-			}
-			g.DrawDivider(s, f, cs, attr, width, height, x, !tt.underABar)
-			column := func(screen string) string {
-				var b strings.Builder
-				for row := range strings.SplitSeq(strings.TrimPrefix(screen, "\n"), "\n") {
-					b.WriteRune([]rune(row)[x])
-				}
-				return b.String()
-			}
-			assert.Equal(t, tt.column, column(s.render(t, pics, attr, tt.graphics.Overlay || tt.frame.Overlay)))
-			assert.Equal(t, tt.under, column(s.String()))
-		})
-	}
-}
-
-func TestFrameGraphicsDividerAttributes(t *testing.T) {
-	pics := newFramePictures(t)
-	frameAttr := term.Attributes{Fg: term.ColorSilver}
-	ruleAttr := term.Attributes{Fg: term.ColorGray}
-	f := component.NewFrame(&component.TestComponent{Ch: 'x'})
-	f.Attributes = frameAttr
-	f.Resize(3, 4)
-	g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
-	t.Cleanup(func() { assert.NoError(t, g.Close()) })
-	g.Reload(map[string]image.Image{pics.uris["L"]: pics.imgs['L']})
-	s := newImageScreen(3, 4)
-	s.noImages = true
-	f.Draw(s)
-	cs := DividerCharSet{Top: '┬', VerticalTop: '│', Vertical: '│', VerticalBottom: '│', Bottom: '┴',
-		Graphics: DividerGraphics{Top: pics.uris["L"], Vertical: pics.uris["L"], Bottom: pics.uris["L"]}}
-	g.DrawDivider(s, f, cs, ruleAttr, 3, 4, 1, true)
-	cells := s.Cells()
-	assert.Equal(t, frameAttr, cells[1].Attributes(), "the top junction takes the frame's attributes")
-	assert.Equal(t, ruleAttr, cells[3+1].Attributes(), "the rule takes its own")
-	assert.Equal(t, ruleAttr, cells[2*3+1].Attributes())
-	assert.Equal(t, frameAttr, cells[3*3+1].Attributes(), "the bottom junction takes the frame's attributes")
-}
-
-func TestFrameGraphicsDividerOutsets(t *testing.T) {
-	pics := newFramePictures(t)
-	for _, tt := range []struct {
-		name          string
-		width, height int
-		x             int
-		outset        DividerOutset
-		want          []image.Rectangle
-	}{
-		{name: "ornaments cover the rule ends", width: 5, height: 7, x: 2, outset: DividerOutset{Left: 1, Right: 1, Inward: 1}, want: []image.Rectangle{image.Rect(1, 0, 4, 2), image.Rect(1, 5, 4, 7)}},
-		{name: "oversized ornaments are clipped", width: 5, height: 7, x: 1, outset: DividerOutset{Left: 3, Right: 6, Inward: 8}, want: []image.Rectangle{image.Rect(0, 0, 5, 7), image.Rect(0, 0, 5, 7)}},
-		{name: "short frame", width: 3, height: 3, x: 1, outset: DividerOutset{Inward: 1}, want: []image.Rectangle{image.Rect(1, 0, 2, 2), image.Rect(1, 1, 2, 3)}},
-		{name: "negative outsets are zero", width: 3, height: 5, x: 1, outset: DividerOutset{Left: -1, Right: -1, Inward: -1}, want: []image.Rectangle{image.Rect(1, 0, 2, 1), image.Rect(1, 4, 2, 5)}},
-		{name: "too narrow", width: 2, height: 3, x: 1},
-		{name: "too short", width: 3, height: 2, x: 1},
-		{name: "left border is not a divider", width: 3, height: 5, x: 0},
-		{name: "right border is not a divider", width: 3, height: 5, x: 2},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			f := component.NewFrame(&component.TestComponent{Ch: 'x'})
-			f.Resize(tt.width, tt.height)
-			cs := DividerCharSet{Graphics: DividerGraphics{Top: pics.uris["L"], Vertical: pics.uris["R"], Bottom: pics.uris["L"], Outset: tt.outset}}
-			g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
-			t.Cleanup(func() { assert.NoError(t, g.Close()) })
-			g.Reload(map[string]image.Image{pics.uris["L"]: pics.imgs['L'], pics.uris["R"]: pics.imgs['R']})
-			s := newImageScreen(tt.width, tt.height)
-			f.Draw(s)
-			g.DrawDivider(s, f, cs, term.Attributes{}, tt.width, tt.height, tt.x, true)
-			if tt.want == nil {
-				assert.Empty(t, s.images)
-				return
-			}
-			require.Len(t, s.images, tt.height)
-			for i, img := range s.images[:tt.height-2] {
-				assert.Equal(t, image.Rect(tt.x, i+1, tt.x+1, i+2), img.Visible())
-			}
-			for i, img := range s.images[tt.height-2:] {
-				assert.Equal(t, tt.want[i], img.Visible(), "junction %d", i)
-				assert.Equal(t, 1+max(0, tt.outset.Left)+max(0, tt.outset.Right), img.Width, "clipping must not rescale the image")
-				assert.Equal(t, 1+max(0, tt.outset.Inward), img.Height)
 			}
 		})
 	}
@@ -640,23 +627,21 @@ func TestFrameGraphicsBackgroundImages(t *testing.T) {
 
 func TestFrameGraphicsDrawCell(t *testing.T) {
 	pics := newFramePictures(t)
-	attr := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack}
-	cell := term.NewCell('c', 1, attr)
+	under := term.Attributes{Fg: term.ColorBlue, Bg: term.ColorTeal}
+	cell := term.NewCell('c', 1, term.Attributes{Fg: term.ColorBlue, Bg: term.ColorBlack})
 	pos := term.Coordinates{X: 1}
 
 	tests := []struct {
 		name       string
 		uri        string
-		overlay    bool
 		noImages   bool
 		expected   string
 		underneath string
 	}{
-		{name: "an image replaces the cell", uri: "L", expected: "\n.L.", underneath: "\n. ."},
-		{name: "an overlay image keeps the cell under it", uri: "L", overlay: true, expected: "\n.L.", underneath: "\n.c."},
-		{name: "no image keeps the cell", expected: "\n.c."},
-		{name: "an image that fails to load keeps the cell", uri: "invalid", expected: "\n.c."},
-		{name: "a writer that cannot draw images keeps the cell", uri: "L", noImages: true, expected: "\n.c."},
+		{name: "an image goes over a blank cell keeping what is under it", uri: "L", expected: "\n.L.", underneath: "\n. ."},
+		{name: "no image draws nothing", expected: "\n.u."},
+		{name: "an image that fails to load writes the cell", uri: "invalid", expected: "\n.c."},
+		{name: "a writer that cannot draw images writes the cell", uri: "L", noImages: true, expected: "\n.c."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -667,11 +652,11 @@ func TestFrameGraphicsDrawCell(t *testing.T) {
 			s := newImageScreen(3, 1)
 			s.noImages = tt.noImages
 			for x := range 3 {
-				s.SetCell(term.Coordinates{X: x}, term.NewCell('.', 1, attr))
+				s.SetCell(term.Coordinates{X: x}, term.NewCell('.', 1, under))
 			}
-			s.SetCell(pos, cell)
-			g.DrawCell(s, pics.uris[tt.uri], pos, cell, tt.overlay)
-			assert.Equal(t, tt.expected, s.render(t, pics, attr, tt.overlay))
+			s.SetCell(pos, term.NewCell('u', 1, under))
+			g.DrawCell(s, pics.uris[tt.uri], pos, cell)
+			assert.Equal(t, tt.expected, s.render(t, pics, under, false))
 			if tt.underneath != "" {
 				assert.Equal(t, tt.underneath, "\n"+s.String())
 			}
@@ -684,8 +669,10 @@ func TestFrameGraphicsDrawOver(t *testing.T) {
 	navy := term.Attributes{Fg: term.ColorWhite, Bg: term.ColorNavy}
 	teal := term.Attributes{Bg: term.ColorTeal}
 	gr := component.FrameCharSetGraphics{TopLeft: pics.uris["L"], HorizontalTop: pics.uris["L"]}
+	wideCorner := component.FrameCharSetGraphics{TopLeft: pics.uris["L"], CornerWidth: 2, CornerHeight: 2}
 	tests := []struct {
 		name     string
+		graphics *component.FrameCharSetGraphics
 		noImages bool
 		keep     []term.Coordinates
 		// bg is the background of each cell: t for teal, under the
@@ -715,9 +702,21 @@ tttn
 t..n
 nnnt`,
 		},
+		{
+			name:     "the cells a corner's image covers keep the background under the frame",
+			graphics: &wideCorner,
+			bg: `
+ttnn
+t..n
+nnnn`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			gr := gr
+			if tt.graphics != nil {
+				gr = *tt.graphics
+			}
 			g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
 			t.Cleanup(func() { assert.NoError(t, g.Close()) })
 			g.Reload(map[string]image.Image{pics.uris["L"]: pics.imgs['L']})
@@ -1571,7 +1570,7 @@ func (c interruptCounter) Interrupt(context.Context) error {
 	return nil
 }
 
-func (c interruptCounter) wait(t *testing.T, n int) {
+func (c interruptCounter) wait(t testing.TB, n int) {
 	t.Helper()
 	for range n {
 		select {

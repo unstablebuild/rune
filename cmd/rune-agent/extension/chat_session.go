@@ -66,6 +66,7 @@ type chatSession struct {
 	agent      *agent.Agent
 	commands   *commandAdapter
 	webBrowser *agentools.WebBrowser
+	runeGUI    *agentools.RuneGUI
 
 	// tx carries what the agent loop shows to the log.
 	tx chan dialoguetui.MessageEvent
@@ -577,6 +578,9 @@ func (s *chatSession) finish(reason string) {
 	close(s.done)
 	if s.webBrowser != nil {
 		s.webBrowser.Close()
+	}
+	if s.runeGUI != nil {
+		s.runeGUI.Close()
 	}
 	// Purely observational; no result fields are honored.
 	s.h.hookRunner.Run(s.h.ctx, hooks.Payload{

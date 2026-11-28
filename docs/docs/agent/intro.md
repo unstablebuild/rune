@@ -123,6 +123,7 @@ conversation:
 | --- | --- |
 | `chatmodel [<model>]` | Show or switch the focused chat's model. |
 | `chateffort [<level>]` | Show or set the focused chat's reasoning effort. |
+| `chatspeed [<speed>]` | Show or set the focused chat's inference speed: `standard`, `fast`, or `ultrafast`. |
 | `chatmaxtokens [<n>]` | Show or set the focused chat's max output tokens. |
 | `chatskill <skill> [args]` | Load a skill into the focused chat. |
 | `chatclear` | Clear the focused chat and archive its previous contents. |
@@ -216,8 +217,9 @@ replaces it, and clicking the attachment drops it.
 
 The agent works with configurable model providers, including OpenAI,
 Codex, Anthropic, Claude, Gemini, and local models. You can switch the
-focused conversation's model or reasoning effort with the `chatmodel` and
-`chateffort` [command prompt](../learn/command-prompt.md) commands.
+focused conversation's model, reasoning effort, or inference speed with the
+`chatmodel`, `chateffort`, and `chatspeed`
+[command prompt](../learn/command-prompt.md) commands.
 
 ### Model aliases
 

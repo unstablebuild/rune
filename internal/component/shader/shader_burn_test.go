@@ -631,6 +631,31 @@ func TestBurn_DesaturatesTheSnapshot(t *testing.T) {
 	assert.Equal(t, term.NewRGBColor(255, 0, 0), snapshot[0][0].Fg, "the snapshot given is left as is")
 }
 
+func TestBurn_DesaturatesTheSnapshotsBackgrounds(t *testing.T) {
+	snapshot := makeCharCells(3, 1)
+	snapshot[0][0].Bg = term.NewRGBColor(10, 20, 30)
+	snapshot[0][1].Bg = term.ColorDefault
+	snapshot[0][2].Bg, snapshot[0][2].Attrs = term.ColorDefault, term.AttrReverse
+	fill := term.Image{
+		Fill: true, FillColor: term.NewRGBColor(0, 90, 200),
+		Width: 1, Height: 1, Layer: term.ImageLayerBelowText,
+	}
+	params := shader.DefaultBurnParams()
+	params.From = shader.Snapshot{Cells: snapshot, Images: []term.Image{fill}, Desaturation: 1}
+	sh := shader.Burn(params, term.Attributes{Bg: term.NewRGBColor(40, 20, 80)})
+
+	live := makeCharCells(3, 1)
+	images := sh.ShadeImages(0, 30, live, nil)
+
+	gray := term.NewRGBColor(33, 33, 33)
+	assert.Equal(t, []term.Color{term.NewRGBColor(18, 18, 18), term.ColorDefault, gray},
+		[]term.Color{live[0][0].Bg, live[0][1].Bg, live[0][2].Bg})
+	canvas := term.Image{Fill: true, FillColor: gray, Width: 3, Height: 1, Layer: term.ImageLayerBelowBackground}
+	fill.FillColor = term.NewRGBColor(76, 76, 76)
+	assert.Equal(t, []term.Image{canvas, fill}, images)
+	assert.Equal(t, term.NewRGBColor(0, 90, 200), params.From.Images[0].FillColor, "the snapshot given is left as is")
+}
+
 func TestBurn_DesaturatesTheSnapshotsPictures(t *testing.T) {
 	red := color.RGBA{R: 200, G: 100, B: 50, A: 255}
 	old := solidPicture(red, image.Rect(0, 0, 4, 2))

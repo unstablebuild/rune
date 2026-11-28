@@ -18,6 +18,7 @@ package idestatus
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"image"
 	"image/color"
@@ -330,15 +331,15 @@ func TestStatusView(t *testing.T) {
 		{
 			name: "nothing reported",
 			steps: []statusViewStep{
-				{width: 45, height: 2, wantSize: []int{48, statusMinHeight}, want: `
-                                 │No preview 
-   No program reported a status  │           `[1:]},
+				{width: 45, height: 2, wantSize: []int{47, statusMinHeight}, want: `
+                                  No preview 
+   No program reported a status              `[1:]},
 				{keys: "jk<down><up>", want: `
-                                 │No preview 
-   No program reported a status  │           `[1:]},
+                                  No preview 
+   No program reported a status              `[1:]},
 				{keys: "<enter>", wantShown: []string{}, want: `
-                                 │No preview 
-   No program reported a status  │           `[1:]},
+                                  No preview 
+   No program reported a status              `[1:]},
 				{width: 20, height: 3, want: `
                     
    No program repo  
@@ -363,75 +364,75 @@ func TestStatusView(t *testing.T) {
 			steps: []statusViewStep{
 				{width: 40, height: 21, wantSize: []int{
 					// The widest line, "working · rune-agent", takes 20 cells.
-					statusTextX + 20 + statusSelectionPad + statusPadRight + statusDividerWidth + len(statusPreviewNone) + 4,
+					statusTextX + 20 + statusSelectionPad + statusPadRight + len(statusPreviewNone) + 4,
 					statusMinHeight,
 				}, want: `
-                            │           
- ▌   1 home                 │           
- ▌ ! claude                 │           
- ▌   blocked                │           
-                            │           
-     1 home                 │           
-   ✗ terminal               │           
-     error                  │           
-                            │           
-     1 home                 │           
-   ✓ make                   │No preview 
-     done                   │           
-                            │           
-     1 home                 │           
-   ⠋ agent                  │           
-     working · rune-agent   │           
-     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%   │           
-                            │           
-     1 home                 │           
-     vim                    │           
-     idle                   │           `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ! claude                             
+ ▌   blocked                            
+                                        
+     1 home                             
+   ✗ terminal                           
+     error                              
+                                        
+     1 home                             
+   ✓ make                    No preview 
+     done                               
+                                        
+     1 home                             
+   ⠋ agent                              
+     working · rune-agent               
+     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%               
+                                        
+     1 home                             
+     vim                                
+     idle                               `[1:]},
 				// A tab never shown is fit to the preview.
 				{keys: "jjj", want: `
-                            │agent067890
-     1 home                 │agent167890
-   ! claude                 │agent267890
-     blocked                │agent367890
-                            │agent467890
-     1 home                 │agent567890
-   ✗ terminal               │agent667890
-     error                  │agent767890
-                            │agent867890
-     1 home                 │agent967890
-   ✓ make                   │agent107890
-     done                   │agent117890
-                            │agent127890
- ▌   1 home                 │agent137890
- ▌ ⠋ agent                  │agent147890
- ▌   working · rune-agent   │agent157890
- ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%   │agent167890
-                            │agent177890
-     1 home                 │agent187890
-     vim                    │agent197890
-     idle                   │agent207890`[1:]},
+                            agent0678901
+     1 home                 agent1678901
+   ! claude                 agent2678901
+     blocked                agent3678901
+                            agent4678901
+     1 home                 agent5678901
+   ✗ terminal               agent6678901
+     error                  agent7678901
+                            agent8678901
+     1 home                 agent9678901
+   ✓ make                   agent1078901
+     done                   agent1178901
+                            agent1278901
+ ▌   1 home                 agent1378901
+ ▌ ⠋ agent                  agent1478901
+ ▌   working · rune-agent   agent1578901
+ ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%   agent1678901
+                            agent1778901
+     1 home                 agent1878901
+     vim                    agent1978901
+     idle                   agent2078901`[1:]},
 				{keys: "<enter>", wantShown: []string{"file:///agent"}, want: `
-                            │agent067890
-     1 home                 │agent167890
-   ! claude                 │agent267890
-     blocked                │agent367890
-                            │agent467890
-     1 home                 │agent567890
-   ✗ terminal               │agent667890
-     error                  │agent767890
-                            │agent867890
-     1 home                 │agent967890
-   ✓ make                   │agent107890
-     done                   │agent117890
-                            │agent127890
- ▌   1 home                 │agent137890
- ▌ ⠋ agent                  │agent147890
- ▌   working · rune-agent   │agent157890
- ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%   │agent167890
-                            │agent177890
-     1 home                 │agent187890
-     vim                    │agent197890
-     idle                   │agent207890`[1:]},
+                            agent0678901
+     1 home                 agent1678901
+   ! claude                 agent2678901
+     blocked                agent3678901
+                            agent4678901
+     1 home                 agent5678901
+   ✗ terminal               agent6678901
+     error                  agent7678901
+                            agent8678901
+     1 home                 agent9678901
+   ✓ make                   agent1078901
+     done                   agent1178901
+                            agent1278901
+ ▌   1 home                 agent1378901
+ ▌ ⠋ agent                  agent1478901
+ ▌   working · rune-agent   agent1578901
+ ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%   agent1678901
+                            agent1778901
+     1 home                 agent1878901
+     vim                    agent1978901
+     idle                   agent2078901`[1:]},
 			},
 		},
 		{
@@ -450,17 +451,17 @@ func TestStatusView(t *testing.T) {
 				}
 			},
 			steps: []statusViewStep{{width: 40, height: 11, want: `
-                        │               
- ▌   1 home             │               
- ▌ ! a                  │               
- ▌   blocked            │               
-                        │               
-     2 other            │  No preview   
-   ✓ b                  │               
-     done               │               
-                        │               
-   ✓ c                  │               
-     done               │               `[1:]}},
+                                        
+ ▌   1 home                             
+ ▌ ! a                                  
+ ▌   blocked                            
+                                        
+     2 other               No preview   
+   ✓ b                                  
+     done                               
+                                        
+   ✓ c                                  
+     done                               `[1:]}},
 		},
 		{
 			name: "progress",
@@ -472,177 +473,177 @@ func TestStatusView(t *testing.T) {
 				f.report("e", statusTestReport(done, "done", 70))
 			},
 			steps: []statusViewStep{{width: 40, height: 23, want: `
-                        │               
- ▌   1 home             │               
- ▌ ✓ done               │               
- ▌   done               │               
-                        │               
-     1 home             │               
-   ⠋ none               │               
-     working            │               
-                        │               
-     1 home             │               
-   ⠋ zero               │               
-     working            │  No preview   
-     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋   0%   │               
-                        │               
-     1 home             │               
-   ⠋ full               │               
-     working            │               
-     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋 100%   │               
-                        │               
-     1 home             │               
-   ⠋ over               │               
-     working            │               
-     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋 100%   │               `[1:]}},
+                                        
+ ▌   1 home                             
+ ▌ ✓ done                               
+ ▌   done                               
+                                        
+     1 home                             
+   ⠋ none                               
+     working                            
+                                        
+     1 home                             
+   ⠋ zero                               
+     working               No preview   
+     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋   0%                   
+                                        
+     1 home                             
+   ⠋ full                               
+     working                            
+     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋 100%                   
+                                        
+     1 home                             
+   ⠋ over                               
+     working                            
+     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋 100%                   `[1:]}},
 		},
 		{
 			name:  "navigation wraps around both ways",
 			setup: threeDone,
 			steps: []statusViewStep{
 				{width: 40, height: 12, want: `
-                        │               
- ▌   1 home             │               
- ▌ ✓ a                  │               
- ▌   done               │               
-                        │               
-     1 home             │  No preview   
-   ✓ b                  │               
-     done               │               
-                        │               
-     1 home             │               
-   ✓ c                  │               
-     done               │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ✓ a                                  
+ ▌   done                               
+                                        
+     1 home                No preview   
+   ✓ b                                  
+     done                               
+                                        
+     1 home                             
+   ✓ c                                  
+     done                               `[1:]},
 				{keys: "k", want: `
-                        │               
-     1 home             │               
-   ✓ a                  │               
-     done               │               
-                        │               
-     1 home             │  No preview   
-   ✓ b                  │               
-     done               │               
-                        │               
- ▌   1 home             │               
- ▌ ✓ c                  │               
- ▌   done               │               `[1:]},
+                                        
+     1 home                             
+   ✓ a                                  
+     done                               
+                                        
+     1 home                No preview   
+   ✓ b                                  
+     done                               
+                                        
+ ▌   1 home                             
+ ▌ ✓ c                                  
+ ▌   done                               `[1:]},
 				{keys: "<down>", want: `
-                        │               
- ▌   1 home             │               
- ▌ ✓ a                  │               
- ▌   done               │               
-                        │               
-     1 home             │  No preview   
-   ✓ b                  │               
-     done               │               
-                        │               
-     1 home             │               
-   ✓ c                  │               
-     done               │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ✓ a                                  
+ ▌   done                               
+                                        
+     1 home                No preview   
+   ✓ b                                  
+     done                               
+                                        
+     1 home                             
+   ✓ c                                  
+     done                               `[1:]},
 				{keys: "<c-j>", want: `
-                        │               
-     1 home             │               
-   ✓ a                  │               
-     done               │               
-                        │               
- ▌   1 home             │  No preview   
- ▌ ✓ b                  │               
- ▌   done               │               
-                        │               
-     1 home             │               
-   ✓ c                  │               
-     done               │               `[1:]},
+                                        
+     1 home                             
+   ✓ a                                  
+     done                               
+                                        
+ ▌   1 home                No preview   
+ ▌ ✓ b                                  
+ ▌   done                               
+                                        
+     1 home                             
+   ✓ c                                  
+     done                               `[1:]},
 				{keys: "<c-n>", want: `
-                        │               
-     1 home             │               
-   ✓ a                  │               
-     done               │               
-                        │               
-     1 home             │  No preview   
-   ✓ b                  │               
-     done               │               
-                        │               
- ▌   1 home             │               
- ▌ ✓ c                  │               
- ▌   done               │               `[1:]},
+                                        
+     1 home                             
+   ✓ a                                  
+     done                               
+                                        
+     1 home                No preview   
+   ✓ b                                  
+     done                               
+                                        
+ ▌   1 home                             
+ ▌ ✓ c                                  
+ ▌   done                               `[1:]},
 				{keys: "<c-p><up>", want: `
-                        │               
- ▌   1 home             │               
- ▌ ✓ a                  │               
- ▌   done               │               
-                        │               
-     1 home             │  No preview   
-   ✓ b                  │               
-     done               │               
-                        │               
-     1 home             │               
-   ✓ c                  │               
-     done               │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ✓ a                                  
+ ▌   done                               
+                                        
+     1 home                No preview   
+   ✓ b                                  
+     done                               
+                                        
+     1 home                             
+   ✓ c                                  
+     done                               `[1:]},
 				{keys: "<c-k>", want: `
-                        │               
-     1 home             │               
-   ✓ a                  │               
-     done               │               
-                        │               
-     1 home             │  No preview   
-   ✓ b                  │               
-     done               │               
-                        │               
- ▌   1 home             │               
- ▌ ✓ c                  │               
- ▌   done               │               `[1:]},
+                                        
+     1 home                             
+   ✓ a                                  
+     done                               
+                                        
+     1 home                No preview   
+   ✓ b                                  
+     done                               
+                                        
+ ▌   1 home                             
+ ▌ ✓ c                                  
+ ▌   done                               `[1:]},
 				{keys: "j", want: `
-                        │               
- ▌   1 home             │               
- ▌ ✓ a                  │               
- ▌   done               │               
-                        │               
-     1 home             │  No preview   
-   ✓ b                  │               
-     done               │               
-                        │               
-     1 home             │               
-   ✓ c                  │               
-     done               │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ✓ a                                  
+ ▌   done                               
+                                        
+     1 home                No preview   
+   ✓ b                                  
+     done                               
+                                        
+     1 home                             
+   ✓ c                                  
+     done                               `[1:]},
 				{keys: "x<left><right>", want: `
-                        │               
- ▌   1 home             │               
- ▌ ✓ a                  │               
- ▌   done               │               
-                        │               
-     1 home             │  No preview   
-   ✓ b                  │               
-     done               │               
-                        │               
-     1 home             │               
-   ✓ c                  │               
-     done               │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ✓ a                                  
+ ▌   done                               
+                                        
+     1 home                No preview   
+   ✓ b                                  
+     done                               
+                                        
+     1 home                             
+   ✓ c                                  
+     done                               `[1:]},
 				{keys: "kk<enter>", wantShown: []string{"file:///b"}, want: `
-                        │               
-     1 home             │               
-   ✓ a                  │               
-     done               │               
-                        │               
- ▌   1 home             │  No preview   
- ▌ ✓ b                  │               
- ▌   done               │               
-                        │               
-     1 home             │               
-   ✓ c                  │               
-     done               │               `[1:]},
+                                        
+     1 home                             
+   ✓ a                                  
+     done                               
+                                        
+ ▌   1 home                No preview   
+ ▌ ✓ b                                  
+ ▌   done                               
+                                        
+     1 home                             
+   ✓ c                                  
+     done                               `[1:]},
 				{keys: "<esc>q<c-c>", wantShown: []string{"file:///b"}, want: `
-                        │               
-     1 home             │               
-   ✓ a                  │               
-     done               │               
-                        │               
- ▌   1 home             │  No preview   
- ▌ ✓ b                  │               
- ▌   done               │               
-                        │               
-     1 home             │               
-   ✓ c                  │               
-     done               │               `[1:]},
+                                        
+     1 home                             
+   ✓ a                                  
+     done                               
+                                        
+ ▌   1 home                No preview   
+ ▌ ✓ b                                  
+ ▌   done                               
+                                        
+     1 home                             
+   ✓ c                                  
+     done                               `[1:]},
 			},
 		},
 		{
@@ -654,75 +655,75 @@ func TestStatusView(t *testing.T) {
 			},
 			steps: []statusViewStep{
 				{width: 40, height: 9, want: `
-                        │               
- ▌   1 home             │               
- ▌ ✓ a                  │               
- ▌   done               │               
-                        │  No preview   
-     1 home             │               
-   ✓ b                  │               
-     done               │               
-           ↓            │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ✓ a                                  
+ ▌   done                               
+                           No preview   
+     1 home                             
+   ✓ b                                  
+     done                               
+           ↓                            `[1:]},
 				{keys: "<down><c-j>", want: `
-                        │               
-     1 home             │               
-   ✓ b                  │               
-     done               │               
-                        │  No preview   
- ▌   1 home             │               
- ▌ ✓ c                  │               
- ▌   done               │               
-           ↓            │               `[1:]},
+                                        
+     1 home                             
+   ✓ b                                  
+     done                               
+                           No preview   
+ ▌   1 home                             
+ ▌ ✓ c                                  
+ ▌   done                               
+           ↓                            `[1:]},
 				{keys: "<down><down>", want: `
-                        │               
-     1 home             │               
-   ✓ d                  │               
-     done               │               
-                        │  No preview   
- ▌   1 home             │               
- ▌ ✓ e                  │               
- ▌   done               │               
-                        │               `[1:]},
+                                        
+     1 home                             
+   ✓ d                                  
+     done                               
+                           No preview   
+ ▌   1 home                             
+ ▌ ✓ e                                  
+ ▌   done                               
+                                        `[1:]},
 				{keys: "<up>", want: `
-                        │               
- ▌   1 home             │               
- ▌ ✓ d                  │               
- ▌   done               │               
-                        │  No preview   
-     1 home             │               
-   ✓ e                  │               
-     done               │               
-                        │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ✓ d                                  
+ ▌   done                               
+                           No preview   
+     1 home                             
+   ✓ e                                  
+     done                               
+                                        `[1:]},
 				{keys: "<c-j>", want: `
-                        │               
-     1 home             │               
-   ✓ d                  │               
-     done               │               
-                        │  No preview   
- ▌   1 home             │               
- ▌ ✓ e                  │               
- ▌   done               │               
-                        │               `[1:]},
+                                        
+     1 home                             
+   ✓ d                                  
+     done                               
+                           No preview   
+ ▌   1 home                             
+ ▌ ✓ e                                  
+ ▌   done                               
+                                        `[1:]},
 				{keys: "<down>", want: `
-                        │               
- ▌   1 home             │               
- ▌ ✓ a                  │               
- ▌   done               │               
-                        │  No preview   
-     1 home             │               
-   ✓ b                  │               
-     done               │               
-           ↓            │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ✓ a                                  
+ ▌   done                               
+                           No preview   
+     1 home                             
+   ✓ b                                  
+     done                               
+           ↓                            `[1:]},
 				{keys: "<c-k>", want: `
-                        │               
-     1 home             │               
-   ✓ d                  │               
-     done               │               
-                        │  No preview   
- ▌   1 home             │               
- ▌ ✓ e                  │               
- ▌   done               │               
-                        │               `[1:]},
+                                        
+     1 home                             
+   ✓ d                                  
+     done                               
+                           No preview   
+ ▌   1 home                             
+ ▌ ✓ e                                  
+ ▌   done                               
+                                        `[1:]},
 			},
 		},
 		{
@@ -734,86 +735,86 @@ func TestStatusView(t *testing.T) {
 			},
 			steps: []statusViewStep{
 				{width: 40, height: 9, want: `
-                        │               
- ▌   1 home             │               
- ▌ ✓ a                  │               
- ▌   done               │               
-                        │  No preview   
-     1 home             │               
-   ✓ b                  │               
-     done               │               
-           ↓            │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ✓ a                                  
+ ▌   done                               
+                           No preview   
+     1 home                             
+   ✓ b                                  
+     done                               
+           ↓                            `[1:]},
 				{events: []term.Event{statusTestWheel(term.MouseWheelDown, 5, 2)}, want: `
-                        │               
-     1 home             │               
-   ✓ b                  │               
-     done               │               
-                        │  No preview   
-     1 home             │               
-   ✓ c                  │               
-     done               │               
-           ↓            │               `[1:]},
+                                        
+     1 home                             
+   ✓ b                                  
+     done                               
+                           No preview   
+     1 home                             
+   ✓ c                                  
+     done                               
+           ↓                            `[1:]},
 				// No further than the last program.
 				{events: []term.Event{
 					statusTestWheel(term.MouseWheelDown, 5, 2),
 					statusTestWheel(term.MouseWheelDown, 5, 2),
 					statusTestWheel(term.MouseWheelDown, 5, 2),
 				}, want: `
-                        │               
-     1 home             │               
-   ✓ d                  │               
-     done               │               
-                        │  No preview   
-     1 home             │               
-   ✓ e                  │               
-     done               │               
-                        │               `[1:]},
+                                        
+     1 home                             
+   ✓ d                                  
+     done                               
+                           No preview   
+     1 home                             
+   ✓ e                                  
+     done                               
+                                        `[1:]},
 				{events: []term.Event{statusTestWheel(term.MouseWheelUp, 5, 2)}, want: `
-                        │               
-     1 home             │               
-   ✓ c                  │               
-     done               │               
-                        │  No preview   
-     1 home             │               
-   ✓ d                  │               
-     done               │               
-           ↓            │               `[1:]},
+                                        
+     1 home                             
+   ✓ c                                  
+     done                               
+                           No preview   
+     1 home                             
+   ✓ d                                  
+     done                               
+           ↓                            `[1:]},
 				// Over the preview, it scrolls nothing.
 				{events: []term.Event{statusTestWheel(term.MouseWheelDown, 30, 2)}, want: `
-                        │               
-     1 home             │               
-   ✓ c                  │               
-     done               │               
-                        │  No preview   
-     1 home             │               
-   ✓ d                  │               
-     done               │               
-           ↓            │               `[1:]},
+                                        
+     1 home                             
+   ✓ c                                  
+     done                               
+                           No preview   
+     1 home                             
+   ✓ d                                  
+     done                               
+           ↓                            `[1:]},
 				// Moved, the selection comes back in sight.
 				{keys: "<down>", want: `
-                        │               
- ▌   1 home             │               
- ▌ ✓ b                  │               
- ▌   done               │               
-                        │  No preview   
-     1 home             │               
-   ✓ c                  │               
-     done               │               
-           ↓            │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ✓ b                                  
+ ▌   done                               
+                           No preview   
+     1 home                             
+   ✓ c                                  
+     done                               
+           ↓                            `[1:]},
 				// No further than the first program.
 				{events: []term.Event{
 					statusTestWheel(term.MouseWheelUp, 5, 2),
 					statusTestWheel(term.MouseWheelUp, 5, 2),
 				}, want: `
-                        │               
-     1 home             │               
-   ✓ a                  │               
-     done               │               
-                        │  No preview   
- ▌   1 home             │               
- ▌ ✓ b                  │               
- ▌   done               │               
-           ↓            │               `[1:]},
+                                        
+     1 home                             
+   ✓ a                                  
+     done                               
+                           No preview   
+ ▌   1 home                             
+ ▌ ✓ b                                  
+ ▌   done                               
+           ↓                            `[1:]},
 			},
 		},
 		{
@@ -824,31 +825,31 @@ func TestStatusView(t *testing.T) {
 			},
 			steps: []statusViewStep{
 				{width: 40, height: 5, want: `
-                        │               
- ▌   1 home             │               
- ▌ ✓ a                  │  No preview   
- ▌   done               │               
-           ↓            │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ✓ a                     No preview   
+ ▌   done                               
+           ↓                            `[1:]},
 				{keys: "j", want: `
-                        │               
- ▌   1 home             │               
- ▌ ⠋ b                  │  No preview   
- ▌   working            │               
-           ↓            │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ⠋ b                     No preview   
+ ▌   working                            
+           ↓                            `[1:]},
 				{width: 40, height: 4, want: `
-                        │               
- ▌   1 home             │  No preview   
- ▌ ⠋ b                  │               
-           ↓            │               `[1:]},
+                                        
+ ▌   1 home                No preview   
+ ▌ ⠋ b                                  
+           ↓                            `[1:]},
 				{keys: "k", want: `
-                        │               
- ▌   1 home             │  No preview   
- ▌ ✓ a                  │               
-           ↓            │               `[1:]},
+                                        
+ ▌   1 home                No preview   
+ ▌ ✓ a                                  
+           ↓                            `[1:]},
 				// Too short to keep a row for the arrow.
 				{width: 40, height: 2, want: `
-                        │  No preview   
- ▌   1 home             │               `[1:]},
+                           No preview   
+ ▌   1 home                             `[1:]},
 			},
 		},
 		{
@@ -858,15 +859,15 @@ func TestStatusView(t *testing.T) {
 				f.report("b", statusTestReport(done, strings.Repeat("界", 25), -1))
 			},
 			steps: []statusViewStep{
-				{width: 60, height: 8, wantSize: []int{statusSidebarMax + statusDividerWidth + len(statusPreviewNone) + 4, statusMinHeight}, want: `
-                                        │                   
- ▌   1 home                             │                   
- ▌ ✓ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa   │                   
- ▌   done                               │    No preview     
-                                        │                   
-     1 home                             │                   
-   ✓ 界 界 界 界 界 界 界 界 界 界 界 界 界 界 界 界    │                   
-     done                               │                   `[1:]},
+				{width: 60, height: 8, wantSize: []int{statusSidebarMax + len(statusPreviewNone) + 4, statusMinHeight}, want: `
+                                                            
+ ▌   1 home                                                 
+ ▌ ✓ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa                       
+ ▌   done                                    No preview     
+                                                            
+     1 home                                                 
+   ✓ 界 界 界 界 界 界 界 界 界 界 界 界 界 界 界 界                        
+     done                                                   `[1:]},
 			},
 		},
 		{
@@ -886,17 +887,17 @@ func TestStatusView(t *testing.T) {
  ▌   done               
            ↓            `[1:]},
 				{width: statusSidebarMin + 1, height: 5, want: `
-                        │
- ▌   1 home             │
- ▌ ✓ a                  │
- ▌   done               │
-           ↓            │`[1:]},
+                         
+ ▌   1 home              
+ ▌ ✓ a                  N
+ ▌   done                
+           ↓             `[1:]},
 				{width: statusSidebarMin + 2, height: 5, want: `
-                        │ 
- ▌   1 home             │ 
- ▌ ✓ a                  │N
- ▌   done               │ 
-           ↓            │ `[1:]},
+                          
+ ▌   1 home               
+ ▌ ✓ a                  No
+ ▌   done                 
+           ↓              `[1:]},
 			},
 		},
 		{
@@ -905,11 +906,11 @@ func TestStatusView(t *testing.T) {
 			steps: []statusViewStep{
 				{width: 0, height: 0, keys: "j", want: ""},
 				{width: 30, height: 5, want: `
-                        │     
- ▌   1 home             │     
- ▌ ✓ b                  │No pr
- ▌   done               │     
-           ↓            │     `[1:]},
+                              
+ ▌   1 home                   
+ ▌ ✓ b                  No pre
+ ▌   done                     
+           ↓                  `[1:]},
 			},
 		},
 		{
@@ -920,83 +921,83 @@ func TestStatusView(t *testing.T) {
 			},
 			steps: []statusViewStep{
 				{width: 40, height: 12, keys: "j", want: `
-                        │               
-     1 home             │               
-   ! a                  │               
-     blocked            │               
-                        │               
- ▌   1 home             │  No preview   
- ▌ ✓ b                  │               
- ▌   done               │               
-                        │               
-                        │               
-                        │               
-                        │               `[1:]},
+                                        
+     1 home                             
+   ! a                                  
+     blocked                            
+                                        
+ ▌   1 home                No preview   
+ ▌ ✓ b                                  
+ ▌   done                               
+                                        
+                                        
+                                        
+                                        `[1:]},
 				{do: func(f *statusViewFixture) { f.report("c", statusTestReport(failed, "c", -1)) }, want: `
-                        │               
-     1 home             │               
-   ! a                  │               
-     blocked            │               
-                        │               
-     1 home             │  No preview   
-   ✗ c                  │               
-     error              │               
-                        │               
- ▌   1 home             │               
- ▌ ✓ b                  │               
- ▌   done               │               `[1:]},
+                                        
+     1 home                             
+   ! a                                  
+     blocked                            
+                                        
+     1 home                No preview   
+   ✗ c                                  
+     error                              
+                                        
+ ▌   1 home                             
+ ▌ ✓ b                                  
+ ▌   done                               `[1:]},
 				{do: func(f *statusViewFixture) { f.report("b", statusTestReport(working, "b", 10)) }, want: `
-                        │               
-     1 home             │               
-   ✗ c                  │               
-     error              │               
-                        │               
- ▌   1 home             │  No preview   
- ▌ ⠋ b                  │               
- ▌   working            │               
- ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  10%   │               
-                        │               
-                        │               
-                        │               `[1:]},
+                                        
+     1 home                             
+   ✗ c                                  
+     error                              
+                                        
+ ▌   1 home                No preview   
+ ▌ ⠋ b                                  
+ ▌   working                            
+ ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  10%                   
+                                        
+                                        
+                                        `[1:]},
 				{do: func(f *statusViewFixture) { f.clear("b") }, want: `
-                        │               
-     1 home             │               
-   ! a                  │               
-     blocked            │               
-                        │               
- ▌   1 home             │  No preview   
- ▌ ✗ c                  │               
- ▌   error              │               
-                        │               
-                        │               
-                        │               
-                        │               `[1:]},
+                                        
+     1 home                             
+   ! a                                  
+     blocked                            
+                                        
+ ▌   1 home                No preview   
+ ▌ ✗ c                                  
+ ▌   error                              
+                                        
+                                        
+                                        
+                                        `[1:]},
 				{do: func(f *statusViewFixture) { f.clear("a"); f.clear("c") }, want: `
-                                 │      
-   No program reported a status  │      
-                                 │      
-                                 │      
-                                 │      
-                                 │No pre
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      `[1:]},
+                                        
+   No program reported a status         
+                                        
+                                        
+                                        
+                                 No prev
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        `[1:]},
 				{do: func(f *statusViewFixture) { f.report("d", statusTestReport(done, "d", -1)) }, want: `
-                        │               
- ▌   1 home             │               
- ▌ ✓ d                  │               
- ▌   done               │               
-                        │               
-                        │  No preview   
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ✓ d                                  
+ ▌   done                               
+                                        
+                           No preview   
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        `[1:]},
 			},
 		},
 		{
@@ -1004,89 +1005,89 @@ func TestStatusView(t *testing.T) {
 			setup: threeDone,
 			steps: []statusViewStep{
 				{width: 40, height: 12, want: `
-                        │               
- ▌   1 home             │               
- ▌ ✓ a                  │               
- ▌   done               │               
-                        │               
-     1 home             │  No preview   
-   ✓ b                  │               
-     done               │               
-                        │               
-     1 home             │               
-   ✓ c                  │               
-     done               │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ✓ a                                  
+ ▌   done                               
+                                        
+     1 home                No preview   
+   ✓ b                                  
+     done                               
+                                        
+     1 home                             
+   ✓ c                                  
+     done                               `[1:]},
 				// Any row of a program, at any column of the sidebar.
 				{events: []term.Event{statusTestClick(5, 7)}, want: `
-                        │               
-     1 home             │               
-   ✓ a                  │               
-     done               │               
-                        │               
- ▌   1 home             │  No preview   
- ▌ ✓ b                  │               
- ▌   done               │               
-                        │               
-     1 home             │               
-   ✓ c                  │               
-     done               │               `[1:]},
+                                        
+     1 home                             
+   ✓ a                                  
+     done                               
+                                        
+ ▌   1 home                No preview   
+ ▌ ✓ b                                  
+ ▌   done                               
+                                        
+     1 home                             
+   ✓ c                                  
+     done                               `[1:]},
 				{events: []term.Event{statusTestClick(0, 9)}, want: `
-                        │               
-     1 home             │               
-   ✓ a                  │               
-     done               │               
-                        │               
-     1 home             │  No preview   
-   ✓ b                  │               
-     done               │               
-                        │               
- ▌   1 home             │               
- ▌ ✓ c                  │               
- ▌   done               │               `[1:]},
+                                        
+     1 home                             
+   ✓ a                                  
+     done                               
+                                        
+     1 home                No preview   
+   ✓ b                                  
+     done                               
+                                        
+ ▌   1 home                             
+ ▌ ✓ c                                  
+ ▌   done                               `[1:]},
 				// A gap, the padding, the preview and other buttons select
 				// nothing.
 				{events: []term.Event{statusTestClick(5, 8)}, want: `
-                        │               
-     1 home             │               
-   ✓ a                  │               
-     done               │               
-                        │               
-     1 home             │  No preview   
-   ✓ b                  │               
-     done               │               
-                        │               
- ▌   1 home             │               
- ▌ ✓ c                  │               
- ▌   done               │               `[1:]},
+                                        
+     1 home                             
+   ✓ a                                  
+     done                               
+                                        
+     1 home                No preview   
+   ✓ b                                  
+     done                               
+                                        
+ ▌   1 home                             
+ ▌ ✓ c                                  
+ ▌   done                               `[1:]},
 				{events: []term.Event{statusTestClick(5, 0), statusTestClick(30, 1), statusTestClick(24, 1)}, want: `
-                        │               
-     1 home             │               
-   ✓ a                  │               
-     done               │               
-                        │               
-     1 home             │  No preview   
-   ✓ b                  │               
-     done               │               
-                        │               
- ▌   1 home             │               
- ▌ ✓ c                  │               
- ▌   done               │               `[1:]},
+                                        
+     1 home                             
+   ✓ a                                  
+     done                               
+                                        
+     1 home                No preview   
+   ✓ b                                  
+     done                               
+                                        
+ ▌   1 home                             
+ ▌ ✓ c                                  
+ ▌   done                               `[1:]},
 				{events: []term.Event{
 					{Type: term.EventMouse, Key: term.MouseWheelUp, MouseX: 1, MouseY: 1},
 					{Type: term.EventMouse, Key: term.MouseRight, MouseX: 1, MouseY: 1},
 				}, want: `
-                        │               
-     1 home             │               
-   ✓ a                  │               
-     done               │               
-                        │               
-     1 home             │  No preview   
-   ✓ b                  │               
-     done               │               
-                        │               
- ▌   1 home             │               
- ▌ ✓ c                  │               
- ▌   done               │               `[1:]},
+                                        
+     1 home                             
+   ✓ a                                  
+     done                               
+                                        
+     1 home                No preview   
+   ✓ b                                  
+     done                               
+                                        
+ ▌   1 home                             
+ ▌ ✓ c                                  
+ ▌   done                               `[1:]},
 			},
 		},
 		{
@@ -1110,40 +1111,40 @@ func TestStatusView(t *testing.T) {
 				f.report("d", statusTestReport(working, "gone", -1))
 			},
 			steps: []statusViewStep{
-				{width: 40, height: 5, wantSize: []int{statusSidebarMin + statusDividerWidth + 20, statusMinHeight}, want: `
-                        │L12345678901234
- ▌   1 home             │L22345678901234
- ▌ ! large              │L32345678901234
- ▌   blocked            │L42345678901234
-           ↓            │L52345678901234`[1:]},
-				{keys: "j", wantSize: []int{statusSidebarMin + statusDividerWidth + 4, statusMinHeight}, want: `
-                        │S023           
- ▌   1 home             │S123           
- ▌ ✗ small              │               
- ▌   error              │               
-           ↓            │               `[1:]},
-				{keys: "j", wantSize: []int{statusSidebarMin + statusDividerWidth + statusPreviewWidth, max(statusPreviewHeight, statusMinHeight)}, want: `
-                        │H02345678901234
- ▌   1 home             │H12345678901234
- ▌ ✓ hidden             │H22345678901234
- ▌   done               │H32345678901234
-           ↓            │H42345678901234`[1:]},
+				{width: 40, height: 5, wantSize: []int{statusSidebarMin + 20, statusMinHeight}, want: `
+                        L123456789012345
+ ▌   1 home             L223456789012345
+ ▌ ! large              L323456789012345
+ ▌   blocked            L423456789012345
+           ↓            L523456789012345`[1:]},
+				{keys: "j", wantSize: []int{statusSidebarMin + 4, statusMinHeight}, want: `
+                        S023            
+ ▌   1 home             S123            
+ ▌ ✗ small                              
+ ▌   error                              
+           ↓                            `[1:]},
+				{keys: "j", wantSize: []int{statusSidebarMin + statusPreviewWidth, max(statusPreviewHeight, statusMinHeight)}, want: `
+                        H023456789012345
+ ▌   1 home             H123456789012345
+ ▌ ✓ hidden             H223456789012345
+ ▌   done               H323456789012345
+           ↓            H423456789012345`[1:]},
 				{keys: "j", want: `
-                        │               
- ▌   1 home             │               
- ▌ ⠋ gone               │  No preview   
- ▌   working            │               
-                        │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ⠋ gone                  No preview   
+ ▌   working                            
+                                        `[1:]},
 				// A preview drawing the inbox, as previewing the workspace it
 				// floats over would, leaves the nested inbox blank.
 				{do: func(f *statusViewFixture) {
 					f.preview("d", Preview{Content: f.v, Width: 15, Height: 4})
 				}, want: `
-                        │               
- ▌   1 home             │               
- ▌ ⠋ gone               │               
- ▌   working            │               
-                        │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ⠋ gone                               
+ ▌   working                            
+                                        `[1:]},
 			},
 		},
 		{
@@ -1162,99 +1163,99 @@ func TestStatusView(t *testing.T) {
 			},
 			steps: []statusViewStep{
 				{width: 40, height: 21, want: `
-                        │agent0678901234
- ▌   1 home             │agent1678901234
- ▌ ! agent              │agent2678901234
- ▌   blocked · claude   │agent3678901234
-                        │agent4678901234
-     1 home             │agent5678901234
-   ✗ test               │agent6678901234
-     error              │agent7678901234
-                        │agent8678901234
-     1 home             │agent9678901234
-   ✓ make               │agent1078901234
-     done               │agent1178901234
-                        │agent1278901234
-     1 home             │agent1378901234
-   ⠋ build              │agent1478901234
-     working            │agent1578901234
-     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%   │agent1678901234
-                        │agent1778901234
-     1 home             │agent1878901234
-     vim                │agent1978901234
-     idle               │agent2078901234`[1:]},
+                        agent06789012345
+ ▌   1 home             agent16789012345
+ ▌ ! agent              agent26789012345
+ ▌   blocked · claude   agent36789012345
+                        agent46789012345
+     1 home             agent56789012345
+   ✗ test               agent66789012345
+     error              agent76789012345
+                        agent86789012345
+     1 home             agent96789012345
+   ✓ make               agent10789012345
+     done               agent11789012345
+                        agent12789012345
+     1 home             agent13789012345
+   ⠋ build              agent14789012345
+     working            agent15789012345
+     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%   agent16789012345
+                        agent17789012345
+     1 home             agent18789012345
+     vim                agent19789012345
+     idle               agent20789012345`[1:]},
 				// Done with, it closes at once and the next program is
 				// selected.
 				{keys: "j<delete>", wantClosed: []string{"file:///test"}, wantConfirms: []string{}, want: `
-                        │               
-     1 home             │               
-   ! agent              │               
-     blocked · claude   │               
-                        │               
- ▌   1 home             │               
- ▌ ✓ make               │               
- ▌   done               │               
-                        │               
-     1 home             │               
-   ⠋ build              │  No preview   
-     working            │               
-     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%   │               
-                        │               
-     1 home             │               
-     vim                │               
-     idle               │               
-                        │               
-                        │               
-                        │               
-                        │               `[1:]},
+                                        
+     1 home                             
+   ! agent                              
+     blocked · claude                   
+                                        
+ ▌   1 home                             
+ ▌ ✓ make                               
+ ▌   done                               
+                                        
+     1 home                             
+   ⠋ build                 No preview   
+     working                            
+     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%                   
+                                        
+     1 home                             
+     vim                                
+     idle                               
+                                        
+                                        
+                                        
+                                        `[1:]},
 				{keys: "<backspace>", wantClosed: []string{"file:///test", "file:///make"}, want: `
-                        │               
-     1 home             │               
-   ! agent              │               
-     blocked · claude   │               
-                        │               
- ▌   1 home             │               
- ▌ ⠋ build              │               
- ▌   working            │               
- ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%   │               
-                        │               
-     1 home             │  No preview   
-     vim                │               
-     idle               │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               `[1:]},
+                                        
+     1 home                             
+   ! agent                              
+     blocked · claude                   
+                                        
+ ▌   1 home                             
+ ▌ ⠋ build                              
+ ▌   working                            
+ ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%                   
+                                        
+     1 home                No preview   
+     vim                                
+     idle                               
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        `[1:]},
 				// At work, it is only closed once the user says so.
 				{keys: "<delete>", wantClosed: []string{"file:///test", "file:///make"}, wantConfirms: []string{
 					"Are you sure you want to close `build` in `1 home`? It is working.\n\n" +
 						"- working · build: Compiling — 40%",
 				}, want: `
-                        │               
-     1 home             │               
-   ! agent              │               
-     blocked · claude   │               
-                        │               
- ▌   1 home             │               
- ▌ ⠋ build              │               
- ▌   working            │               
- ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%   │               
-                        │               
-     1 home             │  No preview   
-     vim                │               
-     idle               │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               `[1:]},
+                                        
+     1 home                             
+   ! agent                              
+     blocked · claude                   
+                                        
+ ▌   1 home                             
+ ▌ ⠋ build                              
+ ▌   working                            
+ ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%                   
+                                        
+     1 home                No preview   
+     vim                                
+     idle                               
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        `[1:]},
 				// Waiting on the user, likewise.
 				{keys: "k<backspace>", wantClosed: []string{"file:///test", "file:///make"}, wantConfirms: []string{
 					"Are you sure you want to close `build` in `1 home`? It is working.\n\n" +
@@ -1262,76 +1263,76 @@ func TestStatusView(t *testing.T) {
 					"Are you sure you want to close `agent` in `1 home`? It is blocked.\n\n" +
 						"- blocked · claude (tool/edit): Allow edit? — edit main.go",
 				}, want: `
-                        │agent0678901234
- ▌   1 home             │agent1678901234
- ▌ ! agent              │agent2678901234
- ▌   blocked · claude   │agent3678901234
-                        │agent4678901234
-     1 home             │agent5678901234
-   ⠋ build              │agent6678901234
-     working            │agent7678901234
-     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%   │agent8678901234
-                        │agent9678901234
-     1 home             │agent1078901234
-     vim                │agent1178901234
-     idle               │agent1278901234
-                        │agent1378901234
-                        │agent1478901234
-                        │agent1578901234
-                        │agent1678901234
-                        │agent1778901234
-                        │agent1878901234
-                        │agent1978901234
-                        │agent2078901234`[1:]},
+                        agent06789012345
+ ▌   1 home             agent16789012345
+ ▌ ! agent              agent26789012345
+ ▌   blocked · claude   agent36789012345
+                        agent46789012345
+     1 home             agent56789012345
+   ⠋ build              agent66789012345
+     working            agent76789012345
+     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%   agent86789012345
+                        agent96789012345
+     1 home             agent10789012345
+     vim                agent11789012345
+     idle               agent12789012345
+                        agent13789012345
+                        agent14789012345
+                        agent15789012345
+                        agent16789012345
+                        agent17789012345
+                        agent18789012345
+                        agent19789012345
+                        agent20789012345`[1:]},
 				{do: func(f *statusViewFixture) { f.host.yes() }, wantClosed: []string{
 					"file:///test", "file:///make", "file:///agent",
 				}, want: `
-                        │               
- ▌   1 home             │               
- ▌ ⠋ build              │               
- ▌   working            │               
- ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%   │               
-                        │               
-     1 home             │               
-     vim                │               
-     idle               │               
-                        │               
-                        │  No preview   
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ⠋ build                              
+ ▌   working                            
+ ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%                   
+                                        
+     1 home                             
+     vim                                
+     idle                               
+                                        
+                           No preview   
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        `[1:]},
 				// Idle, it closes at once.
 				{keys: "j<delete>", wantClosed: []string{
 					"file:///test", "file:///make", "file:///agent", "file:///vim",
 				}, want: `
-                        │               
- ▌   1 home             │               
- ▌ ⠋ build              │               
- ▌   working            │               
- ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%   │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │  No preview   
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ⠋ build                              
+ ▌   working                            
+ ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%                   
+                                        
+                                        
+                                        
+                                        
+                                        
+                           No preview   
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        `[1:]},
 				{keys: "<delete>", wantConfirms: []string{
 					"Are you sure you want to close `build` in `1 home`? It is working.\n\n" +
 						"- working · build: Compiling — 40%",
@@ -1340,73 +1341,73 @@ func TestStatusView(t *testing.T) {
 					"Are you sure you want to close `build` in `1 home`? It is working.\n\n" +
 						"- working · build: Compiling — 40%",
 				}, want: `
-                        │               
- ▌   1 home             │               
- ▌ ⠋ build              │               
- ▌   working            │               
- ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%   │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │  No preview   
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               
-                        │               `[1:]},
+                                        
+ ▌   1 home                             
+ ▌ ⠋ build                              
+ ▌   working                            
+ ▌   🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  40%                   
+                                        
+                                        
+                                        
+                                        
+                                        
+                           No preview   
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        `[1:]},
 				{do: func(f *statusViewFixture) { f.host.yes() }, want: `
-                                 │      
-   No program reported a status  │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │No pre
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      `[1:]},
+                                        
+   No program reported a status         
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                 No prev
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        `[1:]},
 				{keys: "<delete><backspace>", wantClosed: []string{
 					"file:///test", "file:///make", "file:///agent", "file:///vim", "file:///build",
 				}, want: `
-                                 │      
-   No program reported a status  │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │No pre
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      
-                                 │      `[1:]},
+                                        
+   No program reported a status         
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                 No prev
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        `[1:]},
 			},
 		},
 	} {
@@ -1629,7 +1630,7 @@ func TestStatusViewPreview(t *testing.T) {
 
 	v := store.View(nil)
 	t.Cleanup(func() { require.NoError(t, v.Close()) })
-	const sideW = statusSidebarMin + statusDividerWidth
+	const sideW = statusSidebarMin
 	w, h := v.Dimensions()
 	assert.Equal(t, []int{sideW + statusPreviewWidth, max(statusPreviewHeight, statusMinHeight)}, []int{w, h},
 		"a view of its own asks for the default size, and the inbox for no less than its least height")
@@ -1715,7 +1716,7 @@ func TestStatusViewOpensPreview(t *testing.T) {
 	v := store.View(nil)
 	require.Equal(t, own.String(), v.sel.uri)
 
-	const sideW = statusSidebarMin + statusDividerWidth
+	const sideW = statusSidebarMin
 	w, h := v.Dimensions()
 	assert.Equal(t, []int{sideW + statusPreviewWidth, max(statusPreviewHeight, statusMinHeight)}, []int{w, h},
 		"a view of its own asks for the default size")
@@ -1756,7 +1757,7 @@ func TestStatusViewOpenedPreviewSize(t *testing.T) {
 	})
 	v := store.View(nil)
 	t.Cleanup(func() { require.NoError(t, v.Close()) })
-	const sideW = statusSidebarMin + statusDividerWidth
+	const sideW = statusSidebarMin
 	w, h := v.Dimensions()
 	assert.Equal(t, []int{sideW + 30, 50}, []int{w, h}, "a view of its own may ask for a size")
 
@@ -1778,7 +1779,7 @@ func TestStatusViewOpensNothing(t *testing.T) {
 	})
 	v := store.View(nil)
 	t.Cleanup(func() { require.NoError(t, v.Close()) })
-	const sideW = statusSidebarMin + statusDividerWidth
+	const sideW = statusSidebarMin
 	v.Resize(sideW+20, 6)
 	drawn := handlertest.DrawHandler(v, sideW+20, 6)
 	assert.Contains(t, drawn, statusPreviewNone, "a view that does not open shows no preview")
@@ -1801,7 +1802,7 @@ func TestStatusViewStyle(t *testing.T) {
 	v.Resize(width, 14)
 	w := cell.NewBufferWriter(context.Background(), width, 14)
 	v.Draw(w)
-	cells := w.RawCells()
+	cells := statusTestUnshifted(w.RawCells())
 	text := func(y int) string {
 		var b strings.Builder
 		for _, c := range cells[y][:statusSidebarMin] {
@@ -1895,9 +1896,6 @@ func TestStatusViewStyle(t *testing.T) {
 		assert.Equal(t, repeat(term.Attributes{}, 2*statusPadTop), attrs(y, selEnd, statusSidebarMin),
 			"cells being about twice as tall as wide, the selection leaves twice as many columns of row %d "+
 				"empty on its right as rows above it, for the padding to look even", y)
-		assert.Equal(t, style.Divider.Vertical, cells[y][statusSidebarMin].Ch,
-			"a line stands between the sidebar and the preview")
-		assert.Equal(t, style.DividerAttr, cells[y][statusSidebarMin].Attributes())
 	}
 	assert.Equal(t, repeat(term.Attributes{}, statusSidebarMin), attrs(0, 0, statusSidebarMin), "the padding is not selected")
 	assert.Equal(t, repeat(term.Attributes{}, statusSidebarMin), attrs(4, 0, statusSidebarMin), "the gap is not selected")
@@ -1905,7 +1903,7 @@ func TestStatusViewStyle(t *testing.T) {
 	redraw := func() {
 		w = cell.NewBufferWriter(context.Background(), width, 14)
 		v.Draw(w)
-		cells = w.RawCells()
+		cells = statusTestUnshifted(w.RawCells())
 	}
 	store.style.MarkerAttr.Bg = term.ColorRed
 	redraw()
@@ -1972,9 +1970,9 @@ func TestStatusViewStyle(t *testing.T) {
 	w = cell.NewBufferWriter(context.Background(), emptyW, emptyH)
 	ev.Draw(w)
 	var screen strings.Builder
-	for _, row := range w.RawCells() {
-		for x, c := range row {
-			if c.Ch == 0 || c.Ch == ' ' || x == ev.sidebarWidth() {
+	for _, row := range statusTestUnshifted(w.RawCells()) {
+		for _, c := range row {
+			if c.Ch == 0 || c.Ch == ' ' {
 				continue
 			}
 			screen.WriteRune(c.Ch)
@@ -2009,39 +2007,39 @@ func TestViewDrawGraphics(t *testing.T) {
 			name: "no images", style: func(*InboxStyle) {},
 			wantSelectedBg: term.ColorNavy,
 			want: `
-                        │         
- ▌   1 home             │         
- ▌ ! terminal           │         
- ▌   blocked            │         
-                        │         
-     1 home             │         
-   ✓ terminal           │No previe
-     done               │         
-                        │         
-     1 home             │         
-   ⠋ terminal           │         
-     working            │         
-     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  50%   │         
-                        │         `,
+                                  
+ ▌   1 home                       
+ ▌ ! terminal                     
+ ▌   blocked                      
+                                  
+     1 home                       
+   ✓ terminal           No preview
+     done                         
+                                  
+     1 home                       
+   ⠋ terminal                     
+     working                      
+     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  50%             
+                                  `,
 		},
 		{
 			name:  "each item is drawn over the images of its state",
 			style: func(s *InboxStyle) { s.Images = items }, hover: 6,
 			want: `
-                        │         
- ▌66616home66666666666  │         
- ▌6!6terminal666666666  │         
- ▌666blocked6666666666  │         
-                        │         
- 111111home11111111111  │         
- 11✓1terminal111111111  │No previe
- 1111done1111111111111  │         
-                        │         
- ****1*home***********  │         
- **⠋*terminal*********  │         
- ****working**********  │         
- ****🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋**50%*  │         
-                        │         `,
+                                  
+ ▌66616home66666666666            
+ ▌6!6terminal666666666            
+ ▌666blocked6666666666            
+                                  
+ 111111home11111111111            
+ 11✓1terminal111111111  No preview
+ 1111done1111111111111            
+                                  
+ ****1*home***********            
+ **⠋*terminal*********            
+ ****working**********            
+ ****🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋**50%*            
+                                  `,
 		},
 		{
 			name: "images that do not draw leave the items in the colors of their states",
@@ -2051,40 +2049,40 @@ func TestViewDrawGraphics(t *testing.T) {
 			hover:          6,
 			wantSelectedBg: term.ColorNavy,
 			want: `
-                        │         
- ▌   1 home             │         
- ▌ ! terminal           │         
- ▌   blocked            │         
-                        │         
-     1 home             │         
-   ✓ terminal           │No previe
-     done               │         
-                        │         
-     1 home             │         
-   ⠋ terminal           │         
-     working            │         
-     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  50%   │         
-                        │         `,
+                                  
+ ▌   1 home                       
+ ▌ ! terminal                     
+ ▌   blocked                      
+                                  
+     1 home                       
+   ✓ terminal           No preview
+     done                         
+                                  
+     1 home                       
+   ⠋ terminal                     
+     working                      
+     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  50%             
+                                  `,
 		},
 		{
 			name:           "the marker replaces its character with its images",
 			style:          func(s *InboxStyle) { s.MarkerGraphics = line('a', '@', '_', false) },
 			wantSelectedBg: term.ColorNavy,
 			want: `
-                        │         
- a   1 home             │         
- @ ! terminal           │         
- _   blocked            │         
-                        │         
-     1 home             │         
-   ✓ terminal           │No previe
-     done               │         
-                        │         
-     1 home             │         
-   ⠋ terminal           │         
-     working            │         
-     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  50%   │         
-                        │         `,
+                                  
+ a   1 home                       
+ @ ! terminal                     
+ _   blocked                      
+                                  
+     1 home                       
+   ✓ terminal           No preview
+     done                         
+                                  
+     1 home                       
+   ⠋ terminal                     
+     working                      
+     🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋  50%             
+                                  `,
 		},
 		{
 			name: "the item's images show through the marker's in place of its character",
@@ -2092,20 +2090,20 @@ func TestViewDrawGraphics(t *testing.T) {
 				s.Images, s.MarkerGraphics = items, line('t', 't', 't', false)
 			},
 			want: `
-                        │         
- 666616home66666666666  │         
- 66!6terminal666666666  │         
- 6666blocked6666666666  │         
-                        │         
- ****1*home***********  │         
- **✓*terminal*********  │No previe
- ****done*************  │         
-                        │         
- ****1*home***********  │         
- **⠋*terminal*********  │         
- ****working**********  │         
- ****🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋**50%*  │         
-                        │         `,
+                                  
+ 666616home66666666666            
+ 66!6terminal666666666            
+ 6666blocked6666666666            
+                                  
+ ****1*home***********            
+ **✓*terminal*********  No preview
+ ****done*************            
+                                  
+ ****1*home***********            
+ **⠋*terminal*********            
+ ****working**********            
+ ****🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋**50%*            
+                                  `,
 		},
 		{
 			name: "the marker keeps its character under its images",
@@ -2113,20 +2111,20 @@ func TestViewDrawGraphics(t *testing.T) {
 				s.Images, s.MarkerGraphics = items, line('t', 't', 't', true)
 			},
 			want: `
-                        │         
- ▌66616home66666666666  │         
- ▌6!6terminal666666666  │         
- ▌666blocked6666666666  │         
-                        │         
- ****1*home***********  │         
- **✓*terminal*********  │No previe
- ****done*************  │         
-                        │         
- ****1*home***********  │         
- **⠋*terminal*********  │         
- ****working**********  │         
- ****🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋**50%*  │         
-                        │         `,
+                                  
+ ▌66616home66666666666            
+ ▌6!6terminal666666666            
+ ▌666blocked6666666666            
+                                  
+ ****1*home***********            
+ **✓*terminal*********  No preview
+ ****done*************            
+                                  
+ ****1*home***********            
+ **⠋*terminal*********            
+ ****working**********            
+ ****🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋🬋**50%*            
+                                  `,
 		},
 		{
 			name: "the progress bar replaces its characters with its images",
@@ -2137,20 +2135,20 @@ func TestViewDrawGraphics(t *testing.T) {
 			},
 			wantSelectedBg: term.ColorNavy,
 			want: `
-                        │         
- ▌   1 home             │         
- ▌ ! terminal           │         
- ▌   blocked            │         
-                        │         
-     1 home             │         
-   ✓ terminal           │No previe
-     done               │         
-                        │         
-     1 home             │         
-   ⠋ terminal           │         
-     working            │         
-     a@@@@_____1  50%   │         
-                        │         `,
+                                  
+ ▌   1 home                       
+ ▌ ! terminal                     
+ ▌   blocked                      
+                                  
+     1 home                       
+   ✓ terminal           No preview
+     done                         
+                                  
+     1 home                       
+   ⠋ terminal                     
+     working                      
+     a@@@@_____1  50%             
+                                  `,
 		},
 		{
 			name: "the item's images show through the progress bar's in place of its characters",
@@ -2159,20 +2157,20 @@ func TestViewDrawGraphics(t *testing.T) {
 				s.ProgressBarGraphics = ProgressBarGraphics{Filled: uris['t'], Empty: uris['t']}
 			},
 			want: `
-                        │         
- ▌66616home66666666666  │         
- ▌6!6terminal666666666  │         
- ▌666blocked6666666666  │         
-                        │         
- ****1*home***********  │         
- **✓*terminal*********  │No previe
- ****done*************  │         
-                        │         
- ****1*home***********  │         
- **⠋*terminal*********  │         
- ****working**********  │         
- *****************50%*  │         
-                        │         `,
+                                  
+ ▌66616home66666666666            
+ ▌6!6terminal666666666            
+ ▌666blocked6666666666            
+                                  
+ ****1*home***********            
+ **✓*terminal*********  No preview
+ ****done*************            
+                                  
+ ****1*home***********            
+ **⠋*terminal*********            
+ ****working**********            
+ *****************50%*            
+                                  `,
 		},
 	}
 	for _, tt := range tests {
@@ -2239,112 +2237,245 @@ func statusTestPictures(t *testing.T) (map[rune]string, map[string]image.Image, 
 	return uris, pictures, dir
 }
 
-func TestViewStitchFrame(t *testing.T) {
-	const width, height = statusSidebarMin + 8, 4
-	uris, pictures, _ := statusTestPictures(t)
-	resolve := func(name *string) {
-		if *name != "" {
-			*name = uris[[]rune(*name)[0]]
+// statusTestUnshifted returns cells without the vertical render offset
+// the sidebar draws with, for their colors to be compared alone.
+func statusTestUnshifted(cells [][]term.Cell) [][]term.Cell {
+	for _, row := range cells {
+		for x := range row {
+			row[x].Attrs &^= term.AttrVerticalRenderOffset
 		}
 	}
-	charset := tcomponent.DividerCharSet{Top: 'T', VerticalTop: 't', Vertical: '|', VerticalBottom: 'b', Bottom: 'B'}
-	tests := []struct {
-		name                string
-		graphics            tcomponent.DividerGraphics
-		edges               component.FrameCharSetGraphics
-		bar                 bool
-		noGraphics, drawing bool
-		// column is the divider's column, from the frame's top row to its
-		// bottom one.
-		column string
+	return cells
+}
+
+func TestViewSidebarFill(t *testing.T) {
+	const width, height = statusSidebarMin + 10, 9
+	dark := term.Attributes{Fg: term.NewRGBColor(200, 200, 200), Bg: term.NewRGBColor(30, 30, 30)}
+	olive := term.Attributes{Fg: term.ColorWhite, Bg: term.ColorOlive}
+	for _, tc := range []struct {
+		name    string
+		sidebar term.Attributes
+		theme   term.Attributes
+		// want are the colors of a blank cell of the sidebar.
+		want term.Attributes
 	}{
-		{name: "the divider joins the frame", column: "Tt||bB"},
-		{name: "a window bar keeps the top row", bar: true, column: "─|||bB"},
-		{name: "without images the divider keeps its characters", noGraphics: true,
-			graphics: tcomponent.DividerGraphics{Top: "a", Vertical: "@", Bottom: "_"}, column: "Tt||bB"},
-		{name: "images replace the characters",
-			graphics: tcomponent.DividerGraphics{Top: "a", Vertical: "@", Bottom: "_"}, column: "a@@@@_"},
-		{name: "missing junctions keep the frame's images",
-			graphics: tcomponent.DividerGraphics{Vertical: "@"}, edges: component.FrameCharSetGraphics{
-				HorizontalTop: "6", HorizontalBottom: "1",
-			}, column: "6@@@@1"},
-		{name: "within its own draw the view joins nothing", drawing: true, column: "─||||─"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		{name: "the sidebar's colors fill it", sidebar: olive, want: olive},
+		{name: "without them, the theme's shade fills it", theme: dark, want: term.Attributes{Bg: SidebarShade(dark)}},
+		{name: "the sidebar's background wins over the theme's shade", sidebar: olive, theme: dark, want: olive},
+		{
+			name: "a sidebar without a background takes the theme's shade", sidebar: term.Attributes{Fg: term.ColorWhite},
+			theme: dark, want: term.Attributes{Fg: term.ColorWhite, Bg: SidebarShade(dark)},
+		},
+		{name: "without a theme, the sidebar keeps the default colors"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			_, store, ws := newStatusStoreTestWith(t, statusViewTestConfig(), nil)
-			store.updateDetached(ws, statusStoreTestURI(t, "file:///a"),
-				func(r *programstatus.Store) { r.Apply(detachedTestReport(programstatus.Done, "")) })
-			style := statusTestStyle()
-			style.Divider = charset
-			style.Divider.Graphics = tt.graphics
-			for _, uri := range []*string{&style.Divider.Graphics.Top, &style.Divider.Graphics.Vertical, &style.Divider.Graphics.Bottom} {
-				resolve(uri)
+			for path, state := range map[string]programstatus.State{"a": programstatus.Blocked, "b": programstatus.Done} {
+				store.updateDetached(ws, statusStoreTestURI(t, "file:///"+path), func(r *programstatus.Store) {
+					r.Apply(detachedTestReport(state, ""))
+				})
 			}
+			style := statusTestStyle()
+			style.SidebarAttr = tc.sidebar
+			store.SetStyle(style)
+			store.SetDefaultAttributes(tc.theme)
+			v := store.View(nil)
+			t.Cleanup(func() { require.NoError(t, v.Close()) })
+			v.Resize(width, height)
+			w := cell.NewBufferWriter(context.Background(), width, height)
+			v.Draw(w)
+			cells := statusTestUnshifted(w.RawCells())
+			// 0 padding, 1-3 a, selected, 4 gap, 5-7 b, 8 below them.
+			for y := range height {
+				for x := range statusSidebarMin {
+					want := tc.want.Bg
+					if y >= 1 && y <= 3 && x >= statusPadLeft && x < statusSidebarMin-statusPadRight {
+						want = style.SelectedAttr.Bg
+					}
+					assert.Equal(t, want, cells[y][x].Attributes().Bg, "the background at %d,%d", x, y)
+				}
+				assert.Equal(t, term.ColorDefault, cells[y][statusSidebarMin].Attributes().Bg,
+					"the preview keeps the window's background at row %d", y)
+			}
+			assert.Equal(t, tc.want, cells[0][0].Attributes())
+			assert.Equal(t, term.Attributes{Fg: term.ColorGreen, Bg: tc.want.Bg}, cells[6][statusTextX].Attributes(),
+				"text keeps its own color over the fill")
+		})
+	}
+}
+
+func TestViewSidebarMargin(t *testing.T) {
+	const previewW, fillH = 10, 9
+	olive := term.Attributes{Bg: term.ColorOlive}
+	text := func(row []term.Cell) string {
+		var b strings.Builder
+		for _, c := range row {
+			b.WriteRune(cmp.Or(c.Ch, ' '))
+		}
+		return b.String()
+	}
+	for _, tc := range []struct {
+		name   string
+		margin Margin
+	}{
+		{name: "the default margin", margin: DefaultInboxStyle().SidebarMargin},
+		{name: "no margin"},
+		{name: "a margin on every side", margin: Margin{Top: 2, Left: 3, Bottom: 1, Right: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host, store, ws := newStatusStoreTestWith(t, statusViewTestConfig(), nil)
+			views := &statusTestOpener{name: "p"}
+			for path, state := range map[string]programstatus.State{"a": programstatus.Blocked, "b": programstatus.Done} {
+				uri := statusStoreTestURI(t, "file:///"+path)
+				host.previews[statusKey{ws.String(), uri.String()}] = views.preview()
+				store.updateDetached(ws, uri, func(r *programstatus.Store) { r.Apply(detachedTestReport(state, "")) })
+			}
+			style := statusTestStyle()
+			style.SidebarAttr = olive
+			style.SidebarMargin = tc.margin
 			store.SetStyle(style)
 			v := store.View(nil)
 			t.Cleanup(func() { require.NoError(t, v.Close()) })
-			f := component.NewFrame(v)
-			f.Graphics = tt.edges
-			for _, uri := range []*string{&f.Graphics.HorizontalTop, &f.Graphics.HorizontalBottom} {
-				resolve(uri)
-			}
-			f.Resize(width+2, height+2)
-			var g *tcomponent.FrameGraphics
-			if !tt.noGraphics {
-				g = tcomponent.NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
-				t.Cleanup(func() { assert.NoError(t, g.Close()) })
-				g.Reload(pictures)
-			}
+			m := tc.margin
+			previewX := m.Left + statusSidebarMin + m.Right
+			w, _ := v.Dimensions()
+			assert.Equal(t, previewX+statusPreviewWidth, w, "the view asks for room for the margin")
 
-			w := asciiart.NewStringWriter(width+2, height+2, asciiart.DefaultConfig())
-			f.Draw(w)
-			v.drawing = tt.drawing
-			v.StitchFrame(w, f, g, width+2, height+2, tt.bar)
-			require.NoError(t, w.Flush())
-			var column strings.Builder
-			for row := range strings.SplitSeq(w.String(), "\n") {
-				column.WriteRune([]rune(row)[1+statusSidebarMin])
+			width, height := previewX+previewW, m.Top+fillH+m.Bottom
+			v.Resize(width, height)
+			require.Len(t, views.views, 1)
+			assert.Equal(t, []int{previewW, height}, []int{views.views[0].width, views.views[0].height},
+				"the preview takes what the sidebar and its margin leave, all the way down")
+			buf := cell.NewBufferWriter(context.Background(), width, height)
+			v.Draw(buf)
+			cells := statusTestUnshifted(buf.RawCells())
+			for y := range height {
+				for x := range previewX {
+					if x >= m.Left && x < m.Left+statusSidebarMin && y >= m.Top && y < height-m.Bottom {
+						continue
+					}
+					assert.Equal(t, term.Attributes{}, cells[y][x].Attributes(),
+						"the margin at %d,%d keeps the window's background", x, y)
+				}
+				assert.Equal(t, statusPreviewTestRow("p", y, previewW), text(cells[y][previewX:]),
+					"row %d of the preview", y)
 			}
-			assert.Equal(t, tt.column, column.String())
+			assert.Equal(t, olive, cells[m.Top][m.Left].Attributes(), "the fill's top left corner")
+			assert.Equal(t, olive, cells[height-m.Bottom-1][m.Left+statusSidebarMin-1].Attributes(),
+				"the fill's bottom right corner")
+			assert.Equal(t, style.Marker, cells[m.Top+statusPadTop][m.Left+statusPadLeft].Ch,
+				"the list keeps its padding inside the fill")
+
+			// 0 padding, 1-3 a, 4 gap, 5-7 b, in the fill.
+			a, b := statusRef{ws: ws.String(), uri: "file:///a"}, statusRef{ws: ws.String(), uri: "file:///b"}
+			bY := m.Top + 6
+			require.Equal(t, a, v.sel)
+			if m.Left > 0 {
+				v.Handle(statusTestClick(m.Left-1, bY))
+				assert.Equal(t, a, v.sel, "a click in the left margin selects nothing")
+			}
+			if m.Right > 0 {
+				v.Handle(statusTestClick(previewX-1, bY))
+				assert.Equal(t, a, v.sel, "a click between the fill and the preview selects nothing")
+			}
+			v.Handle(statusTestClick(m.Left+statusTextX, bY))
+			assert.Equal(t, b, v.sel, "a click on b's name, past the margin, selects it")
 		})
+	}
+
+	t.Run("a margin wider than the view", func(t *testing.T) {
+		_, store, ws := newStatusStoreTestWith(t, statusViewTestConfig(), nil)
+		store.updateDetached(ws, statusStoreTestURI(t, "file:///a"), func(r *programstatus.Store) {
+			r.Apply(detachedTestReport(programstatus.Done, ""))
+		})
+		style := statusTestStyle()
+		style.SidebarMargin = Margin{Top: 1, Left: 12}
+		store.SetStyle(style)
+		v := store.View(nil)
+		t.Cleanup(func() { require.NoError(t, v.Close()) })
+		v.Resize(10, 3)
+		var drawn string
+		require.NotPanics(t, func() { drawn = handlertest.DrawHandler(v, 10, 3) })
+		assert.Empty(t, strings.TrimSpace(drawn), "neither the list nor the preview fits")
+	})
+}
+
+func TestViewSidebarRenderOffset(t *testing.T) {
+	const previewW, fillH = 10, 12
+	uris, pictures, _ := statusTestPictures(t)
+	m := Margin{Top: 1, Left: 1, Bottom: 1, Right: 1}
+	host, store, ws := newStatusStoreTestWith(t, statusViewTestConfig(), nil)
+	views := &statusTestOpener{name: "p"}
+	for path, report := range map[string]programstatus.Report{
+		"a": detachedTestReport(programstatus.Blocked, ""),
+		"c": {State: programstatus.Working, Progress: 50},
+	} {
+		uri := statusStoreTestURI(t, "file:///"+path)
+		host.previews[statusKey{ws.String(), uri.String()}] = views.preview()
+		store.updateDetached(ws, uri, func(r *programstatus.Store) { r.Apply(report) })
+	}
+	g := tcomponent.NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+	t.Cleanup(func() { assert.NoError(t, g.Close()) })
+	g.Reload(pictures)
+	store.graphics = g
+	style := statusTestStyle()
+	style.SidebarMargin = m
+	style.Images = browser.PromptImages{Idle: browser.PromptButtonImage{Middle: uris['*']}}
+	style.MarkerGraphics = tcomponent.LineGraphics{Middle: uris['@']}
+	style.ProgressBarGraphics = ProgressBarGraphics{Filled: uris['a'], Empty: uris['_']}
+	store.SetStyle(style)
+	v := store.View(nil)
+	t.Cleanup(func() { require.NoError(t, v.Close()) })
+	previewX := m.Left + statusSidebarMin + m.Right
+	width, height := previewX+previewW, m.Top+fillH+m.Bottom
+	v.Resize(width, height)
+
+	w := cell.NewBufferWriter(context.Background(), width, height)
+	v.Draw(w)
+	for y, row := range w.RawCells() {
+		for x, c := range row {
+			inFill := x >= m.Left && x < m.Left+statusSidebarMin && y >= m.Top && y < height-m.Bottom
+			assert.Equal(t, inFill, c.Attrs&term.AttrVerticalRenderOffset != 0,
+				"whether the cell at %d,%d is drawn half a cell lower", x, y)
+		}
+	}
+	require.NotEmpty(t, w.Images())
+	for _, img := range w.Images() {
+		assert.True(t, img.VerticalRenderOffset, "the image at %v moves with the sidebar's cells", img.Pos)
 	}
 }
 
 func TestViewFocusStyle(t *testing.T) {
 	const width, height = statusSidebarMin + 8, 6
 	uris, pictures, _ := statusTestPictures(t)
-	selected := browser.PromptButtonImage{Middle: uris['6']}
 	focus := statusTestStyle()
-	focus.Divider.Vertical, focus.Divider.Top = 'F', 'G'
-	focus.Images = browser.PromptImages{Selected: selected}
+	focus.SidebarAttr = term.Attributes{Bg: term.ColorGreen}
+	focus.Images = browser.PromptImages{Selected: browser.PromptButtonImage{Middle: uris['6']}}
 	tests := []struct {
-		name  string
-		focus *InboxStyle
-		ctx   context.Context
-		// wantDivider is the divider's character in the view, and
-		// wantJoin where it joins the frame's top row.
-		wantDivider, wantJoin rune
-		wantImages            bool
+		name        string
+		focus       *InboxStyle
+		ctx         context.Context
+		wantSidebar term.Color
+		wantImages  bool
 	}{
 		{
 			name: "the focus style while its window holds the focus", focus: &focus,
 			ctx:         term.ContextWithWindowFocus(context.Background(), true),
-			wantDivider: 'F', wantJoin: 'G', wantImages: true,
+			wantSidebar: term.ColorGreen, wantImages: true,
 		},
 		{
 			name: "the normal style while it doesn't", focus: &focus,
 			ctx:         term.ContextWithWindowFocus(context.Background(), false),
-			wantDivider: '|', wantJoin: 'T',
+			wantSidebar: term.ColorOlive,
 		},
 		{
 			name: "the normal style when the host doesn't tell", focus: &focus,
-			ctx: context.Background(), wantDivider: '|', wantJoin: 'T',
+			ctx: context.Background(), wantSidebar: term.ColorOlive,
 		},
 		{
 			name:        "the normal style without a focus style",
 			ctx:         term.ContextWithWindowFocus(context.Background(), true),
-			wantDivider: '|', wantJoin: 'T',
+			wantSidebar: term.ColorOlive,
 		},
 	}
 	for _, tt := range tests {
@@ -2357,20 +2488,17 @@ func TestViewFocusStyle(t *testing.T) {
 			g.Reload(pictures)
 			store.graphics = g
 			style := statusTestStyle()
-			style.Divider.Vertical, style.Divider.Top = '|', 'T'
+			style.SidebarAttr = term.Attributes{Bg: term.ColorOlive}
 			style.Focus = tt.focus
 			store.SetStyle(style)
 			v := store.View(nil)
 			t.Cleanup(func() { require.NoError(t, v.Close()) })
-			f := component.NewFrame(v)
-			f.Resize(width+2, height+2)
+			v.Resize(width, height)
 
-			w := cell.NewBufferWriter(tt.ctx, width+2, height+2)
-			f.Draw(w)
-			v.StitchFrame(w, f, g, width+2, height+2, false)
+			w := cell.NewBufferWriter(tt.ctx, width, height)
+			v.Draw(w)
 			cells := w.RawCells()
-			assert.Equal(t, tt.wantDivider, cells[3][1+statusSidebarMin].Ch)
-			assert.Equal(t, tt.wantJoin, cells[0][1+statusSidebarMin].Ch)
+			assert.Equal(t, tt.wantSidebar, cells[height-1][0].Attributes().Bg)
 			assert.Equal(t, tt.wantImages, len(w.Images()) > 0)
 		})
 	}

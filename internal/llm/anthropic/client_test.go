@@ -192,6 +192,55 @@ func TestEffortWarningProvenance(t *testing.T) {
 	})
 }
 
+func TestCreateCompletionSpeed(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     string
+		wantSpeed any
+	}{
+		{"supported model sends speed", ClaudeOpus5Dot5, "fast"},
+		{"unsupported model drops speed silently", ClaudeSonnet5Dot5, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var (
+				body map[string]any
+				beta []string
+			)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, err := io.ReadAll(r.Body)
+				assert.NoError(t, err)
+				assert.NoError(t, json.Unmarshal(raw, &body))
+				beta = r.Header.Values("anthropic-beta")
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprint(w, minimalSSEResponse("ok"))
+			}))
+			defer srv.Close()
+
+			it, err := NewClient("test-key", Config{BaseURL: srv.URL}).CreateCompletion(
+				context.Background(), llmapi.ModelEntry{Name: tt.model}, llmapi.Request{
+					Messages: []llmapi.Message{{Role: llmapi.RoleUser, Content: "hi"}},
+					Speed:    llmapi.SpeedFast,
+				})
+			require.NoError(t, err)
+			for {
+				ev, ok := it.Next(context.Background())
+				if !ok {
+					break
+				}
+				assert.NotEqual(t, llmapi.EventRateLimitWarning, ev.Type)
+			}
+			require.NoError(t, it.Err())
+			require.NoError(t, it.Close())
+
+			assert.Equal(t, tt.wantSpeed, body["speed"])
+			for _, b := range beta {
+				assert.NotContains(t, b, "fast-mode")
+			}
+		})
+	}
+}
+
 func TestNewClientOAuthBearerAuth(t *testing.T) {
 	tests := []struct {
 		name       string

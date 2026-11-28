@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -199,6 +200,8 @@ func (a *commandAdapter) HandleCommand(
 		return a.handleModel(ctx, args)
 	case "effort":
 		return a.handleEffort(args)
+	case "speed":
+		return a.handleSpeed(args)
 	case "max_tokens":
 		return a.handleMaxTokens(args)
 	case "fork":
@@ -402,11 +405,18 @@ func (a *commandAdapter) syncStatusBarModel() {
 		// leaving the bar reading "default".
 		effort = string(llmarg.DefaultEffort(entry))
 	}
+	// Only show a speed the request is billed at, so a model switch to one
+	// without that speed clears it from the bar.
+	var speed string
+	if s := a.agent.Speed(); llmarg.SupportsSpeed(entry, s) {
+		speed = string(s)
+	}
 	maxTokens := a.agent.MaxOutputTokens()
 	a.statusBarFn(func(s *dialoguetui.StatusBarState) {
 		s.Model = entry.Name
 		s.Provider = entry.Provider
 		s.Effort = effort
+		s.Speed = speed
 		s.MaxTokens = maxTokens
 		if entry.ContextWindow > 0 {
 			s.ContextWindow = entry.ContextWindow
@@ -459,6 +469,50 @@ func (a *commandAdapter) handleEffort(args []string) (dialoguetui.CommandResult,
 	a.agent.SetEffort(level)
 	a.syncStatusBarModel()
 	md, err := markdown.New(fmt.Sprintf("Set effort level to **%s**.", level))
+	if err != nil {
+		return dialoguetui.CommandResult{}, err
+	}
+	return dialoguetui.CommandResult{
+		Display: iterator.FromSlice([]component.Responsive{md}),
+	}, nil
+}
+
+// validSpeeds lists the allowed inference speed values.
+var validSpeeds = []llmapi.Speed{
+	llmapi.SpeedStandard,
+	llmapi.SpeedFast,
+	llmapi.SpeedUltrafast,
+}
+
+// handleSpeed shows the current inference speed or sets a new one.
+func (a *commandAdapter) handleSpeed(args []string) (dialoguetui.CommandResult, error) {
+	var text string
+	if len(args) == 0 {
+		current := a.agent.Speed()
+		if current == "" {
+			current = llmapi.SpeedStandard
+		}
+		text = fmt.Sprintf("Current speed: **%s**", current)
+	} else {
+		speed := llmapi.Speed(args[0])
+		if !slices.Contains(validSpeeds, speed) {
+			return dialoguetui.CommandResult{}, fmt.Errorf(
+				"invalid speed %q: must be standard, fast, or ultrafast", args[0])
+		}
+		stored := speed
+		if stored == llmapi.SpeedStandard {
+			stored = ""
+		}
+		a.agent.SetSpeed(stored)
+		a.syncStatusBarModel()
+
+		text = fmt.Sprintf("Set speed to **%s**.", speed)
+		if entry := a.agent.ModelEntry(); !llmarg.SupportsSpeed(entry, speed) {
+			text += fmt.Sprintf(" %s/%s has no %s mode, so its requests run at standard speed.",
+				entry.Provider, entry.Name, speed)
+		}
+	}
+	md, err := markdown.New(text)
 	if err != nil {
 		return dialoguetui.CommandResult{}, err
 	}
@@ -788,6 +842,13 @@ func (a *commandAdapter) Complete(
 			levels[i] = string(l)
 		}
 		return iterator.FromSlice(levels), nil
+	}
+	if name == "speed" {
+		speeds := make([]string, len(validSpeeds))
+		for i, s := range validSpeeds {
+			speeds[i] = string(s)
+		}
+		return iterator.FromSlice(speeds), nil
 	}
 	return a.handler.Complete(ctx, name, args)
 }

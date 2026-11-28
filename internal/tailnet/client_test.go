@@ -451,6 +451,37 @@ func TestClientPeers(t *testing.T) {
 		}, 5*time.Second, 10*time.Millisecond)
 	})
 
+	t.Run("a machine is asked once however many list it at once", func(t *testing.T) {
+		var nodes []*tailcfg.Node
+		up := make(map[netip.Addr]bool)
+		for id := 2; id < 18; id++ {
+			nodes = append(nodes, testNode(id, fmt.Sprintf("desktop%d", id), alice))
+			up[testAddr(id)] = id%2 == 0
+		}
+		// A listing that finds a machine unknown can lose the race to the
+		// probe another one started; each round gives it a fresh chance.
+		for range 20 {
+			_, lc := newFakeLocalAPI(t, laptop, nodes...)
+			dialer := &stubDialer{serving: up}
+			c := newTestClient(t, lc, dialer)
+			c.listWait = time.Hour
+			var wg sync.WaitGroup
+			for range 64 {
+				wg.Add(1)
+				go debug.CapturePanicReport(func() {
+					defer wg.Done()
+					_, err := c.Peers(context.Background())
+					assert.NoError(t, err)
+				})
+			}
+			wg.Wait()
+			for _, n := range nodes {
+				require.Equal(t, 1, dialer.dialedTo(workspaceAddr(int(n.ID))),
+					"asked %s again", n.Name)
+			}
+		}
+	})
+
 	t.Run("machines are probed before they are listed", func(t *testing.T) {
 		f, lc := newFakeLocalAPI(t, laptop, desktop, phone)
 		dialer := &stubDialer{}

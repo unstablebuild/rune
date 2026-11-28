@@ -2398,8 +2398,6 @@ func TestE2EWorkspaceSymbolDBIndexing(t *testing.T) {
 	configPath := filepath.Join(dataDir, "rune.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte(`
 clipboard: memory
-workspace:
-  symboldb: true
 `), 0o666))
 
 	mu := new(sync.Mutex)
@@ -2424,9 +2422,8 @@ workspace:
 	wh := i.workspaceHandler.workspaces[i.workspaceHandler.focus]
 	mu.Unlock()
 	require.NotNil(t, wh)
-	sdb, ok := wh.symbolDBCloser.(*symboldb.Parser)
-	require.True(t, ok,
-		"workspace parser must be wrapped with the symbol database")
+	sdb := wh.symbolIndex
+	require.NotNil(t, sdb)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -2463,45 +2460,6 @@ func mustResolve(
 	it, err := p.ResolveSymbol(ctx, name, nil)
 	require.NoError(t, err)
 	return it
-}
-
-func TestWorkspaceSymbolDBDisabledByDefault(t *testing.T) {
-	rawDir := t.TempDir()
-	dir, err := filepath.EvalSymlinks(rawDir)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, "alpha.go"), []byte("package a\n"), 0o644))
-
-	dataDir := t.TempDir()
-	configPath := filepath.Join(dataDir, "rune.yaml")
-	require.NoError(t, os.WriteFile(configPath, []byte(`
-clipboard: memory
-`), 0o666))
-
-	mu := new(sync.Mutex)
-	scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
-
-	i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
-		WithLocker(mu),
-		WithScheduleNextTick(scheduleNextTick),
-		WithPublishEvent(func(term.Event) bool { return true }),
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = i.Close() })
-
-	root := i.Ready()
-	mu.Lock()
-	root.Resize(80, 24)
-	mu.Unlock()
-	drainSchedule()
-	i.WaitWorkspaces()
-
-	mu.Lock()
-	wh := i.workspaceHandler.workspaces[i.workspaceHandler.focus]
-	mu.Unlock()
-	require.NotNil(t, wh)
-	assert.Nil(t, wh.symbolDBCloser,
-		"symbol database must not be built when workspace.symboldb is unset")
 }
 
 func TestWorkspaceSearchIndexing(t *testing.T) {
@@ -2591,6 +2549,80 @@ func TestWorkspaceSearchIndexing(t *testing.T) {
 			assert.False(t, open, "closing the workspace closes its index")
 			_, err = wh.regexIndex.RegexpSearch(ctx, searchapi.RegexpRequest{Pattern: "x"})
 			assert.Error(t, err, "closing the workspace closes its regex index")
+		})
+	}
+}
+
+func TestWorkspaceSymbolIndexing(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  string
+		indexed bool
+	}{
+		{"enabled by default", "clipboard: memory\n", true},
+		{"disabled", "clipboard: memory\nsearch:\n  symbols_enabled: false\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "invoice.go"),
+				[]byte("package billing\n\nfunc InvoiceTotal() {}\n"), 0o644))
+			dataDir := t.TempDir()
+			stageTreeSitterGo(t, dataDir)
+			configPath := filepath.Join(dataDir, "rune.yaml")
+			require.NoError(t, os.WriteFile(configPath, []byte(tt.config), 0o666))
+
+			mu := new(sync.Mutex)
+			scheduleNextTick, drainSchedule := newTestScheduler(t, mu)
+			i, err := New(dir, configPath, dataDir, pkgtrust.NewStore(), newTestStorage(t, dataDir),
+				WithLocker(mu),
+				WithScheduleNextTick(scheduleNextTick),
+				WithPublishEvent(func(term.Event) bool { return true }),
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = i.Close() })
+			root := i.Ready()
+			mu.Lock()
+			root.Resize(80, 24)
+			mu.Unlock()
+			drainSchedule()
+			i.WaitWorkspaces()
+
+			mu.Lock()
+			wh := i.workspaceHandler.workspaces[i.workspaceHandler.focus]
+			storage := i.workspaceHandler.ideStorage
+			mu.Unlock()
+			require.NotNil(t, wh)
+			idx := wh.symbolIndex
+			require.NotNil(t, idx)
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			require.NoError(t, idx.Wait(ctx))
+			st := idx.Status()
+			assert.True(t, st.Scanned)
+			assert.Equal(t, tt.indexed, st.Files == 1)
+			db := storageapi.WithPartition(storageapi.WithPartition(storage, symboldb.PartitionName), wh.uri.String())
+			var marker map[string]any
+			err = db.Get(ctx, "scan", &marker)
+			assert.Equal(t, tt.indexed, err == nil, "the symbol index persists only when enabled")
+
+			it, err := idx.Definitions(ctx, symboldb.DefinitionQuery{Kinds: []symboldb.Kind{symboldb.KindFunction}})
+			require.NoError(t, err)
+			defs, err := sdkiterator.ToSlice(ctx, it)
+			require.NoError(t, err)
+			assert.Equal(t, []symboldb.Definition{{
+				Path: "invoice.go", Line: 3, Col: 6, Kind: symboldb.KindFunction, Lang: "go", Name: "InvoiceTotal",
+			}}, defs, "definitions are listed with or without an index")
+
+			mu.Lock()
+			_, _, err = i.workspaceHandler.closeWorkspace()
+			mu.Unlock()
+			require.NoError(t, err)
+			i.workspaceHandler.waitClosing()
+			_, err = idx.Definitions(ctx, symboldb.DefinitionQuery{})
+			assert.Error(t, err, "closing the workspace closes its symbol index")
 		})
 	}
 }
