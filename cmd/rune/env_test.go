@@ -210,7 +210,6 @@ func newBootstrapForTest(
 			b.Handle(ev)
 		}
 	})
-	t.Cleanup(stopPump)
 	rootCfg, err := rootConfig(configPath)
 	require.NoError(t, err)
 
@@ -226,6 +225,7 @@ func newBootstrapForTest(
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = built.Close() })
+	t.Cleanup(stopPump)
 	mu.Lock()
 	b = built
 	mu.Unlock()
