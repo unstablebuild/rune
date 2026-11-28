@@ -190,6 +190,7 @@ commands, whatever preset you load:
 | `g d` / `g D` | Go to the definition / declaration |
 | `g y` / `g i` | Go to the type definition / implementation |
 | `g r` | References to the symbol |
+| `g f` | Open the file under the caret |
 | `g n` / `g p` | Next / previous tab |
 | `] d` / `[ d` | Next / previous diagnostic |
 | `] g` / `[ g` | Next / previous Git change |

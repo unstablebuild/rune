@@ -32,6 +32,7 @@ func TestKeyBindings(t *testing.T) {
 		"gy": {{"lsp", "type-definition"}},
 		"gr": {{"lsp", "references"}},
 		"gi": {{"lsp", "implementation"}},
+		"gf": {{"editfileoncursor"}},
 		"gn": {{"tabnext"}},
 		"gp": {{"tabprevious"}},
 		"]d": {{"jumptolocation", "next", "lsp-diagnostics"}},

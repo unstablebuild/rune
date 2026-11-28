@@ -570,9 +570,34 @@ type parsedLocationLine struct {
 }
 
 func parseLocationLineDetailed(fs workspaceapi.FileSystem, line string) parsedLocationLine {
+	path, coords, hasColumn, ok := ParseLocationLine(line)
+	if !ok {
+		return parsedLocationLine{}
+	}
+
+	uri, err := fs.URI(path)
+	if err != nil {
+		return parsedLocationLine{}
+	}
+	return parsedLocationLine{
+		uri:       uri,
+		coords:    coords,
+		hasColumn: hasColumn,
+		ok:        true,
+	}
+}
+
+// ParseLocationLine parses a token in the form `path`, `path:LINE`,
+// `path:LINE:COL`, or `path:LINE:COL:rest` into the raw path and the
+// 0-indexed target coordinates, reporting whether a column was given.
+// Unlike parseLocationLine it does not resolve the path, so callers
+// can try several base directories before giving up.
+func ParseLocationLine(
+	line string,
+) (path string, coords term.Coordinates, hasColumn bool, ok bool) {
 	s := strings.TrimSpace(line)
 	if s == "" {
-		return parsedLocationLine{}
+		return "", term.Coordinates{}, false, false
 	}
 
 	parts := strings.Split(s, ":")
@@ -584,9 +609,7 @@ func parseLocationLineDetailed(fs workspaceapi.FileSystem, line string) parsedLo
 		}
 	}
 
-	var path string
 	lineNum, col := 0, 0
-	hasColumn := false
 	if lineIdx < 0 {
 		path = s
 	} else {
@@ -598,24 +621,13 @@ func parseLocationLineDetailed(fs workspaceapi.FileSystem, line string) parsedLo
 		}
 	}
 	if path == "" {
-		return parsedLocationLine{}
+		return "", term.Coordinates{}, false, false
 	}
-
-	uri, err := fs.URI(path)
-	if err != nil {
-		return parsedLocationLine{}
-	}
-	coords := term.Coordinates{}
 	if lineNum > 0 {
 		coords.Y = lineNum - 1
 	}
 	if col > 0 {
 		coords.X = col - 1
 	}
-	return parsedLocationLine{
-		uri:       uri,
-		coords:    coords,
-		hasColumn: hasColumn,
-		ok:        true,
-	}
+	return path, coords, hasColumn, true
 }

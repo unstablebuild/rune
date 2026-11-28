@@ -425,6 +425,86 @@ func TestReadfileCommandReadsFileInOtherWorkspace(t *testing.T) {
 	assert.Equal(t, "current\nforeign contents\n", term.CellsToString(h.CellView().RawCells()))
 }
 
+func TestEditFileOnCursor(t *testing.T) {
+	uri, err := workspaceapi.ParseURI("memory:///")
+	require.NoError(t, err)
+
+	cases := []struct {
+		name       string
+		line       string
+		cursorX    int
+		wantURI    string
+		wantCursor *term.Coordinates
+		wantErr    string
+	}{
+		{"relative to the file's directory wins over the root",
+			"open sibling.go\n", 5,
+			"memory:///dir/sibling.go", nil, ""},
+		{"relative to the workspace root",
+			"open root_only.go\n", 5,
+			"memory:///root_only.go", nil, ""},
+		{"absolute path",
+			"open /root_only.go\n", 5,
+			"memory:///root_only.go", nil, ""},
+		{"path:line:col moves the cursor",
+			"open dir/sibling.go:2:3\n", 5,
+			"memory:///dir/sibling.go", &term.Coordinates{X: 2, Y: 1}, ""},
+		{"missing file errors",
+			"open missing.go\n", 5,
+			"", nil, `can't find file "missing.go"`},
+		{"no token errors",
+			"\n", 0,
+			"", nil, "no file name under cursor"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			scheme, err := workspace.NewMemoryScheme(
+				context.Background(), config.NopConfig(), uri)
+			require.NoError(t, err)
+			require.NoError(t, scheme.MkdirAll("/dir", 0o755))
+			writeTestFile(t, scheme, "/dir/main.go", tc.line)
+			writeTestFile(t, scheme, "/dir/sibling.go", "package dir\nlorem ipsum\n")
+			touchTestFile(t, scheme, "/sibling.go")
+			touchTestFile(t, scheme, "/root_only.go")
+
+			b := newExForTestingWithWorkspace(t,
+				workspace.NewSchemeWorkspace(uri, scheme, inlineSchedule),
+				vi.Editor(vi.WithWorkspaceCommandRegistry(
+					uri, texttest.NopWorkspaceRegistry())),
+				vte.DefaultConfig(), nopPublishEvent,
+				clipboard.NewInMemory(), text.WithCommandKey(testCommandKey),
+				text.WithCommandOverlayConfig(testCommandOverlayConfig()))
+			defer b.Close()
+			b.Resize(100, 30)
+
+			mainURI, err := b.ex.workspace.URI("/dir/main.go")
+			require.NoError(t, err)
+			_, err = b.ex.editFileURI(mainURI, b.ex.invokeWindow(), false)
+			require.NoError(t, err)
+
+			_, h, ok := b.ex.handlerInFocus()
+			require.True(t, ok)
+			if tc.cursorX > 0 {
+				require.True(t, h.SetCursorAtScroll(term.Coordinates{X: tc.cursorX}))
+			}
+
+			err = b.ex.editFileOnCursor(context.Background())
+			if tc.wantErr != "" {
+				require.EqualError(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+
+			gotURI, gotH, ok := b.ex.handlerInFocus()
+			require.True(t, ok)
+			assert.Equal(t, tc.wantURI, gotURI.String())
+			if tc.wantCursor != nil {
+				assert.Equal(t, *tc.wantCursor, gotH.CursorAtScroll())
+			}
+		})
+	}
+}
+
 func TestFileExplorerOpenFile(t *testing.T) {
 	uri, err := workspaceapi.ParseURI("memory:///")
 	require.NoError(t, err)
@@ -2437,7 +2517,7 @@ func TestExCommandResponsive(t *testing.T) {
                     
  edit▐              
  edit               
-                    
+ editfileoncursor   
                     
                     
                     `},
@@ -7356,10 +7436,10 @@ func TestEditCompletion(t *testing.T) {
                     
  edi▐               
  edit               
+ editfileoncursor   
  keybindings        
  readfile           
- reloadfile!        
-                    `},
+ reloadfile!        `},
 		{":edit dawo⬇✌re✌^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
 			`                    
                     
@@ -10415,6 +10495,14 @@ func notificationsConfig() notifications.Config {
 func touchTestFile(t *testing.T, scheme schemeapi.Scheme, name string) {
 	f, werr := scheme.OpenFile(name, os.O_CREATE, 0666)
 	require.Nil(t, werr)
+	require.NoError(t, f.Sync())
+}
+
+func writeTestFile(t *testing.T, scheme schemeapi.Scheme, name, contents string) {
+	f, werr := scheme.OpenFile(name, os.O_CREATE|os.O_WRONLY, 0666)
+	require.Nil(t, werr)
+	_, err := f.Write([]byte(contents))
+	require.NoError(t, err)
 	require.NoError(t, f.Sync())
 }
 

@@ -52,3 +52,42 @@ func TestWordAtCursor(t *testing.T) {
 func TestWordAtCursorNilView(t *testing.T) {
 	assert.Equal(t, "", wordAtCursor(nil, term.Coordinates{}))
 }
+
+func TestPathAtCursor(t *testing.T) {
+	buf := cell.NewBuffer()
+	buf.WriteString("open dir/foo.go and ./bar/baz_test.go:12:3,\n" +
+		"see \"pkg/mod@v1.2\" or (a/b-2), end.\n" +
+		"~/x ~/y\n")
+
+	cases := []struct {
+		name string
+		pos  term.Coordinates
+		want string
+	}{
+		{"middle of relative path",
+			term.Coordinates{Y: 0, X: 9}, "dir/foo.go"},
+		{"start of dot-relative path",
+			term.Coordinates{Y: 0, X: 20}, "./bar/baz_test.go:12:3"},
+		{"on trailing comma",
+			term.Coordinates{Y: 0, X: 42}, "./bar/baz_test.go:12:3"},
+		{"on separator", term.Coordinates{Y: 0, X: 4}, ""},
+		{"quoted path drops the quotes",
+			term.Coordinates{Y: 1, X: 9}, "pkg/mod@v1.2"},
+		{"bracketed path drops the bracket",
+			term.Coordinates{Y: 1, X: 26}, "a/b-2"},
+		{"sentence dot is trimmed",
+			term.Coordinates{Y: 1, X: 33}, "end"},
+		{"tilde path start", term.Coordinates{Y: 2, X: 0}, "~/x"},
+		{"tilde path separated", term.Coordinates{Y: 2, X: 4}, "~/y"},
+		{"row out of range", term.Coordinates{Y: 99}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, PathAtCursor(buf, tc.pos))
+		})
+	}
+}
+
+func TestPathAtCursorNilView(t *testing.T) {
+	assert.Equal(t, "", PathAtCursor(nil, term.Coordinates{}))
+}

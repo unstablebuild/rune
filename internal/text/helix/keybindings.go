@@ -43,6 +43,7 @@ func KeyBindings() map[handler.Sequence][][]string {
 		seq('g', 'y'): {{"lsp", "type-definition"}}, // goto_type_definition
 		seq('g', 'r'): {{"lsp", "references"}},      // goto_reference
 		seq('g', 'i'): {{"lsp", "implementation"}},  // goto_implementation
+		seq('g', 'f'): {{"editfileoncursor"}},       // goto_file
 		seq('g', 'n'): {{"tabnext"}},                // goto_next_buffer
 		seq('g', 'p'): {{"tabprevious"}},            // goto_previous_buffer
 		seq(']', 'd'): {{text.CommandLocationJump, "next", lspDiagnosticsLocationListID}},

@@ -13761,3 +13761,16 @@ func TestViHandlerImplPointerLeaves(t *testing.T) {
 		}
 	}
 }
+
+func TestViGoFileDeclinesForDispatch(t *testing.T) {
+	vi := setupVi(t, "one two three", 0)
+	vi.Resize(80, 10)
+	at := vi.cursor.Coordinates()
+
+	_, handled := vi.Handle(term.Event{Type: term.EventKey, Ch: 'g'})
+	require.True(t, handled)
+	_, handled = vi.Handle(term.Event{Type: term.EventKey, Ch: 'f'})
+	assert.False(t, handled, "vi declines f so the dispatcher completes gf")
+	assert.Equal(t, at, vi.cursor.Coordinates())
+	assert.Equal(t, normalMode, vi.mode())
+}
