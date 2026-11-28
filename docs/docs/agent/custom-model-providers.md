@@ -309,6 +309,44 @@ models:
 },
 ```
 
+### MartLLM
+
+[MartLLM](https://martllm.com) is a hosted, OpenAI-compatible API that
+serves models from several vendors (DeepSeek, Anthropic, OpenAI, Google,
+Qwen, Kimi, GLM and others) behind one key. Create a key at
+[martllm.com](https://martllm.com/signup), then list the models you want.
+Model names are namespaced as `vendor/model`, matching the ids returned by
+`https://api.martllm.com/v1/models`:
+
+```yaml tab
+models:
+  custom:
+    url: "https://api.martllm.com/v1"
+    api_key: "<your MartLLM API key>"
+    available_models:
+      deepseek/deepseek-v4-flash: 1048576
+      anthropic/claude-sonnet-4.6: 1000000
+      moonshotai/kimi-k2.6: 262144
+```
+
+```python tab
+"models": {
+    "custom": {
+        "url": "https://api.martllm.com/v1",
+        "api_key": "<your MartLLM API key>",
+        "available_models": {
+            "deepseek/deepseek-v4-flash": 1048576,
+            "anthropic/claude-sonnet-4.6": 1000000,
+            "moonshotai/kimi-k2.6": 262144,
+        },
+    },
+},
+```
+
+Select them as `custom/deepseek/deepseek-v4-flash` and so on; only the
+first `/` separates the provider. The context window for each model is
+listed in the `context_length` field of the `/v1/models` response.
+
 ## Tool calling and capabilities
 
 - **Tool calling** works when the backing model and server support
