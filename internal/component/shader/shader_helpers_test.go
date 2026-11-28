@@ -1003,13 +1003,15 @@ func testReveal(
 			for x := range cols {
 				want := old.Cells[y][x]
 				want.Fg = shaderutils.DesaturateColor(want.Fg, 1, revealAttr.Fg)
+				want.Bg = shaderutils.DesaturateColor(want.Bg, 1, revealAttr.Bg)
 				if cells[y][x].Ch == 'O' {
 					require.Equal(t, want, cells[y][x], "cell %d,%d", x, y)
 				}
 			}
 		}
-		require.NotEmpty(t, images)
-		assert.Equal(t, color.RGBA{R: 76, G: 76, B: 76, A: 255}, images[0].Src.(*image.RGBA).RGBAAt(0, 0))
+		pictures := slices.DeleteFunc(images, func(img term.Image) bool { return img.Src == nil })
+		require.NotEmpty(t, pictures)
+		assert.Equal(t, color.RGBA{R: 76, G: 76, B: 76, A: 255}, pictures[0].Src.(*image.RGBA).RGBAAt(0, 0))
 		assert.Equal(t, red, old.Images[0].Src.(*image.RGBA).RGBAAt(0, 0), "the snapshot given is left as is")
 	})
 
@@ -1046,8 +1048,8 @@ func testReveal(
 // assertDesaturatesSnapshotWithFill checks the shaders newShader makes
 // reveal a desaturated snapshot that shows a fill without a mask, as the
 // frames of windows draw, beside a picture: every frame shows the fill
-// in its colour, as it has no pixels to fade, and the picture
-// desaturated, and the first frame shows both.
+// and the picture desaturated, over a canvas of the default background
+// desaturated, and the first frame shows all three.
 func assertDesaturatesSnapshotWithFill(
 	t *testing.T, newShader func(from shader.Snapshot, defaultAttr term.Attributes) shader.ImageShader,
 ) {
@@ -1063,10 +1065,13 @@ func assertDesaturatesSnapshotWithFill(
 	tests := []struct {
 		desaturation float64
 		picture      color.RGBA
+		fill         term.Color
 	}{
-		{desaturation: 0.5, picture: color.RGBA{R: 166, G: 38, B: 38, A: 255}},
-		{desaturation: 1, picture: color.RGBA{R: 76, G: 76, B: 76, A: 255}},
+		{desaturation: 0.5, picture: color.RGBA{R: 166, G: 38, B: 38, A: 255}, fill: term.NewRGBColor(38, 83, 138)},
+		{desaturation: 1, picture: color.RGBA{R: 76, G: 76, B: 76, A: 255}, fill: term.NewRGBColor(76, 76, 76)},
 	}
+	// revealAttr's default background is black.
+	canvas := term.NewRGBColor(0, 0, 0)
 	for _, tc := range tests {
 		t.Run(fmt.Sprintf("by %v", tc.desaturation), func(t *testing.T) {
 			sh := newShader(shader.Snapshot{
@@ -1075,19 +1080,25 @@ func assertDesaturatesSnapshotWithFill(
 				Desaturation: tc.desaturation,
 			}, revealAttr)
 			for frame := range total {
-				fills, pictures := 0, 0
+				fills, canvases, pictures := 0, 0, 0
 				for _, img := range sh.ShadeImages(frame, total, cloneCells(live), nil) {
-					if img.Src == nil {
+					switch {
+					case img.Src != nil:
+						require.Equal(t, tc.picture, img.Src.(*image.RGBA).RGBAAt(0, 0), "frame %d", frame)
+						pictures++
+					case img.Layer == term.ImageLayerBelowBackground:
 						require.True(t, img.Fill, "frame %d", frame)
-						require.Equal(t, fill.FillColor, img.FillColor, "frame %d", frame)
+						require.Equal(t, canvas, img.FillColor, "frame %d", frame)
+						canvases++
+					default:
+						require.True(t, img.Fill, "frame %d", frame)
+						require.Equal(t, tc.fill, img.FillColor, "frame %d", frame)
 						fills++
-						continue
 					}
-					require.Equal(t, tc.picture, img.Src.(*image.RGBA).RGBAAt(0, 0), "frame %d", frame)
-					pictures++
 				}
 				if frame == 0 {
 					require.Positive(t, fills, "the first frame shows the fill")
+					require.Positive(t, canvases, "the first frame shows the canvas")
 					require.Positive(t, pictures, "the first frame shows the picture")
 				}
 			}

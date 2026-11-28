@@ -1,0 +1,14 @@
+//kage:unit pixels
+
+package main
+
+var Resolution vec2
+var Progress float
+var Tint vec4
+
+// A band of Tint that sweeps across once per loop, ending where it starts.
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	x := dstPos.x / Resolution.x
+	d := abs(fract(x-Progress+0.5) - 0.5)
+	return Tint * smoothstep(0.2, 0, d)
+}

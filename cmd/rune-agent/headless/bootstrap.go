@@ -94,8 +94,8 @@ type Built struct {
 // Everything the interactive extension installs for the sake of a user
 // interface — terminal, notifications, editor, window manager,
 // interrupter, command registration, MCP, hooks, the skill tool,
-// question tools, web_browser and subagents — is deliberately absent so
-// the agent has no side effects on the live session.
+// question tools, web_browser, rune_gui and subagents — is deliberately
+// absent so the agent has no side effects on the live session.
 func (h Host) NewAgent(cfg AgentConfig) Built {
 	// The host strips the `extensions` key before serving its config
 	// over RPC, so the extension's own config block is unreachable

@@ -57,24 +57,26 @@ type Snapshot struct {
 	Desaturation float64
 }
 
-// copied returns a copy of s, with its desaturation applied, for a
-// shader to keep. defaultFg stands for the default foreground.
-func (s Snapshot) copied(defaultFg term.Color) Snapshot {
+// copied returns a copy of s, with its desaturation applied as [GrayFade]
+// applies it, for a shader whose default attributes are defaultAttr to
+// keep.
+func (s Snapshot) copied(defaultAttr term.Attributes) Snapshot {
 	out := Snapshot{Cells: cloneCellMatrix(s.Cells), Images: copyImages(s.Images)}
 	amount := min(s.Desaturation, 1)
 	if !(amount > 0) {
 		return out
 	}
 	for _, row := range out.Cells {
-		for x, c := range row {
-			row[x].Fg = shaderutils.DesaturateColor(c.Fg, amount, defaultFg)
+		for x := range row {
+			desaturateCell(&row[x], amount, defaultAttr)
 		}
 	}
 	// copyImages shares a copy among the placements of a picture.
 	desaturated := make(map[*image.RGBA]bool, len(out.Images))
-	for _, img := range out.Images {
-		// A fill without a mask has no pixels to desaturate.
-		if img.Src == nil {
+	for i, img := range out.Images {
+		if img.Fill {
+			// The colours of a fill's mask are not its own.
+			out.Images[i].FillColor = shaderutils.DesaturateColor(img.FillColor, amount, defaultAttr.Bg)
 			continue
 		}
 		pixels := img.Src.(*image.RGBA)
@@ -83,6 +85,7 @@ func (s Snapshot) copied(defaultFg term.Color) Snapshot {
 			desaturated[pixels] = true
 		}
 	}
+	out.Images = underCanvas(out.Images, out.Cells, amount, defaultAttr.Bg)
 	return out
 }
 

@@ -173,11 +173,14 @@ func (c *raCallback) HandleNotification(
 // workspaceapi.Executor over the local OS, rooted at a directory so
 // relative paths resolve into the test workspace.
 type localScheme struct {
-	root    string
-	mu      sync.Mutex
-	procs   map[workspaceapi.Pid]*os.Process
-	nextPid workspaceapi.Pid
-	started []startedProcess
+	root string
+	// keepStderr holds what the processes started without a Stderr write
+	// to it, for startedProcess to report.
+	keepStderr bool
+	mu         sync.Mutex
+	procs      map[workspaceapi.Pid]*os.Process
+	nextPid    workspaceapi.Pid
+	started    []startedProcess
 }
 
 type synchronizedBuffer struct {
@@ -265,7 +268,7 @@ func (s *localScheme) StartCommand(
 	ctx context.Context, cmd workspaceapi.Cmd,
 ) (workspaceapi.Pid, error) {
 	stderr := &synchronizedBuffer{}
-	if cmd.Stderr == nil {
+	if s.keepStderr && cmd.Stderr == nil {
 		cmd.Stderr = stderr
 	}
 	c := exec.CommandContext(ctx, cmd.Path, cmd.Args...)

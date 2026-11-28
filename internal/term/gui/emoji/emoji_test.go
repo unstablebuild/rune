@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,6 +48,16 @@ func TestHasDistinguishesColorEmoji(t *testing.T) {
 	// ordinary text, so it belongs with the non-emoji runes.
 	for _, r := range []rune{'A', '中', ' ', '1', 'z', '❤'} {
 		assert.Falsef(t, f.Has([]rune{r}), "%c must not be treated as a color emoji", r)
+	}
+}
+
+func TestHasRejectsEveryASCIIRune(t *testing.T) {
+	f := newTestFace(t)
+
+	for r := range rune(utf8.RuneSelf) {
+		cluster := []rune{r}
+		assert.Falsef(t, emojiPresented(cluster), "%q is presented as text", r)
+		assert.Falsef(t, f.Has(cluster), "%q must not be treated as a color emoji", r)
 	}
 }
 

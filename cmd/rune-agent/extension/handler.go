@@ -309,6 +309,7 @@ func newCommandEventHandler(
 	} else {
 		ret.browserDir = dir
 	}
+	ret.userDataDir = w.DataDir(ctx)
 	if dir, err := imageGenDir(ctx, w); err != nil {
 		slog.Warn("imagegen tool unavailable", "error", err)
 	} else {
@@ -664,6 +665,7 @@ type aiEditorHandler struct {
 	skillRegistry  *skills.SkillRegistry
 	plansDir       string
 	browserDir     string
+	userDataDir    string
 	imagesDir      string
 	memoryDataPath string
 	exec           workspaceapi.Executor
@@ -1732,6 +1734,10 @@ func (h *aiEditorHandler) startChat(
 	if s.webBrowser != nil {
 		allTools = append(allTools, s.webBrowser)
 	}
+	s.runeGUI = h.runeGUI(d.ID)
+	if s.runeGUI != nil {
+		allTools = append(allTools, s.runeGUI)
+	}
 	chatRegistry := agent.NewRegistry(allTools...)
 	chatRegistry.AddOverrides(h.toolRegistry.Overrides())
 	adapter.modelToolsFn = func(svc llmapi.Service, model llmapi.ModelEntry) {
@@ -1833,6 +1839,28 @@ func (h *aiEditorHandler) webBrowser(dialogueID string) *agentools.WebBrowser {
 		return nil
 	}
 	return agentools.NewWebBrowser(h.executor, h.fs, bin, h.browserDir, dialogueID)
+}
+
+// runeGUI returns the rune_gui tool for the chat dialogueID, or nil when
+// the Rune that started the extension did not report its executable. The
+// tool runs that Rune on this machine, where the extension and the user's
+// config are, whatever the workspace;
+// only a binary the agent names goes through the workspace's executor, so
+// it needs a workspace on this machine. Whether this machine can run Rune
+// without a window is Rune's to report, when the tool starts it.
+func (h *aiEditorHandler) runeGUI(dialogueID string) *agentools.RuneGUI {
+	bin, err := agentools.LookupRune()
+	if err != nil {
+		slog.Debug("rune_gui tool unavailable", "error", err)
+		return nil
+	}
+	var workspaceExec workspaceapi.Executor
+	var workspace string
+	if h.cwd.Scheme() == "file" {
+		workspaceExec, workspace = h.executor, h.cwd.Path()
+	}
+	return agentools.NewRuneGUI(workspaceExec, bin, filepath.Join(h.userDataDir, "rune-gui"),
+		h.userDataDir, workspace, dialogueID)
 }
 
 func (h *aiEditorHandler) registerImageGen(registry *agent.Registry, svc llmapi.Service, model llmapi.ModelEntry) {

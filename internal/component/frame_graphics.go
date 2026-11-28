@@ -226,12 +226,13 @@ func NewFrameGraphics(
 }
 
 // Draw draws, over the border that f draws when it is width x height at
-// 0,0 of w, the image of every slot of f.FrameCharSet.Graphics that has a
-// URI. Each image fills its cell over a blank cell with f.Attributes, or
-// over the rune f drew there when the graphics are Overlay. Cells under
-// the scroll bar, and the cells of an image that is not loaded yet,
-// failed to load or that w cannot draw keep their rune. It draws nothing
-// when width or height is below 3, where f draws no border.
+// 0,0 of w, the images of f.FrameCharSet.Graphics, each cell of the
+// border its part of the image component.FrameCharSetGraphics says it
+// shows, over a blank cell with f.Attributes, or over the rune f drew
+// there when the graphics are Overlay. Cells under the scroll bar, and
+// the cells of an image that is not loaded yet, failed to load or that w
+// cannot draw keep their rune. It draws nothing when width or height is
+// below 3, where f draws no border.
 func (g *FrameGraphics) Draw(
 	w term.Writer, f *component.Frame, width, height int,
 ) {
@@ -268,35 +269,42 @@ func (g *FrameGraphics) draw(
 	if over {
 		cw.under.Attrs |= term.AttrKeepBackground
 	}
-	draw := func(uri string, ch rune, x, y int) {
-		if uri == "" ||
+	draw := func(ch rune, x, y int) {
+		c := frameCellAt(gr, x, y, width, height)
+		if c.uri == "" ||
 			(sb && x == limitX && y >= sbPos.Y && y < sbPos.Y+sbHeight) {
 			return
 		}
 		cw.fallback = term.NewCell(ch, 1, f.Attributes)
-		g.drawCell(&cw, uri, term.Coordinates{X: x, Y: y})
+		g.drawFrameCell(&cw, c, term.Coordinates{X: x, Y: y})
 	}
 
+	// Each side is drawn on its own, so that a renderer drawing images
+	// of one picture together draws a side at once.
 	for x := 1; x < limitX; x++ {
-		draw(gr.HorizontalTop, f.HorizontalTop, x, 0)
-		draw(gr.HorizontalBottom, f.HorizontalBottom, x, limitY)
+		draw(f.HorizontalTop, x, 0)
+	}
+	for x := 1; x < limitX; x++ {
+		draw(f.HorizontalBottom, x, limitY)
 	}
 	for y := 1; y < limitY; y++ {
-		draw(gr.VerticalLeft, f.VerticalLeft, 0, y)
-		draw(gr.VerticalRight, f.VerticalRight, limitX, y)
+		draw(f.VerticalLeft, 0, y)
 	}
-	draw(gr.TopLeft, f.TopLeft, 0, 0)
-	draw(gr.TopRight, f.TopRight, limitX, 0)
-	draw(gr.BottomLeft, f.BottomLeft, 0, limitY)
-	draw(gr.BottomRight, f.BottomRight, limitX, limitY)
+	for y := 1; y < limitY; y++ {
+		draw(f.VerticalRight, limitX, y)
+	}
+	draw(f.TopLeft, 0, 0)
+	draw(f.TopRight, limitX, 0)
+	draw(f.BottomLeft, 0, limitY)
+	draw(f.BottomRight, limitX, limitY)
 }
 
 // FrameUnderWriter forwards everything to Writer, and writes the cells
-// of the border of a frame Width by Height at 0,0 whose slot Graphics
-// names an image keeping the background of the cell under them, for
+// of the border of a frame Width by Height at 0,0 that Graphics draws an
+// image over keeping the background of the cell under them, for
 // FrameGraphics.DrawOver to draw the images over it. The cells in Keep
-// keep it too, whatever their slot names, for images drawn over the
-// border other than the frame's, such as a separator's junctions.
+// keep it too, whatever Graphics draws, for images drawn over the border
+// other than the frame's, such as a separator's junctions.
 type FrameUnderWriter struct {
 	term.Writer
 	Graphics      component.FrameCharSetGraphics
@@ -306,46 +314,76 @@ type FrameUnderWriter struct {
 
 // SetCell satisfies term.Writer.
 func (w *FrameUnderWriter) SetCell(pos term.Coordinates, c term.Cell) {
-	if frameSlotURI(w.Graphics, pos.X, pos.Y, w.Width, w.Height) != "" || slices.Contains(w.Keep, pos) {
+	if frameCellAt(w.Graphics, pos.X, pos.Y, w.Width, w.Height).uri != "" || slices.Contains(w.Keep, pos) {
 		c.Attrs |= term.AttrKeepBackground
 	}
 	w.Writer.SetCell(pos, c)
 }
 
-// frameSlotURI returns the image gr names for the cell at x, y of the
-// border of a frame width by height, or "" for none or a cell off it.
-func frameSlotURI(gr component.FrameCharSetGraphics, x, y, width, height int) string {
-	if width < 3 || height < 3 || x < 0 || y < 0 || x >= width || y >= height {
-		return ""
+// frameCell is what a cell of a frame's border shows: the part at cell
+// of the picture of uri cut into size cells, or all of it when size is
+// at most 1 by 1. An empty uri shows no image.
+type frameCell struct {
+	uri        string
+	cell, size image.Point
+}
+
+// frameCellAt returns what gr draws over the cell at x, y of the border
+// of a frame width by height, as component.FrameCharSetGraphics
+// describes it, and no image for a cell off the border.
+func frameCellAt(gr component.FrameCharSetGraphics, x, y, width, height int) frameCell {
+	if width < 3 || height < 3 || x < 0 || y < 0 || x >= width || y >= height ||
+		(x > 0 && y > 0 && x < width-1 && y < height-1) {
+		return frameCell{}
 	}
-	top, bottom := y == 0, y == height-1
-	left, right := x == 0, x == width-1
+	right, bottom := width-1-x < x, height-1-y < y
+	dx, dy := x, y
+	if right {
+		dx = width - 1 - x
+	}
+	if bottom {
+		dy = height - 1 - y
+	}
+	var corner string
 	switch {
-	case top && left:
-		return gr.TopLeft
-	case top && right:
-		return gr.TopRight
-	case bottom && left:
-		return gr.BottomLeft
-	case bottom && right:
-		return gr.BottomRight
-	case top:
-		return gr.HorizontalTop
-	case bottom:
-		return gr.HorizontalBottom
-	case left:
-		return gr.VerticalLeft
-	case right:
-		return gr.VerticalRight
+	case !right && !bottom:
+		corner = gr.TopLeft
+	case right && !bottom:
+		corner = gr.TopRight
+	case !right && bottom:
+		corner = gr.BottomLeft
+	default:
+		corner = gr.BottomRight
 	}
-	return ""
+	cw, ch := max(1, gr.CornerWidth), max(1, gr.CornerHeight)
+	if corner != "" && dx < cw && dy < ch {
+		col, row := dx, dy
+		if right {
+			col = cw - 1 - dx
+		}
+		if bottom {
+			row = ch - 1 - dy
+		}
+		return frameCell{uri: corner, cell: image.Pt(col, row), size: image.Pt(cw, ch)}
+	}
+	switch {
+	case dx == 0 && dy == 0:
+		return frameCell{}
+	case y == 0:
+		return frameCell{uri: gr.HorizontalTop}
+	case y == height-1:
+		return frameCell{uri: gr.HorizontalBottom}
+	case x == 0:
+		return frameCell{uri: gr.VerticalLeft}
+	}
+	return frameCell{uri: gr.VerticalRight}
 }
 
 // drawBorder draws the border that f draws when it is width x height at
-// 0,0 of w, in place of f, which must not draw it: the image of each
-// slot of f.Graphics that names one goes over the cell as w holds it, so
-// that its transparent pixels show what was drawn there before, and
-// every other cell takes its slot's rune, as do the cells whose image is
+// 0,0 of w, in place of f, which must not draw it: the part of an image
+// of f.Graphics a cell shows goes over the cell as w holds it, so that
+// its transparent pixels show what was drawn there before, and every
+// other cell takes its slot's rune, as do the cells whose image is
 // not loaded yet, failed to load or that w cannot draw, and those under
 // Overlay images, which keep the background under the window so that
 // the image's transparent pixels show it. The cells of f's scroll bar
@@ -363,10 +401,11 @@ func (g *FrameGraphics) drawBorder(
 	gr := f.Graphics
 	// cw escapes, so it is allocated by the first image only.
 	var cw *cellImageWriter
-	draw := func(uri string, ch rune, x, y int) {
+	draw := func(ch rune, x, y int) {
 		pos := term.Coordinates{X: x, Y: y}
 		cell := term.NewCell(ch, 1, f.Attributes)
-		if g == nil || uri == "" {
+		c := frameCellAt(gr, x, y, width, height)
+		if g == nil || c.uri == "" {
 			w.SetCell(pos, cell)
 			return
 		}
@@ -378,23 +417,26 @@ func (g *FrameGraphics) drawBorder(
 		if cw == nil {
 			cw = &cellImageWriter{Writer: w, keep: true}
 		}
-		if !g.drawCell(cw, uri, pos) && !gr.Overlay {
+		if !g.drawFrameCell(cw, c, pos) && !gr.Overlay {
 			w.SetCell(pos, cell)
 		}
 	}
 
 	if !bar {
 		for x := 1; x < limitX; x++ {
-			draw(gr.HorizontalTop, f.HorizontalTop, x, 0)
+			draw(f.HorizontalTop, x, 0)
 		}
 	}
 	for x := 1; x < limitX; x++ {
-		draw(gr.HorizontalBottom, f.HorizontalBottom, x, limitY)
+		draw(f.HorizontalBottom, x, limitY)
+	}
+	// The right side is drawn after the left, as Draw does.
+	for y := 1; y < limitY; y++ {
+		draw(f.VerticalLeft, 0, y)
 	}
 	for y := 1; y < limitY; y++ {
-		draw(gr.VerticalLeft, f.VerticalLeft, 0, y)
 		if !sb || y < sbPos.Y || y >= sbPos.Y+sbHeight {
-			draw(gr.VerticalRight, f.VerticalRight, limitX, y)
+			draw(f.VerticalRight, limitX, y)
 			continue
 		}
 		ch, _ := f.ScrollBarCharSet.At(y-sbPos.Y, sbHeight)
@@ -404,11 +446,11 @@ func (g *FrameGraphics) drawBorder(
 		w.SetCell(term.Coordinates{X: limitX, Y: y}, term.NewCell(ch, 1, f.ScrollBarAttributes))
 	}
 	if !bar {
-		draw(gr.TopLeft, f.TopLeft, 0, 0)
-		draw(gr.TopRight, f.TopRight, limitX, 0)
+		draw(f.TopLeft, 0, 0)
+		draw(f.TopRight, limitX, 0)
 	}
-	draw(gr.BottomLeft, f.BottomLeft, 0, limitY)
-	draw(gr.BottomRight, f.BottomRight, limitX, limitY)
+	draw(f.BottomLeft, 0, limitY)
+	draw(f.BottomRight, limitX, limitY)
 }
 
 // DrawSeparator draws images over an already drawn separator at y inside
@@ -427,13 +469,14 @@ func (g *FrameGraphics) DrawSeparator(
 		under:  term.NewCell(' ', 1, f.Attributes),
 		layer:  term.ImageLayerAboveText,
 	}
-	draw := func(uri string, ch rune, x int, area image.Rectangle, overlay bool) bool {
-		if uri == "" {
+	draw := func(c frameCell, ch rune, x int, area image.Rectangle, overlay bool) bool {
+		if c.uri == "" {
 			return false
 		}
 		cw.keep = overlay
 		cw.fallback = term.NewCell(ch, 1, f.Attributes)
-		return g.drawArea(&cw, uri, term.Coordinates{X: x, Y: y}, area)
+		cw.cell, cw.size = c.cell, c.size
+		return g.drawArea(&cw, c.uri, term.Coordinates{X: x, Y: y}, area)
 	}
 	gr := cs.Graphics
 	for x := 1; x < width-1; x++ {
@@ -444,15 +487,15 @@ func (g *FrameGraphics) DrawSeparator(
 		if x == width-2 {
 			ch = cs.HorizontalRight
 		}
-		draw(gr.Horizontal, ch, x, image.Rect(x, y, x+1, y+1), gr.Overlay)
+		draw(frameCell{uri: gr.Horizontal}, ch, x, image.Rect(x, y, x+1, y+1), gr.Overlay)
 	}
 	// Junctions cover the ends of the repeated bar, including their outsets.
 	top, bottom, inward := max(0, gr.Outset.Top), max(0, gr.Outset.Bottom), max(0, gr.Outset.Inward)
-	if !draw(gr.Left, cs.Left, 0, image.Rect(0, y-top, 1+inward, y+1+bottom), gr.Overlay) {
-		draw(f.Graphics.VerticalLeft, cs.Left, 0, image.Rect(0, y, 1, y+1), f.Graphics.Overlay)
+	if !draw(frameCell{uri: gr.Left}, cs.Left, 0, image.Rect(0, y-top, 1+inward, y+1+bottom), gr.Overlay) {
+		draw(frameCellAt(f.Graphics, 0, y, width, height), cs.Left, 0, image.Rect(0, y, 1, y+1), f.Graphics.Overlay)
 	}
-	if !draw(gr.Right, cs.Right, width-1, image.Rect(width-1-inward, y-top, width, y+1+bottom), gr.Overlay) {
-		draw(f.Graphics.VerticalRight, cs.Right, width-1, image.Rect(width-1, y, width, y+1), f.Graphics.Overlay)
+	if !draw(frameCell{uri: gr.Right}, cs.Right, width-1, image.Rect(width-1-inward, y-top, width, y+1+bottom), gr.Overlay) {
+		draw(frameCellAt(f.Graphics, width-1, y, width, height), cs.Right, width-1, image.Rect(width-1, y, width, y+1), f.Graphics.Overlay)
 	}
 }
 
@@ -695,6 +738,15 @@ func (g *FrameGraphics) drawCell(
 	return g.drawArea(cw, uri, pos, image.Rect(pos.X, pos.Y, pos.X+1, pos.Y+1))
 }
 
+// drawFrameCell draws over the cell at pos its part of the image of c,
+// and reports whether it drew it.
+func (g *FrameGraphics) drawFrameCell(
+	cw *cellImageWriter, c frameCell, pos term.Coordinates,
+) bool {
+	cw.cell, cw.size = c.cell, c.size
+	return g.drawCell(cw, c.uri, pos)
+}
+
 // drawArea draws the image of uri stretched over the cells of area, in
 // place of the cell at pos.
 func (g *FrameGraphics) drawArea(
@@ -722,7 +774,9 @@ func (g *FrameGraphics) drawArea(
 // Writer cannot draw the image. The image is drawn in layer on at's row
 // and above the text of any other row it reaches, whose text is not at's.
 // When deferred is set, the part on at's row under the text goes to it
-// instead, counted as drawn, for the caller to draw later.
+// instead, counted as drawn, for the caller to draw later. Only the part
+// at cell of the image's picture cut into size cells is drawn, or all of
+// it when size is at most 1 by 1.
 type cellImageWriter struct {
 	term.Writer
 	under, fallback term.Cell
@@ -730,6 +784,7 @@ type cellImageWriter struct {
 	drawn           bool
 	layer           term.ImageLayer
 	at              term.Coordinates
+	cell, size      image.Point
 	area            component.VirtualWriter
 	deferred        *[]deferredImage
 }
@@ -746,6 +801,7 @@ type deferredImage struct {
 // DrawImage satisfies term.Writer. The cell is written before the image
 // because writers treat a cell written after an image as covering it.
 func (w *cellImageWriter) DrawImage(img term.Image) bool {
+	img = croppedToCell(img, w.cell, w.size)
 	if !w.keep {
 		w.Writer.SetCell(w.at, w.under)
 	}
@@ -789,4 +845,22 @@ func (w *cellImageWriter) drawImage(img term.Image) bool {
 		drawn = w.Writer.DrawImage(p) || drawn
 	}
 	return drawn
+}
+
+// croppedToCell returns img cropped to the part at cell of its picture
+// cut into size cells, or img itself when size is at most 1 by 1.
+func croppedToCell(img term.Image, cell, size image.Point) term.Image {
+	if img.Src == nil || size.X <= 1 && size.Y <= 1 {
+		return img
+	}
+	b := img.Src.Bounds()
+	if !img.Crop.Empty() {
+		b = img.Crop.Intersect(b)
+	}
+	w, h := b.Dx(), b.Dy()
+	img.Crop = image.Rect(
+		b.Min.X+cell.X*w/size.X, b.Min.Y+cell.Y*h/size.Y,
+		b.Min.X+(cell.X+1)*w/size.X, b.Min.Y+(cell.Y+1)*h/size.Y,
+	)
+	return img
 }

@@ -28,6 +28,10 @@ pkg install runectl
 (or `console pkg install runectl` from the command prompt). Once installed,
 `runectl` is on your `PATH` inside Rune's terminals.
 
+To build it from source instead, run `make runectl` in a
+[Rune checkout](./building.md#get-the-source); the binary is written to
+`bin/runectl`.
+
 ## How it finds the workspace
 
 Commands you run from a Rune terminal target the right workspace
@@ -48,7 +52,7 @@ for a specific one. The main groups:
 | `runectl screenshot` | Take a GUI screenshot and print its absolute path. |
 | `runectl exec -- <cmd> [args...]` | Run a command through the workspace executor. |
 | `runectl editor ...` | Read and edit buffer text, cursors, and location lists. |
-| `runectl wm ...` | Window-manager actions: focus, split, float, close. |
+| `runectl wm ...` | Window-manager actions: focus, split, float, close, and [prompt](#prompts) the user. |
 | `runectl lsp ...` | Language-server queries: definitions, references, diagnostics, rename, symbols, and more. |
 | `runectl syntax ...` | Tree-sitter searches and structural queries across the workspace. |
 | `runectl storage ...` | Create, read, update, and delete extension documents. |
@@ -89,7 +93,8 @@ keys to every open workspace, as `themereload` does:
   `focus_tab_highlight_char`, `tab_images`,
   `focus_tab_highlight_graphics` and `tab_sounds`;
 - `browser.prompt`: `text_attr`, `highlight_attr`, `hover_attr`,
-  `clicked_attr`, `background_attr` and `images`;
+  `clicked_attr`, `background_attr`, `field_attr`, `focus_field_attr`,
+  `placeholder_attr` and `images`;
 - `command.frame_charset`, `command.separator_charset` and
   `command.show_manual`;
 - `editor.status_bar`: `layout`, `background_attr`,
@@ -100,7 +105,7 @@ keys to every open workspace, as `themereload` does:
   `progress_bar` and `progress_format`;
 - `program_status`, every key;
 - `terminal.bell`;
-- `workspace`: `wallpaper_image`, `wallpaper_image_ascii`,
+- `workspace`: `wallpaper_shader`, `wallpaper_image`, `wallpaper_image_ascii`,
   `wallpaper_ascii`, `wallpaper`, `wallpaper_attr`,
   `wallpaper_background_attr`, `wallpaper_density_characters`, their
   `focus_` versions such as `focus_wallpaper_image`,
@@ -139,6 +144,131 @@ Screenshots require GUI mode. TUI sessions safely discard the request, and
 output, not native window borders or the desktop behind it. Requests sharing
 a data directory should run sequentially: simultaneous requests can observe
 the same new file.
+
+## Prompts
+
+```sh
+choice=$(runectl wm prompt 'Deploy *main* to production?' Deploy Cancel)
+```
+
+`runectl wm prompt <message> <option>...` opens a dialog that asks the
+markdown `<message>`, waits for the user to pick one of the options and
+prints it. It fails if the user dismisses the dialog, or if one with the same
+message is already open, and stopping the command closes the dialog.
+
+| Flag | What it does |
+| --- | --- |
+| `-k`, `--keys` | Keys that pick each option in order, such as `yn` or `<enter><esc>`. |
+| `-w`, `--max-width` | Size the message to its widest line, wrapping at this many cells. |
+| `--field QUESTION[=ANSWER]` | Ask a question the user answers by typing, starting from `ANSWER`. |
+| `--secret QUESTION[=ANSWER]` | The same, with the answer hidden as typed. |
+| `--mandatory` | Keep the options from being picked while the answer to the `--field` or `--secret` before it is blank. |
+| `--placeholder TEXT` | Show `TEXT` in the `--field` or `--secret` before it while its answer is empty. It is never the answer. |
+
+Questions show in the order given, between the message and the options, and
+the answers are printed a line each after the option:
+
+```sh
+runectl wm prompt 'Log in to *db*' OK Cancel \
+  --field User=me --secret Password --mandatory -F json
+```
+
+```json
+{"Answers":["me","hunter2"],"Index":0,"Option":"OK","success":true}
+```
+
+Tab and Shift-Tab, or Down and Up, move between the questions and the row of
+options. Enter moves to the next question, and picks the selected option from
+the last one. The `--keys` only pick an option from the row of options, so a
+`y` typed into a question is just text. Esc and Ctrl+C dismiss the dialog.
+
+A secret answer is hidden on screen but printed to stdout like any other, so
+keep it out of your shell history and logs. A Rune too old for questions opens
+the dialog without them, so `runectl` closes it at once and fails with an
+unsupported operation error.
+
+## Automating Rune with --exec
+
+```sh
+rune --exec 'edit main.go' --exec 'windownew right'
+```
+
+`--exec` (`-e`) runs a command line once Rune starts, as the command prompt
+runs it when you type it and press Enter. Pass it more than once to run
+several, in order. It runs Rune in GUI mode, as `--gui` does, and cannot be
+combined with `--tui` or `--headless`. It needs a data directory that is
+set up, with a `config.yaml` or `config.star`; otherwise Rune exits with an
+error rather than run commands against the first-run setup.
+
+For every command, Rune writes one line to standard output: `ok`,
+`ok <path>` for `screenshot`, or `error: <message>`, with any line break in
+the message written as `\n`. Rune reads the next command only once it has
+replied. With only `--exec` commands, Rune stays open after the last one,
+like `vim -c`.
+
+`--exec -` reads command lines from standard input instead, one per line,
+and skips empty ones. Other `--exec` flags run before or after it, in the
+order given. When standard input ends, Rune exits without asking about
+unsaved changes.
+
+### Waiting for Rune
+
+A command replies once it has finished, including the work it started:
+
+- `echo` replies once the keys it sends, and whatever they set off, have
+  been handled, so the next command sees their effect.
+- After `edit` and the other commands that open files, the next command
+  waits until those files have loaded, so its keys reach their editors.
+- `write`, `write!`, `writeall` and `writeall!` reply once the files are
+  saved, or with the error when a save fails.
+- `workspaceready [command]` waits until the workspace being opened is
+  ready, then runs the command, if any. `extensionready <id> [command]` does
+  the same for an extension. Start a script with `workspaceready`.
+- `screenshot` replies with the path of the PNG it saved in
+  `$RUNE_DATADIR/screenshots/`. `screenshot --reload` first applies the
+  config again, as described in [Screenshots](#screenshots).
+
+When the workspace has a `.rune` config that the data directory has not
+trusted yet, Rune asks whether to trust it, and `workspaceready` waits for
+the answer. Answer with `echo` first; a `screenshot` shows the choices.
+
+### Running without a window
+
+```sh
+rune --offscreen --geometry 1280x800@2 -d /tmp/rune-test -e -
+```
+
+`--offscreen` runs Rune with no window, Dock icon or menu bar, and draws
+frames only when there is something to show, so it neither appears on
+screen nor takes focus. It needs `--exec`, as nothing else could reach or
+close it. It plays no sounds, opens no browser and keeps its own clipboard.
+`--offscreen` is available on macOS and Linux. On Linux it needs no X or
+Wayland server, but it needs Mesa's EGL, such as Debian's `libegl-mesa0`
+package; without a GPU, Mesa draws in software.
+
+`--geometry WxH@SCALE` sets the size in points and the device scale, so
+screenshots do not depend on the displays attached: `1280x800@2`, the
+default, captures 2560 by 1600 pixels. Without `--offscreen`,
+`--geometry WxH` opens the window at that size instead of its last one, and
+takes no scale. Each side can be at most 8192 pixels.
+
+Give the instance its own data directory, as with `-d` above, so it has its
+own config, history and screenshots and leaves yours alone. Copy your
+config there to test it.
+
+```console
+$ mkdir -p /tmp/rune-test && printf 'editor:\n  mode: vim\n' > /tmp/rune-test/config.yaml
+$ printf '%s\n' workspaceready 'edit main.go' 'echo yyp' write 'screenshot --reload' |
+    rune --offscreen -d /tmp/rune-test -w ~/src/project -e -
+ok
+ok
+ok
+ok
+ok /tmp/rune-test/screenshots/screenshot-20260101T120000.000000000Z-1.png
+```
+
+In Rune Agent, the `rune_gui` tool runs such an instance for the agent, so
+it can check a change to Rune or to your config the way you would see it.
 
 ## Program status
 

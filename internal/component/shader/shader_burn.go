@@ -84,7 +84,7 @@ func Burn(params BurnParams, defaultAttr term.Attributes) ImageShader {
 	if params.SmokeChance > 1 {
 		params.SmokeChance = 1
 	}
-	params.From = params.From.copied(defaultAttr.Fg)
+	params.From = params.From.copied(defaultAttr)
 	return &burn{
 		BurnParams:  params,
 		defaultAttr: defaultAttr,

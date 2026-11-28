@@ -158,6 +158,31 @@ func TestGetFrameCharset(t *testing.T) {
 			want:    def,
 			wantErr: []string{"graphics.mode: " + config.ErrInvalidType.Error()},
 		},
+		{
+			name: "corner size",
+			cfg: map[string]any{"graphics": map[string]any{
+				"corner_width": 3, "corner_height": int64(2),
+			}},
+			want: func() component.FrameCharSet {
+				cs := def
+				cs.Graphics.CornerWidth, cs.Graphics.CornerHeight = 3, 2
+				return cs
+			}(),
+		},
+		{
+			name: "an invalid corner size fails with the slots",
+			cfg: map[string]any{"graphics": map[string]any{
+				"topleft":       "ftp://example.com/tl.png",
+				"corner_width":  -1,
+				"corner_height": "2",
+			}},
+			want: def,
+			wantErr: []string{
+				`graphics.topleft: imageuri: unsupported scheme "ftp"`,
+				"graphics.corner_width: expected 0 or more cells, got -1",
+				"graphics.corner_height: " + config.ErrInvalidType.Error(),
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -183,6 +208,18 @@ func TestGetFrameCharset(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, got.Graphics.Overlay)
 		assert.Equal(t, "file:///img/tl.png", got.Graphics.TopLeft)
+	})
+
+	t.Run("a missing corner size keeps the default's", func(t *testing.T) {
+		wide := def
+		wide.Graphics.CornerWidth, wide.Graphics.CornerHeight = 3, 2
+		c := config.MapConfig(map[string]any{"frame_charset": map[string]any{
+			"graphics": map[string]any{"corner_height": 0},
+		}})
+		got, err := tconfig.GetFrameCharset(c, "frame_charset", wide)
+		require.NoError(t, err)
+		assert.Equal(t, 3, got.Graphics.CornerWidth)
+		assert.Equal(t, 0, got.Graphics.CornerHeight)
 	})
 
 	t.Run("a missing key returns ErrNotFound", func(t *testing.T) {

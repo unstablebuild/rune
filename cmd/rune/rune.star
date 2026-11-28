@@ -1222,10 +1222,20 @@ config = {
         # "hover", and "hover" falls back to "idle". "outset" stretches
         # every image "top" rows up and "bottom" rows down, and the left
         # and right images "sides" cells outward.
+        #
+        # "field_attr" styles where the answers to a prompt's questions
+        # are typed, "focus_field_attr" the one the keys go to, and
+        # "placeholder_attr" the hint an empty one shows. The fields are
+        # framed in the window_manager's "frame_charset" and "frame_attr",
+        # the one the keys go to in its "focus_frame_charset" and
+        # "focus_frame_attr".
         "prompt": {
             "text_attr":       attr(bg = "gray", flag = "bold"),
             "highlight_attr":  attr(bg = "red", flag = "bold"),
             "background_attr": attr(fg = "default", bg = "default"),
+            "field_attr":       attr(fg = "default", bg = "default"),
+            "focus_field_attr": attr(fg = "default", bg = "default", flag = "bold"),
+            "placeholder_attr": attr(fg = "gray", bg = "default"),
         },
     },
     # Workspace configuration. This configuration is never reloaded.
@@ -1242,9 +1252,24 @@ config = {
         # Automatically restore the previous session's files, terminals, and
         # window layout.
         "auto_restore": True,
-        # Precedence: wallpaper_image, then wallpaper_image_ascii, then
-        # wallpaper_ascii. The first non-empty one is shown; when all three
-        # are "" the built-in Rune logo is.
+        # Precedence: wallpaper_shader, then wallpaper_image, then
+        # wallpaper_image_ascii, then wallpaper_ascii. The first non-empty one
+        # is shown; when all four are "" the built-in Rune logo is.
+        # wallpaper_shader is a Kage shader the GUI draws over the whole
+        # window: a built-in (gradient, noise, plasma, blaze or inferno) or a
+        # .kage file. The terminal UI shows the next wallpaper instead. It
+        # animates, looping over duration, when the shader declares Frame or
+        # Progress and animate is True.
+        # under_frame runs the shader on the frame cells as well.
+        "wallpaper_shader": { # this takes a built-in name or .kage file path string, or the following object
+            "shader":      "",
+            "fps":         30,
+            "duration":    "10s",
+            "animate":     True,
+            "under_frame": True,
+            # "seed":   0,  # or "random": sets the Seed uniform
+            # "uniforms": {"Tint": "blue"},  # numbers, lists or colours
+        },
         "wallpaper_image": { # this takes a file path string, or the following object
             "path":   "",
             "width":  "60%", # or number of cells
@@ -1267,6 +1292,7 @@ config = {
         # focus_ picture, art or text, it shows the picture, art or text
         # above; the attributes and density characters left out inherit
         # theirs. With no focus_ key set, it is the wallpaper above.
+        # "focus_wallpaper_shader":             "",
         # "focus_wallpaper_image":              "",
         # "focus_wallpaper_image_ascii":        "",
         # "focus_wallpaper_ascii":              "",
@@ -1742,6 +1768,8 @@ if tui:
                 "text_attr":       attr(fg = "default", bg = "#1e1e1e"),
                 "highlight_attr":  attr(fg = "#c6c6c6", bg = "default", flag = "reverse"),
                 "background_attr": attr(fg = "default", bg = "#1e1e1e"),
+                "field_attr":       attr(fg = "default", bg = "#262626"),
+                "focus_field_attr": attr(fg = "#c6c6c6", bg = "#303030"),
             },
         },
         "workspace": {

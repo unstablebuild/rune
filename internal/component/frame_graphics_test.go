@@ -19,6 +19,7 @@ package component
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -220,6 +221,124 @@ LRRRRL`,
 			if tt.notLoaded {
 				irq.wait(t, loads)
 			}
+		})
+	}
+}
+
+func TestFrameGraphicsDrawCornerParts(t *testing.T) {
+	const corner, edge = "file:///corner.png", "file:///edge.png"
+	every := component.FrameCharSetGraphics{
+		TopLeft: corner, TopRight: corner, BottomLeft: corner, BottomRight: corner,
+		HorizontalTop: edge, HorizontalBottom: edge, VerticalLeft: edge, VerticalRight: edge,
+		CornerWidth: 2, CornerHeight: 2,
+	}
+	noTopLeft := every
+	noTopLeft.TopLeft = ""
+	oneCell := every
+	oneCell.CornerWidth, oneCell.CornerHeight = 0, 0
+	wide := every
+	wide.CornerWidth, wide.CornerHeight = 3, 1
+	tests := []struct {
+		name          string
+		graphics      component.FrameCharSetGraphics
+		width, height int
+		// want shows the part of the corner picture each border cell
+		// shows, as its column and row, -- for the edge picture, ## for a
+		// whole corner picture and xx for no image.
+		want string
+	}{
+		{
+			name: "each corner shows its parts over the edge cells next to it", graphics: every,
+			width: 6, height: 5,
+			want: `
+00 10 -- -- 00 10
+01 .. .. .. .. 11
+-- .. .. .. .. --
+00 .. .. .. .. 10
+01 11 -- -- 01 11`,
+		},
+		{
+			name: "the nearer corner draws a cell, the top or left one halfway", graphics: every,
+			width: 3, height: 3,
+			want: `
+00 10 10
+01 .. 11
+01 11 11`,
+		},
+		{
+			name: "a corner without an image leaves its cells to the edges", graphics: noTopLeft,
+			width: 6, height: 5,
+			want: `
+xx -- -- -- 00 10
+-- .. .. .. .. 11
+-- .. .. .. .. --
+00 .. .. .. .. 10
+01 11 -- -- 01 11`,
+		},
+		{
+			name: "a corner of one cell shows its whole picture", graphics: oneCell,
+			width: 4, height: 3,
+			want: `
+## -- -- ##
+-- .. .. --
+## -- -- ##`,
+		},
+		{
+			name: "a corner as wide as half the frame", graphics: wide,
+			width: 6, height: 3,
+			want: `
+00 10 20 00 10 20
+-- .. .. .. .. --
+00 10 20 00 10 20`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Each part of the corner picture is 2 by 1 pixels.
+			cw, ch := max(1, tt.graphics.CornerWidth), max(1, tt.graphics.CornerHeight)
+			g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+			t.Cleanup(func() { assert.NoError(t, g.Close()) })
+			g.Reload(map[string]image.Image{
+				corner: image.NewRGBA(image.Rect(0, 0, 2*cw, ch)),
+				edge:   image.NewRGBA(image.Rect(0, 0, 1, 1)),
+			})
+			f := component.NewFrame(&component.TestComponent{Ch: 'x'})
+			f.Graphics = tt.graphics
+			f.Resize(tt.width, tt.height)
+			s := newImageScreen(tt.width, tt.height)
+			f.Draw(s)
+			g.Draw(s, f, tt.width, tt.height)
+
+			area := image.Rect(0, 0, tt.width, tt.height)
+			grid := make([][]string, tt.height)
+			for y := range grid {
+				grid[y] = make([]string, tt.width)
+				for x := range grid[y] {
+					grid[y][x] = ".."
+					if RingSides(image.Pt(x, y), area) != 0 {
+						grid[y][x] = "xx"
+					}
+				}
+			}
+			for _, img := range s.images {
+				require.Equal(t, image.Pt(1, 1), image.Pt(img.Width, img.Height), "the image at %v", img.Pos)
+				part := "--"
+				switch {
+				case img.Src.Bounds().Dx() == 1:
+				case img.Crop.Empty():
+					part = "##"
+				default:
+					assert.Equal(t, image.Pt(2, 1), img.Crop.Size(), "the part at %v", img.Pos)
+					part = fmt.Sprintf("%d%d", img.Crop.Min.X/2, img.Crop.Min.Y)
+				}
+				grid[img.Pos.Y][img.Pos.X] = part
+			}
+			var b strings.Builder
+			for _, row := range grid {
+				b.WriteByte('\n')
+				b.WriteString(strings.Join(row, " "))
+			}
+			assert.Equal(t, tt.want, b.String())
 		})
 	}
 }
@@ -550,8 +669,10 @@ func TestFrameGraphicsDrawOver(t *testing.T) {
 	navy := term.Attributes{Fg: term.ColorWhite, Bg: term.ColorNavy}
 	teal := term.Attributes{Bg: term.ColorTeal}
 	gr := component.FrameCharSetGraphics{TopLeft: pics.uris["L"], HorizontalTop: pics.uris["L"]}
+	wideCorner := component.FrameCharSetGraphics{TopLeft: pics.uris["L"], CornerWidth: 2, CornerHeight: 2}
 	tests := []struct {
 		name     string
+		graphics *component.FrameCharSetGraphics
 		noImages bool
 		keep     []term.Coordinates
 		// bg is the background of each cell: t for teal, under the
@@ -581,9 +702,21 @@ tttn
 t..n
 nnnt`,
 		},
+		{
+			name:     "the cells a corner's image covers keep the background under the frame",
+			graphics: &wideCorner,
+			bg: `
+ttnn
+t..n
+nnnn`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			gr := gr
+			if tt.graphics != nil {
+				gr = *tt.graphics
+			}
 			g := NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
 			t.Cleanup(func() { assert.NoError(t, g.Close()) })
 			g.Reload(map[string]image.Image{pics.uris["L"]: pics.imgs['L']})
@@ -1437,7 +1570,7 @@ func (c interruptCounter) Interrupt(context.Context) error {
 	return nil
 }
 
-func (c interruptCounter) wait(t *testing.T, n int) {
+func (c interruptCounter) wait(t testing.TB, n int) {
 	t.Helper()
 	for range n {
 		select {

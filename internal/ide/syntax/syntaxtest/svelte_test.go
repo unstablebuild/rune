@@ -99,7 +99,7 @@ type promptingPackages struct {
 	prompts map[string]chan struct{}
 }
 
-func newPromptingPackages(t *testing.T, catalog []string, installed ...string) *promptingPackages {
+func newPromptingPackages(t testing.TB, catalog []string, installed ...string) *promptingPackages {
 	t.Helper()
 	wd, err := os.Getwd()
 	require.NoError(t, err)
@@ -193,11 +193,19 @@ func (p *promptingPackages) answer(pkgID string) {
 }
 
 // serializedSyntaxConfig serializes every tree's event-loop work through mu,
-// which the test holds while it edits or reads.
+// which the test holds while it edits or reads. A callback scheduled while
+// mu is held, as one scheduled from the loop is, runs once it is released.
 func serializedSyntaxConfig(mu *sync.Mutex) syntax.Config {
 	cfg := syntax.DefaultConfig()
 	cfg.ScheduleNextTick = func(fn func()) bool {
-		mu.Lock()
+		if !mu.TryLock() {
+			go func() {
+				mu.Lock()
+				defer mu.Unlock()
+				fn()
+			}()
+			return true
+		}
 		defer mu.Unlock()
 		fn()
 		return true
@@ -220,7 +228,7 @@ func highlight(from, to term.Coordinates, attr term.Attributes) textapi.Location
 // compositeTree is a composite tree installed into a bare buffer, with the
 // highlights it publishes recorded.
 type compositeTree struct {
-	t     *testing.T
+	t     testing.TB
 	mu    *sync.Mutex
 	buf   *cell.Buffer
 	tree  *multitree.Tree
@@ -236,7 +244,7 @@ func newSvelteTree(t *testing.T, pkgs syntax.PkgManager, content string) *compos
 // newCompositeTree installs into a buffer holding content the composite tree
 // of a file with extension ext, configured by cfg.
 func newCompositeTree(
-	t *testing.T, pkgs syntax.PkgManager, ext, content string,
+	t testing.TB, pkgs syntax.PkgManager, ext, content string,
 	cfg func(*sync.Mutex) syntax.Config,
 ) *compositeTree {
 	t.Helper()
@@ -896,13 +904,15 @@ func TestSvelteCompositeParseInstallIntegration(t *testing.T) {
 	mu.Lock()
 	tree := parsed.Install(&recordingNotifications{}, term.NopInterrupter(), loc,
 		nopFlusherCloser{}, nil)
-	installed := len(published)
+	// The sections publish as they parse, so what Install published is
+	// read before the event loop is let go.
+	installed := slices.Clone(published)
 	sections := tree.(*multitree.Tree).Sections()
 	mu.Unlock()
 	t.Cleanup(func() { require.NoError(t, tree.Close()) })
 
-	require.GreaterOrEqual(t, installed, 1, "Install publishes the host's highlights")
-	assert.Contains(t, published[0], highlight(xy(1, 0), xy(7, 0), svelteTagAttr))
+	require.NotEmpty(t, installed, "Install publishes the host's highlights")
+	assert.Contains(t, installed[0], highlight(xy(1, 0), xy(7, 0), svelteTagAttr))
 	assert.Len(t, sections, 2, "Install creates the sections of the parsed host")
 	assert.Same(t, tree, buf.View())
 

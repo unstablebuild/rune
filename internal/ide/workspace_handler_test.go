@@ -5894,7 +5894,7 @@ func TestWorkspaceManagerRestoresOpenTerminalSessions(t *testing.T) {
 			{"windownew", "left"},
 			{"terminalnewtab", "this run"},
 		} {
-			require.NoError(t, m.commandWorkspaceReady(cmd...))
+			require.NoError(t, m.commandWorkspaceReady(context.Background(), cmd...))
 		}
 		m.mu.Unlock()
 		m.waitForWorkspace(t, uri)
@@ -10231,7 +10231,7 @@ func TestWorkspaceReadyCommand(t *testing.T) {
 		defer m.mu.Unlock()
 		require.Nil(t, m.lastReservedPending)
 		require.NoError(t,
-			m.commandWorkspaceReady(cmdRenameWorkspace, "inline"))
+			m.commandWorkspaceReady(context.Background(), cmdRenameWorkspace, "inline"))
 		require.Equal(t, "inline", m.workspaces[m.focus].tabname,
 			"workspaceready with no pending must dispatch inline "+
 				"against the focused workspace")
@@ -10251,7 +10251,7 @@ func TestWorkspaceReadyCommand(t *testing.T) {
 
 		m.mu.Lock()
 		require.NoError(t,
-			m.commandExtensionReady("ext-id", extCmd))
+			m.commandExtensionReady(context.Background(), "ext-id", extCmd))
 		m.mu.Unlock()
 
 		// The extension is ready, but extcmd has not been registered
@@ -10298,7 +10298,7 @@ func TestWorkspaceReadyCommand(t *testing.T) {
 		require.Equal(t, uri2.String(),
 			m.lastReservedPending.uri.String())
 		require.NoError(t,
-			m.commandWorkspaceReady(cmdRenameWorkspace, "deferred"))
+			m.commandWorkspaceReady(context.Background(), cmdRenameWorkspace, "deferred"))
 		// The previously focused workspace must NOT be renamed
 		// while the new build is still pending — that is the
 		// whole point of `workspaceready`.
@@ -10343,7 +10343,7 @@ func TestWorkspaceReadyCommand(t *testing.T) {
 		require.Same(t, pending, m.lastReservedPending)
 
 		require.NoError(t,
-			m.commandWorkspaceReady(cmdRenameWorkspace, "dropped"))
+			m.commandWorkspaceReady(context.Background(), cmdRenameWorkspace, "dropped"))
 		require.Len(t, pending.onReady, 1)
 
 		// Focus the pending slot so closeWorkspace cancels the
@@ -10387,7 +10387,7 @@ func TestWorkspaceReadyCommand(t *testing.T) {
 		require.Same(t, pendingB, m.lastReservedPending)
 
 		require.NoError(t,
-			m.commandWorkspaceReady(cmdRenameWorkspace, "onB"))
+			m.commandWorkspaceReady(context.Background(), cmdRenameWorkspace, "onB"))
 		require.Empty(t, pendingA.onReady,
 			"the older pending workspace must not receive the queued "+
 				"command")
@@ -10405,6 +10405,144 @@ func TestWorkspaceReadyCommand(t *testing.T) {
 		m.lastReservedPending = nil
 		m.mu.Unlock()
 	})
+
+	t.Run("waiting callers", func(t *testing.T) {
+		cases := []struct {
+			name string
+			args []string
+			// wantErr is a substring of the result; empty means nil.
+			wantErr  string
+			wantName string
+		}{
+			{name: "answered after the queued command ran",
+				args: []string{cmdRenameWorkspace, "deferred"}, wantName: "deferred"},
+			{name: "bare barrier answered once the workspace opens"},
+			{name: "queued command error forwarded",
+				args: []string{cmdRenameWorkspace}, wantErr: "expected one argument"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				m := newTestWorkspaceManagerHandlerWithDir(t,
+					defaultConfigWithWrap(false), t.TempDir(), nopShutdownShaderConfig())
+				t.Cleanup(func() { _ = m.Close() })
+				m.quiesce()
+				uri, err := workspaceapi.ParseURI("memory://" + t.TempDir())
+				require.NoError(t, err)
+
+				ctx, w := resultWaitCtx()
+				m.mu.Lock()
+				require.NoError(t, m.workspaceManagerHandler.addOrCreateWorkspace(uri))
+				require.NoError(t, m.commandWorkspaceReady(ctx, tc.args...))
+				require.True(t, w.Claimed, "a queued command must claim the waiter")
+				m.mu.Unlock()
+
+				err = awaitWaiter(t, m, w)
+				if tc.wantErr != "" {
+					require.ErrorContains(t, err, tc.wantErr)
+				} else {
+					require.NoError(t, err)
+				}
+				m.mu.Lock()
+				defer m.mu.Unlock()
+				slot, ok := m.findInstalledSlot(uri)
+				require.True(t, ok, "the waiter must be answered after the install")
+				require.Equal(t, tc.wantName, m.workspaces[slot].tabname)
+			})
+		}
+	})
+
+	t.Run("bare barrier with nothing pending returns at once", func(t *testing.T) {
+		m := newTestWorkspaceManagerHandlerWithDir(t,
+			defaultConfigWithWrap(false), t.TempDir(), nopShutdownShaderConfig())
+		t.Cleanup(func() { _ = m.Close() })
+		m.quiesce()
+
+		ctx, w := resultWaitCtx()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		require.NoError(t, m.commandWorkspaceReady(ctx))
+		require.False(t, w.Claimed)
+	})
+
+	t.Run("waiter of a dropped pending workspace gets an error", func(t *testing.T) {
+		m := newTestWorkspaceManagerHandlerWithDir(t,
+			defaultConfigWithWrap(false), t.TempDir(), nopShutdownShaderConfig())
+		t.Cleanup(func() { _ = m.Close() })
+		m.quiesce()
+		firstSlot := m.focus
+		uri, err := workspaceapi.ParseURI("memory://" + t.TempDir())
+		require.NoError(t, err)
+
+		ctx, w := resultWaitCtx()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		_, cancel := context.WithCancel(context.Background())
+		pending, err := m.reservePendingSlot(uri, -1, cancel)
+		require.NoError(t, err)
+		require.NoError(t, m.commandWorkspaceReady(ctx, cmdRenameWorkspace, "dropped"))
+		require.True(t, w.Claimed)
+
+		m.focus = pending.slot
+		_, _, err = m.closeWorkspace()
+		require.NoError(t, err)
+		m.focus = firstSlot
+		select {
+		case err := <-w.Ch:
+			require.ErrorContains(t, err, "did not open")
+		default:
+			t.Fatal("closing the pending workspace must answer its waiter")
+		}
+	})
+
+	t.Run("unmarked waiter is left to the caller", func(t *testing.T) {
+		m := newTestWorkspaceManagerHandlerWithDir(t,
+			defaultConfigWithWrap(false), t.TempDir(), nopShutdownShaderConfig())
+		t.Cleanup(func() { _ = m.Close() })
+		m.quiesce()
+		uri, err := workspaceapi.ParseURI("memory://" + t.TempDir())
+		require.NoError(t, err)
+
+		// Alias steps carry a waiter on every dispatch; claiming it
+		// would hold the alias run until the workspace opens.
+		w := &textrpc.Waiter{Ch: make(chan error, 1)}
+		ctx := textrpc.ContextWithWaiter(context.Background(), w)
+		m.mu.Lock()
+		require.NoError(t, m.workspaceManagerHandler.addOrCreateWorkspace(uri))
+		require.NoError(t, m.commandWorkspaceReady(ctx, cmdRenameWorkspace, "alias"))
+		require.False(t, w.Claimed)
+		m.mu.Unlock()
+
+		m.quiesce()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		slot, ok := m.findInstalledSlot(uri)
+		require.True(t, ok)
+		require.Equal(t, "alias", m.workspaces[slot].tabname)
+		require.Empty(t, w.Ch)
+	})
+}
+
+// resultWaitCtx returns a dispatch context marked as IDE.DispatchCommandLine
+// marks it, with the waiter it carries.
+func resultWaitCtx() (context.Context, *textrpc.Waiter) {
+	w := &textrpc.Waiter{Ch: make(chan error, 1)}
+	return withResultWait(textrpc.ContextWithWaiter(context.Background(), w)), w
+}
+
+// awaitWaiter drives m until w reports, and returns the result.
+func awaitWaiter(t *testing.T, m *testWorkspaceManagerHandler, w *textrpc.Waiter) error {
+	t.Helper()
+	var err error
+	require.Eventually(t, func() bool {
+		m.quiesce()
+		select {
+		case err = <-w.Ch:
+			return true
+		default:
+			return false
+		}
+	}, 2*time.Second, 10*time.Millisecond, "the waiter must be answered")
+	return err
 }
 
 // waitReadyRunner is a fake extension.Runner that resolves WaitReady
@@ -10594,7 +10732,7 @@ func TestExtensionReadyCommand(t *testing.T) {
 		m.mu.Lock()
 		require.Nil(t, m.lastReservedPending)
 		require.NoError(t,
-			m.commandExtensionReady("ext-id", cmdRenameWorkspace, "inline"))
+			m.commandExtensionReady(context.Background(), "ext-id", cmdRenameWorkspace, "inline"))
 		// The follow-up command must NOT run before the extension is
 		// ready.
 		require.Equal(t, "", m.workspaces[m.focus].tabname)
@@ -10626,7 +10764,7 @@ func TestExtensionReadyCommand(t *testing.T) {
 		var dispatched atomic.Bool
 
 		m.mu.Lock()
-		require.NoError(t, m.commandExtensionReady("ext-id", extCmd))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", extCmd))
 		m.mu.Unlock()
 
 		// The extension is ready, but extcmd has not been registered
@@ -10671,11 +10809,11 @@ func TestExtensionReadyCommand(t *testing.T) {
 		require.NotNil(t, m.lastReservedPending)
 		pending := m.lastReservedPending
 		require.NoError(t,
-			m.commandExtensionReady("ext-id", cmdRenameWorkspace, "deferred"))
+			m.commandExtensionReady(context.Background(), "ext-id", cmdRenameWorkspace, "deferred"))
 		require.Len(t, pending.onReady, 1)
 		require.Equal(t,
 			[]string{cmdExtensionReady, "ext-id", cmdRenameWorkspace, "deferred"},
-			pending.onReady[0],
+			pending.onReady[0].cmd,
 			"the queued command must preserve the extensionready envelope")
 		require.Equal(t, "", m.workspaces[firstSlot].tabname)
 		m.mu.Unlock()
@@ -10716,7 +10854,7 @@ func TestExtensionReadyCommand(t *testing.T) {
 
 		m.mu.Lock()
 		require.NoError(t,
-			m.commandExtensionReady("ext-id", cmdRenameWorkspace, "never"))
+			m.commandExtensionReady(context.Background(), "ext-id", cmdRenameWorkspace, "never"))
 		focus := m.focus
 		m.mu.Unlock()
 
@@ -10747,7 +10885,7 @@ func TestExtensionReadyCommand(t *testing.T) {
 		notes := &recordingNotifications{inner: m.workspaces[focus].notifications}
 		m.workspaces[focus].notifications = notes
 		require.NoError(t,
-			m.commandExtensionReady("ext-id", cmdRenameWorkspace, "never"))
+			m.commandExtensionReady(context.Background(), "ext-id", cmdRenameWorkspace, "never"))
 		m.mu.Unlock()
 
 		require.Eventually(t, func() bool {
@@ -10787,7 +10925,7 @@ func TestExtensionReadyCommand(t *testing.T) {
 		focus := m.focus
 		notes := &recordingNotifications{inner: m.workspaces[focus].notifications}
 		m.workspaces[focus].notifications = notes
-		require.NoError(t, m.commandExtensionReady("ext-id", "neverregistered"))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", "neverregistered"))
 		m.mu.Unlock()
 
 		require.Eventually(t, func() bool {
@@ -10823,7 +10961,7 @@ func TestExtensionReadyCommand(t *testing.T) {
 		require.Same(t, pending, m.lastReservedPending)
 
 		require.NoError(t,
-			m.commandExtensionReady("ext-id", cmdRenameWorkspace, "dropped"))
+			m.commandExtensionReady(context.Background(), "ext-id", cmdRenameWorkspace, "dropped"))
 		require.Len(t, pending.onReady, 1)
 
 		m.focus = pending.slot
@@ -10862,8 +11000,8 @@ func TestExtensionReadyCommand(t *testing.T) {
 			textapi.CommandManual{Name: cmdA2}, record(cmdA2)))
 
 		m.mu.Lock()
-		require.NoError(t, m.commandExtensionReady("ext-A", cmdA1))
-		require.NoError(t, m.commandExtensionReady("ext-A", cmdA2))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-A", cmdA1))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-A", cmdA2))
 		m.mu.Unlock()
 
 		runner.release("ext-A")
@@ -10909,8 +11047,8 @@ func TestExtensionReadyCommand(t *testing.T) {
 			textapi.CommandManual{Name: cmdFast}, record(cmdFast)))
 
 		m.mu.Lock()
-		require.NoError(t, m.commandExtensionReady("ext-slow", cmdSlow))
-		require.NoError(t, m.commandExtensionReady("ext-fast", cmdFast))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-slow", cmdSlow))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-fast", cmdFast))
 		m.mu.Unlock()
 
 		// Release only the fast extension; ext-slow stays unready.
@@ -10950,9 +11088,9 @@ func TestExtensionReadyCommand(t *testing.T) {
 		m.mu.Lock()
 		for i := 0; i < extReadyQueueLimit; i++ {
 			require.NoError(t,
-				m.commandExtensionReady("ext-full", "ext-full-cmd"))
+				m.commandExtensionReady(context.Background(), "ext-full", "ext-full-cmd"))
 		}
-		err := m.commandExtensionReady("ext-full", "ext-full-cmd")
+		err := m.commandExtensionReady(context.Background(), "ext-full", "ext-full-cmd")
 		m.mu.Unlock()
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "too many extensionready commands queued")
@@ -10989,8 +11127,8 @@ func TestExtensionReadyCommand(t *testing.T) {
 			textapi.CommandManual{Name: cmd1}, record(cmd1)))
 
 		m.mu.Lock()
-		require.NoError(t, m.commandExtensionReady("ext-close", cmd1))
-		require.NoError(t, m.commandExtensionReady("ext-close", cmd2))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-close", cmd1))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-close", cmd2))
 		m.mu.Unlock()
 
 		runner.release("ext-close")
@@ -11045,8 +11183,8 @@ func TestExtensionReadyCommand(t *testing.T) {
 				name: cmdSecond, release: releaseSecond, mu: &mu, order: &order}))
 
 		m.mu.Lock()
-		require.NoError(t, m.commandExtensionReady("ext-id", cmdFirst))
-		require.NoError(t, m.commandExtensionReady("ext-id", cmdSecond))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", cmdFirst))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", cmdSecond))
 		m.mu.Unlock()
 
 		// cmdFirst is in flight (its waiter has not reported completion);
@@ -11117,8 +11255,8 @@ func TestExtensionReadyCommand(t *testing.T) {
 			textapi.CommandManual{Name: cmd2}, record(cmd2)))
 
 		m.mu.Lock()
-		require.NoError(t, m.commandExtensionReady("ext-id", cmd1))
-		require.NoError(t, m.commandExtensionReady("ext-id", cmd2))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", cmd1))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", cmd2))
 		m.mu.Unlock()
 
 		require.Eventually(t, func() bool {
@@ -11163,8 +11301,8 @@ func TestExtensionReadyCommand(t *testing.T) {
 		focus := m.focus
 		notes := &recordingNotifications{inner: m.workspaces[focus].notifications}
 		m.workspaces[focus].notifications = notes
-		require.NoError(t, m.commandExtensionReady("ext-id", cmdSilent))
-		require.NoError(t, m.commandExtensionReady("ext-id", cmdNext))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", cmdSilent))
+		require.NoError(t, m.commandExtensionReady(context.Background(), "ext-id", cmdNext))
 		m.mu.Unlock()
 
 		// cmdSilent claims the waiter but never reports completion, so the
@@ -11190,6 +11328,138 @@ func TestExtensionReadyCommand(t *testing.T) {
 			return dispatched
 		}, 2*time.Second, 10*time.Millisecond,
 			"the next follow-up must dispatch after a dropped reply times out")
+	})
+
+	t.Run("waiting callers", func(t *testing.T) {
+		cases := []struct {
+			name string
+			// args follow the extension id.
+			args []string
+			// neverReady keeps the extension from becoming ready.
+			neverReady bool
+			// wantErr is a substring of the result; empty means nil.
+			wantErr  string
+			wantName string
+		}{
+			{name: "answered after the follow-up ran",
+				args: []string{cmdRenameWorkspace, "waited"}, wantName: "waited"},
+			{name: "bare barrier answered once ready"},
+			{name: "follow-up error forwarded",
+				args: []string{cmdRenameWorkspace}, wantErr: "expected one argument"},
+			{name: "readiness timeout forwarded instead of notified",
+				args: []string{cmdRenameWorkspace, "never"}, neverReady: true,
+				wantErr: "not ready within"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				runner := newPerIDReadyRunner("ext-id")
+				m := newTestWorkspaceManagerHandlerWithRunner(t,
+					defaultConfigWithWrap(false), t.TempDir(), runner)
+				t.Cleanup(func() { _ = m.Close() })
+				m.quiesce()
+
+				ctx, w := resultWaitCtx()
+				m.mu.Lock()
+				m.extReadyWait = 50 * time.Millisecond
+				focus := m.focus
+				notes := &recordingNotifications{inner: m.workspaces[focus].notifications}
+				m.workspaces[focus].notifications = notes
+				require.NoError(t, m.commandExtensionReady(ctx, append([]string{"ext-id"}, tc.args...)...))
+				require.True(t, w.Claimed, "a queued follow-up must claim the waiter")
+				m.mu.Unlock()
+
+				if !tc.neverReady {
+					m.quiesce()
+					require.Empty(t, w.Ch, "the waiter must not be answered before the extension is ready")
+					runner.release("ext-id")
+				}
+				err := awaitWaiter(t, m, w)
+				if tc.wantErr != "" {
+					require.ErrorContains(t, err, tc.wantErr)
+				} else {
+					require.NoError(t, err)
+				}
+				for _, n := range notes.snapshot() {
+					assert.NotEqual(t, browserapi.LevelError, n.level,
+						"a waiter's error must not also be notified: %s", n.msg)
+				}
+				m.mu.Lock()
+				defer m.mu.Unlock()
+				require.Equal(t, tc.wantName, m.workspaces[focus].tabname)
+			})
+		}
+	})
+
+	t.Run("full queue does not claim the waiter", func(t *testing.T) {
+		runner := newPerIDReadyRunner("ext-full")
+		m := newTestWorkspaceManagerHandlerWithRunner(t,
+			defaultConfigWithWrap(false), t.TempDir(), runner)
+		t.Cleanup(func() { _ = m.Close() })
+		m.quiesce()
+
+		ctx, w := resultWaitCtx()
+		m.mu.Lock()
+		for range extReadyQueueLimit {
+			require.NoError(t,
+				m.commandExtensionReady(context.Background(), "ext-full", "ext-full-cmd"))
+		}
+		err := m.commandExtensionReady(ctx, "ext-full", "ext-full-cmd")
+		m.mu.Unlock()
+		require.ErrorContains(t, err, "too many extensionready commands queued")
+		require.False(t, w.Claimed)
+
+		runner.release("ext-full")
+		m.quiesce()
+	})
+
+	t.Run("close answers queued waiters", func(t *testing.T) {
+		runner := newPerIDReadyRunner("ext-close")
+		m := newTestWorkspaceManagerHandlerWithRunner(t,
+			defaultConfigWithWrap(false), t.TempDir(), runner)
+		t.Cleanup(func() { _ = m.Close() })
+		m.quiesce()
+
+		ctx1, w1 := resultWaitCtx()
+		ctx2, w2 := resultWaitCtx()
+		m.mu.Lock()
+		require.NoError(t, m.commandExtensionReady(ctx1, "ext-close"))
+		require.NoError(t, m.commandExtensionReady(ctx2, "ext-close", cmdRenameWorkspace, "x"))
+		m.mu.Unlock()
+
+		require.NoError(t, m.Close())
+		for _, w := range []*textrpc.Waiter{w1, w2} {
+			select {
+			case err := <-w.Ch:
+				require.ErrorContains(t, err, "workspace closed")
+			case <-time.After(2 * time.Second):
+				t.Fatal("Close must answer every queued waiter")
+			}
+		}
+	})
+
+	t.Run("waiter queued behind a pending workspace", func(t *testing.T) {
+		m := newTestWorkspaceManagerHandlerWithDir(t,
+			defaultConfigWithWrap(false), t.TempDir(), nopShutdownShaderConfig())
+		t.Cleanup(func() { _ = m.Close() })
+		m.quiesce()
+		uri, err := workspaceapi.ParseURI("memory://" + t.TempDir())
+		require.NoError(t, err)
+
+		ctx, w := resultWaitCtx()
+		m.mu.Lock()
+		require.NoError(t, m.workspaceManagerHandler.addOrCreateWorkspace(uri))
+		require.NoError(t,
+			m.commandExtensionReady(ctx, "ext-id", cmdRenameWorkspace, "pendingwait"))
+		require.True(t, w.Claimed)
+		m.mu.Unlock()
+
+		require.NoError(t, awaitWaiter(t, m, w))
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		slot, ok := m.findInstalledSlot(uri)
+		require.True(t, ok)
+		require.Equal(t, "pendingwait", m.workspaces[slot].tabname,
+			"the waiter must be answered only after the follow-up ran")
 	})
 }
 
@@ -12449,7 +12719,8 @@ func TestTextOptsInstallSyntaxTrees(t *testing.T) {
 	require.NoError(t, err)
 
 	textCfg := text.DefaultConfig()
-	for _, opt := range (&workspaceManagerHandler{}).textOpts(cfg, nil, uri, nil) {
+	for _, opt := range (&workspaceManagerHandler{pkgmanager: new(localPkgManager)}).
+		textOpts(cfg, nil, uri, nil) {
 		opt(&textCfg)
 	}
 	assert.NotNil(t, textCfg.SyntaxTree,
@@ -12464,7 +12735,8 @@ func TestTextOptsEnableMarkdownImages(t *testing.T) {
 	require.NoError(t, err)
 
 	textCfg := text.DefaultConfig()
-	for _, opt := range (&workspaceManagerHandler{}).textOpts(cfg, nil, uri, nil) {
+	for _, opt := range (&workspaceManagerHandler{pkgmanager: new(localPkgManager)}).
+		textOpts(cfg, nil, uri, nil) {
 		opt(&textCfg)
 	}
 	// Images are cached in a partition of their own.

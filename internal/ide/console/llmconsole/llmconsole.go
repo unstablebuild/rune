@@ -36,11 +36,8 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/component"
-	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/handler/repl"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
-	"github.com/unstablebuild/rune-go-sdk/term"
-	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/component/markdown"
 	"unstable.build/rune/internal/llm/llamacpp"
 	"unstable.build/rune/internal/llm/llmrouter"
@@ -251,30 +248,15 @@ type Config struct {
 	// Storage is the persistent storage service used by the codex
 	// provider for auth state.
 	Storage storageapi.Service
-	// WindowManager opens the floating redacted prompt and confirmation
-	// prompt used by the hosted-provider `add` flow.
-	WindowManager browserapi.WindowManager
 	// Notifications surfaces success/failure of key operations.
 	Notifications browserapi.Notifications
 	// ScheduleNextTick marshals UI work back onto the host event loop
 	// from the REPL goroutine.
 	ScheduleNextTick func(func()) bool
-	// PromptOpener opens yes/no confirmation prompts using the IDE's
-	// shared prompt machinery, so they render markdown and use the
-	// configured button styling exactly like core IDE prompts.
-	PromptOpener PromptOpener
-}
-
-// PromptOpener opens a browser prompt for host-side decisions. It mirrors
-// the core IDE prompt entry point (text.Component.Prompt) so the provider
-// flows render markdown messages and styled option buttons consistently
-// with the rest of the IDE.
-type PromptOpener interface {
-	Prompt(
-		message string, options []string,
-		bindings []term.KeyComb,
-		promptHandler handler.PromptHandler,
-	) browser.Window
+	// Prompter asks for the API key and whether to store a key that
+	// failed verification in the hosted-provider `add` flow. It must
+	// support prompt fields.
+	Prompter browserapi.Prompter
 }
 
 // Handler is the parent dispatcher for the `models` command tree.
@@ -304,17 +286,14 @@ func New(cfg Config) *Handler {
 	if cfg.Router == nil {
 		panic("llmconsole: Config.Router must not be nil")
 	}
-	if cfg.WindowManager == nil {
-		panic("llmconsole: Config.WindowManager must not be nil")
-	}
 	if cfg.Notifications == nil {
 		panic("llmconsole: Config.Notifications must not be nil")
 	}
 	if cfg.ScheduleNextTick == nil {
 		panic("llmconsole: Config.ScheduleNextTick must not be nil")
 	}
-	if cfg.PromptOpener == nil {
-		panic("llmconsole: Config.PromptOpener must not be nil")
+	if cfg.Prompter == nil {
+		panic("llmconsole: Config.Prompter must not be nil")
 	}
 	return &Handler{
 		service:       cfg.Service,
@@ -323,10 +302,9 @@ func New(cfg Config) *Handler {
 		providers: newProvidersHandler(providersConfig{
 			storage:  cfg.Storage,
 			router:   cfg.Router,
-			wm:       cfg.WindowManager,
 			notifs:   cfg.Notifications,
 			schedule: cfg.ScheduleNextTick,
-			prompt:   cfg.PromptOpener,
+			prompt:   cfg.Prompter,
 		}),
 		local: newLocalHandler(cfg.LocalRegistry),
 		alias: newAliasHandler(cfg.Router),

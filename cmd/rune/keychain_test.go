@@ -26,5 +26,8 @@ import (
 
 func TestMain(m *testing.M) {
 	keyring.MockInitWithError(errors.New("keychain disabled in tests"))
+	if os.Getenv(runMainEnv) != "" {
+		main()
+	}
 	os.Exit(m.Run())
 }

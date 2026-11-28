@@ -1,0 +1,20 @@
+//kage:unit pixels
+
+package main
+
+var Resolution vec2
+var Background vec4
+var Tint vec4
+var Seed float
+var Bands int
+var Stops [2]float
+
+// A vertical gradient from the background to Tint, in Bands bands.
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	t := dstPos.y / Resolution.y
+	if Bands > 0 {
+		t = floor(t*float(Bands)) / float(Bands)
+	}
+	t = clamp((t-Stops[0])/max(Stops[1]-Stops[0], 0.001), 0, 1)
+	return mix(Background, Tint, t) * (0.95 + 0.05*fract(Seed))
+}

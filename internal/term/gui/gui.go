@@ -25,6 +25,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,10 +40,12 @@ import (
 	"github.com/unstablebuild/tcell/v3"
 	xdraw "golang.org/x/image/draw"
 	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/component/gshader"
 	"unstable.build/rune/internal/debug"
 	"unstable.build/rune/internal/term/gui/appicon"
 	"unstable.build/rune/internal/term/gui/drawrect"
 	"unstable.build/rune/internal/term/gui/font"
+	"unstable.build/rune/internal/term/gui/shaderdevice"
 )
 
 var (
@@ -56,6 +59,10 @@ var (
 	// system cannot start, such as when no display server is reachable.
 	// No GUI can be created in the process after that.
 	ErrNoDisplay = errors.New("no display available")
+
+	// ErrOffscreenUnsupported is returned by NewOffscreen on platforms
+	// without a windowless mode.
+	ErrOffscreenUnsupported = errors.New("running without a window is supported only on macOS and Linux")
 )
 
 const (
@@ -93,6 +100,7 @@ type GUI struct {
 	defaultWidth      int
 	defaultHeight     int
 	explicitSize      bool
+	offscreen         bool
 	startPositionX    int
 	startPositionY    int
 	printFPS          bool
@@ -103,6 +111,10 @@ type GUI struct {
 	cursorAttributes  term.Attributes
 	defaultAttr       term.Attributes
 	renderer          *renderer
+	// shaders renders the gshader trees the handler draws. Its textures
+	// outlive the renderer, which a resize replaces.
+	shaders     *shaderdevice.Device
+	shaderTheme shaderdevice.Theme
 
 	originalColorValues map[tcell.Color]int32
 	originalValuesColor map[int32]tcell.Color
@@ -234,6 +246,48 @@ func New(handler tui.Handler, options ...Option) (*GUI, error) {
 	if err := ebiten.Init(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrNoDisplay, err)
 	}
+	return newGUI(handler, nil, options)
+}
+
+// offscreenSize is the fixed size of an offscreen GUI.
+type offscreenSize struct {
+	width, height int
+	deviceScale   float64
+}
+
+// OffscreenSupported reports whether NewOffscreen can create a GUI on this
+// platform. On Linux, Run also needs Mesa's EGL, and fails without it.
+func OffscreenSupported() bool {
+	return runtime.GOOS == "darwin" || runtime.GOOS == "linux"
+}
+
+// NewOffscreen is New for a GUI without a window, a Dock icon or an
+// application menu. Frames are drawn into a texture nothing displays, so
+// Screenshot still works, and there is no input: the handler only gets the
+// events published to the GUI. The GUI is width by height device-independent
+// pixels of deviceScale device pixels each, whatever monitors are attached;
+// WithSize and WithPosition have no effect.
+//
+// NewOffscreen must create the first GUI of the process, before any other
+// ebiten call. It returns ErrOffscreenUnsupported on platforms other than
+// macOS and Linux, and an error if a dimension or the scale is not positive.
+func NewOffscreen(
+	handler tui.Handler, width, height int, deviceScale float64, options ...Option,
+) (*GUI, error) {
+	if !OffscreenSupported() {
+		return nil, ErrOffscreenUnsupported
+	}
+	if width <= 0 || height <= 0 || !(deviceScale > 0) {
+		return nil, fmt.Errorf("invalid offscreen size %dx%d at scale %v", width, height, deviceScale)
+	}
+	ebiten.SetOffscreen(width, height, deviceScale)
+	if err := ebiten.Init(); err != nil {
+		return nil, err
+	}
+	return newGUI(handler, &offscreenSize{width, height, deviceScale}, options)
+}
+
+func newGUI(handler tui.Handler, offscreen *offscreenSize, options []Option) (*GUI, error) {
 	drawrect.Init()
 	const (
 		cellOverlapX = 0
@@ -259,6 +313,7 @@ func New(handler tui.Handler, options ...Option) (*GUI, error) {
 		defaultHeight:    defaultHeight,
 		setAppIcon:       showAppIcon,
 	}
+	ret.shaders = shaderdevice.New(ret.renderCells)
 	ret.input = newInput(ret.fontManager)
 	ret.mouse = newMouse(ret.fontManager)
 	ret.drag = newDragPoller(ret.mouse)
@@ -278,6 +333,14 @@ func New(handler tui.Handler, options ...Option) (*GUI, error) {
 	}
 	if ret.processWindowClosed == nil {
 		ret.processWindowClosed = func() []term.Event { return nil }
+	}
+	if offscreen != nil {
+		ret.offscreen = true
+		ret.defaultWidth, ret.defaultHeight = offscreen.width, offscreen.height
+		ret.explicitSize = true
+		// The application icon belongs to the Dock, which an offscreen GUI
+		// stays out of.
+		ret.setAppIcon = func([]image.Image) {}
 	}
 
 	// clone original values for restoration
@@ -347,6 +410,7 @@ func (g *GUI) Close() error {
 		g.runAcceptedUserFuncs()
 		g.cancelCtx()
 		g.cursorEffect.close()
+		g.shaders.Close()
 		if g.renderer != nil {
 			g.renderer.deallocate()
 			g.renderer = nil
@@ -732,6 +796,12 @@ func (g *GUI) MinimizeWindow() {
 	ebiten.MinimizeWindow()
 }
 
+// Offscreen reports whether NewOffscreen created g, so that it has no
+// window for platform UI to attach to.
+func (g *GUI) Offscreen() bool {
+	return g.offscreen
+}
+
 // MaximizeWindow maximizes the window.
 func (g *GUI) MaximizeWindow() {
 	ebiten.MaximizeWindow()
@@ -936,9 +1006,14 @@ func (g *GUI) LastPosition() (x, y int) {
 }
 
 func (g *GUI) drawHandler(ctx context.Context) {
-	g.writer.SetContext(frameContext(ctx, g.fontManager))
+	// Every draw redraws the whole handler, so whatever the device
+	// rendered for an earlier draw and not for this one is no longer
+	// placed, and End can free it.
+	g.shaders.Begin(pixelSize(g.fontManager), g.shaderTheme)
+	g.writer.SetContext(gshader.ContextWithDevice(frameContext(ctx, g.fontManager), g.shaders))
 	_ = g.writer.Clear(g.defaultAttr)
 	g.handler.Draw(g.writer)
+	g.shaders.End()
 	g.cursor.pos, g.cursor.style, g.cursor.show = g.handler.Cursor()
 	g.hasContent = true
 	g.needsDraw = false
@@ -971,8 +1046,18 @@ func (g *GUI) resize(width, height int, deviceScale float64) {
 		g.cursorAttributes, g.defaultAttr)
 	g.renderer.forceFullRepaint = g.forceFullRepaint
 	g.renderer.cursorEffect = &g.cursorEffect
+	g.shaderTheme = g.renderer.shaderTheme()
+	// The palette may have changed with the theme, which Begin cannot
+	// tell from the default colours alone.
+	g.shaders.Invalidate()
 	g.cursorEffect.reset()
 	g.needsDraw = true
+}
+
+// renderCells is the shaderdevice.CellRenderer of the GUI's device: cells
+// drawn as the current renderer draws the window.
+func (g *GUI) renderCells(dst *ebiten.Image, cells [][]term.Cell, images []term.Image) {
+	g.renderer.renderCells(dst, cells, images)
 }
 
 // SetAltModifier selects which Alt key produces layout characters. It must

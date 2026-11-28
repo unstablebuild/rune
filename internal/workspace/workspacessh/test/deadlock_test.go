@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"unstable.build/rune/internal/workspace/workspacessh"
@@ -46,7 +47,7 @@ func TestSchemeConstructorDoesNotDeadlockEventLoop(t *testing.T) {
 	require.NoError(t, err)
 
 	// No private keys configured: the only auth route is password,
-	// which will trigger ui.PromptSecret (and therefore exercise the
+	// which will trigger ui.PromptFields (and therefore exercise the
 	// deadlock condition).
 	cfg := config.MapConfig(map[string]any{
 		"insecure": true,
@@ -89,7 +90,7 @@ func TestSchemeConstructorDoesNotDeadlockEventLoop(t *testing.T) {
 }
 
 // eventLoopUI mimics the IDE adapter's threading model: prompts are
-// rendered on a single "event loop" goroutine, and PromptSecret blocks
+// rendered on a single "event loop" goroutine, and PromptFields blocks
 // the calling goroutine until the loop processes the work.
 //
 // If workspacessh.New is invoked from the event-loop goroutine itself
@@ -106,25 +107,25 @@ func newEventLoopUI(loop chan func(), passwords ...string) *eventLoopUI {
 	return &eventLoopUI{loop: loop, pwAnswers: passwords}
 }
 
-func (u *eventLoopUI) PromptSecret(_ context.Context, _ string) (string, error) {
-	res := make(chan string, 1)
+func (u *eventLoopUI) PromptFields(
+	_ context.Context, _ string, fields []browserapi.Field,
+) ([]string, error) {
+	res := make(chan []string, 1)
 	// Post the work onto the event loop. The loop goroutine renders the
 	// prompt and sends the answer back through res.
 	u.loop <- func() {
 		u.mu.Lock()
-		var ans string
-		if len(u.pwAnswers) > 0 {
-			ans = u.pwAnswers[0]
-			u.pwAnswers = u.pwAnswers[1:]
+		ans := make([]string, len(fields))
+		for i := range ans {
+			if len(u.pwAnswers) > 0 {
+				ans[i] = u.pwAnswers[0]
+				u.pwAnswers = u.pwAnswers[1:]
+			}
 		}
 		u.mu.Unlock()
 		res <- ans
 	}
 	return <-res, nil
-}
-
-func (u *eventLoopUI) PromptText(context.Context, string, string) (string, error) {
-	return "", context.Canceled
 }
 
 func (u *eventLoopUI) PromptChoice(context.Context, string, []string) (int, error) {

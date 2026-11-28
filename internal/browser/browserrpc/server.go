@@ -432,7 +432,9 @@ func (s *Server) Floating(srv browserrpc.WindowManager_FloatingServer) error {
 // is open, then the option the user picks, if any, and the prompt's
 // close. For a prompt already open for the same message, it streams only
 // that prompt's window. A prompt whose stream ends before it closes is
-// closed.
+// closed. The window is streamed with supports_fields set, for the
+// client to tell this host from one that ignores the fields, and the
+// option with the answers to the fields.
 func (s *Server) Prompt(
 	req *browserrpc.PromptRequest, srv browserrpc.WindowManager_PromptServer,
 ) error {
@@ -448,6 +450,15 @@ func (s *Server) Prompt(
 		}
 		cfg.Bindings = append(cfg.Bindings, term.KeyComb{Mod: ev.Mod, Key: ev.Key, Ch: ev.Ch})
 	}
+	for _, f := range req.GetFields() {
+		cfg.Fields = append(cfg.Fields, browserapi.Field{
+			Question:    f.GetQuestion(),
+			Answer:      f.GetAnswer(),
+			Secret:      f.GetSecret(),
+			Mandatory:   f.GetMandatory(),
+			Placeholder: f.GetPlaceholder(),
+		})
+	}
 	if err := cfg.Validate(); err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -460,7 +471,7 @@ func (s *Server) Prompt(
 		return fmt.Errorf("open prompt: %w", err)
 	}
 	err = srv.Send(&browserrpc.PromptEvent{Event: &browserrpc.PromptEvent_Opened_{
-		Opened: &browserrpc.PromptEvent_Opened{WindowId: win.WindowID()},
+		Opened: &browserrpc.PromptEvent_Opened{WindowId: win.WindowID(), SupportsFields: true},
 	}})
 	if err != nil || !opened {
 		if opened {
@@ -506,8 +517,14 @@ func (s *Server) closePrompt(win browser.Window) {
 type promptEvents chan *browserrpc.PromptEvent
 
 func (e promptEvents) OnSelect(i int, option string) {
+	e.OnAnswer(i, option, nil)
+}
+
+func (e promptEvents) OnAnswer(i int, option string, answers []string) {
 	e.queue(&browserrpc.PromptEvent{Event: &browserrpc.PromptEvent_Selected_{
-		Selected: &browserrpc.PromptEvent_Selected{Index: uint32(i), Option: option},
+		Selected: &browserrpc.PromptEvent_Selected{
+			Index: uint32(i), Option: option, Answers: answers,
+		},
 	}})
 }
 
@@ -522,7 +539,9 @@ func (e promptEvents) queue(ev *browserrpc.PromptEvent) {
 	select {
 	case e <- ev:
 	default:
-		log.WithField(logging.KeyClass, "browser.Server").Warnf("prompt event dropped: %v", ev)
+		// Only the kind, as a selection carries the answers, secrets
+		// among them.
+		log.WithField(logging.KeyClass, "browser.Server").Warnf("prompt event dropped: %T", ev.GetEvent())
 	}
 }
 

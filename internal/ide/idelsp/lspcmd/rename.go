@@ -20,24 +20,22 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"unicode/utf8"
+	"strings"
 
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
-	"github.com/unstablebuild/rune-go-sdk/component"
-	"github.com/unstablebuild/rune-go-sdk/handler/inputbox"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
-	"github.com/unstablebuild/rune-go-sdk/term"
 )
 
-// RenameHandler creates a textapi.CommandHandler for the
-// "rename" subcommand. It shows an inputbox under the cursor,
-// pre-filled with the current symbol name, and applies the
-// workspace edit returned by the language server.
+// RenameHandler creates a textapi.CommandHandler for the "rename"
+// subcommand. It asks for the new name in a prompt, starting from the
+// current symbol name, and applies the workspace edit returned by the
+// language server.
 func RenameHandler(
-	lsp semanticapi.LSP, editor textapi.Editor, wm browserapi.WindowManager,
+	lsp semanticapi.LSP, editor textapi.Editor, prompter browserapi.Prompter,
 	opener browserapi.ResourceOpener,
 	log *slog.Logger,
 ) textapi.CommandHandler {
@@ -45,22 +43,22 @@ func RenameHandler(
 		log = slog.Default()
 	}
 	return &renameHandler{
-		lsp:    lsp,
-		editor: editor,
-		wm:     wm,
-		opener: opener,
-		log:    log,
+		lsp:      lsp,
+		editor:   editor,
+		prompter: prompter,
+		opener:   opener,
+		log:      log,
 	}
 }
 
 var _ textapi.CommandHandler = (*renameHandler)(nil)
 
 type renameHandler struct {
-	lsp    semanticapi.LSP
-	editor textapi.Editor
-	wm     browserapi.WindowManager
-	opener browserapi.ResourceOpener
-	log    *slog.Logger
+	lsp      semanticapi.LSP
+	editor   textapi.Editor
+	prompter browserapi.Prompter
+	opener   browserapi.ResourceOpener
+	log      *slog.Logger
 }
 
 func (h *renameHandler) HandleCommand(ctx context.Context, cmd textapi.Command) error {
@@ -80,117 +78,54 @@ func (h *renameHandler) HandleCommand(ctx context.Context, cmd textapi.Command) 
 		return fmt.Errorf("rename not available at cursor position")
 	}
 
-	ib := inputbox.New(
-		inputbox.WithPrompt(""),
-		inputbox.WithText(prep.Placeholder),
-	)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	floating := &renameFloatingHandler{
-		ib:       ib,
-		lsp:      h.lsp,
-		editor:   h.editor,
-		opener:   h.opener,
-		uri:      cmd.URI,
-		position: pos,
-		ctx:      ctx,
-		cancel:   cancel,
-		log:      h.log,
+	uri := cmd.URI
+	// The message asks the question, which leaves the field unlabeled.
+	message := "Rename the symbol to:"
+	if prep.Placeholder != "" {
+		message = fmt.Sprintf("Rename `%s` to:", prep.Placeholder)
 	}
-
-	_, err = h.wm.Floating(floating, browserapi.FloatingConfig{
-		Alignment: component.AlignmentLeft | component.AlignmentTop,
-		Offset: term.Coordinates{
-			X: cmd.Cursor.Window.X + 1,
-			Y: cmd.Cursor.Window.Y + 2,
+	_, err = h.prompter.Prompt(browserapi.PromptConfig{
+		Message: message,
+		Options: []string{"Rename"},
+		Fields: []browserapi.Field{
+			{Answer: prep.Placeholder, Placeholder: "New name", Mandatory: true},
 		},
-	})
+	}, handler.FuncAnswerHandler(
+		func(_ int, _ string, answers []string) {
+			h.rename(uri, pos, strings.TrimSpace(answers[0]))
+		},
+		func() error { return nil },
+	))
 	return err
+}
+
+// rename renames the symbol at position in uri to newName and applies
+// the edit. It runs on the event loop, where the prompt answers.
+func (h *renameHandler) rename(
+	uri workspaceapi.URI, position semanticapi.Position, newName string,
+) {
+	ctx := context.Background()
+	edit, err := h.lsp.Rename(ctx, semanticapi.RenameParams{
+		TextDocument: TextDocID(uri),
+		Position:     position,
+		NewName:      newName,
+	})
+	if err != nil {
+		h.log.Warn("rename", "err", err)
+		return
+	}
+	if edit == nil {
+		return
+	}
+	if err := ApplyWorkspaceEdit(ctx, h.editor, h.opener, uri, edit, h.log); err != nil {
+		h.log.Warn("rename apply", "err", err)
+	}
 }
 
 func (h *renameHandler) Complete(_ context.Context, _ string, _ []string) (
 	iterator.Iterator[string], error,
 ) {
 	return iterator.Empty[string](), nil
-}
-
-// renameFloatingHandler wraps an inputbox.Handler to
-// implement browserapi.Floating. On confirmation it calls
-// LSP rename and applies the returned workspace edit.
-var _ browserapi.Floating = (*renameFloatingHandler)(nil)
-
-type renameFloatingHandler struct {
-	ib       *inputbox.Handler
-	lsp      semanticapi.LSP
-	editor   textapi.Editor
-	opener   browserapi.ResourceOpener
-	uri      workspaceapi.URI
-	position semanticapi.Position
-	ctx      context.Context
-	cancel   context.CancelFunc
-	log      *slog.Logger
-}
-
-func (r *renameFloatingHandler) Handle(ev term.Event) (bool, bool) {
-	isEsc := ev.Type == term.EventKey && ev.Key == term.KeyEsc
-	exit, handled := r.ib.Handle(ev)
-	if !exit {
-		return false, handled
-	}
-	if isEsc {
-		return true, true
-	}
-
-	newName := r.ib.Text()
-	if newName == "" {
-		return true, true
-	}
-
-	edit, err := r.lsp.Rename(r.ctx, semanticapi.RenameParams{
-		TextDocument: TextDocID(r.uri),
-		Position:     r.position,
-		NewName:      newName,
-	})
-	if err != nil {
-		r.log.Warn("rename", "err", err)
-		return true, true
-	}
-	if edit == nil {
-		return true, true
-	}
-
-	err = ApplyWorkspaceEdit(r.ctx, r.editor, r.opener, r.uri, edit, r.log)
-	if err != nil {
-		r.log.Warn("rename apply", "err", err)
-		return true, true
-	}
-	return true, true
-}
-
-func (r *renameFloatingHandler) Cursor() (term.Coordinates, term.CursorStyle, bool) {
-	return r.ib.Cursor()
-}
-
-func (r *renameFloatingHandler) Selection() (string, bool) {
-	return r.ib.Selection()
-}
-
-func (r *renameFloatingHandler) Resize(width, height int) {
-	r.ib.Resize(width, height)
-}
-
-func (r *renameFloatingHandler) Draw(w term.Writer) {
-	r.ib.Draw(w)
-}
-
-func (r *renameFloatingHandler) Dimensions() (int, int) {
-	textW := utf8.RuneCountInString(r.ib.Text())
-	return max(textW+2, 30), 1
-}
-
-func (r *renameFloatingHandler) Close() error {
-	r.cancel()
-	return nil
 }
 
 // ApplyWorkspaceEdit applies a WorkspaceEdit by routing

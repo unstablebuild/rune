@@ -74,7 +74,7 @@ func TestRouterCompleteSymbol(t *testing.T) {
 		cfg.Interrupter = term.NopInterrupter()
 		cfg.Parser = parser
 		router, err := AllHandler(
-			&mockLSP{}, &mockEditor{}, &mockWindowManager{},
+			&mockLSP{}, &mockEditor{}, &mockWindowManager{}, &mockPrompter{},
 			&mockResourceOpener{}, &mockNotifications{},
 			&mockFileSystem{}, parser, cfg,
 		)
@@ -117,7 +117,7 @@ func TestRouterNilResource(t *testing.T) {
 	cfg.Interrupter = term.NopInterrupter()
 	cfg.Parser = &mockParser{}
 	router, err := AllHandler(
-		&mockLSP{}, &mockEditor{}, &mockWindowManager{},
+		&mockLSP{}, &mockEditor{}, &mockWindowManager{}, &mockPrompter{},
 		&mockResourceOpener{}, &mockNotifications{},
 		&mockFileSystem{}, cfg.Parser, cfg,
 	)
@@ -202,7 +202,7 @@ func TestRouterCompleteReferencedSymbolFallback(t *testing.T) {
 				cfg.Interrupter = term.NopInterrupter()
 				cfg.Parser = parser
 				router, err := AllHandler(
-					lsp, &mockEditor{}, &mockWindowManager{},
+					lsp, &mockEditor{}, &mockWindowManager{}, &mockPrompter{},
 					&mockResourceOpener{}, &mockNotifications{},
 					&mockFileSystem{}, parser, cfg,
 				)
@@ -337,7 +337,7 @@ func TestE2ECommands(t *testing.T) {
 			return nil, nil
 		},
 	}
-	router, err := AllHandler(mgr, editor, wm, opener, notify, fs, cfg.Parser, cfg)
+	router, err := AllHandler(mgr, editor, wm, &mockPrompter{}, opener, notify, fs, cfg.Parser, cfg)
 	require.NoError(t, err)
 
 	makeCmd := func(name string, args []string, line, char int) textapi.Command {
@@ -875,7 +875,7 @@ func TestE2ESignatureHelpAutoTrigger(t *testing.T) {
 	cfg.ScheduleNextTick = syncTick
 	cfg.SignatureHelp.TriggerCharacters = triggerChars
 
-	_, err = AllHandler(mgr, editor, wm, &mockResourceOpener{},
+	_, err = AllHandler(mgr, editor, wm, &mockPrompter{}, &mockResourceOpener{},
 		&mockNotifications{}, &mockFileSystem{
 			openFileFn: func(path string, flag int, mode os.FileMode) (workspaceapi.File, error) {
 				return os.OpenFile(path, flag, mode)

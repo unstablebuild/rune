@@ -759,7 +759,7 @@ func TestHandleFSChange_ExternalEditBetweenSaveRenameAndReopen(t *testing.T) {
 	m.locked(func() {
 		_, tab, ok := x.focusTab()
 		require.True(t, ok)
-		require.NoError(t, x.flusher.flushAndThen(file, tab, false, nil))
+		require.NoError(t, x.flusher.flushAndThen(file, tab, false, nil, nil))
 	})
 	select {
 	case <-s.touched:
@@ -847,7 +847,7 @@ func testFSChangeDuringOwnSave(t *testing.T, directSave bool) {
 			require.NoError(t, err)
 			return
 		}
-		require.NoError(t, x.flusher.flushAndThen(file, tab, false, nil))
+		require.NoError(t, x.flusher.flushAndThen(file, tab, false, nil, nil))
 	})
 	select {
 	case <-s.touched:

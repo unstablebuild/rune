@@ -18,16 +18,20 @@ package syntaxtest
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/blue/iterator"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	sdkiterator "github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/cell"
 	"unstable.build/rune/internal/ide/syntax"
@@ -346,6 +350,92 @@ func TestMarkdownCompositeEnterIndentsIntegration(t *testing.T) {
 	assert.Empty(t, notis.messages)
 }
 
+func TestMarkdownCompositeLoadsEachGrammarOnceIntegration(t *testing.T) {
+	before := treesitter.GrammarLoads("markdown_inline")
+	var clock loopClock
+	s := openMarkdownTree(t, &clock, newAllMarkdownPackages(t), largeMarkdownDocument(60, 20))
+	require.Greater(t, len(s.tree.Sections()), 100)
+	assert.Equal(t, int64(1), treesitter.GrammarLoads("markdown_inline")-before,
+		"every paragraph shares one markdown_inline grammar")
+}
+
+func TestMarkdownCompositeReloadReusesSectionsIntegration(t *testing.T) {
+	doc := largeMarkdownDocument(60, 20)
+	lines := strings.SplitAfter(doc, "\n")
+	for _, c := range []struct {
+		name    string
+		content string
+		// maxCreated is the most sections the reload may create, or -1
+		// for as many as the content gained.
+		maxCreated int
+	}{
+		{name: "a line inserted at the top", content: "Inserted line.\n" + doc, maxCreated: 1},
+		{name: "a blank line inserted at the top", content: "\n" + doc, maxCreated: 0},
+		{name: "every 10th line edited", content: editEveryTenthLine(lines), maxCreated: 1},
+		{name: "100 lines deleted", content: deleteLines(lines, len(lines)/2, 100), maxCreated: 1},
+		{name: "200 lines appended", content: doc + largeMarkdownDocument(60, 0), maxCreated: -1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pkgs := &countingPackages{PkgManager: newAllMarkdownPackages(t), host: "markdown"}
+			var clock loopClock
+			s := openMarkdownTree(t, &clock, pkgs, doc)
+			before := len(s.tree.Sections())
+			created := measure(&clock, pkgs, func() { s.reload(&clock, c.content) }).sections
+
+			fresh := openMarkdownTree(t, &clock, pkgs, c.content)
+			assert.Equal(t, fresh.tree.Sections(), s.tree.Sections())
+			var got, want []textapi.Location
+			s.locked(func() { got = s.locs })
+			fresh.locked(func() { want = fresh.locs })
+			assert.Equal(t, want, got, "the highlights of a fresh open")
+			maxCreated := c.maxCreated
+			if maxCreated < 0 {
+				maxCreated = len(fresh.tree.Sections()) - before
+			}
+			assert.LessOrEqual(t, created, int64(maxCreated), "sections created")
+		})
+	}
+}
+
+// editEveryTenthLine changes the text of every tenth line of a
+// largeMarkdownDocument, keeping its blocks.
+func editEveryTenthLine(lines []string) string {
+	var b strings.Builder
+	for i, line := range lines {
+		switch {
+		case i%10 != 0, strings.TrimSpace(line) == "", strings.HasPrefix(line, "```"),
+			strings.HasPrefix(line, "|---"), strings.HasPrefix(line, "| Step"):
+		case strings.HasPrefix(line, "| step"):
+			line = strings.Replace(line, "step", "stage", 1)
+		default:
+			line = strings.TrimSuffix(line, "\n") + " edited\n"
+		}
+		b.WriteString(line)
+	}
+	return b.String()
+}
+
+// deleteLines deletes about n lines of a largeMarkdownDocument from the
+// blank line at or after from, up to a blank line, keeping its code
+// blocks whole.
+func deleteLines(lines []string, from, n int) string {
+	boundary := func(i int) int {
+		fences := 0
+		for j, line := range lines {
+			if j >= i && fences%2 == 0 && strings.TrimSpace(line) == "" {
+				return j
+			}
+			if strings.HasPrefix(line, "```") {
+				fences++
+			}
+		}
+		return len(lines)
+	}
+	start := boundary(from)
+	end := boundary(start + n)
+	return strings.Join(lines[:start], "") + strings.Join(lines[end:], "")
+}
+
 // The attributes the markdown suites tell the host's and markdown_inline's
 // captures apart by; their defaults share a color.
 var (
@@ -365,12 +455,12 @@ func markdownSyntaxConfig(mu *sync.Mutex) syntax.Config {
 	return cfg
 }
 
-func newAllMarkdownPackages(t *testing.T) *promptingPackages {
+func newAllMarkdownPackages(t testing.TB) *promptingPackages {
 	langs := []string{"markdown", "markdown_inline", "go", "javascript", "yaml"}
 	return newPromptingPackages(t, langs, langs...)
 }
 
-func newMarkdownTree(t *testing.T, pkgs syntax.PkgManager, content string) *compositeTree {
+func newMarkdownTree(t testing.TB, pkgs syntax.PkgManager, content string) *compositeTree {
 	return newCompositeTree(t, pkgs, ".md", content, markdownSyntaxConfig)
 }
 
@@ -392,4 +482,230 @@ func newMarkdownHostTree(t *testing.T, content string) *treesitter.Tree {
 	_, ok := it.Next(context.Background())
 	require.True(t, ok)
 	return tree
+}
+
+// largeMarkdownDocument is shaped like a long design document: a heading
+// every ten paragraphs, each followed by a table while tableRows last, a
+// go block every 25 paragraphs, and every third paragraph two lines long.
+// Each paragraph, heading and table cell is a markdown_inline section.
+func largeMarkdownDocument(paragraphs, tableRows int) string {
+	headings := (paragraphs + 9) / 10
+	perTable := 0
+	if headings > 0 {
+		perTable = (tableRows + headings - 1) / headings
+	}
+	var b strings.Builder
+	for p := range paragraphs {
+		if p%10 == 0 {
+			fmt.Fprintf(&b, "## Part %d with *emphasis*\n\n", p/10)
+			if rows := min(perTable, tableRows); rows > 0 {
+				b.WriteString("| Step | Before | After |\n|---|---|---|\n")
+				for r := range rows {
+					fmt.Fprintf(&b, "| step %d.%d | *%d ms* | `%d ms` |\n", p, r, p+r, r)
+				}
+				b.WriteString("\n")
+				tableRows -= rows
+			}
+		}
+		fmt.Fprintf(&b, "Paragraph %d has **strong** text, `code` and a [link](https://x.y/%d).\n",
+			p, p)
+		if p%3 == 0 {
+			fmt.Fprintf(&b, "It goes on for a second line about *item %d*.\n", p)
+		}
+		b.WriteString("\n")
+		if p%25 == 24 {
+			fmt.Fprintf(&b, "```go\nfunc f%d() int {\n\treturn %d\n}\n```\n\n", p, p)
+		}
+	}
+	return b.String()
+}
+
+// loopClock adds up the time the event loop of a serialized syntax config
+// spends on the trees, in the callbacks they schedule and in the calls the
+// test makes on it through time, and counts the callbacks.
+type loopClock struct {
+	busy      atomic.Int64 // time.Duration
+	callbacks atomic.Int64
+	// queued counts the callbacks scheduled that have not run yet.
+	queued atomic.Int64
+}
+
+func (c *loopClock) config(cfg func(*sync.Mutex) syntax.Config) func(*sync.Mutex) syntax.Config {
+	return func(mu *sync.Mutex) syntax.Config {
+		ret := cfg(mu)
+		schedule := ret.ScheduleNextTick
+		ret.ScheduleNextTick = func(fn func()) bool {
+			c.queued.Add(1)
+			ok := schedule(func() {
+				defer c.queued.Add(-1)
+				c.callbacks.Add(1)
+				c.time(fn)
+			})
+			if !ok {
+				c.queued.Add(-1)
+			}
+			return ok
+		}
+		return ret
+	}
+}
+
+// time runs fn, which must run on the event loop, and adds its duration.
+func (c *loopClock) time(fn func()) {
+	start := time.Now()
+	fn()
+	c.busy.Add(int64(time.Since(start)))
+}
+
+// settle waits for the callbacks scheduled to run, including those they
+// schedule.
+func (c *loopClock) settle(t testing.TB) {
+	t.Helper()
+	require.Eventually(t, func() bool { return c.queued.Load() == 0 },
+		compositeWait, time.Millisecond, "waiting for the event loop to settle")
+}
+
+// loopSample is what one operation cost the event loop.
+type loopSample struct {
+	busy      time.Duration
+	callbacks int64
+	sections  int64
+}
+
+// measure runs op and returns what it cost the event loop of clock, and
+// how many sections it created through pkgs.
+func measure(clock *loopClock, pkgs *countingPackages, op func()) loopSample {
+	busy, callbacks, sections := clock.busy.Load(), clock.callbacks.Load(), pkgs.sections.Load()
+	op()
+	return loopSample{
+		busy:      time.Duration(clock.busy.Load() - busy),
+		callbacks: clock.callbacks.Load() - callbacks,
+		sections:  pkgs.sections.Load() - sections,
+	}
+}
+
+// countingPackages counts the lookups of every package but the host's:
+// each section tree created looks its language up once.
+type countingPackages struct {
+	syntax.PkgManager
+	host     string
+	sections atomic.Int64
+}
+
+func (p *countingPackages) LibDir(
+	ctx context.Context, pkgID string,
+) (sdkiterator.Iterator[string], error) {
+	if pkgID != p.host {
+		p.sections.Add(1)
+	}
+	return p.PkgManager.LibDir(ctx, pkgID)
+}
+
+// waitSectionTrees waits for the tree of every current section to be
+// parsed: their fold iterators wait for them.
+func (s *compositeTree) waitSectionTrees() {
+	s.t.Helper()
+	it, ok := s.tree.Folds()
+	require.True(s.t, ok)
+	_, err := iterator.ToSlice(context.Background(), it)
+	require.NoError(s.t, err)
+}
+
+// openMarkdownTree opens content as the event loop would, timing the open
+// on clock, and returns once every section's tree is parsed.
+func openMarkdownTree(
+	t testing.TB, clock *loopClock, pkgs syntax.PkgManager, content string,
+) *compositeTree {
+	t.Helper()
+	var s *compositeTree
+	clock.time(func() {
+		s = newCompositeTree(t, pkgs, ".md", content, clock.config(markdownSyntaxConfig))
+	})
+	it, ok := s.tree.InitialFolds()
+	require.True(t, ok)
+	_, err := iterator.ToSlice(context.Background(), it)
+	require.NoError(t, err)
+	clock.settle(t)
+	return s
+}
+
+// reload replaces the buffer's contents as a reload from disk does, timing
+// it on clock, and returns once every section's tree is parsed.
+func (s *compositeTree) reload(clock *loopClock, content string) {
+	s.t.Helper()
+	s.locked(func() {
+		clock.time(func() { s.buf.ReloadContents(context.Background(), content) })
+	})
+	s.waitSectionTrees()
+	clock.settle(s.t)
+}
+
+// The size of the benchmarked document: about 1,600 sections, as many as
+// the design document that froze the editor.
+const (
+	benchParagraphs = 600
+	benchTableRows  = 300
+)
+
+func reportLoopMetrics(b *testing.B, samples []loopSample) {
+	var total loopSample
+	for _, s := range samples {
+		total.busy += s.busy
+		total.callbacks += s.callbacks
+		total.sections += s.sections
+	}
+	n := float64(len(samples))
+	b.ReportMetric(float64(total.busy.Microseconds())/1000/n, "loop-ms/op")
+	b.ReportMetric(float64(total.callbacks)/n, "callbacks/op")
+	b.ReportMetric(float64(total.sections)/n, "sections/op")
+}
+
+func BenchmarkMarkdownCompositeOpen(b *testing.B) {
+	pkgs := &countingPackages{PkgManager: newAllMarkdownPackages(b), host: "markdown"}
+	doc := largeMarkdownDocument(benchParagraphs, benchTableRows)
+	var clock loopClock
+	var samples []loopSample
+	for b.Loop() {
+		var s *compositeTree
+		samples = append(samples, measure(&clock, pkgs, func() {
+			s = openMarkdownTree(b, &clock, pkgs, doc)
+		}))
+		b.StopTimer()
+		require.NoError(b, s.tree.Close())
+		b.StartTimer()
+	}
+	reportLoopMetrics(b, samples)
+}
+
+func BenchmarkMarkdownCompositeReload(b *testing.B) {
+	doc := largeMarkdownDocument(benchParagraphs, benchTableRows)
+	lines := strings.SplitAfter(doc, "\n")
+	middle := len(lines) / 2
+	for _, c := range []struct {
+		name    string
+		content string
+	}{
+		{"insert a line at the top", "Inserted line.\n" + doc},
+		{"delete 100 lines", strings.Join(lines[:middle], "") +
+			strings.Join(lines[middle+100:], "")},
+		{"append 200 lines", doc + largeMarkdownDocument(70, 0)},
+	} {
+		b.Run(c.name, func(b *testing.B) {
+			pkgs := &countingPackages{PkgManager: newAllMarkdownPackages(b), host: "markdown"}
+			var clock loopClock
+			var samples []loopSample
+			for b.Loop() {
+				b.StopTimer()
+				s := openMarkdownTree(b, &clock, pkgs, doc)
+				b.StartTimer()
+				samples = append(samples, measure(&clock, pkgs, func() {
+					s.reload(&clock, c.content)
+				}))
+				b.StopTimer()
+				require.NoError(b, s.tree.Close())
+				b.StartTimer()
+			}
+			reportLoopMetrics(b, samples)
+		})
+	}
 }

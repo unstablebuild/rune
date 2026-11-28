@@ -58,10 +58,14 @@ import (
 	"unstable.build/rune/internal/term/gui/glassbar"
 	"unstable.build/rune/internal/term/gui/openpanel"
 	"unstable.build/rune/internal/text"
+	"unstable.build/rune/internal/text/textrpc"
 	"unstable.build/rune/internal/workspace"
 )
 
-const cmdThemeReload = "themereload"
+const (
+	cmdThemeReload = "themereload"
+	cmdScreenshot  = "screenshot"
+)
 
 type bootstrapPrompter interface {
 	Prompt(message string, options []string, bindings []term.KeyComb, h sdkhandler.PromptHandler) browser.Window
@@ -320,6 +324,7 @@ func (b *bootstrapHandler) setupPreIDE() error {
 	return errors.Join(
 		subscribeGUICommands(b.g, b.soundOutput, b.preIDE, b.transparentWindow, b.launchCmd),
 		b.subscribeQuickMenuCommand(b.preIDE),
+		b.subscribeScreenshotCommand(b.preIDE),
 	)
 }
 
@@ -536,6 +541,9 @@ func (b *bootstrapHandler) setupConfiguredIDE(
 	if err := b.subscribeThemeReloadCommand(i); err != nil {
 		errs = append(errs, fmt.Errorf("subscribe theme reload command: %w", err))
 	}
+	if err := b.subscribeScreenshotCommand(i); err != nil {
+		errs = append(errs, fmt.Errorf("subscribe screenshot command: %w", err))
+	}
 
 	if client.TelemetryEnabled() {
 		err := i.SubscribeEvents(apiclient.TelemetryEvents(), client)
@@ -572,18 +580,43 @@ const hudLoadTimeout = 3 * time.Second
 // longer shows its new config in the next screenshot.
 const extensionReloadSettle = 300 * time.Millisecond
 
-// reloadHUDAndScreenshot takes a screenshot that shows i with the HUD of
-// the config file, or with an error notification when the config does not
-// load, and with the extensions that fetched their config again redrawn.
-// i is left as it is if it is no longer the current IDE. It must not run
-// on the event loop.
-func (b *bootstrapHandler) reloadHUDAndScreenshot(i *ide.IDE) {
-	hud, assets, err := b.loadHUD(i)
+// errScreenshotNotQueued is reported when the event loop did not accept
+// a screenshot request, off the event loop.
+var errScreenshotNotQueued = errors.New("could not queue screenshot request")
+
+// takeScreenshot takes a screenshot on a later tick, after reloading the
+// HUD of the config file like SIGUSR2 when reload is set, and reports it
+// to done, as screenshot does. It may run on or off the event loop.
+func (b *bootstrapHandler) takeScreenshot(reload bool, done func(path string, err error)) {
 	ok := b.scheduleNextTick(func() {
-		b.queueScreenshot(b.installHUD(i, hud, assets, err))
+		if !reload {
+			b.screenshot(done)
+			return
+		}
+		// The swap to the configured IDE assigns it off the locker, so
+		// only the event loop reads it safely.
+		i := b.currentIDE()
+		go debug.CapturePanicReport(func() {
+			b.reloadHUDAndScreenshot(i, done)
+		})
 	})
 	if !ok {
-		log.Errorf("request screenshot: could not queue screenshot request")
+		done("", errScreenshotNotQueued)
+	}
+}
+
+// reloadHUDAndScreenshot takes a screenshot that shows i with the HUD of
+// the config file, or with an error notification when the config does not
+// load, and with the extensions that fetched their config again redrawn,
+// and reports it to done, as screenshot does. i is left as it is if it is
+// no longer the current IDE. It must not run on the event loop.
+func (b *bootstrapHandler) reloadHUDAndScreenshot(i *ide.IDE, done func(path string, err error)) {
+	hud, assets, err := b.loadHUD(i)
+	ok := b.scheduleNextTick(func() {
+		b.queueScreenshot(b.installHUD(i, hud, assets, err), done)
+	})
+	if !ok {
+		done("", errScreenshotNotQueued)
 	}
 }
 
@@ -651,14 +684,53 @@ func (b *bootstrapHandler) subscribeThemeReloadCommand(i *ide.IDE) error {
 	return i.SubscribeCommand(man, text.FuncCommandHandler(handler, nil))
 }
 
+// subscribeScreenshotCommand registers on i the command that takes a
+// screenshot, after reloading the HUD of the config file with --reload.
+func (b *bootstrapHandler) subscribeScreenshotCommand(i *ide.IDE) error {
+	man := textapi.CommandManual{
+		Name: cmdScreenshot,
+		Summary: fmt.Sprintf("Takes a screenshot and saves it to %s. With --reload, it "+
+			"first reads the config file again and applies what themereload does, "+
+			"and a caller that waits on the command, such as an alias, waits for "+
+			"the screenshot.", filepath.Join(b.dataDir, "screenshots")),
+		Synopsis: "[--reload]",
+	}
+	handler := func(ctx context.Context, cmd textapi.Command) error {
+		switch {
+		case len(cmd.Args) == 0:
+			path, err := b.g.Screenshot()
+			if err != nil {
+				return err
+			}
+			b.notifyScreenshot(path, nil)
+			return nil
+		case len(cmd.Args) > 1 || cmd.Args[0] != "--reload":
+			return fmt.Errorf("unexpected arguments %q: expected [--reload]", cmd.Args)
+		}
+		w, _ := textrpc.WaiterFromContext(ctx)
+		if w != nil {
+			w.Claimed = true
+		}
+		b.takeScreenshot(true, func(path string, err error) {
+			b.notifyScreenshot(path, err)
+			if w != nil {
+				w.Ch <- err
+			}
+		})
+		return nil
+	}
+	return i.SubscribeCommand(man, text.FuncCommandHandler(handler, nil))
+}
+
 // queueScreenshot queues a screenshot, after extensionReloadSettle when
-// signalled extensions are fetching their config again.
-func (b *bootstrapHandler) queueScreenshot(signalled int) {
+// signalled extensions are fetching their config again, and reports it to
+// done, as screenshot does.
+func (b *bootstrapHandler) queueScreenshot(signalled int, done func(path string, err error)) {
 	queue := func() {
 		// A screenshot shows the last frame drawn, which this tick's
 		// changes reach only after it ends.
-		if !b.scheduleNextTick(b.screenshot) {
-			log.Errorf("request screenshot: could not queue screenshot request")
+		if !b.scheduleNextTick(func() { b.screenshot(done) }) {
+			done("", errScreenshotNotQueued)
 		}
 	}
 	if signalled == 0 {
@@ -746,10 +818,17 @@ func (b *bootstrapHandler) applyGUIConfig(cfg config.Config, assets guiAssets) {
 	b.currentIDE().SetThemeColors(themeColors(theme))
 }
 
-// screenshot captures the last frame the GUI drew. It must run on the
-// event loop.
-func (b *bootstrapHandler) screenshot() {
-	path, err := b.g.Screenshot()
+// screenshot captures the last frame the GUI drew and reports its path, or
+// why it was not taken, to done. done runs exactly once: on the event
+// loop, or off it with errScreenshotNotQueued when a caller could not
+// queue the request. screenshot must run on the event loop.
+func (b *bootstrapHandler) screenshot(done func(path string, err error)) {
+	done(b.g.Screenshot())
+}
+
+// notifyScreenshot shows where a screenshot was saved, and only logs why
+// one was not taken, since that may be reported off the event loop.
+func (b *bootstrapHandler) notifyScreenshot(path string, err error) {
 	if err != nil {
 		log.Errorf("take screenshot: %v", err)
 		return
@@ -794,7 +873,7 @@ func (b *bootstrapHandler) Resize(w, h int) {
 // the main thread, which is where AppKit requires the frame change.
 func (b *bootstrapHandler) positionQuickMenu(width int) {
 	cells := b.quickMenuCells()
-	if cells == 0 || width <= cells || b.g == nil {
+	if cells == 0 || width <= cells || !b.hasWindow() {
 		return
 	}
 	x, y, w, _ := b.g.CellRect(width-cells, quickMenuTopCell, cells, 1)
@@ -880,9 +959,9 @@ func (b *bootstrapHandler) performSwap() error {
 
 // installAppMenu replaces the application menu bar. It must run on the
 // main thread, so callers publish it as an EventInterrupt rather than
-// calling it directly. Without a GUI there is no menu bar to replace.
+// calling it directly. Without a window there is no menu bar to replace.
 func (b *bootstrapHandler) installAppMenu() {
-	if b.g == nil {
+	if !b.hasWindow() {
 		return
 	}
 	appmenu.Install(
@@ -910,6 +989,12 @@ func (b *bootstrapHandler) appMenuModels() []string {
 	}
 	slices.Sort(models)
 	return slices.Compact(models)
+}
+
+// hasWindow reports whether there is a GUI window for native platform UI
+// such as the menu bar and the native quick menu.
+func (b *bootstrapHandler) hasWindow() bool {
+	return b.g != nil && !b.g.Offscreen()
 }
 
 func (b *bootstrapHandler) appMenuTutorials() []string {
@@ -950,7 +1035,7 @@ func (b *bootstrapHandler) publishAppMenuInstall() {
 // invisible until the window was resized.
 func (b *bootstrapHandler) publishQuickMenuInstall() {
 	b.publishEvent(term.Event{Type: term.EventInterrupt, UserFunc: func() {
-		if b.g == nil {
+		if !b.hasWindow() {
 			return
 		}
 		glassbar.Install(quickMenuGlassButtons(b.quickMenuButtons()),

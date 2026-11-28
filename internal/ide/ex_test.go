@@ -6219,6 +6219,57 @@ func TestTerminalWriteIsInvalid(t *testing.T) {
 	}
 }
 
+func TestWriteReportsTheSaveToACallerThatWaits(t *testing.T) {
+	cases := []struct {
+		cmd   string
+		files []string
+	}{
+		{"write", []string{"a.txt"}},
+		{"write!", []string{"a.txt"}},
+		{"writeall", []string{"a.txt", "b.txt"}},
+		{"writeall!", []string{"a.txt", "b.txt"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.cmd, func(t *testing.T) {
+			cfg := defaultConfigWithWrap(false)
+			mu, sched, drain := buildTestSchedulerForCfg(t, &cfg)
+			manager := workspace.NewManager(config.NopConfig(), sched)
+			require.NoError(t, manager.RegisterScheme(workspace.MemoryScheme, workspace.NewMemoryScheme))
+			require.NoError(t, manager.RegisterScheme(workspace.FileScheme, workspace.NewFileScheme))
+			dir := t.TempDir()
+			uri, err := workspaceapi.ParseURI("file://" + dir)
+			require.NoError(t, err)
+			for _, name := range tc.files {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("clean\n"), 0o644))
+			}
+			m := newTestWorkspaceManagerHandlerWithManager(t, manager, mu, drain, uri, cfg)
+			t.Cleanup(func() { require.NoError(t, m.Close()) })
+			h := newSafeHandler(m)
+			h.Resize(30, 9)
+			m.quiesce()
+			x := m.focusEx()
+			for _, name := range tc.files {
+				m.locked(func() { require.NoError(t, x.dispatchCommand("edit", name)) })
+				m.quiesce()
+				feedLiteral(t, h, "ix")
+				h.Handle(term.Event{Type: term.EventKey, Key: term.KeyEsc})
+			}
+
+			ctx, w := resultWaitCtx()
+			m.locked(func() {
+				require.NoError(t, x.dispatchCommandCtx(ctx, tc.cmd))
+				require.True(t, w.Claimed, "the caller must wait for the save to finish")
+			})
+			require.NoError(t, awaitWaiter(t, m, w))
+			for _, name := range tc.files {
+				got, err := os.ReadFile(filepath.Join(dir, name))
+				require.NoError(t, err)
+				assert.Equal(t, "xclean\n", string(got), name)
+			}
+		})
+	}
+}
+
 func TestTerminalNewForwardsShellArgument(t *testing.T) {
 	type call struct {
 		name string

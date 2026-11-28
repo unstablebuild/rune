@@ -58,6 +58,7 @@ mkdir -p "$gitrepo"
     git init -q
     git config user.email tester@example.com
     git config user.name tester
+    git config commit.gpgSign false
     git remote add origin https://example.com/rune.git
     git commit -q --allow-empty -m "seed"
     git tag v0.0.0
@@ -95,6 +96,7 @@ export BLUE_TARGET_OS="darwin"
 export BLUE_TARGET_ARCH="arm64"
 export RELEASE_REPO="example/rune"
 export DOWNLOAD_HOST="https://example.com"
+export RUNECTL_VERSION="v1.1.3"
 
 failures=0
 for script in "${dist_scripts[@]}"; do

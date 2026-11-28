@@ -20,11 +20,15 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/component"
+	"github.com/unstablebuild/rune-go-sdk/handler"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
@@ -234,6 +238,57 @@ func (m *mockWindowManager) CloseWindow(_ browserapi.Window) error {
 }
 
 func (m *mockWindowManager) SetTabStatus(workspaceapi.URI, browserapi.TabStatus) error { return nil }
+
+// mockPrompter implements browserapi.Prompter with real
+// handler.Prompts that tests type into with keys. Like a browser, it
+// closes a prompt once the prompt exits.
+type mockPrompter struct {
+	configs []browserapi.PromptConfig
+	prompts []*handler.Prompt
+}
+
+func (m *mockPrompter) Prompt(
+	cfg browserapi.PromptConfig, h handler.PromptHandler,
+) (browserapi.Window, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	fields := make([]handler.PromptField, len(cfg.Fields))
+	for i, f := range cfg.Fields {
+		fields[i] = handler.PromptField{
+			Question:    f.Question,
+			Answer:      f.Answer,
+			Secret:      f.Secret,
+			Mandatory:   f.Mandatory,
+			Placeholder: f.Placeholder,
+		}
+	}
+	m.configs = append(m.configs, cfg)
+	m.prompts = append(m.prompts, handler.NewPrompt(handler.PromptConfig{
+		PromptConfig:   component.PromptConfig{Message: cfg.Message, Options: cfg.Options},
+		PromptHandler:  h,
+		Fields:         fields,
+		OptionBindings: cfg.Bindings,
+	}))
+	return &mockWindow{id: uint64(len(m.prompts))}, nil
+}
+
+// keys types keys, see term.ParseKeys, into the last prompt opened,
+// dropping those after it exits, and reports whether it exited.
+func (m *mockPrompter) keys(t *testing.T, keys string) (exited bool) {
+	t.Helper()
+	require.NotEmpty(t, m.prompts, "no prompt is open")
+	prompt := m.prompts[len(m.prompts)-1]
+	evs, err := term.ParseKeys(keys)
+	require.NoError(t, err)
+	for _, k := range evs {
+		if exit, _ := prompt.Handle(term.Event{Type: term.EventKey, Key: k.Key, Ch: k.Ch, Mod: k.Mod}); exit {
+			require.NoError(t, prompt.Close())
+			return true
+		}
+	}
+	return false
+}
 
 // mockResourceOpener implements
 // browserapi.ResourceOpener.

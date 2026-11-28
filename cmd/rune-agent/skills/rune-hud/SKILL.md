@@ -2,29 +2,39 @@
 name: rune-hud
 description: >
   Update Rune's configuration and generate sprites to refine its UI:
-  window frames, floating-only frames and focused headers, window backgrounds
+  window frames (including rounder corners, wider gaps between windows and
+  corner art larger than a cell), floating-only frames and focused headers,
+  window backgrounds
   and focus styles (including marking the focused window by its background
   instead of a frame, for a smoother or more modern look), scroll bars,
   command prompts, editor
-  and agent status-bar layouts, the quick menu, prompt buttons, wallpaper, the
-  app icon and sounds. Discover the configuration, edit it, run runectl
-  screenshot and inspect the result yourself. This is configuration and asset
-  editing, not Rune source development. Use when the user wants to create,
-  restyle or iterate on Rune's appearance or sounds.
+  and agent status-bar layouts, the quick menu, prompt buttons, wallpaper (an
+  image, or a shader for gradients, grids, textures and animated backgrounds),
+  the app icon and sounds. Discover the configuration, stage a new version of
+  the theme, check it in a private Rune instance with rune_gui and inspect the
+  result yourself, then add it as the last entry of the user's config include
+  list. This is configuration and asset editing, not Rune source development.
+  Use when the user wants to create, restyle or iterate on Rune's appearance
+  or sounds.
 ---
 
 # Rune HUD images and sounds
 
 Own the edit-and-verify loop. Read the user's configuration and existing assets,
-make the requested changes, run `runectl screenshot`, inspect the PNG and fix
-what looks wrong. Do not ask the user to measure cells, run diagnostic commands
-or provide screenshots you can capture yourself.
+stage the requested changes as a new version of the theme with its own
+`config.yaml`, check it in a private Rune instance with the `rune_gui` tool,
+inspect the screenshots and fix what looks wrong. Once it meets the brief, add
+the version's `config.yaml` as the last entry of the `include` list in the
+user's config, so it overrides the files included before it. That entry is
+the only change to the user's config. Do not ask the user to measure cells,
+run diagnostic commands or provide screenshots you can capture yourself.
 
 ## Scope: configuration and assets only
-- Edit the theme's config file, the include line that loads it, theme assets
-  and the manifest. Generate or edit the requested sprites and wallpaper;
-  generate sounds only when requested. Keep unrelated configuration and
-  artwork unchanged.
+- Write each version's config and sprites, the theme's shared assets and the
+  manifest, and add the version to the user's `include` list. Generate or edit
+  the requested sprites and wallpaper; generate sounds only when requested.
+  Leave every other line of the user's config, and unrelated artwork,
+  unchanged.
 - Do not locate, read or modify Rune's source code to carry out an appearance
   request. Do not write parser tests, run test suites, build Rune, install a
   development toolchain or implement new template features.
@@ -35,8 +45,8 @@ or provide screenshots you can capture yourself.
 - Use the syntax and examples below. If the requested effect is unsupported,
   explain the limitation and use a supported configuration or artwork approach;
   do not turn the styling task into a code change.
-- Verify appearance with `runectl screenshot` and image inspection, not source
-  analysis or test programs.
+- Verify appearance only with `rune_gui` screenshots and image inspection, not
+  source analysis, test programs or the user's own Rune.
 - Floating-only shadows and distinct focused headers are supported config
   surfaces. Use the optional charsets below, not core changes or shared tiled
   frame edits, when the request concerns only floating windows.
@@ -45,14 +55,45 @@ or provide screenshots you can capture yourself.
   `focus_background_attr`, or the theme's `focus_background`. Follow
   "Frameless focus" below, also when the user only asks for a smoother,
   cleaner or more modern design.
+- Rounder frame corners, a wider gap between windows with round corners, and
+  corner ornaments larger than a cell are a supported config surface:
+  `corner_width` and `corner_height`. Follow "Corners larger than a cell"
+  below rather than squeezing the curve into a one-cell corner sprite.
+- Gradients, grids, textures, glows and animated backgrounds are a supported
+  config surface: `workspace.wallpaper_shader` with a `.kage` file you write
+  as a theme asset. Follow "Wallpaper" below. Writing the shader is asset
+  work, not a change to Rune.
 
 ## Checking your work
-Take a baseline screenshot before editing. Run `runectl screenshot` yourself,
-then open the PNG at the printed path with your image-reading tool. Use the
-rendered result to judge proportions, spacing, legibility and seams. Repeat
-after each revision; run captures sequentially.
+Take a baseline screenshot before editing, and another after each revision.
+Use the rendered result to judge proportions, spacing, legibility and seams.
 
-Before each capture, Rune reads the active configuration file again and applies
+Check a staged version in a private Rune instance with the `rune_gui` tool, so
+the user's Rune keeps their current version until the new one is ready:
+
+1. `["config", "include:\n  - $RUNE_DATADIR/etc/hud-<theme>-v<N>/config.yaml\n"]`
+   makes the instance load that version. The instance shares the user's
+   `$RUNE_DATADIR/hud` and `$RUNE_DATADIR/etc`, so the version's URIs
+   resolve, but it starts from Rune's defaults otherwise: add any key outside
+   the theme that a surface you check depends on, such as the editor mode.
+2. `["start"]`, then `["exec", "workspaceready"]`.
+3. Open what you need to see with Rune commands and keys:
+   `["exec", "windownew right"]` for a second tile, `["exec", "edit <file>"]`
+   for an editor, `["keys", "{prompt}"]` for the command prompt.
+4. `["screenshot"]` reads the instance's config again, applies the keys listed
+   below and returns the image.
+
+Keys that are not reloaded live take effect with `["stop"]` and `["start"]`.
+The instance plays no sounds, and a surface it cannot show, such as a chat
+that needs the user's account, goes in your report as not verified.
+
+`rune_gui` is the only way to check a version. Never capture or reload the
+user's Rune, and never add an unfinished version to the user's config to see
+it. When you do not have `rune_gui`, or it reports an error you cannot fix
+with its own commands (`["log"]` shows why the instance exited), stop: tell
+the user the error and leave their config as it is.
+
+Before each capture, Rune reads the instance's configuration again and applies
 these keys to every open workspace:
 
 - `browser.window_manager`: `frame_attr`, `focus_frame_attr`, `frame_charset`,
@@ -82,8 +123,8 @@ these keys to every open workspace:
   `progress_bar` and `progress_format`;
 - `program_status`, every key;
 - `terminal.bell`;
-- `workspace`: `wallpaper_image`, `wallpaper_image_ascii`, `wallpaper_ascii`,
-  `wallpaper`, `wallpaper_attr`, `wallpaper_background_attr`,
+- `workspace`: `wallpaper_shader`, `wallpaper_image`, `wallpaper_image_ascii`,
+  `wallpaper_ascii`, `wallpaper`, `wallpaper_attr`, `wallpaper_background_attr`,
   `wallpaper_density_characters`, the `focus_` version of each of those
   wallpaper keys, `focus_tab_highlight_char`, `tab_images`,
   `focus_tab_highlight_graphics` and `tab_sounds`;
@@ -110,19 +151,24 @@ do not claim to have verified a prompt or state that was not shown.
 - **Data directory:** read `$RUNE_DATADIR` yourself with
   `printf '%s\n' "$RUNE_DATADIR"`, including when it names a development
   installation. Do not dump the full environment, which can contain credentials.
-- **Config:** read `$RUNE_DATADIR/config.yaml`, or `config.star` if the YAML file
-  is absent. If the user supplied another config path, edit that file instead.
-  Edit Starlark with `config["a"]["b"] = ...` statements. Do not create a new
-  default config over an unidentified installation. Ask only if these checks
-  leave a genuine ambiguity or access blocker, not as a routine first step.
-- **Assets:** `$RUNE_DATADIR/hud/<theme>/v<N>/...`, sounds in
-  `$RUNE_DATADIR/hud/<theme>/sounds/`. Copy any asset the user hands you from
-  elsewhere (such as `~/Downloads`) into `hud/<theme>/` before referencing it.
+- **Config:** the user's config is `$RUNE_DATADIR/config.yaml`, or
+  `config.star` if the YAML file is absent, unless the user supplied another
+  path. Read it, and the files it includes, to learn the current theme and
+  which keys the user sets, but put every theme key in the staged version's
+  `config.yaml`, never in the user's config. Do not create a new default
+  config over an unidentified installation. Ask only if these checks leave a
+  genuine ambiguity or access blocker, not as a routine first step.
+- **Versions:** each version of a theme is a directory,
+  `$RUNE_DATADIR/etc/hud-<theme>-v<N>/`, holding its `config.yaml` and its
+  sprites. `$RUNE_DATADIR/hud/<theme>/` keeps what the versions share: the
+  manifest, sources, sounds and wallpaper. Copy any asset the user hands you
+  from elsewhere (such as `~/Downloads`) into these directories before
+  referencing it.
 - **Manifest:** keep `hud/<theme>/manifest.yaml` up to date:
 
   ```yaml
   theme: ember
-  version: 3              # the v<N> the config points at
+  version: 3              # the v<N> the user's include list selects
   background: "#080808"   # the theme background, see Colour continuity
   accent: "#d0622a"       # the one accent colour
   light: top-left         # where every surface is lit from
@@ -134,37 +180,57 @@ do not claim to have verified a prompt or state that was not shown.
   ```
 
 - **Editing the config:**
-  - Write the theme's keys to a file the theme owns,
-    `$RUNE_DATADIR/hud/<theme>/config.yaml`, and make sure the user's config
-    includes it: a YAML config lists it under the top-level `include:` key, a
-    Starlark config calls `include("$RUNE_DATADIR/hud/<theme>/config.yaml")`.
-    Add the line once, as text, and leave the rest of the user's file alone;
-    the user's own settings override the theme's, so a key the user set stays
-    in effect until they remove it.
-  - Patch only the keys you change, as text. Never round-trip the user's file
-    through a YAML library: it drops their comments.
-  - Rune reads the config again when an included file changes, so a save is
-    enough to apply the theme's live keys; `runectl screenshot` applies them
-    before each capture as well.
+  - Start a version by copying the current one to
+    `etc/hud-<theme>-v<N+1>/` and pointing the URIs in its `config.yaml` at
+    the new directory, then make every change there. A new version always has
+    new URIs, so no cached image hides a change.
+  - The user's config selects a version with one include entry, added only
+    once the version is checked. In a YAML config, append
+    `$RUNE_DATADIR/etc/hud-<theme>-v<N>/config.yaml` as the last item of the
+    top-level `include:` list, creating the list if it is missing. In a
+    Starlark config, add
+    `include("$RUNE_DATADIR/etc/hud-<theme>-v<N>/config.yaml")` after the
+    file's last `include()` call, or at its top if it has none. Included files
+    apply in order, so the last one overrides the theme keys of those before
+    it.
+  - If the list already includes an earlier version of the theme, remove
+    that entry and append the new one last, so the list holds one version of
+    the theme. Putting the earlier entry back rolls the theme back.
+  - The user's own settings override everything they include, so a theme key
+    the user set stays in effect. Do not remove it: name it in your report.
+  - A theme made before versions lived under `etc` is included from
+    `$RUNE_DATADIR/hud/<theme>/config.yaml`, with sprites in
+    `hud/<theme>/v<N>/`. Stage its next version under `etc` as above and
+    replace the old entry with the new one, last in the list; keep the old
+    files for rollback.
+  - Patch only the keys you change, as text. Never round-trip a config file
+    through a YAML library: it drops comments.
+  - Rune reads the config again when an included file changes, so once the
+    user's config includes the version, a save is enough to apply its live
+    keys there. That is why the included version stays as it is and the next
+    change goes in a new one.
 
 Layout of a theme:
 ```
 hud/<theme>/
   manifest.yaml
   wallpaper.png
+  wallpaper.kage
   sources/<name>.png, <name>.prompt.txt
   sounds/<cue>.wav
-  v<N>/icon.png
-  v<N>/frame/{normal,focused,prompt}/<slot>.png
-  v<N>/panel/{normal,focused}/<slot>.png      (the 8 frame slots and center)
-  v<N>/scroll/{top,middle,bottom,hover-top,hover-middle,hover-bottom}.png
-  v<N>/scroll/focused-{top,middle,bottom,hover-top,hover-middle,hover-bottom}.png
-  v<N>/window-bar/{left,middle,right}.png
-  v<N>/separator/{left,horizontal,right}.png
-  v<N>/status/{normal,focused}/<name>.png
-  v<N>/inbox/{normal,focused}/<name>.png
-  v<N>/quickmenu/{idle,hover,pressed}/<button>.png
-  v<N>/button/{idle,selected,hover,pressed}/{left,middle,right}.png
+etc/hud-<theme>-v<N>/
+  config.yaml
+  icon.png
+  frame/{normal,focused,prompt}/<slot>.png
+  panel/{normal,focused}/<slot>.png      (the 8 frame slots and center)
+  scroll/{top,middle,bottom,hover-top,hover-middle,hover-bottom}.png
+  scroll/focused-{top,middle,bottom,hover-top,hover-middle,hover-bottom}.png
+  window-bar/{left,middle,right}.png
+  separator/{left,horizontal,right}.png
+  status/{normal,focused}/<name>.png
+  inbox/{normal,focused}/<name>.png
+  quickmenu/{idle,hover,pressed}/<button>.png
+  button/{idle,selected,hover,pressed}/{left,middle,right}.png
 ```
 Use lowercase kebab-case file names, with no spaces, `?`, `#` or `%`: they
 would need percent-encoding in a `file://` URI.
@@ -173,14 +239,15 @@ would need percent-encoding in a `file://` URI.
 1. **Use absolute URIs**, except for the wallpaper and the app icon. Image
    values are `file:///absolute/path.png` or `https://...`, with no `~` and no
    `$VARS`, except `$RUNE_DATADIR` in a `file://` URI, as in
-   `file://$RUNE_DATADIR/hud/<theme>/v1/frame/normal/topleft.png`.
+   `file://$RUNE_DATADIR/etc/hud-<theme>-v1/frame/normal/topleft.png`.
    `workspace.wallpaper_image` and `gui.app_icon` are the exceptions: they
    take a plain path, which may use `~` and environment variables.
 2. **Overwrite an image in place only if a key under Checking your work names
    it.** Rune caches images by URI for 24 hours by default, but
-   `runectl screenshot` reads those images again, so you can overwrite them
-   while you iterate. Save each version you ship in a new `v<N>` directory
-   and keep the previous one for rollback.
+   screenshots read those images again, so you can overwrite them while you
+   iterate on a staged version. Once the user's config selects a version,
+   leave it alone: make the next change in a new `etc/hud-<theme>-v<N>/`
+   directory and keep the previous one for rollback.
    - The wallpaper and the app icon are not cached: overwrite them in place.
 3. **Formats:** PNG with alpha is preferred. JPEG, GIF and WebP also load, except
    for the wallpaper, which must be a PNG. Each side is at most 8192 px.
@@ -292,10 +359,10 @@ Match background fills to the active theme. Transparent image pixels reveal
 whatever is underneath: usually the theme background, but also status colours,
 text or other images. Use that intentionally for status-bar ornaments.
 - Read `gui.default_theme`, then its `background`: from `gui.themes.<name>` in
-  the user's config when it's defined there, otherwise from the built-in list
-  below. Read its `focus_background` too, the focused canvas while
-  `focus_background_attr` and `focus_background_graphics` are unset. Record
-  both in the manifest.
+  the user's config or a file it includes when it's defined there, otherwise
+  from the built-in list below. Read its `focus_background` too, the focused
+  canvas while `focus_background_attr` and `focus_background_graphics` are
+  unset. Record both in the manifest.
 - Built-in backgrounds: furman `#202020`, romero `#000000`, carmack `#080808`,
   reynolds `#121212`, brevik `#080808`, thompson `#0f1114`, pike `#ffffea`,
   hopper `#000000`, kernighan `#0c0c0c`, wozniak `#120F1D`, auge `#270d06`,
@@ -304,18 +371,6 @@ text or other images. Use that intentionally for status-bar ornaments.
 - Built-in focus backgrounds: pike `#fffff3`, ritchie `#ffffff`. The other
   built-in themes set none, so their focused window keeps the theme
   background unless the config sets one.
-- The wallpaper's own background must be that colour, not a nearby one, and
-  its edges must fade to it exactly. With `contain` the image's edges sit
-  inside the window, so any step shows as a rectangle.
-- Leave `workspace.wallpaper_background_attr` unset, or give it the same `bg`.
-- Opaque fills in frames, bars and buttons follow the same rule.
-- The focused state has its own canvas: the `bg` of
-  `browser.window_manager.focus_background_attr`, or else the theme's
-  `focus_background`, and the panel of `focus_background_graphics` drawn over
-  it. Opaque fills in focused sprites,
-  the focused wallpaper and the `focus` blocks' backgrounds must match it
-  exactly, and the panel's own fill must be that `bg`, so a slice that hasn't
-  loaded leaves no step.
 - A pixel painted in a canvas colour is right only where that canvas is
   behind it in every state it's drawn in. A sprite shared by both states
   can't bake either canvas into a pixel the pane shows around.
@@ -366,7 +421,204 @@ bevels, buttons, the scroll bar and icons.
   `magick in.png -filter Lanczos -resize WxH! -unsharp 0x0.6+0.6+0 out.png`.
   Start with `height 3` and `alt ""`. Add `overflow` only when the image must
   cross the editor or chat component's outer bounds.
-- Wallpaper: sample a corner and confirm the background matches.
+- Wallpaper: remove the background to alpha too, so the window's background
+  shows around the figure. Don't paint a backdrop behind it or fade its edges.
+
+## Wallpaper
+The wallpaper fills every window with nothing open: an empty tile, or the
+whole workspace before any file is opened. Editors, terminals and chats draw
+over the window background instead, so the wallpaper never shows behind them.
+
+Design it for the look the user describes, with the simplest of these that
+gets there:
+
+| The look | Use |
+|---|---|
+| A plain colour | `browser.window_manager.background_attr` and `focus_background_attr`. No wallpaper key. |
+| A figure, logo or emblem on that colour | `workspace.wallpaper_image`: a PNG with a transparent background and `fit: contain`. Its transparent pixels show the window's background, so there is nothing to match and no edge to fade. |
+| Anything that covers the whole window: a gradient, a grid, dots, lines, noise, a texture, a vignette or a glow, or anything animated | `workspace.wallpaper_shader`: a shader the GPU runs for every pixel of the window. |
+
+Never use a whole-window PNG for any of the looks in the last row. Windows
+come in every shape: `cover` crops the picture, `fill` stretches it, its edges
+would have to fade into the background, and it cannot move. A shader is
+computed at each window's size, so a gradient spans the window, a grid keeps
+its spacing at any size and an animation loops.
+
+A shader and an image don't stack: while `wallpaper_shader` is set,
+`wallpaper_image` doesn't show. When the brief wants a figure over a
+gradient, ask which of the two matters more.
+
+### Shader wallpapers
+A shader is a theme asset like a sprite: a text file you write,
+`hud/<theme>/wallpaper.kage`, in
+[Kage](https://ebitengine.org/en/documents/shader.html), which is Go syntax
+with GLSL types and functions. Name it in the theme's config, once per state:
+
+```yaml
+workspace:
+  wallpaper_shader:
+    shader: $RUNE_DATADIR/hud/<theme>/wallpaper.kage
+    uniforms: {Top: "#0f1011", Bottom: "#171922"}
+  focus_wallpaper_shader:
+    shader: $RUNE_DATADIR/hud/<theme>/wallpaper.kage
+    uniforms: {Top: "#191a1b", Bottom: "#21232c"}
+```
+
+- `shader`: a `.kage` path, which may use `~` and environment variables, or
+  the name of a built-in.
+- `uniforms`: values for the shader's own uniforms: a colour such as
+  `"#171922"` or `"blue"` for a `vec4`, a number for a `float`, a list of
+  numbers for any other vector.
+- `duration`: one loop of an animation, `10s` by default. `fps`: 30 by
+  default, 120 at most. `animate: false` freezes an animation on its first
+  frame. `seed`: a whole number, or `random` for a new one at every load.
+- `under_frame`: `true` by default, so the shader reaches the frame's line.
+  Set it to `false` when `frame_charset` draws its lines through the middle
+  of the cell, such as `│` and `─`, or the shader shows past them.
+- `focus_wallpaper_shader` is the focused window's: the same file with the
+  focused state's colours.
+
+Rune ships these built-in shaders, which `shader` takes by name:
+
+| Name | Draws | Uniforms |
+|---|---|---|
+| `gradient` | a still gradient | `From`, `To`; `Angle` in degrees clockwise from left-to-right, 90 (the default) for top to bottom |
+| `inferno` | fire | `Speed`, `Hue`, `SwapRedBlue`, `Strength` |
+
+```yaml
+workspace:
+  wallpaper_shader:
+    shader: gradient
+    uniforms: {From: "#0f1011", To: "#171922"}
+```
+
+**Writing one:**
+- The file starts with `//kage:unit pixels` and `package main`, and declares
+  `func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4`. It returns the
+  colour of the pixel at `dstPos.xy`, in device pixels from the window's
+  top-left corner, premultiplied by its alpha: alpha 1 for an opaque
+  wallpaper.
+- Rune sets these uniforms when the shader declares them: `Resolution vec2`,
+  the window in pixels; `CellSize vec2`, a cell in pixels; `Background vec4`
+  and `Foreground vec4`, the theme's; `Progress float`, from 0 to just under
+  1 over each loop; `Frame float` and `Total float`; `Seed float`.
+- Every other exported `var` is a uniform of your own, set from `uniforms`.
+  One the config leaves out is zero, transparent black for a colour, so set
+  them all.
+- Take the colours from uniforms rather than writing them in the shader, so
+  one file serves both states and the colours change in config.
+- Size patterns in `CellSize`, never in fixed pixel counts, so they keep
+  their size across font sizes and Retina displays.
+
+**Example: a light gradient**, from `Top` to `Bottom` as the config above sets
+them. A dark gradient spans few colour levels and shows bands, so it adds
+noise smaller than one level:
+
+```go
+//kage:unit pixels
+
+package main
+
+var Resolution vec2
+var Top vec4
+var Bottom vec4
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	c := mix(Top, Bottom, dstPos.y/Resolution.y)
+	p3 := fract(vec3(dstPos.x, dstPos.y, dstPos.x) * 0.1031)
+	p3 += dot(p3, p3.yzx+33.33)
+	dither := fract((p3.x+p3.y)*p3.z) - 0.5
+	return vec4(c.rgb+dither/255, c.a)
+}
+```
+
+**Example: a grid that fades out**, with square tiles three rows tall and
+lines one pixel wide, fading into the base colour two thirds of the way down:
+
+```go
+//kage:unit pixels
+
+package main
+
+var Resolution vec2
+var CellSize vec2
+var Base vec4
+var Line vec4
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	p := mod(dstPos.xy, vec2(CellSize.y*3))
+	// 1 on the first pixel column and row of each tile.
+	line := 1 - step(1, p.x)*step(1, p.y)
+	fade := 1 - smoothstep(0, 0.7, dstPos.y/Resolution.y)
+	return mix(Base, Line, line*fade)
+}
+```
+
+```yaml
+workspace:
+  wallpaper_shader:
+    shader: $RUNE_DATADIR/hud/<theme>/wallpaper.kage
+    uniforms: {Base: "#0f1011", Line: "#26272b"}
+  focus_wallpaper_shader:
+    shader: $RUNE_DATADIR/hud/<theme>/wallpaper.kage
+    uniforms: {Base: "#191a1b", Line: "#303136"}
+```
+
+**Example: an animation**, a soft glow that circles the window once a loop:
+
+```go
+//kage:unit pixels
+
+package main
+
+var Resolution vec2
+var Progress float
+var Base vec4
+var Glow vec4
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	t := 6.2831853 * Progress
+	center := Resolution * (0.5 + 0.3*vec2(cos(t), sin(t)))
+	d := length(dstPos.xy-center) / length(Resolution)
+	return mix(Base, Glow, 1-smoothstep(0, 0.5, d))
+}
+```
+
+```yaml
+workspace:
+  wallpaper_shader:
+    shader: $RUNE_DATADIR/hud/<theme>/wallpaper.kage
+    duration: 30s
+    uniforms: {Base: "#0f1011", Glow: "#1d2033"}
+  focus_wallpaper_shader:
+    shader: $RUNE_DATADIR/hud/<theme>/wallpaper.kage
+    duration: 30s
+    uniforms: {Base: "#191a1b", Glow: "#272b45"}
+```
+
+Animate with care:
+- Declaring `Progress` or `Frame` makes the shader an animation. Without
+  them it's a still, drawn once and free afterwards.
+- It loops every `duration`, so make the last frame meet the first: move in
+  whole turns, with `sin` and `cos` of `6.2831853*Progress` times a whole
+  number.
+- It plays in every empty window all day: keep the motion slow, with a
+  `duration` of 20 to 60 seconds, the contrast low and the maths light.
+
+**Checking it:**
+- `rune_gui`'s `["screenshot"]` reads the config and the `.kage` file again,
+  so edit and capture.
+- A file that isn't a shader is a config error, shown in a notification. A
+  shader the GPU rejects is reported once in a notification, and the window
+  shows the wallpaper it would show without the shader meanwhile: when a
+  capture shows that wallpaper instead, read the notification.
+- Capture empty windows in both states, focused and not: the wallpaper shows
+  nowhere else. `["exec", "windownew right"]` adds a second empty tile, so the
+  capture shows one of each.
+- Crop the frame's corners and bottom edge at 4× or more: the shader reaches
+  the frame's line and stops there.
+- Capture an animation twice, a few seconds apart, and compare. Zoom into a
+  crop of a gradient and look for bands.
 
 ## Surfaces
 Abbreviations:
@@ -384,24 +636,24 @@ Abbreviations:
 
 | Surface | Key | Images | Cells (w × h) | Fit |
 |---|---|---|---|---|
-| Window frame | `browser.window_manager.frame_charset.graphics` | `topleft` `topright` `bottomleft` `bottomright` | 1 × 1 | fill |
+| Window frame | `browser.window_manager.frame_charset.graphics` | `topleft` `topright` `bottomleft` `bottomright` | `corner_width` × `corner_height`, 1 × 1 by default (see "Corners larger than a cell") | fill |
 | | | `horizontaltop` `horizontalbottom` (tiles →), `verticalleft` `verticalright` (tiles ↓) | 1 × 1 | fill |
-| Focused frame | `browser.window_manager.focus_frame_charset.graphics` | same 8 | 1 × 1 | fill |
+| Focused frame | `browser.window_manager.focus_frame_charset.graphics` | same 8 | same as the window frame | fill |
 | Window background | `browser.window_manager.background_graphics` | `topleft` `topright` `bottomleft` `bottomright` | 1 × 1 | `fit`: fill (default) or tile |
 | | | `horizontaltop` `horizontalbottom` | (w−2) × 1 | `fit` |
 | | | `verticalleft` `verticalright` | 1 × (h−2) | `fit` |
 | | | `center` | (w−2) × (h−2) | `fit` |
 | Focused window background | `browser.window_manager.focus_background_graphics` | same 9 | same as above | `fit` |
-| Floating-only frame | `browser.window_manager.floating_frame_charset.graphics` | same 8 | 1 × 1 | fill |
-| Focused floating-only frame | `browser.window_manager.focus_floating_frame_charset.graphics` | same 8 | 1 × 1 | fill |
-| Command prompt frame | `command.frame_charset.graphics` | same 8 | 1 × 1 | fill |
+| Floating-only frame | `browser.window_manager.floating_frame_charset.graphics` | same 8 | same as the window frame | fill |
+| Focused floating-only frame | `browser.window_manager.focus_floating_frame_charset.graphics` | same 8 | same as the window frame | fill |
+| Command prompt frame | `command.frame_charset.graphics` | same 8 | same as the window frame | fill |
 | Command separator | `command.separator_charset.graphics` | `left`, `right` | (1+I) × (T+1+B) | fill |
 | | | `horizontal` (tiles →) | 1 × 1 | fill |
-| Notification frame | `notifications.frame_charset.graphics` | same 8 | 1 × 1 | fill |
+| Notification frame | `notifications.frame_charset.graphics` | same 8 | same as the window frame | fill |
 | Notification progress bar | `notifications.progress_format.graphics` | `start`, `current_tip`, `end` | 1 × 1 | fill |
 | | | `current` `remain` (tiles →) | 1 × 1 | fill |
-| Agent compose box frame | `extensions.rune-agent.config.input_box_frame_charset.graphics` | same 8 | 1 × 1 | fill |
-| Focused agent compose box frame | `extensions.rune-agent.config.focus.input_box_frame_charset.graphics` | same 8 | 1 × 1 | fill |
+| Agent compose box frame | `extensions.rune-agent.config.input_box_frame_charset.graphics` | same 8 | same as the window frame | fill |
+| Focused agent compose box frame | `extensions.rune-agent.config.focus.input_box_frame_charset.graphics` | same 8 | same as the window frame | fill |
 | Scroll bar | `browser.window_manager.scroll_bar_charset.graphics` | `top_char`, `middle_char` (tiles ↓), `bottom_char`, and the `hover_` version of each | (1+L) × 1 | fill |
 | Focused scroll bar | `browser.window_manager.focus_scroll_bar_charset.graphics` | same as the scroll bar | (1+L) × 1 | fill |
 | Floating window bar | `browser.window_manager.window_bar_charset.graphics` | `left` | (S+1+I) × (T+1+B) | fill |
@@ -436,6 +688,7 @@ Abbreviations:
 | Quick menu | `gui.quick_menu[i].sprite` | `idle` `hover` `pressed` | square, each side as wide as 4 text columns | contain |
 | Wallpaper | `workspace.wallpaper_image` | a path, or `{path, width, height, fit}` | `width`/`height` in cells or `N%`, default 60% | `contain` (default), `cover` or `fill` |
 | Focused wallpaper | `workspace.focus_wallpaper_image` | same as the wallpaper | same | same |
+| Shader wallpaper | `workspace.wallpaper_shader`, `workspace.focus_wallpaper_shader` | a built-in (`gradient`, `inferno`) or a `.kage` path, or `{shader, uniforms, duration, fps, animate, seed, under_frame}` | the whole window, frame included unless `under_frame` is `false` | computed at the window's size; replaces `wallpaper_image` |
 | App icon | `gui.app_icon` | a path | none: a square image, 256 px or larger | `contain`, centered on a transparent square |
 
 ### Floating-only styling
@@ -461,30 +714,171 @@ browser:
   window_manager:
     floating_frame_charset:
       graphics: &float_shadow
-        verticalright: file://$RUNE_DATADIR/hud/custom/v1/shadow-right.png
-        horizontalbottom: file://$RUNE_DATADIR/hud/custom/v1/shadow-bottom.png
-        bottomright: file://$RUNE_DATADIR/hud/custom/v1/shadow-corner.png
+        verticalright: file://$RUNE_DATADIR/etc/hud-custom-v1/shadow-right.png
+        horizontalbottom: file://$RUNE_DATADIR/etc/hud-custom-v1/shadow-bottom.png
+        bottomright: file://$RUNE_DATADIR/etc/hud-custom-v1/shadow-corner.png
     focus_floating_frame_charset:
       graphics: *float_shadow
     window_bar_charset:
       graphics:
-        left: file://$RUNE_DATADIR/hud/custom/v1/black-left.png
-        horizontal: file://$RUNE_DATADIR/hud/custom/v1/black-middle.png
-        right: file://$RUNE_DATADIR/hud/custom/v1/black-right.png
+        left: file://$RUNE_DATADIR/etc/hud-custom-v1/black-left.png
+        horizontal: file://$RUNE_DATADIR/etc/hud-custom-v1/black-middle.png
+        right: file://$RUNE_DATADIR/etc/hud-custom-v1/black-right.png
     focus_window_bar_charset:
       graphics:
-        left: file://$RUNE_DATADIR/hud/custom/v1/lavender-left.png
-        horizontal: file://$RUNE_DATADIR/hud/custom/v1/lavender-middle.png
-        right: file://$RUNE_DATADIR/hud/custom/v1/lavender-right.png
+        left: file://$RUNE_DATADIR/etc/hud-custom-v1/lavender-left.png
+        horizontal: file://$RUNE_DATADIR/etc/hud-custom-v1/lavender-middle.png
+        right: file://$RUNE_DATADIR/etc/hud-custom-v1/lavender-right.png
 ```
 
-Create the assets and merge only the requested keys into the existing config.
-`runectl screenshot` and `themereload` refresh every optional image URI, even
+Create the assets and merge only the requested keys into the staged version's
+config. A screenshot and `themereload` refresh every optional image URI, even
 when overwritten at the same path. Removing an optional key restores its
 shared fallback on existing floats on the next capture; removing just a slot
 restores inheritance, while `""` explicitly clears it. Inspect focused and
 unfocused floats, check shadows and header joins, and confirm tiled frames
 remain unchanged. Do not claim a focus state was verified unless visible.
+
+### Corners larger than a cell
+
+A frame cell is about 7 × 17 points: 14 × 34 pixels in a screenshot at
+device scale 2. A corner image covers one cell by default, so its curve can
+be at most one cell wide, less how far the line sits in from the cell's
+edge: a radius of about 5 points with any gap at all. So a one-cell corner
+can't deliver any of these:
+
+- rounder corners, with a radius over about one cell width;
+- a wider gap between windows, or more padding, with round corners kept:
+  moving the line in from the cell's edge eats into the radius;
+- a corner ornament, bevel or notch larger than a cell.
+
+Don't fake it with an elliptical bend squeezed into one cell, which reads as
+bevelled rather than round, and don't trade away the gap. Make the corners
+larger: `corner_width` and `corner_height`, in the charset's `graphics`
+table, set how many cells each corner image covers along the top and bottom
+rows and along the left and right columns. Draw each corner as one picture
+that size and Rune cuts it into cells.
+
+```yaml
+browser:
+  window_manager:
+    frame_charset:
+      graphics:
+        corner_width: 2      # cells along the top and bottom rows
+        corner_height: 1     # cells along the left and right columns
+        topleft: file://$RUNE_DATADIR/hud/<theme>/v<N>/frame/normal/topleft.png
+        topright: file://$RUNE_DATADIR/hud/<theme>/v<N>/frame/normal/topright.png
+        bottomleft: file://$RUNE_DATADIR/hud/<theme>/v<N>/frame/normal/bottomleft.png
+        bottomright: file://$RUNE_DATADIR/hud/<theme>/v<N>/frame/normal/bottomright.png
+        # ...and the four edges, which stay one cell
+```
+
+Semantics:
+- Each corner image is drawn in its corner, as it is: the top-right image's
+  top-right cell goes in the frame's top-right cell. Draw the top-left
+  corner and mirror it for the others (`-flop` for top-right, `-flip` for
+  bottom-left, both for bottom-right).
+- Only the cells on the frame's border are drawn: the corner's own cell and
+  the edge cells next to it, in place of the edges' images. The rest of the
+  picture lies over the window's content and is never drawn, so keep the art
+  in an L along the two edges. With a cell `cw` × `ch` and the line `ix` in
+  from the side and `iy` from the top, a quarter circle of radius R stays on
+  the border while R ≤ ch − iy or (cw − ix − R)² + (ch − iy − R)² ≤ R². On
+  a 14 × 34 pixel cell that is up to 79 pixels (39 points) with no insets
+  and 64 pixels with 4 pixel insets.
+- The size applies to all four corners. Set it on every charset whose
+  corner images are that size: `frame_charset` and `focus_frame_charset`
+  each need their own. The floating-only charsets and the command prompt
+  frame inherit it from the charset they inherit their images from. Set it
+  back to 1 where a charset overrides the corners with one-cell images.
+- Where the corners at both ends of an edge reach a cell, in a small
+  window, the nearer one draws it, the top or left one halfway between
+  them. A corner without an image leaves its cells to the edges: a floating
+  window's bar replaces the top corners, and a notification's progress bar
+  the bottom ones, so their cells show the edges.
+
+Work in the pixels of Rune's screenshots, which are at the device scale
+(a `rune_gui` screenshot is at scale 2 unless its `--size` sets another).
+
+1. **Measure the cell** in a screenshot: the width of a run of text divided
+   by its characters, and the distance between two lines of text.
+2. **Measure the reference**, when the user shows one (a screenshot, or the
+   site in the web browser):
+   - Check its scale: a one-point hairline is 2 pixels thick at scale 2. If
+     it differs from Rune's, scale the measurements below by Rune's scale
+     over the reference's.
+   - Print the luminance of a 30 × 30 pixel crop around the corner (script
+     below). Find the row of the top line and the column of the left line,
+     and where each stops being straight: R is the distance from that point
+     to the other line, about the same along both.
+   - Confirm it is a circle: at 45° the line sits about 0.29 R in from both
+     lines (R − R/√2). CSS `border-radius` is circular.
+   - Note the line's thickness, and sample three colours: outside the
+     curve, the line, and inside. The outside is the theme background (for
+     tiled windows) and the inside the window's `background_attr.bg` or
+     `focus_background_attr.bg`; see "Which colour a transparent pixel
+     shows". Only the line goes in the sprites.
+3. **Pick the insets** `ix` and `iy`, the line's distance from the cell's
+   side and top. The gap between two windows is twice the inset, so equal
+   insets give an even gap. Check R against the limit above.
+4. **Generate** the corners and edges with the script below. It sizes the
+   corner to N = ceil((ix + R) / cw) by M = ceil((iy + R) / ch) cells,
+   checks that nothing is drawn over the window's content, mirrors the
+   corner, draws the edges at the same insets and thickness, and prints the
+   `graphics` table to merge into the charset. Run it again with the focused
+   line colour, into another folder, for `focus_frame_charset`.
+5. **Compare** in Rune's screenshot. Crop it so its lines fall on the same
+   pixels as the reference's, append the two side by side, and print both
+   luminance grids: each line should straighten at the same distance from
+   the corner, and the 45° point should match within a pixel. Also check a
+   zoomed crop where two tiled windows meet: no step where the corner meets
+   the edges.
+
+A corner picture's line runs unbroken across every cell it covers, so it
+follows "One colour on each side of a line": Rune fills the side facing the
+content in the window's colour, cell by cell.
+
+```sh
+# All lengths in screenshot pixels. K rasterizes larger for sharp edges.
+out="$RUNE_DATADIR/hud/<theme>/v<N>/frame/normal"
+cw=14 ch=34 r=22 stroke=2 ix=4 iy=4 color='#28292a' K=4
+mkdir -p "$out"
+CW=$((cw*K)) CH=$((ch*K)) R=$((r*K)) SW=$((stroke*K)) IX=$((ix*K)) IY=$((iy*K))
+N=$(( (IX+R+CW-1)/CW )) M=$(( (IY+R+CH-1)/CH )) W=$((N*CW)) H=$((M*CH))
+magick -size ${W}x${H} xc:none -fill none -stroke "$color" -strokewidth $SW \
+  -draw "path 'M $IX,$H L $IX,$((IY+R)) A $R,$R 0 0,1 $((IX+R)),$IY L $W,$IY'" \
+  "$out/topleft.png"
+magick "$out/topleft.png" -format 'corner alpha %[fx:mean.a] (must not be 0)\n' info:
+if [ $N -gt 1 ] && [ $M -gt 1 ]; then
+  magick "$out/topleft.png" -crop $((W-CW))x$((H-CH))+$CW+$CH +repage \
+    -format 'over the content %[fx:mean.a] (must be 0)\n' info:
+fi
+magick "$out/topleft.png" -flop "$out/topright.png"
+magick "$out/topleft.png" -flip "$out/bottomleft.png"
+magick "$out/topleft.png" -flip -flop "$out/bottomright.png"
+magick -size ${CW}x${CH} xc:none -fill "$color" \
+  -draw "rectangle 0,$((IY-SW/2)) $((CW-1)),$((IY+SW/2-1))" "$out/horizontaltop.png"
+magick "$out/horizontaltop.png" -flip "$out/horizontalbottom.png"
+magick -size ${CW}x${CH} xc:none -fill "$color" \
+  -draw "rectangle $((IX-SW/2)),0 $((IX+SW/2-1)),$((CH-1))" "$out/verticalleft.png"
+magick "$out/verticalleft.png" -flop "$out/verticalright.png"
+printf 'graphics:\n  corner_width: %d\n  corner_height: %d\n' $N $M
+for s in topleft topright bottomleft bottomright \
+  horizontaltop horizontalbottom verticalleft verticalright; do
+  printf '  %s: file://%s/%s.png\n' $s "$out" $s
+done
+```
+
+Print the luminance around a point, here 30 × 30 pixels from 86,52:
+
+```sh
+magick shot.png -colorspace gray -crop 30x30+86+52 +repage -depth 8 gray:- |
+  python3 -c 'import sys; d=sys.stdin.buffer.read()
+for y in range(30): print(" ".join("%3d" % v for v in d[y*30:y*30+30]))'
+```
+
+Draw the curve with ImageMagick's `path` primitive, as the script does: its
+built-in SVG renderer can return a fully transparent image.
 
 ### Focus styles
 
@@ -629,11 +1023,11 @@ browser:
   window_manager:
     focus_background_graphics:
       fit: fill
-      center: file://$RUNE_DATADIR/hud/custom/v1/panel/focused/center.png
-      topleft: file://$RUNE_DATADIR/hud/custom/v1/panel/focused/topleft.png
+      center: file://$RUNE_DATADIR/etc/hud-custom-v1/panel/focused/center.png
+      topleft: file://$RUNE_DATADIR/etc/hud-custom-v1/panel/focused/topleft.png
       # ...the other corners and edges
     focus_scroll_bar_charset:
-      graphics: {middle_char: file://$RUNE_DATADIR/hud/custom/v1/scroll/focused-middle.png}
+      graphics: {middle_char: file://$RUNE_DATADIR/etc/hud-custom-v1/scroll/focused-middle.png}
 ```
 
 #### Adding a focus background to a theme
@@ -769,10 +1163,11 @@ Status bar rails aren't frames, and Rune paints no inside for them:
   focus. Its colours come from `browser.focus_tab_attr`,
   `browser.non_focus_tab_attr` and
   `browser.focus_tab_highlight_attr`. Every workspace shares it, so only the
-  user's config styles it, never a workspace's own.
+  user's config and the files it includes, the theme's among them, style it,
+  never a workspace's own `.rune/config.yaml`.
 - The program status inbox is `:programstatus`. Every workspace shares it, so
-  only the user's config styles it. Inspect its images only when a capture
-  shows it open with programs listed.
+  only the user's config and the files it includes style it. Inspect its
+  images only when a capture shows it open with programs listed.
 - Inbox sidebar: `program_status.sidebar_attr`, and
   `program_status.focus.sidebar_attr` while the inbox has the focus, colours
   the program list; the preview beside it keeps the window's background. The
@@ -808,7 +1203,9 @@ Line up rails and seams across slices at these positions.
 - Edges are one cell thick.
 - Keep the line at the cell's outer edge, where the default `▔ ▁ ▏ ▕`
   characters sit, so content keeps its spacing.
-- Corners must meet both edges at the cell boundary.
+- Corners must meet both edges at the far side of the cells they cover:
+  the corner's cell, or with `corner_width` and `corner_height`, the last
+  cell along each edge.
 
 **Window background panel:**
 - The panel covers the whole window, frame cells included. Corners are one
@@ -1061,7 +1458,7 @@ are shaders, not images. They're out of scope for this skill.
 
 ## Editor and agent status-bar layouts
 
-Use this reference to edit the user's configuration without a Rune source
+Use this reference to edit the theme's configuration without a Rune source
 checkout. Dimensions below are configuration units, not measurements the user
 must supply. Start with the existing layout and refine the result using
 screenshots. Preserve the user's useful status information while changing its
@@ -1074,14 +1471,12 @@ presentation.
 | Editor | `editor.status_bar.layout` | `background_attr.bg`, `foreground_error_attr.fg` under `editor.status_bar` |
 | Agent | `extensions.rune-agent.config.status_bar.layout` | `enabled`, `background_attr`, `status`, and the gauge settings below, under `extensions.rune-agent.config.status_bar` |
 
-`runectl screenshot` applies both bars' keys to the open editors and chats and
-to those opened later, and reads their images again, so you can overwrite an
+A screenshot applies both bars' keys to the open editors and chats and to
+those opened later, and reads their images again, so you can overwrite an
 image at the same path while you iterate.
 
-Add the examples to the theme's config; do not replace unrelated keys or
-remove the user's useful fields. In Starlark, the equivalent paths are
-`config["editor"]["status_bar"]["layout"]` and
-`config["extensions"]["rune-agent"]["config"]["status_bar"]["layout"]`.
+Add the examples to the staged version's `config.yaml`; do not replace
+unrelated keys or remove the user's useful fields.
 
 ### Layout syntax
 
@@ -1508,45 +1903,48 @@ workspace: {tab_sounds: {hover: hud-ember-hover, click: hud-ember-click}}
 ```
 
 ## Apply and verify
-Run `runectl screenshot` yourself and inspect the result after each revision.
-For the keys under Checking your work, this also applies the change; do not
-ask the user to reload them. Do not restart Rune or reload the agent's own
-workspace automatically: that can interrupt the conversation and running work.
+Capture a screenshot with `rune_gui` and inspect the result after each
+revision. For the keys under Checking your work, the capture also applies the
+change. Do not restart or reload the user's Rune or the agent's own
+workspace: that can interrupt the conversation and running work. The
+`rune_gui` instance is yours to stop and start.
 For focus styles, capture with two tiles and a floating window open, so the
 focused and unfocused states, and a float over the panel, show in one
 screenshot. Capture once more with the command prompt open, and once with one
-of Rune's standard prompts open, such as the close-dirty-tabs prompt: ask the
-user to open it if you can't, and never answer it yourself. Crop and enlarge
-(4x or more) the seam between the two tiles, a frame corner, the compose box's
-corners and bottom edge, the command prompt's corners and separator, the
-standard prompt's message and edges, and both ends of each status bar, in
-both states. On each side of every line, sample the pixel colour: outside
-must be the theme background, inside the pane colour of that state. Behind
-the standard prompt's text and along the inside of its frame, the colour must
-be the same as the rest of its interior. A band, halo, notch, square corner
-or lighter rectangle in any crop means the work isn't done.
+of Rune's standard prompts open, such as the prompt that closing a tab with
+unsaved changes opens: make one in the instance with commands and keys. Crop
+and enlarge (4x or more) the seam between the two tiles, a frame corner, the
+compose box's corners and bottom edge, the command prompt's corners and
+separator, the standard prompt's message and edges, and both ends of each
+status bar, in both states. On each side of every line, sample the pixel
+colour: outside must be the theme background, inside the pane colour of that
+state. Behind the standard prompt's text and along the inside of its frame,
+the colour must be the same as the rest of its interior. A band, halo, notch,
+square corner or lighter rectangle in any crop means the work isn't done.
 
 | Change | Takes effect |
 |---|---|
-| A key listed under Checking your work, or an image it names, even overwritten at the same path | `runectl screenshot`, in every open workspace |
-| Any other `browser.*`, `command.*` or `extensions.*` key | `workspacereload` in the focused workspace |
-| Any other `gui.*` key, `animations.*` | Restart Rune. `:guiwindownew` opens a fresh process to preview them |
+| A key listed under Checking your work, or an image it names, even overwritten at the same path | The next screenshot, in every open workspace |
+| Any other `browser.*`, `command.*` or `extensions.*` key | `workspacereload` in the focused workspace, or `rune_gui` `stop` and `start` |
+| Any other `gui.*` key, `animations.*` | `rune_gui` `stop` and `start`. Once included, the user's Rune needs a restart, or `:guiwindownew` for a fresh process |
 | A sound file overwritten at the same path | The next time it plays |
-| The wallpaper file overwritten at the same path | `runectl screenshot` or `workspacereload` |
+| The wallpaper image or shader file overwritten at the same path | The next screenshot or `workspacereload` |
 | Any other image overwritten at the same URI | Never: give it a new URI |
 
-If a requested change needs a workspace reload or restart, prepare it and state
-that specific activation requirement once. After activation, capture and inspect
-the result yourself. Do not ask for a screenshot unless capture is genuinely
-unavailable. Do not claim unactivated changes have been verified.
+Check a change that needs a restart with `rune_gui` `stop` and `start`. Once
+the user's include list selects the version, tell the user once which of its
+changes need their Rune restarted. Do not ask the user for screenshots, and
+do not claim to have verified what no `rune_gui` capture showed.
 
 **Errors:**
 - Config errors appear as notifications after the reload, so the screenshot
   shows them. If the configuration file does not parse, no new styles are
-  installed. Correct the edit and capture again.
+  installed. Correct the edit and capture again. `["log"]` shows the
+  `rune_gui` instance's log.
 - An invalid URI rejects its whole `graphics` table. Correct the URI instead
   of assuming the previous images will remain.
-- An unreadable wallpaper is a config error.
+- An unreadable wallpaper image or shader file is a config error. A shader
+  the GPU rejects is reported in a notification.
 - An unreadable app icon shows a notification and restores the default icon.
 - Other missing or unreadable images use their slot fallback; separator
   junctions try the vertical side image before the rune, as described above.
@@ -1554,30 +1952,33 @@ unavailable. Do not claim unactivated changes have been verified.
 
 ## Loop
 1. Discover the active config and read it, the manifest and the existing assets.
-   Back up the config and preserve a rollback copy of any assets being replaced.
-2. Run `runectl screenshot` and inspect the baseline image.
+   Note the include entry that selects the current version, if any: it is the
+   rollback. Stage the next version in `etc/hud-<theme>-v<N+1>/`, copied from
+   the current one, or start `v1` for a new theme.
+2. Capture a baseline with `rune_gui` running the current version, and
+   inspect the image.
 3. Use the user's brief and current theme to choose the palette, material and
    light direction. Keep changes within the requested scope.
 4. Work one surface at a time without asking for approval at every step. Use
    the surface table for configuration units and the screenshot for visual fit.
 5. Generate or edit the assets, or adjust the layout using the status-bar
    reference. Inspect the asset files and test repeating tiles for seams.
-6. Patch only the relevant configuration keys. Use absolute image URIs and
-   follow the cache rules for the surface being edited.
-7. Run `runectl screenshot` again and open the returned PNG. Check readability,
-   clipping, rail continuity, background matching, transparent areas and whether
-   ornaments obscure text. When the change touches window backgrounds, the
-   theme or the inbox, open `programstatus` with programs listed and check
-   that its program list stands apart from the preview and the selected
-   entry stands apart from the list.
-8. Fix any config errors shown in the captured screenshot or in the logs at
-$RUNE_DATADIR/debug.log.
+6. Patch only the relevant keys in the staged version's config. Use absolute
+   image URIs and follow the cache rules for the surface being edited.
+7. Capture with `rune_gui` again and inspect the image. Check readability,
+   clipping, rail continuity, background matching, transparent areas and
+   whether ornaments obscure text. When the change touches window backgrounds,
+   the theme or the inbox, open `programstatus` with programs listed and check
+   that its program list stands apart from the preview and the selected entry
+   stands apart from the list.
+8. Fix any config errors shown in the screenshot or in `["log"]`.
 9. Adjust the assets, spacing, dimensions, offsets or colours and repeat steps
-   5–8 until the rendered result meets the brief. A successful file write or
+   5 to 8 until the rendered result meets the brief. A successful file write or
    screenshot command alone is not verification: inspect the resulting image.
-10. Update the manifest and report the final screenshot path, changed keys and
-   rollback location. Note any state you could not inspect or change that still
-   needs activation.
-11. Ask the user if the new UI is to their liking.
-   rollback location. Note any state you could not inspect or change that still
-   needs activation.
+10. Append the staged version as the last entry of the user's `include` list,
+    removing the previous version's entry, and update the manifest. This is
+    the only change to the user's config, and the last step.
+11. Report the version, the changed keys, any theme key the user's own
+    settings still override, and the include entry that rolls it back. Note
+    any state you could not inspect or change that still needs activation,
+    then ask the user if the new UI is to their liking.

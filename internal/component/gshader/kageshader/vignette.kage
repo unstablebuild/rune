@@ -1,0 +1,18 @@
+//kage:unit pixels
+
+package main
+
+var Resolution vec2
+
+// Strength is how dark the corners get, from 0 to 1.
+var Strength float
+
+// Radius is how far from the centre the darkening starts: 0 at the centre,
+// 1 at the middle of the edges.
+var Radius float
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	c := imageSrc0At(srcPos)
+	d := length((dstPos.xy/Resolution - 0.5) * 2)
+	return vec4(c.rgb*(1-Strength*smoothstep(Radius, 1.5, d)), c.a)
+}

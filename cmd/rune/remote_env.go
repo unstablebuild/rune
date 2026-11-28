@@ -17,8 +17,6 @@
 package main
 
 import (
-	"net/http"
-
 	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/blue/release"
 	"github.com/unstablebuild/blue/release/cdnrelease"
@@ -35,7 +33,7 @@ func newRemoteReleaseManager(gitOpts ...gitpkg.Option) release.Manager {
 	// oauth transport fails client-side for logged-out users, which would
 	// break installs under the usage-based paywall.
 	official := cdnrelease.NewManager(
-		&http.Client{},
+		newReleaseHTTPClient(),
 		idepkg.ReleasesURL(*flagHTTPAddress, idepkg.HostArch()))
 	return multipkg.New(gitpkg.New(gitOpts...), official)
 }

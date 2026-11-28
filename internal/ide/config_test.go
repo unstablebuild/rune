@@ -43,10 +43,12 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
-	"github.com/unstablebuild/rune-go-sdk/tui"
 	"unstable.build/rune/internal/browser"
 	"unstable.build/rune/internal/cell"
 	tcomponent "unstable.build/rune/internal/component"
+	"unstable.build/rune/internal/component/gshader"
+	"unstable.build/rune/internal/component/gshader/gshadertest"
+	"unstable.build/rune/internal/component/gshader/kageshader"
 	"unstable.build/rune/internal/component/imagecomp"
 	"unstable.build/rune/internal/component/notifications"
 	"unstable.build/rune/internal/component/template"
@@ -294,6 +296,14 @@ browser:
         clicked_attr:
             bg: purple
             fg: white
+        field_attr:
+            bg: navy
+        focus_field_attr:
+            bg: blue
+            fg: white
+        placeholder_attr:
+            fg: silver
+            flags: italic
     window_manager:
         frame: true
         dim: false
@@ -1961,8 +1971,12 @@ func TestConfigSetting(t *testing.T) {
 	assert.Equal(t, 4, cfg.editorTabspaces())
 	assert.Equal(t, 72, cfg.editorRuler())
 	assert.True(t, cfg.editorAutoPair())
-	_, ok := cfg.wallpaper().NewComponent().(component.String)
-	assert.True(t, ok)
+	wallpaper := cfg.wallpaper().NewComponent()
+	wallpaper.Resize(3, 1)
+	sw := term.NewStringWriter(3, 1)
+	wallpaper.Draw(sw)
+	require.NoError(t, sw.Flush())
+	assert.Equal(t, "abc", strings.TrimSpace(sw.String()))
 	assert.Equal(t, "/tmp/debug.log", cfg.logOutputPath())
 	level, slogLevel := cfg.logLevel()
 	assert.Equal(t, logrus.TraceLevel, level)
@@ -2393,11 +2407,14 @@ func TestConfigSetting(t *testing.T) {
 	}, cfg.tabStatusNotifyConfig())
 
 	expectedPrompt := browser.PromptConfig{
-		TextAttr:      term.Attributes{Fg: term.ColorTeal},
-		HighlightAttr: term.Attributes{Fg: term.GetColor("#f0f0f0"), Bg: term.ColorRed},
-		HoverAttr:     term.Attributes{Fg: term.ColorNavy, Bg: term.ColorSilver},
-		ClickedAttr:   term.Attributes{Fg: term.ColorWhite, Bg: term.ColorPurple},
-		MinWidth:      browser.DefaultConfig().MinWidth,
+		TextAttr:        term.Attributes{Fg: term.ColorTeal},
+		HighlightAttr:   term.Attributes{Fg: term.GetColor("#f0f0f0"), Bg: term.ColorRed},
+		HoverAttr:       term.Attributes{Fg: term.ColorNavy, Bg: term.ColorSilver},
+		ClickedAttr:     term.Attributes{Fg: term.ColorWhite, Bg: term.ColorPurple},
+		FieldAttr:       term.Attributes{Bg: term.ColorNavy},
+		FocusFieldAttr:  term.Attributes{Fg: term.ColorWhite, Bg: term.ColorBlue},
+		PlaceholderAttr: term.Attributes{Fg: term.ColorSilver, Attrs: term.AttrItalic},
+		MinWidth:        browser.DefaultConfig().MinWidth,
 	}
 	assert.Equal(t, expectedPrompt, cfg.promptConfig())
 
@@ -2532,8 +2549,8 @@ func TestConfigWallpaperResolvesTheImagesThenTheTextThenTheLogo(t *testing.T) {
 
 	logo := func(text string, fps int) Logo {
 		return Logo{
-			Wallpaper: browser.Wallpaper{NewComponent: func() tui.Component {
-				return component.NewString(text)
+			Wallpaper: browser.Wallpaper{NewComponent: func() browser.ComponentCloser {
+				return browser.NopCloser(component.NewString(text))
 			}},
 			ShaderFPS: fps,
 		}
@@ -2720,28 +2737,27 @@ func TestConfigWallpaperResolvesTheImagesThenTheTextThenTheLogo(t *testing.T) {
 
 func TestConfigWallpaperResolvesTheFocusWallpaper(t *testing.T) {
 	logo := Logo{
-		Wallpaper: browser.Wallpaper{NewComponent: func() tui.Component {
-			return component.NewString("logo")
+		Wallpaper: browser.Wallpaper{NewComponent: func() browser.ComponentCloser {
+			return browser.NopCloser(component.NewString("logo"))
 		}},
 		ShaderFPS: 1,
 	}
 	yellow := term.Attributes{Fg: term.ColorYellow}
-	navy := term.Attributes{Bg: term.ColorNavy}
-	// drawn returns the text w draws and the foreground of its first rune.
-	drawn := func(w browser.Wallpaper) (string, term.Color) {
+	// drawn returns the text w draws and the cell of its first rune.
+	drawn := func(w browser.Wallpaper) (string, term.Cell) {
 		comp := w.NewComponent()
 		comp.Resize(10, 1)
 		sw := term.NewStringWriter(10, 1)
 		comp.Draw(sw)
 		require.NoError(t, sw.Flush())
-		var fg term.Color
+		var first term.Cell
 		for _, c := range sw.Cells() {
 			if c.Ch != 0 && c.Ch != ' ' {
-				fg = c.Fg
+				first = c
 				break
 			}
 		}
-		return strings.TrimSpace(sw.String()), fg
+		return strings.TrimSpace(sw.String()), first
 	}
 	cases := []struct {
 		name      string
@@ -2749,7 +2765,7 @@ func TestConfigWallpaperResolvesTheFocusWallpaper(t *testing.T) {
 		// wantFocus is the focus wallpaper's text, empty for none.
 		wantFocus   string
 		wantFocusFg term.Color
-		wantFocusBg term.Attributes
+		wantFocusBg term.Color
 		wantErr     string
 	}{
 		{
@@ -2772,7 +2788,7 @@ func TestConfigWallpaperResolvesTheFocusWallpaper(t *testing.T) {
 				"focus_wallpaper_background_attr": map[string]any{"bg": "navy"},
 			},
 			wantFocus:   "N",
-			wantFocusBg: navy,
+			wantFocusBg: term.ColorNavy,
 		},
 		{
 			name: "an empty focus text shows the logo",
@@ -2804,10 +2820,10 @@ func TestConfigWallpaperResolvesTheFocusWallpaper(t *testing.T) {
 			if tc.wantFocus == "" {
 				assert.Nil(t, wallpaper.Focus)
 			} else if assert.NotNil(t, wallpaper.Focus) {
-				text, fg := drawn(*wallpaper.Focus)
+				text, first := drawn(*wallpaper.Focus)
 				assert.Equal(t, tc.wantFocus, text)
-				assert.Equal(t, tc.wantFocusFg, fg)
-				assert.Equal(t, tc.wantFocusBg, wallpaper.Focus.BackgroundAttr)
+				assert.Equal(t, tc.wantFocusFg, first.Fg)
+				assert.Equal(t, tc.wantFocusBg, first.Bg)
 			}
 			if tc.wantErr == "" {
 				assert.Empty(t, cfg.errors)
@@ -4041,11 +4057,13 @@ func TestConfigHUDStyle(t *testing.T) {
 			name: "wallpaper",
 			cfg: map[string]any{"workspace": map[string]any{
 				"wallpaper_ascii":           "art",
+				"wallpaper_attr":            map[string]any{"fg": "yellow", "bg": "red", "flags": "bold"},
 				"wallpaper_background_attr": map[string]any{"bg": "navy"},
 			}},
 			check: func(t *testing.T, s hudStyle) {
 				wallpaper := s.browser.Wallpaper
-				assert.Equal(t, term.ColorNavy, wallpaper.BackgroundAttr.Bg)
+				assert.Equal(t, term.Attributes{}, wallpaper.BackgroundAttr,
+					"the text draws its own background")
 				comp := wallpaper.NewComponent()
 				comp.Resize(3, 1)
 				w := cell.NewBufferWriter(context.Background(), 3, 1)
@@ -4053,6 +4071,8 @@ func TestConfigHUDStyle(t *testing.T) {
 				var drawn []rune
 				for _, c := range w.RawCells()[0] {
 					drawn = append(drawn, c.Ch)
+					assert.Equal(t, term.Attributes{Fg: term.ColorYellow, Bg: term.ColorNavy, Attrs: term.AttrBold},
+						c.Attributes(), "the text keeps its attributes on the background's colour")
 				}
 				assert.Equal(t, "art", string(drawn))
 			},
@@ -5233,4 +5253,442 @@ func TestSearchConfigInvalidKeepsDefaults(t *testing.T) {
 	}, errors: map[string]error{}}
 	assert.Empty(t, off.searchConfig().Model, "a disabled search needs no model")
 	assert.Empty(t, off.errors)
+}
+
+// shadedWallpaper draws a wallpaper of 20x4 cells once on dev, and once
+// where shaders cannot run, returning the render and what the fallback
+// drew.
+func shadedWallpaper(
+	t *testing.T, w browser.Wallpaper, dev *gshadertest.Device,
+) (call gshadertest.Call, comp *gshader.Component, fallback string) {
+	t.Helper()
+	const width, height = 20, 4
+	c := w.NewComponent()
+	comp, ok := c.(*gshader.Component)
+	require.True(t, ok, "a %T", c)
+	t.Cleanup(func() { _ = comp.Close() })
+	comp.Resize(width, height)
+	gw := &gshadertest.Writer{Ctx: dev.Context(context.Background())}
+	comp.Draw(gw)
+	require.Len(t, dev.Calls, 1)
+	require.Len(t, gw.Images, 1, "the shader is placed")
+
+	sw := term.NewStringWriter(width, height)
+	comp.Draw(sw)
+	require.NoError(t, sw.Flush())
+	return dev.Calls[0], comp, strings.Join(strings.Fields(sw.String()), "")
+}
+
+func configErrs(errors map[string]error) map[string]string {
+	errs := map[string]string{}
+	for key, err := range errors {
+		errs[key] = err.Error()
+	}
+	return errs
+}
+
+func TestConfigWallpaperShader(t *testing.T) {
+	still, err := filepath.Abs("testdata/wallpaper_still.kage")
+	require.NoError(t, err)
+	animation, err := filepath.Abs("testdata/wallpaper_animation.kage")
+	require.NoError(t, err)
+	bad := filepath.Join(t.TempDir(), "bad.kage")
+	require.NoError(t, os.WriteFile(bad, []byte("package main\n\nfunc Fragment() {}\n"), 0o644))
+	white := filepath.Join(t.TempDir(), "white.png")
+	f, err := os.Create(white)
+	require.NoError(t, err)
+	require.NoError(t, png.Encode(f, image.NewGray(image.Rect(0, 0, 1, 1))))
+	require.NoError(t, f.Close())
+
+	logo := Logo{
+		Wallpaper: browser.Wallpaper{NewComponent: func() browser.ComponentCloser {
+			return browser.NopCloser(component.NewString("logo"))
+		}},
+		ShaderFPS: 1,
+	}
+	defaults := func(name string, set gshader.Uniforms) gshader.Uniforms {
+		b, ok := kageshader.Lookup(name)
+		require.True(t, ok, name)
+		maps.Copy(b.Uniforms, set)
+		return b.Uniforms
+	}
+	tests := []struct {
+		name      string
+		workspace map[string]any
+		// wantShader is the file the shader runs, empty when it shows
+		// another wallpaper.
+		wantShader   string
+		wantUniforms gshader.Uniforms
+		wantTotal    float32
+		wantAnimated bool
+		wantFallback string
+		wantErrs     map[string]string
+	}{
+		{
+			name:         "a still from a path",
+			workspace:    map[string]any{"wallpaper_shader": still, "wallpaper_ascii": "art"},
+			wantShader:   "wallpaper_still.kage",
+			wantUniforms: gshader.Uniforms{},
+			wantTotal:    1,
+			wantFallback: "art",
+		},
+		{
+			name:         "an animation loops for 10s at 30 fps",
+			workspace:    map[string]any{"wallpaper_shader": animation},
+			wantShader:   "wallpaper_animation.kage",
+			wantUniforms: gshader.Uniforms{},
+			wantTotal:    300,
+			wantAnimated: true,
+			wantFallback: "logo",
+		},
+		{
+			name: "a section",
+			workspace: map[string]any{"wallpaper_shader": map[string]any{
+				"shader": animation, "fps": 12, "duration": "2s",
+				"uniforms": map[string]any{"Tint": "red"},
+			}},
+			wantShader:   "wallpaper_animation.kage",
+			wantUniforms: gshader.Uniforms{"Tint": term.ColorRed},
+			wantTotal:    24,
+			wantAnimated: true,
+			wantFallback: "logo",
+		},
+		{
+			name: "an animation that is told not to animate",
+			workspace: map[string]any{"wallpaper_shader": map[string]any{
+				"shader": animation, "animate": false,
+			}},
+			wantShader:   "wallpaper_animation.kage",
+			wantUniforms: gshader.Uniforms{},
+			wantTotal:    1,
+			wantFallback: "logo",
+		},
+		{
+			name: "uniforms converted by their declared type",
+			workspace: map[string]any{"wallpaper_shader": map[string]any{
+				"shader": still, "seed": 7,
+				"uniforms": map[string]any{
+					"Tint": "#102030", "Bands": int64(4), "Stops": []any{0.25, 1},
+					"Background": "default",
+				},
+			}},
+			wantShader: "wallpaper_still.kage",
+			wantUniforms: gshader.Uniforms{
+				"Seed": float32(7), "Tint": term.NewHexColor(0x102030), "Bands": 4,
+				"Stops": []float32{0.25, 1}, "Background": term.ColorDefault,
+			},
+			wantTotal:    1,
+			wantFallback: "logo",
+		},
+		{
+			name: "invalid section keys keep their defaults",
+			workspace: map[string]any{"wallpaper_shader": map[string]any{
+				"shader": animation, "fps": 0, "duration": "-1s", "animate": "yes", "seed": 1.5,
+				"uniforms": map[string]any{
+					"Tint": "mauvish", "Progress": 1, "Missing": 1, "Resolution": []any{1, 2, 3},
+				},
+			}},
+			wantShader:   "wallpaper_animation.kage",
+			wantUniforms: gshader.Uniforms{},
+			wantTotal:    300,
+			wantAnimated: true,
+			wantFallback: "logo",
+			wantErrs: map[string]string{
+				"workspace.wallpaper_shader.fps":                 "must be a number of frames per second from 1 to 120",
+				"workspace.wallpaper_shader.duration":            `must be a positive duration, such as "10s"`,
+				"workspace.wallpaper_shader.animate":             "type is invalid",
+				"workspace.wallpaper_shader.seed":                `must be a whole number or "random"`,
+				"workspace.wallpaper_shader.uniforms.Tint":       `unknown colour "mauvish"`,
+				"workspace.wallpaper_shader.uniforms.Progress":   "is set from the time",
+				"workspace.wallpaper_shader.uniforms.Missing":    "wallpaper_animation.kage declares no uniform Missing",
+				"workspace.wallpaper_shader.uniforms.Resolution": "wallpaper_animation.kage: uniform Resolution: a vec2 takes 2 values, got 3",
+			},
+		},
+		{
+			name: "a whole-number seed",
+			workspace: map[string]any{"wallpaper_shader": map[string]any{
+				"shader": still, "seed": "often",
+			}},
+			wantShader:   "wallpaper_still.kage",
+			wantUniforms: gshader.Uniforms{},
+			wantTotal:    1,
+			wantFallback: "logo",
+			wantErrs: map[string]string{
+				"workspace.wallpaper_shader.seed": `must be a whole number or "random"`,
+			},
+		},
+		{
+			name:         "over a picture, which it falls back to",
+			workspace:    map[string]any{"wallpaper_shader": still, "wallpaper_image": white},
+			wantShader:   "wallpaper_still.kage",
+			wantUniforms: gshader.Uniforms{},
+			wantTotal:    1,
+		},
+		{
+			name:         "a built-in shader by name",
+			workspace:    map[string]any{"wallpaper_shader": "plasma"},
+			wantShader:   "plasma.kage",
+			wantUniforms: defaults("plasma", nil),
+			wantTotal:    300,
+			wantAnimated: true,
+			wantFallback: "logo",
+		},
+		{
+			name:         "a built-in still",
+			workspace:    map[string]any{"wallpaper_shader": "gradient"},
+			wantShader:   "gradient.kage",
+			wantUniforms: defaults("gradient", nil),
+			wantTotal:    1,
+			wantFallback: "logo",
+		},
+		{
+			name: "a built-in's uniforms over its defaults",
+			workspace: map[string]any{"wallpaper_shader": map[string]any{
+				"shader": "noise", "seed": 3, "uniforms": map[string]any{"To": "red", "Scale": 5},
+			}},
+			wantShader: "noise.kage",
+			wantUniforms: defaults("noise", gshader.Uniforms{
+				"Seed": float32(3), "To": term.ColorRed, "Scale": float32(5),
+			}),
+			wantTotal:    300,
+			wantAnimated: true,
+			wantFallback: "logo",
+		},
+		{
+			name:      "an unknown built-in",
+			workspace: map[string]any{"wallpaper_shader": "sparkles", "wallpaper_ascii": "art"},
+			wantErrs: map[string]string{
+				"workspace.wallpaper_shader": `no built-in shader "sparkles", only blaze, gradient, inferno, ` +
+					`noise and plasma; a file must end in .kage`,
+			},
+		},
+		{
+			name:      "an empty shader shows the next wallpaper",
+			workspace: map[string]any{"wallpaper_shader": map[string]any{"shader": ""}, "wallpaper_ascii": "art"},
+		},
+		{
+			name:      "a missing file",
+			workspace: map[string]any{"wallpaper_shader": "/nonexistent.kage", "wallpaper_ascii": "art"},
+			wantErrs: map[string]string{
+				"workspace.wallpaper_shader": "read shader: open /nonexistent.kage: no such file or directory",
+			},
+		},
+		{
+			name:      "a file that is not a shader",
+			workspace: map[string]any{"wallpaper_shader": bad, "wallpaper_ascii": "art"},
+			wantErrs: map[string]string{
+				"workspace.wallpaper_shader": "bad.kage: missing the //kage:unit pixels directive",
+			},
+		},
+		{
+			name:      "neither a path nor a section",
+			workspace: map[string]any{"wallpaper_shader": 42, "wallpaper_ascii": "art"},
+			wantErrs: map[string]string{
+				"workspace.wallpaper_shader": "must name a built-in shader or a .kage file, or be a section with its shader",
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ideConfig{
+				cfg:    map[string]any{"workspace": tc.workspace},
+				errors: map[string]error{},
+				logo:   &logo,
+			}
+			wallpaper := cfg.wallpaper()
+			wantErrs := tc.wantErrs
+			if wantErrs == nil {
+				wantErrs = map[string]string{}
+			}
+			assert.Equal(t, wantErrs, configErrs(cfg.errors))
+			if tc.wantShader == "" {
+				_, ok := wallpaper.NewComponent().(*gshader.Component)
+				assert.False(t, ok, "shows another wallpaper")
+				return
+			}
+			assert.Zero(t, cfg.intro().fps, "a shader replaces the logo's intro")
+			call, comp, fallback := shadedWallpaper(t, wallpaper, &gshadertest.Device{})
+			run, ok := call.Node.(gshader.RunNode)
+			require.True(t, ok, gshadertest.Format(call.Node))
+			assert.Equal(t, tc.wantShader, run.Program.Name())
+			assert.Equal(t, image.Pt(20, 4), call.Size)
+			assert.Equal(t, tc.wantTotal, run.Uniforms[gshader.UniformTotal])
+			for _, builtin := range []string{gshader.UniformFrame, gshader.UniformTotal, gshader.UniformProgress} {
+				delete(run.Uniforms, builtin)
+			}
+			assert.Equal(t, tc.wantUniforms, run.Uniforms)
+			assert.Equal(t, tc.wantAnimated, !comp.Done())
+			assert.Equal(t, tc.wantFallback, fallback, "the terminal shows the rest of the chain")
+		})
+	}
+}
+
+func TestConfigWallpaperShaderRandomSeed(t *testing.T) {
+	still, err := filepath.Abs("testdata/wallpaper_still.kage")
+	require.NoError(t, err)
+	seeds := map[float32]bool{}
+	for range 10 {
+		cfg := &ideConfig{
+			cfg: map[string]any{"workspace": map[string]any{
+				"wallpaper_shader": map[string]any{"shader": still, "seed": "random"},
+			}},
+			errors: map[string]error{},
+		}
+		call, _, _ := shadedWallpaper(t, cfg.wallpaper(), &gshadertest.Device{})
+		require.Empty(t, cfg.errors)
+		seed, ok := gshadertest.Uniform(t, call.Node, gshader.UniformSeed).(float32)
+		require.True(t, ok)
+		seeds[seed] = true
+	}
+	assert.Greater(t, len(seeds), 1, "each load picks a seed")
+}
+
+func TestConfigWallpaperShaderSharesItsRenderingAcrossWindows(t *testing.T) {
+	still, err := filepath.Abs("testdata/wallpaper_still.kage")
+	require.NoError(t, err)
+	cfg := &ideConfig{
+		cfg:    map[string]any{"workspace": map[string]any{"wallpaper_shader": still}},
+		errors: map[string]error{},
+	}
+	wallpaper := cfg.wallpaper()
+	dev := &gshadertest.Device{}
+	a, _, _ := shadedWallpaper(t, wallpaper, dev)
+	dev.Calls = nil
+	b, _, _ := shadedWallpaper(t, wallpaper, dev)
+	assert.Equal(t, a.Key, b.Key, "windows of one wallpaper share a key")
+	other, _, _ := shadedWallpaper(t, cfg.wallpaper(), &gshadertest.Device{})
+	assert.NotEqual(t, a.Key, other.Key, "another load has its own")
+}
+
+func TestConfigWallpaperShaderReportsRuntimeErrorsOnce(t *testing.T) {
+	still, err := filepath.Abs("testdata/wallpaper_still.kage")
+	require.NoError(t, err)
+	var notified []string
+	cfg := &ideConfig{
+		cfg:         map[string]any{"workspace": map[string]any{"wallpaper_shader": still}},
+		errors:      map[string]error{},
+		notifyError: func(err error) { notified = append(notified, err.Error()) },
+	}
+	wallpaper := cfg.wallpaper()
+	dev := &gshadertest.Device{Err: fmt.Errorf("compile: boom")}
+	for range 2 {
+		comp := wallpaper.NewComponent()
+		comp.Resize(4, 4)
+		for range 2 {
+			comp.Draw(&gshadertest.Writer{Ctx: dev.Context(context.Background())})
+		}
+	}
+	assert.Equal(t, []string{"workspace.wallpaper_shader: compile: boom"}, notified,
+		"once, however many windows show it")
+}
+
+func TestConfigWallpaperShaderUnderFrame(t *testing.T) {
+	still, err := filepath.Abs("testdata/wallpaper_still.kage")
+	require.NoError(t, err)
+	tests := []struct {
+		name    string
+		section map[string]any
+		// wantSize is the picture the shader renders in a framed tile of
+		// 8x5 cells.
+		wantSize image.Point
+		wantErrs map[string]string
+	}{
+		{name: "covers the frame by default", section: map[string]any{}, wantSize: image.Pt(8, 5)},
+		{name: "stops inside the frame when turned off", section: map[string]any{"under_frame": false}, wantSize: image.Pt(6, 3)},
+		{
+			name:     "an invalid value keeps the default",
+			section:  map[string]any{"under_frame": "no"},
+			wantSize: image.Pt(8, 5),
+			wantErrs: map[string]string{"workspace.wallpaper_shader.under_frame": "type is invalid"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.section["shader"] = still
+			cfg := &ideConfig{
+				cfg:    map[string]any{"workspace": map[string]any{"wallpaper_shader": tt.section}},
+				errors: map[string]error{},
+			}
+			comp := cfg.wallpaper().NewComponent()
+			t.Cleanup(func() { _ = comp.Close() })
+			wantErrs := tt.wantErrs
+			if wantErrs == nil {
+				wantErrs = map[string]string{}
+			}
+			assert.Equal(t, wantErrs, configErrs(cfg.errors))
+
+			wm, _ := tcomponent.NewWindowManager(comp, tcomponent.WindowManagerConfig{
+				Frame:                true,
+				FrameGraphicsStorage: storagestub.NewInMemoryService(),
+				Interrupter:          term.NopInterrupter(),
+			})
+			t.Cleanup(func() { _ = wm.Close() })
+			wm.Resize(8, 5)
+			dev := &gshadertest.Device{}
+			wm.Draw(&gshadertest.Writer{Ctx: dev.Context(context.Background())})
+			require.Len(t, dev.Calls, 1)
+			assert.Equal(t, tt.wantSize, dev.Calls[0].Size)
+		})
+	}
+}
+
+func TestConfigFocusWallpaperShader(t *testing.T) {
+	still, err := filepath.Abs("testdata/wallpaper_still.kage")
+	require.NoError(t, err)
+	animation, err := filepath.Abs("testdata/wallpaper_animation.kage")
+	require.NoError(t, err)
+	tests := []struct {
+		name      string
+		workspace map[string]any
+		// wantFocus is the shader the focus wallpaper runs, empty for
+		// none, and "-" for no focus wallpaper.
+		wantFocus string
+	}{
+		{name: "no focus keys", workspace: map[string]any{"wallpaper_shader": still}, wantFocus: "-"},
+		{
+			name:      "a focus shader",
+			workspace: map[string]any{"wallpaper_shader": still, "focus_wallpaper_shader": animation},
+			wantFocus: "wallpaper_animation.kage",
+		},
+		{
+			name:      "a focus section",
+			workspace: map[string]any{"wallpaper_shader": still, "focus_wallpaper_shader": map[string]any{"shader": animation}},
+			wantFocus: "wallpaper_animation.kage",
+		},
+		{
+			name:      "a focus text replaces the shader",
+			workspace: map[string]any{"wallpaper_shader": still, "focus_wallpaper_ascii": "F"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ideConfig{cfg: map[string]any{"workspace": tc.workspace}, errors: map[string]error{}}
+			wallpaper := cfg.wallpaper()
+			require.Empty(t, cfg.errors)
+			call, _, _ := shadedWallpaper(t, wallpaper, &gshadertest.Device{})
+			assert.Equal(t, "wallpaper_still.kage", call.Node.(gshader.RunNode).Program.Name())
+			switch tc.wantFocus {
+			case "-":
+				assert.Nil(t, wallpaper.Focus)
+			case "":
+				require.NotNil(t, wallpaper.Focus)
+				_, ok := wallpaper.Focus.NewComponent().(*gshader.Component)
+				assert.False(t, ok)
+			default:
+				require.NotNil(t, wallpaper.Focus)
+				focus, _, _ := shadedWallpaper(t, *wallpaper.Focus, &gshadertest.Device{})
+				assert.Equal(t, tc.wantFocus, focus.Node.(gshader.RunNode).Program.Name())
+				assert.NotEqual(t, call.Key, focus.Key)
+			}
+		})
+	}
+}
+
+func TestTickInterrupter(t *testing.T) {
+	var scheduled int
+	i := tickInterrupter(func(fn func()) bool { scheduled++; fn(); return true })
+	require.NoError(t, i.Interrupt(context.Background()))
+	assert.Equal(t, 1, scheduled)
+	require.Error(t, tickInterrupter(func(func()) bool { return false }).Interrupt(context.Background()))
+	require.Error(t, tickInterrupter(nil).Interrupt(context.Background()))
 }

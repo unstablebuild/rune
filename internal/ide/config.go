@@ -23,10 +23,13 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"io"
 	"log/slog"
 	"maps"
+	"math"
+	"math/rand/v2"
 	"net"
 	"net/url"
 	"os"
@@ -36,6 +39,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -49,11 +53,12 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/term/graphemecluster"
-	"github.com/unstablebuild/rune-go-sdk/tui"
 	yaml "gopkg.in/yaml.v3"
 	"unstable.build/rune/internal/browser"
 	tcomponent "unstable.build/rune/internal/component"
 	"unstable.build/rune/internal/component/asciiart"
+	"unstable.build/rune/internal/component/gshader"
+	"unstable.build/rune/internal/component/gshader/kageshader"
 	"unstable.build/rune/internal/component/imagecomp"
 	"unstable.build/rune/internal/component/imageuri"
 	"unstable.build/rune/internal/component/notifications"
@@ -424,6 +429,9 @@ type ideConfig struct {
 	// systemOpenURL opens a URL in the system browser for the "system"
 	// meta_open_url. Nil when the IDE was given none.
 	systemOpenURL func(*url.URL) error
+	// notifyError shows an error to the user. It is safe to call from any
+	// goroutine. Nil when the IDE was given none.
+	notifyError func(error)
 	// storage is the IDE-wide storage service. It's owned by the IDE
 	// and shared across workspaces; commandAliases consults it to
 	// resolve `{history}` placeholders in alias completer chains by
@@ -2162,6 +2170,27 @@ func (c ideConfig) promptBackgroundAttr() term.Attributes {
 	)
 }
 
+func (c ideConfig) promptFieldAttr() term.Attributes {
+	return c.getCfgAttr(
+		"field_attr", browser.DefaultConfig().FieldAttr,
+		"prompt", c.prompt,
+	)
+}
+
+func (c ideConfig) promptFocusFieldAttr() term.Attributes {
+	return c.getCfgAttr(
+		"focus_field_attr", browser.DefaultConfig().FocusFieldAttr,
+		"prompt", c.prompt,
+	)
+}
+
+func (c ideConfig) promptPlaceholderAttr() term.Attributes {
+	return c.getCfgAttr(
+		"placeholder_attr", browser.DefaultConfig().PlaceholderAttr,
+		"prompt", c.prompt,
+	)
+}
+
 func (c ideConfig) commandOverlayMatchedTextAttr() (ret term.Attributes) {
 	def := text.DefaultCommandOverlayConfig().MatchedTextAttr
 	return c.getCommandAttr("matched_text_attr", def)
@@ -2354,6 +2383,9 @@ func (c ideConfig) promptConfig() browser.PromptConfig {
 	ret.HoverAttr = c.promptHoverAttr()
 	ret.ClickedAttr = c.promptClickedAttr()
 	ret.BackgroundAttr = c.promptBackgroundAttr()
+	ret.FieldAttr = c.promptFieldAttr()
+	ret.FocusFieldAttr = c.promptFocusFieldAttr()
+	ret.PlaceholderAttr = c.promptPlaceholderAttr()
 	ret.Images = c.promptImages()
 	return ret
 }
@@ -5072,13 +5104,15 @@ func (c ideConfig) intro() initShaderConfig {
 	}
 }
 
-// resolveWallpaper returns the wallpaper of windows without a tab: the picture
-// of workspace.wallpaper_image, else the ASCII art of
+// resolveWallpaper returns the wallpaper of windows without a tab: the shader
+// of workspace.wallpaper_shader, else the picture of
+// workspace.wallpaper_image, else the ASCII art of
 // workspace.wallpaper_image_ascii, else the text of workspace.wallpaper_ascii,
-// else the built-in logo, which it returns too. An empty value turns its
-// wallpaper off, as the defaults do, so the logo shows when all three are
-// empty. Its Focus is the wallpaper the focus_ keys resolve to the same way,
-// or nil when none is set. The focus wallpaper takes its picture, art or
+// else the built-in logo, which it returns too. A shader shows the rest of
+// that chain where shaders cannot run. An empty value turns its wallpaper
+// off, as the defaults do, so the logo shows when all four are empty. Its
+// Focus is the wallpaper the focus_ keys resolve to the same way, or nil
+// when none is set. The focus wallpaper takes its shader, picture, art or
 // text from the normal keys unless a focus_ one of them is set, and each
 // attribute and the density characters a focus_ key leaves out from the
 // normal key.
@@ -5094,7 +5128,7 @@ func (c ideConfig) resolveWallpaper() (browser.Wallpaper, Logo) {
 			return !errors.Is(err, config.ErrNotFound)
 		})
 	}
-	content := []string{"wallpaper_image", "wallpaper_image_ascii", "wallpaper_ascii"}
+	content := []string{"wallpaper_shader", "wallpaper_image", "wallpaper_image_ascii", "wallpaper_ascii"}
 	style := []string{"wallpaper_attr", "wallpaper_background_attr", "wallpaper_density_characters"}
 	if !has(content...) && !has(style...) {
 		return wallpaper, logo
@@ -5115,6 +5149,7 @@ func (c ideConfig) resolveWallpaper() (browser.Wallpaper, Logo) {
 func (c ideConfig) resolveWallpaperKeys(content, style string) (browser.Wallpaper, Logo) {
 	wallpaper := browser.NopWallpaper()
 	var logo Logo
+	var ownBackground bool
 	if c.cfg != nil {
 		cfg := c.workspace()
 		if w, ok := c.wallpaperImage(cfg, content, style); ok {
@@ -5122,12 +5157,21 @@ func (c ideConfig) resolveWallpaperKeys(content, style string) (browser.Wallpape
 		} else if w, ok := c.wallpaperImageASCII(cfg, content, style); ok {
 			wallpaper = w
 		} else if w, ok := c.wallpaperText(cfg, content, style); ok {
-			wallpaper = w
+			wallpaper, ownBackground = w, true
 		} else if c.logo != nil {
 			wallpaper, logo = c.logo.Wallpaper, *c.logo
 		}
+		// The rest of the chain is what windows show where shaders cannot
+		// run, such as in the terminal.
+		if w, ok := c.wallpaperShader(cfg, content, wallpaper); ok {
+			wallpaper, logo, ownBackground = w, Logo{}, false
+		}
 	}
-	wallpaper.BackgroundAttr = c.wallpaperStyleAttr(style, "wallpaper_background_attr")
+	// The text draws its own background: drawn on the BackgroundAttr, its
+	// characters would lose their attributes but the foreground colour.
+	if !ownBackground {
+		wallpaper.BackgroundAttr = c.wallpaperStyleAttr(style, "wallpaper_background_attr")
+	}
 	return wallpaper, logo
 }
 
@@ -5194,7 +5238,7 @@ func (c ideConfig) wallpaperImage(cfg config.Config, prefix, style string) (brow
 	// Shared by every window, so the screen keeps one copy of the pixels.
 	id := term.NewImageID()
 	return browser.Wallpaper{
-		NewComponent: func() tui.Component { return imagecomp.New(img, id, pcfg) },
+		NewComponent: func() browser.ComponentCloser { return browser.NopCloser(imagecomp.New(img, id, pcfg)) },
 	}, true
 }
 
@@ -5273,12 +5317,12 @@ func (c ideConfig) wallpaperImageASCII(cfg config.Config, prefix, style string) 
 	}
 	ascii := c.wallpaperImageASCIIConfig(cfg, style)
 	return browser.Wallpaper{
-		NewComponent: func() tui.Component {
-			return component.NewSpan(asciiart.NewComponent(img, ascii), component.SpanConfig{
+		NewComponent: func() browser.ComponentCloser {
+			return browser.NopCloser(component.NewSpan(asciiart.NewComponent(img, ascii), component.SpanConfig{
 				PadHorizontalPerc: 0.4,
 				PadVerticalPerc:   0.2,
 				ContentAlignment:  component.AlignmentCentered,
-			})
+			}))
 		},
 	}, true
 }
@@ -5330,7 +5374,8 @@ func openImage(imagePath string) (image.Image, error) {
 // wallpaperText returns the text art of wallpaper_ascii, named with prefix
 // before it, else of its deprecated name wallpaper, which configs written
 // before the rename still set and the defaults leave out, in the
-// attributes of style.
+// attributes of style, on the background of style, whose colour overrides
+// the one of the text's attributes.
 func (c ideConfig) wallpaperText(cfg config.Config, prefix, style string) (browser.Wallpaper, bool) {
 	keys := []string{prefix + "wallpaper_ascii"}
 	if prefix == "" {
@@ -5358,11 +5403,278 @@ func (c ideConfig) wallpaperText(cfg config.Config, prefix, style string) (brows
 		BackgroundAttributes: c.wallpaperStyleAttr(style, "wallpaper_background_attr"),
 		Alignment:            component.AlignmentCentered,
 	}
+	if strcfg.BackgroundAttributes != (term.Attributes{}) {
+		strcfg.Attributes.Bg = strcfg.BackgroundAttributes.Bg
+	}
 	return browser.Wallpaper{
-		NewComponent: func() tui.Component {
-			return component.NewStringWithConfig(cfgText, strcfg)
+		NewComponent: func() browser.ComponentCloser {
+			return browser.NopCloser(component.NewStringWithConfig(cfgText, strcfg))
 		},
 	}, true
+}
+
+// The defaults of workspace.wallpaper_shader.
+const (
+	defaultWallpaperShaderFPS      = gshader.DefaultFPS
+	defaultWallpaperShaderDuration = 10 * time.Second
+	maxWallpaperShaderFPS          = 120
+)
+
+// wallpaperShader returns the wallpaper of workspace.wallpaper_shader, named
+// with prefix before it: a built-in shader, the path of a .kage file, or a
+// section with the shader and how it runs. Where shaders cannot run, it
+// shows fallback. It animates, looping, when the shader reads the time and
+// animate is not false; otherwise it is a still.
+func (c ideConfig) wallpaperShader(
+	cfg config.Config, prefix string, fallback browser.Wallpaper,
+) (browser.Wallpaper, bool) {
+	key := prefix + "wallpaper_shader"
+	errKey := "workspace." + key
+	section := config.MapConfig(map[string]any{})
+	name, err := cfg.GetString(key)
+	if err == config.ErrInvalidType {
+		if section, err = cfg.GetConfig(key); err != nil {
+			c.errors[errKey] = errors.New("must name a built-in shader or a .kage file, or be a section with its shader")
+			return browser.Wallpaper{}, false
+		}
+		if name, err = section.GetString("shader"); err != nil {
+			if err != config.ErrNotFound {
+				c.errors[errKey+".shader"] = err
+			}
+			return browser.Wallpaper{}, false
+		}
+	} else if err != nil {
+		if err != config.ErrNotFound {
+			c.errors[errKey] = err
+		}
+		return browser.Wallpaper{}, false
+	}
+	if name == "" {
+		return browser.Wallpaper{}, false
+	}
+	program, uniforms, err := wallpaperShaderProgram(name)
+	if err != nil {
+		c.errors[errKey] = err
+		return browser.Wallpaper{}, false
+	}
+	gcfg := c.wallpaperShaderConfig(section, errKey, program, uniforms)
+	gcfg.Key = term.NewImageID()
+	gcfg.Start = time.Now()
+	gcfg.Interrupter = tickInterrupter(c.scheduleNextTick)
+	gcfg.OnError = c.wallpaperShaderErrors(errKey)
+	sh := gshader.FromProgram(program, uniforms)
+	return browser.Wallpaper{
+		NewComponent: func() browser.ComponentCloser {
+			cfg := gcfg
+			cfg.Fallback = fallback.NewComponent()
+			return gshader.New(nil, sh, cfg)
+		},
+	}, true
+}
+
+// wallpaperShaderProgram returns the program of the built-in shader name,
+// or of the .kage file at the path name, and the uniforms it starts with. A
+// name with no dot or path separator is a built-in.
+func wallpaperShaderProgram(name string) (*gshader.Program, gshader.Uniforms, error) {
+	path := os.ExpandEnv(name)
+	if !strings.ContainsAny(path, `./\~`) {
+		b, ok := kageshader.Lookup(path)
+		if !ok {
+			names := kageshader.Names()
+			return nil, nil, fmt.Errorf("no built-in shader %q, only %s and %s; a file must end in .kage",
+				path, strings.Join(names[:len(names)-1], ", "), names[len(names)-1])
+		}
+		return b.Program, b.Uniforms, nil
+	}
+	uri, err := workspaceapi.CurrentUserHostURI(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("expand shader %q: %w", name, err)
+	}
+	src, err := os.ReadFile(uri.Path())
+	if err != nil {
+		return nil, nil, fmt.Errorf("read shader: %w", err)
+	}
+	program, err := gshader.NewProgram(filepath.Base(uri.Path()), src)
+	if err != nil {
+		return nil, nil, err
+	}
+	return program, gshader.Uniforms{}, nil
+}
+
+// wallpaperShaderConfig returns how the section of the workspace key errKey
+// runs program, and sets the uniforms it sets.
+func (c ideConfig) wallpaperShaderConfig(
+	section config.Config, errKey string, program *gshader.Program, uniforms gshader.Uniforms,
+) gshader.Config {
+	gcfg := gshader.Config{FPS: defaultWallpaperShaderFPS, Loop: true}
+	if fps, err := section.GetInt("fps"); err == nil && fps > 0 && fps <= maxWallpaperShaderFPS {
+		gcfg.FPS = fps
+	} else if err != config.ErrNotFound {
+		c.errors[errKey+".fps"] = fmt.Errorf("must be a number of frames per second from 1 to %d",
+			maxWallpaperShaderFPS)
+	}
+	duration := defaultWallpaperShaderDuration
+	if s, err := section.GetString("duration"); err != config.ErrNotFound {
+		d, perr := time.ParseDuration(s)
+		if err != nil || perr != nil || d <= 0 {
+			c.errors[errKey+".duration"] = errors.New(`must be a positive duration, such as "10s"`)
+		} else {
+			duration = d
+		}
+	}
+	animate, err := section.GetBool("animate")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors[errKey+".animate"] = err
+		}
+		animate = true
+	}
+	if animate && (program.Declares(gshader.UniformFrame) || program.Declares(gshader.UniformProgress)) {
+		gcfg.Duration = duration
+	}
+	if seed, ok := c.wallpaperShaderSeed(section, errKey); ok {
+		uniforms[gshader.UniformSeed] = seed
+	}
+	// On by default, as the default frame characters draw their lines at
+	// the outer edge of their cells.
+	gcfg.Backdrop = true
+	if underFrame, err := section.GetBool("under_frame"); err == nil {
+		gcfg.Backdrop = underFrame
+	} else if err != config.ErrNotFound {
+		c.errors[errKey+".under_frame"] = err
+	}
+	c.wallpaperShaderUniforms(section, errKey, program, uniforms)
+	return gcfg
+}
+
+// wallpaperShaderSeed returns the seed of the section of the workspace key
+// errKey: a whole number, or "random" for one chosen now.
+func (c ideConfig) wallpaperShaderSeed(section config.Config, errKey string) (float32, bool) {
+	if s, err := section.GetString("seed"); err == nil && s == "random" {
+		return float32(rand.IntN(1 << 16)), true
+	}
+	seed, err := section.GetFloat("seed")
+	if err != nil || seed != math.Trunc(seed) {
+		if err != config.ErrNotFound {
+			c.errors[errKey+".seed"] = errors.New(`must be a whole number or "random"`)
+		}
+		return 0, false
+	}
+	return float32(seed), true
+}
+
+// wallpaperShaderUniforms sets in uniforms the values that the uniforms map
+// of the section of the workspace key errKey sets: numbers, lists of
+// numbers, and colours for vec4 uniforms, each checked against the type
+// program declares.
+func (c ideConfig) wallpaperShaderUniforms(
+	section config.Config, errKey string, program *gshader.Program, uniforms gshader.Uniforms,
+) {
+	values, err := section.GetMap("uniforms")
+	if err != nil {
+		if err != config.ErrNotFound {
+			c.errors[errKey+".uniforms"] = errors.New("must map uniform names to values")
+		}
+		return
+	}
+	declared := program.Uniforms()
+	noColors := func(term.Color) color.RGBA { return color.RGBA{} }
+	for name, raw := range values {
+		key := errKey + ".uniforms." + name
+		typ, ok := declared[name]
+		switch {
+		case name == gshader.UniformFrame || name == gshader.UniformTotal || name == gshader.UniformProgress:
+			c.errors[key] = errors.New("is set from the time")
+			continue
+		case !ok:
+			c.errors[key] = fmt.Errorf("%s declares no uniform %s", program.Name(), name)
+			continue
+		}
+		v, err := configUniform(typ, raw)
+		if err == nil {
+			_, err = gshader.Uniforms{name: v}.Values(program, gshader.Defaults{}, noColors)
+		}
+		if err != nil {
+			c.errors[key] = err
+			continue
+		}
+		uniforms[name] = v
+	}
+}
+
+// configUniform converts raw, a configuration value, to the value of a
+// uniform of Kage type typ.
+func configUniform(typ string, raw any) (any, error) {
+	number := func(v any) (float64, bool) {
+		f, err := config.MapConfig(map[string]any{"v": v}).GetFloat("v")
+		return f, err == nil
+	}
+	switch v := raw.(type) {
+	case string:
+		if v == "default" {
+			return term.ColorDefault, nil
+		}
+		if c := term.GetColor(v); c != term.ColorDefault {
+			return c, nil
+		}
+		return nil, fmt.Errorf("unknown colour %q", v)
+	case []any:
+		floats := make([]float32, len(v))
+		for i, elem := range v {
+			f, ok := number(elem)
+			if !ok {
+				return nil, fmt.Errorf("must be a list of numbers, got a %T", elem)
+			}
+			floats[i] = float32(f)
+		}
+		return floats, nil
+	}
+	f, ok := number(raw)
+	if !ok {
+		return nil, fmt.Errorf("must be a number, a list of numbers or a colour, got a %T", raw)
+	}
+	if typ == "int" {
+		if f != math.Trunc(f) {
+			return nil, errors.New("must be a whole number")
+		}
+		return int(f), nil
+	}
+	return float32(f), nil
+}
+
+// wallpaperShaderErrors returns what reports the errors of the shader of
+// the workspace key errKey as it runs: each once, to the log and the user,
+// however many windows show it.
+func (c ideConfig) wallpaperShaderErrors(errKey string) func(error) {
+	var mu sync.Mutex
+	reported := map[string]bool{}
+	notify := c.notifyError
+	return func(err error) {
+		mu.Lock()
+		seen := reported[err.Error()]
+		reported[err.Error()] = true
+		mu.Unlock()
+		if seen {
+			return
+		}
+		err = fmt.Errorf("%s: %w", errKey, err)
+		log.WithError(err).Warn("wallpaper shader")
+		if notify != nil {
+			notify(err)
+		}
+	}
+}
+
+// tickInterrupter requests a draw by scheduling nothing for the next tick
+// of the event loop, which draws after running what it was scheduled.
+type tickInterrupter func(func()) bool
+
+// Interrupt satisfies term.Interrupter.
+func (s tickInterrupter) Interrupt(context.Context) error {
+	if s == nil || !s(func() {}) {
+		return errors.New("the event loop is not running")
+	}
+	return nil
 }
 
 func (c ideConfig) autoRestore() (ret bool) {

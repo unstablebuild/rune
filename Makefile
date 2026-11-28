@@ -105,11 +105,11 @@ EXECMAIN=$(wildcard cmd/*/main.go)
 EXECDIRS=$(sort $(dir $(EXECMAIN)))
 EXECS=$(patsubst cmd/%/,$(BIN)/%,$(EXECDIRS))
 SPECIAL_EXECS=$(BIN)/rune
-# Language extensions and rune-agent ship as cgo-free binaries so one build runs on
-# every supported glibc and macOS release. rtc links C libraries to capture audio and
-# video, so it is exempt.
+# Language extensions, rune-agent and runectl ship as cgo-free binaries so one build
+# runs on every supported glibc and macOS release. rtc links C libraries to capture
+# audio and video, so it is exempt.
 CGO_EXECS=$(BIN)/extension_rtc
-NOCGO_EXECS=$(filter-out $(CGO_EXECS),$(filter $(BIN)/extension_% $(BIN)/rune-agent,$(EXECS)))
+NOCGO_EXECS=$(filter-out $(CGO_EXECS),$(filter $(BIN)/extension_% $(BIN)/rune-agent $(BIN)/runectl,$(EXECS)))
 NOCGO_ENABLED=$(if $(RACE_FLAG),1,0)
 NOCGO_NOTE=$(if $(RACE_FLAG),,cgo off)
 NOCGO_ERROR=$(if $(RACE_FLAG),, without cgo)
@@ -142,13 +142,13 @@ RELEASE_FILES=$(wildcard release/*)
 	fuzzy-search-prod-dist-darwin-amd64 fuzzy-search-staging-dist-darwin-amd64 \
 	fuzzy-search-prod-dist-darwin-arm64 fuzzy-search-staging-dist-darwin-arm64 \
 	fuzzy-search-prod-dist-all fuzzy-search-staging-dist-all \
-	runectl-pkg runectl-sign runectl-notarize \
+	runectl-pkg runectl-sign runectl-dist-version-test \
 	runectl-prod-dist runectl-staging-dist \
-	runectl-prod-dist-notarized runectl-staging-dist-notarized \
 	runectl-prod-dist-linux-amd64 runectl-staging-dist-linux-amd64 \
 	runectl-prod-dist-linux-arm64 runectl-staging-dist-linux-arm64 \
 	runectl-prod-dist-darwin-amd64 runectl-staging-dist-darwin-amd64 \
 	runectl-prod-dist-darwin-arm64 runectl-staging-dist-darwin-arm64 \
+	runectl-prod-dist-all runectl-staging-dist-all \
 	xsandbox-pkg xsandbox-sign xsandbox-notarize \
 	xsandbox-prod-dist xsandbox-staging-dist \
 	xsandbox-prod-dist-notarized xsandbox-staging-dist-notarized \
@@ -335,9 +335,6 @@ $(GENERIC_EXECS): $(EXECSRC) $(LIBSRC) $(BIN)
 $(NOCGO_EXECS): $(EXECSRC) $(LIBSRC) $(BIN)
 	@$(call compile,CGO_ENABLED=$(NOCGO_ENABLED) $(GO) build $(GOFLAGS) -o ../../$@,$(NOCGO_NOTE),$(NOCGO_ERROR),$(NOCGO_HELP))
 
-$(BIN)/runectl: $(BIN)
-	@GOBIN="`pwd`/$(BIN)" $(GO) install github.com/unstablebuild/rune-go-sdk/cmd/runectl
-
 make_release: CGO_ENABLED=CGO_ENABLED=1
 make_release:
 	@ mkdir -p $(TARGET)/$(TARGET_OS)_$(TARGET_ARCH)
@@ -491,6 +488,11 @@ dist-tar-with-src:
 dist-dmg-with-src:
 	@./cmd/dist-with-src-test.sh dmg
 
+# runectl-dist-version-test drives cmd/runectl/dist.sh against a fake bluectl and
+# asserts it refuses to publish without RUNECTL_VERSION and uploads under it.
+runectl-dist-version-test:
+	@bash ./cmd/runectl/dist-version-test.sh
+
 # dist-min-macos exercises the minimum-macOS publish gate
 # (cmd/verify-min-macos.sh + cmd/rune/dist.sh): it builds stub artifacts
 # with a known Mach-O minos and asserts the gate refuses to publish one
@@ -563,7 +565,7 @@ rune-dmg-amd64-notarize:
 rune-release-all:
 	@$(MAKE) -C cmd/rune release-all
 
-runectl: CGO_ENABLED=CGO_ENABLED=1
+runectl: GOPRIVATE=github.com/unstablebuild,unstable.build/*
 runectl: $(BIN)/runectl
 
 rune-agent-pkg:
@@ -609,6 +611,7 @@ rune-agent-staging-dist-darwin-arm64: clean
 # prerequisites they would share a single clean and run at once under -j.
 rune-agent-prod-dist-all rune-agent-staging-dist-all \
 fuzzy-search-prod-dist-all fuzzy-search-staging-dist-all \
+runectl-prod-dist-all runectl-staging-dist-all \
 xsandbox-prod-dist-all xsandbox-staging-dist-all:
 	@$(MAKE) $(@:%-all=%)-linux-amd64
 	@$(MAKE) $(@:%-all=%)-linux-arm64
@@ -662,20 +665,16 @@ runectl-pkg:
 runectl-sign:
 	@$(MAKE) -C cmd/runectl sign
 
-runectl-notarize:
-	@$(MAKE) -C cmd/runectl notarize
-
+# runectl's package version is independent of Rune's release tags, which remain in
+# the upload metadata. Set it explicitly, e.g.
+#   RUNECTL_VERSION=v1.1.3 make runectl-prod-dist-all
+# Missing RUNECTL_VERSION aborts the upload. The Darwin targets must run on macOS
+# with CODESIGN_IDENTITY configured; runectl is signed but not notarized.
 runectl-prod-dist: clean
 	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/runectl dist
 
 runectl-staging-dist: clean
 	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/runectl dist
-
-runectl-prod-dist-notarized: clean
-	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/runectl dist-notarized
-
-runectl-staging-dist-notarized: clean
-	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,staging,$(BLUECTL_HOST_OS)-$(BLUECTL_HOST_ARCH)) $(MAKE) -C cmd/runectl dist-notarized
 
 runectl-prod-dist-linux-amd64: clean
 	@BLUECTL_CONFIG_DIR=$(call BLUECTL_CONFIG,prod,linux-amd64) $(MAKE) -C cmd/runectl dist-linux-amd64

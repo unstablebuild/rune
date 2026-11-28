@@ -21,15 +21,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"sync"
 	"time"
 	"unicode/utf8"
-	"unsafe"
 
-	"github.com/ebitengine/purego"
 	"github.com/ernestrc/go-multierror"
 	"github.com/ernestrc/logd-go/logging"
 	log "github.com/sirupsen/logrus"
@@ -88,11 +84,14 @@ func New(
 
 	go debug.CapturePanicReport(func() {
 		files, err := ret.downloadFiles(ctx)
+		loaded := ret.loadGrammar(files, err)
 		// The buffer is installed and live, so it is parsed on the
 		// event loop that edits it.
-		config.ScheduleNextTick(func() {
-			ret.finishInit(ctx, ret.initParserFromFiles(files, err))
-		})
+		if !config.ScheduleNextTick(func() {
+			ret.finishInit(ctx, ret.initParserFromGrammar(loaded))
+		}) && loaded.g != nil {
+			_ = loaded.g.close()
+		}
 	})
 	return ret
 }
@@ -107,7 +106,7 @@ func Parse(
 ) syntax.ParsedTree {
 	t := newTree(pkg, uri, buf, config)
 	files, err := t.downloadFiles(ctx)
-	return &parsedTree{t: t, init: t.initParserFromFiles(files, err)}
+	return &parsedTree{t: t, init: t.initParserFromGrammar(t.loadGrammar(files, err))}
 }
 
 // parsedTree is a Tree that Parse initialized, waiting to be installed.
@@ -146,6 +145,7 @@ func newTree(
 		buf:          buf,
 		uri:          uri,
 		pkg:          pkg,
+		loader:       grammars,
 		statesubs:    make(map[chan syntax.State]struct{}),
 		waitingReady: make(chan struct{}),
 	}
@@ -172,6 +172,7 @@ type Tree struct {
 	n           browserapi.Notifications
 	interrupter term.Interrupter
 	pkg         syntax.PkgManager
+	loader      grammarLoader
 	loc         syntax.LocationSetter
 	config      syntax.Config
 	fc          workspace.FlusherCloser
@@ -180,10 +181,11 @@ type Tree struct {
 	buf         *cell.Buffer
 	cview       cell.View
 
-	ready             bool
-	closed            bool
-	lib               uintptr
-	mu                sync.Mutex
+	ready  bool
+	closed bool
+	mu     sync.Mutex
+	// highlights, indents, folds, locals and injections are grammar's.
+	grammar           *grammar
 	cellBytes         cell.ByteCounts
 	content           []byte
 	contentBuf        bytes.Buffer
@@ -353,22 +355,7 @@ func (t *Tree) release() (ret error) {
 		t.tree.Close()
 	}
 	t.parser.Close()
-	if t.highlights != nil {
-		t.highlights.Close()
-	}
-	if t.folds != nil {
-		t.folds.Close()
-	}
-	if t.locals != nil {
-		t.locals.Close()
-	}
-	if t.indents != nil {
-		t.indents.Close()
-	}
-	if t.injections != nil {
-		t.injections.Close()
-	}
-	ret = purego.Dlclose(t.lib)
+	ret = t.grammar.close()
 	for ch := range t.statesubs {
 		close(ch)
 	}
@@ -458,11 +445,10 @@ func (t *internalTree) LastFlush() time.Time {
 }
 
 type files struct {
-	langID       string
-	files        []string
+	grammar      grammarFiles
 	packageFound bool
-	// notAvail is whether the user must be told the grammar of langID
-	// is not available.
+	// notAvail is whether the user must be told the grammar of the
+	// language is not available.
 	notAvail bool
 }
 
@@ -476,25 +462,26 @@ func (t *Tree) downloadFiles(ctx context.Context) (files, error) {
 		return files{}, err
 	}
 	t.log(log.DebugLevel, "found language for file %s: %s", filename, id)
+	lang := grammarFiles{langID: id}
 	iter, err := t.pkg.LibDir(ctx, id)
 	if err != nil {
 		if errors.Is(err, storageapi.ErrNotFound) {
 			t.log(log.DebugLevel,
 				"aborting syntax parsing: package for language %q does not exist or it's not installed",
 				id)
-			return files{langID: id}, nil
+			return files{grammar: lang}, nil
 		}
 		t.log(log.ErrorLevel, "aborting syntax parsing: %v", err)
-		return files{langID: id, notAvail: true}, err
+		return files{grammar: lang, notAvail: true}, err
 	}
 	defer iter.Close()
 	allFiles, err := iterator.ToSlice(ctx, iter)
 	if err != nil {
 		msg := fmt.Sprintf("fetch language %q package: %v", id, err)
 		t.log(log.ErrorLevel, "%s", msg)
-		return files{langID: id, notAvail: true}, errors.New(msg)
+		return files{grammar: lang, notAvail: true}, errors.New(msg)
 	}
-	return files{files: allFiles, langID: id, packageFound: true}, nil
+	return files{grammar: newGrammarFiles(id, allFiles), packageFound: true}, nil
 }
 
 // initResult is how initializing a tree's parser went, for finishInit to
@@ -508,42 +495,45 @@ type initResult struct {
 	highlighted bool
 }
 
-// initParserFromFiles loads the grammar in f and parses and highlights t's
-// buffer with it, publishing nothing. It may run on any goroutine that may
-// read the buffer.
-func (t *Tree) initParserFromFiles(f files, err error) initResult {
-	res := initResult{langID: f.langID, err: err, notAvail: f.notAvail}
-	if err != nil || !f.packageFound {
-		return res
-	}
+// loadedGrammar is the grammar of a tree's language, or why it has none.
+type loadedGrammar struct {
+	langID   string
+	g        *grammar
+	err      error
+	notAvail bool
+}
 
-	var langFile, highlightsFile, indentsFile, foldsFile, localsFile, injectionsFile string
-	for _, file := range f.files {
-		switch filepath.Base(file) {
-		case ParserFilename:
-			langFile = file
-		case HighlightsFilename:
-			highlightsFile = file
-		case IndentsFilename:
-			indentsFile = file
-		case FoldsFilename:
-			foldsFile = file
-		case LocalsFilename:
-			localsFile = file
-		case InjectionsFilename:
-			injectionsFile = file
-		}
+// loadGrammar loads the grammar in f through t's loader. It may run on any
+// goroutine.
+func (t *Tree) loadGrammar(f files, err error) loadedGrammar {
+	l := loadedGrammar{langID: f.grammar.langID, err: err, notAvail: f.notAvail}
+	if err != nil || !f.packageFound {
+		return l
 	}
-	if langFile == "" {
-		msg := fmt.Sprintf("parser file not found in language %q package", f.langID)
+	if f.grammar.parser == "" {
+		msg := fmt.Sprintf("parser file not found in language %q package", l.langID)
 		t.log(log.InfoLevel, "language not available: %s", msg)
-		res.err, res.notAvail = errors.New(msg), true
+		l.err, l.notAvail = errors.New(msg), true
+		return l
+	}
+	if l.g, l.err = t.loader.load(f.grammar); l.err != nil {
+		t.log(log.ErrorLevel, "initialize language %s: %v", l.langID, l.err)
+		l.notAvail = true
+	}
+	return l
+}
+
+// initParserFromGrammar parses and highlights t's buffer with the grammar
+// l loaded, publishing nothing. It may run on any goroutine that may read
+// the buffer.
+func (t *Tree) initParserFromGrammar(l loadedGrammar) initResult {
+	res := initResult{langID: l.langID, err: l.err, notAvail: l.notAvail}
+	if l.g == nil {
 		return res
 	}
-	res.highlighted, res.err = t.initParser(f.langID, langFile,
-		highlightsFile, indentsFile, foldsFile, localsFile, injectionsFile)
+	res.highlighted, res.err = t.initParser(l.g)
 	if res.err != nil {
-		t.log(log.ErrorLevel, "initialize language %s: %v", f.langID, res.err)
+		t.log(log.ErrorLevel, "initialize language %s: %v", l.langID, res.err)
 		res.notAvail = true
 		return res
 	}
@@ -551,7 +541,7 @@ func (t *Tree) initParserFromFiles(f files, err error) initResult {
 	return res
 }
 
-// finishInit reports res, publishes the highlights initParserFromFiles left
+// finishInit reports res, publishes the highlights initParserFromGrammar left
 // pending and releases the callers waiting for t to be initialized. It runs
 // on the event loop.
 func (t *Tree) finishInit(ctx context.Context, res initResult) {
@@ -578,87 +568,31 @@ func (t *Tree) finishInit(ctx context.Context, res initResult) {
 }
 
 // initParser reports whether it left a full highlight pending in
-// highlightBuf.
-func (t *Tree) initParser(
-	langID, langfile, highlightsfile, indentsFile, foldsFile, localsFile, injectionsFile string,
-) (bool, error) {
+// highlightBuf. It takes ownership of g, which it closes when t is closed.
+func (t *Tree) initParser(g *grammar) (bool, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if t.closed {
+		_ = g.close()
 		return false, nil
 	}
 
-	lib, err := dlopenGrammar(langfile)
-	if err != nil {
-		return false, err
-	}
-	t.lib = lib
-
-	parserID := fmt.Sprintf("tree_sitter_%s", langID)
-	t.log(log.TraceLevel, "loading parser %q", parserID)
-
-	var lang func() uintptr
-	sym, err := purego.Dlsym(lib, parserID)
-	if err != nil {
-		_ = purego.Dlclose(t.lib)
-		return false, fmt.Errorf("load symbol %q: %w", parserID, err)
-	}
-	purego.RegisterFunc(&lang, sym)
-
-	language := tree_sitter.NewLanguage(unsafe.Pointer(lang()))
-	t.parser = tree_sitter.NewParser()
-	if err := t.parser.SetLanguage(language); err != nil {
-		_ = purego.Dlclose(t.lib)
-		t.parser.Close()
+	parser := tree_sitter.NewParser()
+	if err := parser.SetLanguage(g.language); err != nil {
+		parser.Close()
+		_ = g.close()
 		return false, fmt.Errorf("set parser language: %v", err)
 	}
-
-	if highlightsfile != "" {
-		if err := t.initHighlights(language, highlightsfile); err != nil {
-			_ = purego.Dlclose(t.lib)
-			t.parser.Close()
-			return false, fmt.Errorf("initialize highlights: %w", err)
-		}
-	} else {
-		t.log(log.InfoLevel, "highlights file not found, some features will be disabled")
-	}
-
-	if indentsFile != "" {
-		if err := t.initIndents(language, indentsFile); err != nil {
-			t.log(log.ErrorLevel, "initialize indents: %v", err)
-		}
-	} else {
-		t.log(log.InfoLevel, "indents file not found, some features will be disabled")
-	}
-
-	if foldsFile != "" {
-		if err := t.initFolds(language, foldsFile); err != nil {
-			t.log(log.ErrorLevel, "initialize folds: %v", err)
-		}
-	} else {
-		t.log(log.InfoLevel, "folds file not found, some features will be disabled")
-	}
-
-	if localsFile != "" {
-		if err := t.initLocals(language, localsFile); err != nil {
-			t.log(log.ErrorLevel, "initialize locals: %v", err)
-		}
-	} else {
-		t.log(log.InfoLevel, "locals file not found, some features will be disabled")
-	}
-
-	if injectionsFile != "" {
-		if err := t.initInjections(language, injectionsFile); err != nil {
-			t.log(log.ErrorLevel, "initialize injections: %v", err)
-		}
-	}
+	t.grammar, t.parser = g, parser
+	t.highlights, t.indents, t.folds, t.locals, t.injections =
+		g.highlights, g.indents, g.folds, g.locals, g.injections
 
 	// build the syntax tree
 	t.persistCells()
 	start := time.Now()
 	t.parseTree(nil, "initial parse error")
-	t.updateCurrentState(langID)
+	t.updateCurrentState(g.langID)
 
 	// set ready to true, even if tree is nil
 	t.ready = true
@@ -674,88 +608,13 @@ func (t *Tree) initParser(
 	}
 	// do not return highlight errors so we don't
 	// show initialize SO failure notification to user.
-	err = t.computeHighlights()
+	err := t.computeHighlights()
 	t.fullPassTook = time.Since(start)
 	if err != nil {
 		t.log(log.ErrorLevel, "highlight: %v", err)
 		return false, nil
 	}
 	return true, nil
-}
-
-func (t *Tree) initHighlights(
-	language *tree_sitter.Language, highlightsfile string,
-) error {
-	// for files coming from LibDir, we can use
-	// os.ReadFile since packages are installed on the local fs
-	// and paths are always absolute.
-	data, err := os.ReadFile(highlightsfile)
-	if err != nil {
-		return fmt.Errorf("read highlights file: %v", err)
-	}
-
-	// compile the highlights query for this language.
-	highlights, qerr := tree_sitter.NewQuery(language, string(data))
-	if qerr != nil {
-		return fmt.Errorf("compile query: %v", qerr)
-	}
-	t.highlights = highlights
-	t.log(log.DebugLevel, "highlights initialized")
-	return nil
-}
-
-func (t *Tree) initIndents(
-	language *tree_sitter.Language, indentsFile string,
-) error {
-	data, err := os.ReadFile(indentsFile)
-	if err != nil {
-		return fmt.Errorf("read indents file: %v", err)
-	}
-
-	indents, qerr := tree_sitter.NewQuery(language, string(data))
-	if qerr != nil {
-		return fmt.Errorf("compile query: %v", qerr)
-	}
-
-	t.indents = indents
-	t.log(log.DebugLevel, "indents initialized")
-	return nil
-}
-
-func (t *Tree) initFolds(
-	language *tree_sitter.Language, foldsFile string,
-) error {
-	data, err := os.ReadFile(foldsFile)
-	if err != nil {
-		return fmt.Errorf("read folds file: %v", err)
-	}
-
-	folds, qerr := tree_sitter.NewQuery(language, string(data))
-	if qerr != nil {
-		return fmt.Errorf("compile query: %v", qerr)
-	}
-
-	t.folds = folds
-	t.log(log.DebugLevel, "folds initialized")
-	return nil
-}
-
-func (t *Tree) initLocals(
-	language *tree_sitter.Language, localsFile string,
-) error {
-	data, err := os.ReadFile(localsFile)
-	if err != nil {
-		return fmt.Errorf("read locals file: %v", err)
-	}
-
-	locals, qerr := tree_sitter.NewQuery(language, string(data))
-	if qerr != nil {
-		return fmt.Errorf("compile locals query: %v", qerr)
-	}
-
-	t.locals = locals
-	t.log(log.DebugLevel, "locals initialized")
-	return nil
 }
 
 func (t *Tree) notifyNotAvail(ext string) {

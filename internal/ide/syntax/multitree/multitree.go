@@ -25,6 +25,7 @@ package multitree
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -158,11 +159,15 @@ type Tree struct {
 	// keeps the last one until the next call.
 	merged      []textapi.Location
 	mergedSpare []textapi.Location
-	// publishing suppresses the publishes the trees trigger while an edit
-	// is replayed and reconciled, so loc sees one merged list per edit;
-	// pending records that one was suppressed.
-	publishing bool
-	pending    bool
+	// pending records that a tree published since loc was last handed the
+	// merged list. publishing suppresses the publishes the trees trigger
+	// while an edit is replayed and reconciled, so loc sees one merged
+	// list per edit. publishScheduled records that the sections'
+	// publishes are merged on the next tick, so the sections that publish
+	// in one frame cost one merge.
+	pending          bool
+	publishing       bool
+	publishScheduled bool
 	// notified holds the languages whose missing grammar has been
 	// reported, so every section of that language does not repeat it.
 	notified map[string]bool
@@ -457,16 +462,16 @@ func (c *Tree) OnDidEdit(ctx context.Context, from, to term.Coordinates, old str
 	// Sections after the edit moved with it, so their highlights must
 	// be re-translated even when no tree published.
 	if c.pending || len(c.sections) > 0 {
-		c.pending = false
 		c.publishLocked()
 	}
 	c.mu.Unlock()
 }
 
 // reconcile brings the sections in line with the regions the host reports
-// now: it keeps the sections whose region is unchanged, reloads the ones of
-// the same language whose region moved, creates the new ones and closes
-// the rest. Regions overlapping an earlier one are ignored.
+// now: it keeps or moves the sections whose text is unchanged, reloads
+// other sections of the same language with the text of the regions they
+// continue (see matchSections), creates the rest and closes the sections
+// left over. Regions overlapping an earlier one are ignored.
 func (c *Tree) reconcile() {
 	var detected []treesitter.Injection
 	var ok bool
@@ -480,17 +485,7 @@ func (c *Tree) reconcile() {
 		return
 	}
 	prev := c.sections
-	used := make([]bool, len(prev))
-	next := make([]*section, 0, len(detected))
-	// creates are the indices of next holding a placeholder for a
-	// section to create once mu is released: constructing a tree may
-	// call back into the composite.
-	var creates []int
-	type reload struct {
-		s    *section
-		text string
-	}
-	var reloads []reload
+	var regions []treesitter.Injection
 	if ok {
 		var lastEnd term.Coordinates
 		for i, d := range detected {
@@ -500,19 +495,35 @@ func (c *Tree) reconcile() {
 				continue
 			}
 			lastEnd = d.Range.End
-			if idx := matchSection(prev, used, d); idx >= 0 {
-				used[idx] = true
-				s := prev[idx]
-				if s.dirty || s.rng != d.Range {
-					reloads = append(reloads, reload{s: s, text: c.text(d.Range)})
-				}
-				s.rng, s.dirty = d.Range, false
-				next = append(next, s)
-				continue
-			}
+			regions = append(regions, d)
+		}
+	}
+	m := c.matchSections(prev, regions)
+	used := make([]bool, len(prev))
+	next := make([]*section, 0, len(regions))
+	// creates are the indices of next holding a placeholder for a
+	// section to create once mu is released: constructing a tree may
+	// call back into the composite.
+	var creates []int
+	type reload struct {
+		s    *section
+		text string
+	}
+	var reloads []reload
+	for i, d := range regions {
+		j := m.section[i]
+		if j < 0 {
 			creates = append(creates, len(next))
 			next = append(next, &section{lang: d.Language, rng: d.Range})
+			continue
 		}
+		used[j] = true
+		s := prev[j]
+		if m.reload[i] {
+			reloads = append(reloads, reload{s: s, text: m.regionText(i)})
+		}
+		s.rng, s.dirty = d.Range, false
+		next = append(next, s)
 	}
 	var closes []*section
 	for i, s := range prev {
@@ -553,21 +564,130 @@ func (c *Tree) reconcile() {
 	}
 }
 
-// matchSection returns the index of the unused section of prev that d
-// continues: the one covering exactly d's region, else one of d's language
-// overlapping it. It returns -1 when there is none.
-func matchSection(prev []*section, used []bool, d treesitter.Injection) int {
+// sectionMatch pairs regions with the sections that continue them.
+type sectionMatch struct {
+	c       *Tree
+	prev    []*section
+	regions []treesitter.Injection
+	// section[i] is the index in prev of the section of regions[i], or
+	// -1 when it needs a new one; reload[i] is whether that section must
+	// reload the region's text.
+	section []int
+	reload  []bool
+	used    []bool
+	// texts caches the text of the regions and prevTexts that of the
+	// sections, which their buffers hold.
+	texts, prevTexts []*string
+}
+
+// matchSections pairs each region with a section of prev of its language,
+// preferring, in order: one covering its range with its text, kept as is;
+// one holding its text elsewhere, moved without being parsed again; then,
+// to reload with its text, one covering its range, one overlapping it and
+// any other. A reload that shifts the regions so moves every section
+// instead of recreating them. mu must be held.
+func (c *Tree) matchSections(prev []*section, regions []treesitter.Injection) *sectionMatch {
+	m := &sectionMatch{
+		c: c, prev: prev, regions: regions,
+		section: make([]int, len(regions)), reload: make([]bool, len(regions)),
+		used:  make([]bool, len(prev)),
+		texts: make([]*string, len(regions)), prevTexts: make([]*string, len(prev)),
+	}
+	for i := range m.section {
+		m.section[i] = -1
+	}
+	byRange := make(map[term.Range]int, len(prev))
 	for j, s := range prev {
-		if !used[j] && s.lang == d.Language && !s.dirty && s.rng == d.Range {
-			return j
+		byRange[s.rng] = j
+	}
+	sameRange := func(i int) (int, bool) {
+		j, ok := byRange[regions[i].Range]
+		return j, ok && !m.used[j] && prev[j].lang == regions[i].Language
+	}
+
+	for i := range regions {
+		if j, ok := sameRange(i); ok && (!prev[j].dirty || m.prevText(j) == m.regionText(i)) {
+			m.assign(i, j, false)
 		}
 	}
+	if m.matchedAll() {
+		return m
+	}
+
+	byText := make(map[string][]int)
 	for j, s := range prev {
-		if !used[j] && s.lang == d.Language && rangesOverlap(s.rng, d.Range) {
-			return j
+		if !m.used[j] {
+			key := s.lang + "\x00" + m.prevText(j)
+			byText[key] = append(byText[key], j)
 		}
 	}
-	return -1
+	for i, d := range regions {
+		if m.section[i] >= 0 {
+			continue
+		}
+		key := d.Language + "\x00" + m.regionText(i)
+		if js := byText[key]; len(js) > 0 {
+			byText[key] = js[1:]
+			m.assign(i, js[0], false)
+		}
+	}
+
+	for i := range regions {
+		if m.section[i] < 0 {
+			if j, ok := sameRange(i); ok {
+				m.assign(i, j, true)
+			}
+		}
+	}
+	for i, d := range regions {
+		if m.section[i] >= 0 {
+			continue
+		}
+		for j, s := range prev {
+			if !m.used[j] && s.lang == d.Language && rangesOverlap(s.rng, d.Range) {
+				m.assign(i, j, true)
+				break
+			}
+		}
+	}
+
+	unused := make(map[string][]int)
+	for j, s := range prev {
+		if !m.used[j] {
+			unused[s.lang] = append(unused[s.lang], j)
+		}
+	}
+	for i, d := range regions {
+		if js := unused[d.Language]; m.section[i] < 0 && len(js) > 0 {
+			unused[d.Language] = js[1:]
+			m.assign(i, js[0], true)
+		}
+	}
+	return m
+}
+
+func (m *sectionMatch) assign(i, j int, reload bool) {
+	m.section[i], m.reload[i], m.used[j] = j, reload, true
+}
+
+func (m *sectionMatch) matchedAll() bool {
+	return !slices.Contains(m.section, -1)
+}
+
+func (m *sectionMatch) regionText(i int) string {
+	if m.texts[i] == nil {
+		text := m.c.text(m.regions[i].Range)
+		m.texts[i] = &text
+	}
+	return *m.texts[i]
+}
+
+func (m *sectionMatch) prevText(j int) string {
+	if m.prevTexts[j] == nil {
+		text := m.prev[j].buf.String()
+		m.prevTexts[j] = &text
+	}
+	return *m.prevTexts[j]
 }
 
 // newSection creates the section of rng, with its tree parsing a copy of
@@ -610,14 +730,33 @@ func (c *Tree) setHostHighlights(ll textapi.LocationList) {
 
 func (c *Tree) setSectionHighlights(s *section, ll textapi.LocationList) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	s.hl = appendLocations(s.hl, ll)
-	c.publishLocked()
+	schedule := false
+	if !c.closed && c.loc != nil {
+		c.pending = true
+		schedule = !c.publishing && !c.publishScheduled
+		c.publishScheduled = c.publishScheduled || schedule
+	}
+	c.mu.Unlock()
+	if schedule && !c.config.ScheduleNextTick(c.publishPending) {
+		c.publishPending()
+	}
+}
+
+// publishPending hands loc the merged list if a tree published since it
+// last did.
+func (c *Tree) publishPending() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.publishScheduled = false
+	if c.pending {
+		c.publishLocked()
+	}
 }
 
 // publishLocked hands loc the host's highlights followed by every section's
 // in host coordinates, so a section's attributes are layered over the
-// host's. mu must be held.
+// host's. During an edit it waits for the edit to end. mu must be held.
 func (c *Tree) publishLocked() {
 	if c.closed || c.loc == nil {
 		return
@@ -626,6 +765,7 @@ func (c *Tree) publishLocked() {
 		c.pending = true
 		return
 	}
+	c.pending = false
 	clear(c.merged)
 	merged := append(c.merged[:0], c.hostHL...)
 	for _, s := range c.sections {

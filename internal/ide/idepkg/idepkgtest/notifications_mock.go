@@ -34,7 +34,7 @@ var _ browserapi.Notifications = (*Notifications)(nil)
 type Notifications struct {
 	ExpectErrorNotification bool
 
-	t  *testing.T
+	t  testing.TB
 	mu sync.Mutex
 	wg *sync.WaitGroup
 
@@ -74,7 +74,7 @@ func (n *Notifications) Wait() {
 }
 
 // NewNotifications returns an instance of Notifications.
-func NewNotifications(t *testing.T) *Notifications {
+func NewNotifications(t testing.TB) *Notifications {
 	return &Notifications{
 		t:      t,
 		active: make(map[string]Noti),

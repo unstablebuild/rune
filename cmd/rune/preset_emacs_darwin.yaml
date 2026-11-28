@@ -249,6 +249,12 @@ command:
 # ---------------------------------------------------------------------------
 # The Rune logo shows unless one of these is set.
 # workspace:
+#   wallpaper_shader:                     # GUI only
+#     shader:   plasma                    # a built-in, or ~/.rune/wallpaper.kage
+#     fps:      30
+#     duration: 10s                       # one loop of an animated shader
+#     seed:     random                    # or a whole number
+#     uniforms: {Strength: 0.5}
 #   wallpaper_image:
 #     path:   ~/Pictures/wallpaper.png
 #     width:  100%                        # cells, or a percentage of the window

@@ -16,7 +16,11 @@
 
 package workspacessh
 
-import "context"
+import (
+	"context"
+
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
+)
 
 // NotificationLevel mirrors the levels supported by the IDE notifications
 // surface. Defined here so the workspacessh package does not depend on the
@@ -40,14 +44,11 @@ const (
 // loop: implementations are responsible for marshalling work onto the
 // appropriate goroutine if required.
 type UI interface {
-	// PromptSecret displays a redacted single-line input with the given label
-	// and returns the typed value. Returns context.Canceled if the user
-	// dismisses the prompt.
-	PromptSecret(ctx context.Context, label string) (string, error)
-
-	// PromptText displays an unredacted single-line input. defaultValue may be
-	// empty.
-	PromptText(ctx context.Context, label, defaultValue string) (string, error)
+	// PromptFields asks the markdown message with fields the user answers
+	// by typing, and returns the answers in the order of fields. It
+	// returns context.Canceled if the user dismisses the prompt, and the
+	// error of ctx once it is done, which closes the prompt.
+	PromptFields(ctx context.Context, message string, fields []browserapi.Field) ([]string, error)
 
 	// PromptChoice displays a multi-option prompt and returns the selected
 	// index, or context.Canceled if dismissed.

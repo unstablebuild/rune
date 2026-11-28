@@ -150,7 +150,8 @@ func DefaultConfig() Config {
 // by composing all individual subcommand handlers.
 func AllHandler(
 	lsp commandLSP, editor textapi.Editor,
-	wm browserapi.WindowManager, opener browserapi.ResourceOpener,
+	wm browserapi.WindowManager, prompter browserapi.Prompter,
+	opener browserapi.ResourceOpener,
 	notify browserapi.Notifications, fs workspaceapi.FileSystem,
 	parser syntaxapi.Parser, cfg Config,
 ) (textapi.CommandHandler, error) {
@@ -205,7 +206,7 @@ func AllHandler(
 		),
 		"signature-help": SignatureHelpHandler(lsp, editor, wm,
 			cfg.ScheduleNextTick, cfg.SignatureHelp, wsLog),
-		"rename": RenameHandler(lsp, editor, wm, opener, wsLog),
+		"rename": RenameHandler(lsp, editor, prompter, opener, wsLog),
 	}
 	return r, nil
 }

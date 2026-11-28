@@ -28,6 +28,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,6 +46,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/storageapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/clipboard"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"google.golang.org/grpc"
@@ -73,6 +75,17 @@ const (
 	telemetryPeriod    = 1 * time.Hour
 
 	flagNameNoSessionReopen = "no-session-reopen"
+
+	// defaultOffscreenWidth, defaultOffscreenHeight and defaultOffscreenScale
+	// are the size of a window --offscreen opens, for what --geometry
+	// leaves unset.
+	defaultOffscreenWidth  = 1280
+	defaultOffscreenHeight = 800
+	defaultOffscreenScale  = 2.0
+	// maxGeometryPixels bounds each side of a --geometry window in device
+	// pixels: it is the smallest texture size the Metal GPUs ebiten runs on
+	// support.
+	maxGeometryPixels = 8192
 )
 
 var (
@@ -104,6 +117,19 @@ var (
 	flagControlURL = flag.String("control-url", "",
 		"With --headless, join your own Tailscale or Headscale tailnet at "+
 			"this coordination server URL instead of Rune's network")
+	flagExec = flag.StringArrayP("exec", "e", nil,
+		"Implies --gui. Run this command line as the command prompt would once Rune "+
+			"starts, and write one reply line to standard output: ok, ok <path> or "+
+			"error: <message>. Repeatable. - reads command lines from standard input "+
+			"and exits Rune when it ends. Needs a data directory that is set up")
+	flagOffscreen = flag.Bool("offscreen", false,
+		"With --exec, run Rune without a window, Dock icon or menu bar, "+
+			"drawing frames only for screenshots. It plays no sounds, opens no browser "+
+			"and keeps its own clipboard. macOS, and Linux with Mesa's EGL, only")
+	flagGeometry = flag.String("geometry", "",
+		"With --gui, open the window at WxH points instead of its last size. With "+
+			fmt.Sprintf("--offscreen, WxH@SCALE also sets the device scale; the default is %dx%d@%g",
+				defaultOffscreenWidth, defaultOffscreenHeight, defaultOffscreenScale))
 
 	// marked hidden
 	flagWorkspaceServer = flag.StringP("workspace-server", "x", "",
@@ -339,26 +365,18 @@ func main() {
 
 	flag.Parse()
 
-	// If no manual tui/gui flag was set, assume we were launched as a desktop
-	// app and inject the same defaults the platform launcher would normally pass.
+	desktopLaunch := false
 	if !*flagGUI && !*flagTUI && !*flagHeadless && *flagWorkspaceServer == "" {
-		if err := os.MkdirAll(*flagDataPath, 0777); err != nil {
-			fmt.Fprintf(os.Stderr, "mkdir datadir %q: %s",
-				*flagDataPath, err)
-		}
-		defaults, ok := appLaunchArgs(runtime.GOOS)
-		if ok {
+		if flag.Lookup("exec").Changed {
+			// Only scripts pass --exec, so it implies --gui alone. Parsing
+			// again would append the --exec lines a second time.
+			*flagGUI = true
+		} else if defaults, ok := appLaunchArgs(runtime.GOOS); ok {
+			// A desktop launcher passes no mode: inject the defaults it
+			// would.
 			os.Args = append(os.Args[:1], append(defaults, os.Args[1:]...)...)
-
-			// best effort redirect stdout/err to <datadir>/launch.log
-			// so runtime fatal stderr dumps can later be ingested as
-			// crash reports.
-			logPath := crashreport.DefaultLaunchLogPath(*flagDataPath)
-			f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if err == nil {
-				redirectStderr(f)
-			}
 			flag.Parse()
+			desktopLaunch = true
 		}
 	}
 
@@ -392,7 +410,7 @@ func main() {
 	var code int
 	_, err, ok := debug.CapturePanicReportWith(
 		reportsDir, debug.Package, debug.Tag, func() {
-			code = run()
+			code = run(desktopLaunch)
 		})
 	if ok {
 		os.Exit(code)
@@ -449,6 +467,41 @@ func checkModeArgs(
 			"only one of --gui, --tui or --headless can be passed at once, got %s",
 			strings.Join(modes, " "))
 	}
+	if f := fs.Lookup("exec"); f != nil && f.Changed && !headless {
+		if !gui {
+			return fmt.Errorf("--exec needs --gui")
+		}
+		lines, err := fs.GetStringArray("exec")
+		if err != nil {
+			return err
+		}
+		stdin := 0
+		for _, l := range lines {
+			if l == execStdin {
+				stdin++
+			}
+		}
+		if stdin > 1 {
+			return fmt.Errorf("--exec %s can be passed only once", execStdin)
+		}
+	}
+	offscreen := flagValue(fs, "offscreen") == "true"
+	geometry := flagValue(fs, "geometry")
+	if !headless && !gui && (offscreen || geometry != "") {
+		return fmt.Errorf("--offscreen and --geometry need --gui")
+	}
+	if !headless && offscreen {
+		// Without commands to run, nothing could reach or end an instance
+		// that has no window.
+		if f := fs.Lookup("exec"); f == nil || !f.Changed {
+			return fmt.Errorf("--offscreen needs --exec")
+		}
+	}
+	if !headless {
+		if _, err := windowGeometry(geometry, offscreen); err != nil {
+			return fmt.Errorf("--geometry: %w", err)
+		}
+	}
 	if !headless {
 		if f := fs.Lookup("control-url"); f != nil && f.Changed {
 			return fmt.Errorf("--control-url needs --headless")
@@ -471,7 +524,78 @@ func checkModeArgs(
 	return fmt.Errorf("--headless does not take %s", strings.Join(rejected, ", "))
 }
 
-func run() int {
+// flagValue returns the value of the flag name in fs, or "" if fs has no
+// such flag.
+func flagValue(fs *flag.FlagSet, name string) string {
+	if f := fs.Lookup(name); f != nil {
+		return f.Value.String()
+	}
+	return ""
+}
+
+// geometry is a window size in device-independent pixels.
+type geometry struct {
+	width, height int
+	// scale is the device scale, or 0 when it follows the monitor.
+	scale float64
+}
+
+// windowGeometry returns the window size --geometry spec sets: the zero
+// geometry when spec is empty, the last size then applying. spec is WxH or,
+// with offscreen, WxH@SCALE, where W and H are positive integers and SCALE a
+// positive number. With offscreen the default offscreen size fills in what
+// spec leaves out. Each side must fit in maxGeometryPixels device pixels,
+// counting a scale that follows the monitor as 1.
+func windowGeometry(spec string, offscreen bool) (geometry, error) {
+	var g geometry
+	if spec != "" {
+		var err error
+		if g, err = parseGeometry(spec); err != nil {
+			return geometry{}, err
+		}
+	}
+	if g.scale != 0 && !offscreen {
+		return geometry{}, errors.New("a scale needs --offscreen")
+	}
+	if offscreen {
+		if g.width == 0 {
+			g.width, g.height = defaultOffscreenWidth, defaultOffscreenHeight
+		}
+		if g.scale == 0 {
+			g.scale = defaultOffscreenScale
+		}
+	}
+	s := max(g.scale, 1)
+	if float64(g.width)*s > maxGeometryPixels || float64(g.height)*s > maxGeometryPixels {
+		return geometry{}, fmt.Errorf("%dx%d at scale %g exceeds %d device pixels per side",
+			g.width, g.height, s, maxGeometryPixels)
+	}
+	return g, nil
+}
+
+func parseGeometry(s string) (geometry, error) {
+	size, scale, hasScale := strings.Cut(s, "@")
+	w, h, ok := strings.Cut(size, "x")
+	if !ok {
+		return geometry{}, fmt.Errorf("expected WxH or WxH@SCALE, got %q", s)
+	}
+	var g geometry
+	var err error
+	if g.width, err = strconv.Atoi(w); err != nil || g.width <= 0 {
+		return geometry{}, fmt.Errorf("width must be a positive integer, got %q", w)
+	}
+	if g.height, err = strconv.Atoi(h); err != nil || g.height <= 0 {
+		return geometry{}, fmt.Errorf("height must be a positive integer, got %q", h)
+	}
+	if hasScale {
+		if g.scale, err = strconv.ParseFloat(scale, 64); err != nil || !(g.scale > 0) {
+			return geometry{}, fmt.Errorf("scale must be a positive number, got %q", scale)
+		}
+	}
+	return g, nil
+}
+
+func run(desktopLaunch bool) int {
 	var filenames []string
 
 	if *flagVersion {
@@ -480,10 +604,29 @@ func run() int {
 	}
 
 	filenames = append(filenames, flag.Args()...)
+	var launchLog *os.File
+	if desktopLaunch {
+		// A desktop launcher shows no stderr, so the launch log keeps what
+		// Rune writes there, including the runtime's fatal error dumps for
+		// crash reports.
+		if f, err := os.OpenFile(crashreport.DefaultLaunchLogPath(*flagDataPath),
+			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+			launchLog = f
+		}
+	}
 	if err := checkModeArgs(flag.CommandLine,
 		*flagGUI, *flagTUI, *flagHeadless, filenames); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		// Rune run from a terminal without a mode looks like a desktop
+		// launch, so the error goes to stderr as well as to the log.
+		w := io.Writer(os.Stderr)
+		if launchLog != nil {
+			w = io.MultiWriter(os.Stderr, launchLog)
+		}
+		fmt.Fprintln(w, err)
 		return 1
+	}
+	if launchLog != nil {
+		redirectStderr(launchLog)
 	}
 
 	shellRCDir, shellRCErr := installShellRC(*flagDataPath)
@@ -546,7 +689,7 @@ func run() int {
 	if *flagConfigPath != defaultConfigPath {
 		if _, err := os.Stat(*flagConfigPath); err != nil {
 			err = fmt.Errorf("stat %q: %s", *flagConfigPath, err)
-			fmt.Printf("%s", err)
+			fmt.Fprintf(os.Stderr, "%s\n", err)
 			return 1
 		}
 	}
@@ -725,13 +868,35 @@ func runGUI(
 	execPath, _ := os.Executable()
 	var launchArgs []string
 	flag.CommandLine.Visit(func(f *flag.Flag) {
-		if f.Name == flagNameNoSessionReopen {
+		// A new window neither restores this instance's session nor runs
+		// its --exec commands.
+		if f.Name == flagNameNoSessionReopen || f.Name == "exec" {
 			return
 		}
 		launchArgs = append(launchArgs, fmt.Sprintf("--%s=%s", f.Name, f.Value.String()))
 	})
 	launchArgs = append(launchArgs, "--"+flagNameNoSessionReopen)
 	launchCmd := append([]string{execPath}, launchArgs...)
+	if *flagOffscreen {
+		// A new window would open on the user's screen, on this instance's
+		// throwaway data directory.
+		launchCmd = nil
+	}
+
+	if len(*flagExec) > 0 && !isBootstrapped(*flagDataPath) {
+		fmt.Fprintf(os.Stderr, "--exec needs a data directory that is set up: "+
+			"%s has no %s or %s\n", *flagDataPath, configFilename, configStarFilename)
+		return 2
+	}
+	if *flagOffscreen && !gui.OffscreenSupported() {
+		fmt.Fprintf(os.Stderr, "--offscreen: %s\n", gui.ErrOffscreenUnsupported)
+		return 2
+	}
+	size, err := windowGeometry(*flagGeometry, *flagOffscreen)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "--geometry: %s\n", err)
+		return 2
+	}
 
 	chdirerr := os.Chdir(home)
 	if chdirerr != nil {
@@ -776,15 +941,24 @@ func runGUI(
 	}
 
 	soundOutput := gui.NewSounds()
+	clip := text.NewAsyncSystemClipboard()
+	browse := func(u *url.URL) error { return extbrowser.Browse(u) }
+	if *flagOffscreen {
+		// An instance without a window stays off the user's desktop.
+		soundOutput.SetMuted(true)
+		clip = clipboard.NewInMemory()
+		browse = func(*url.URL) error {
+			return errors.New("an --offscreen instance opens no browser")
+		}
+	}
 	root, err := newBootstrapHandler(
 		*flagDataPath, *flagConfigPath,
 		*flagWorkspace, shellRCDir, host, filenames,
 		launchCmd, runner, mu, publisher.publish, cellPixelSize,
-		func(u *url.URL) error { return extbrowser.Browse(u) },
-		text.NewAsyncSystemClipboard(), soundOutput, os.TempDir(), rootCfg, trust,
+		browse, clip, soundOutput, os.TempDir(), rootCfg, trust,
 	)
 	if err != nil {
-		fmt.Printf("ide: %s", err)
+		fmt.Fprintf(os.Stderr, "ide: %s\n", err)
 		log.Errorf("ide: %v", err)
 		return 1
 	}
@@ -820,24 +994,28 @@ func runGUI(
 	options = append(options, gui.WithScreenshotDir(filepath.Join(*flagDataPath, "screenshots")))
 
 	storage := root.storage
-	width, height, ok := getLastSize(storage)
-	if ok {
-		options = append(options, gui.WithSize(width, height))
+	var g *gui.GUI
+	if *flagOffscreen {
+		g, err = gui.NewOffscreen(root, size.width, size.height, size.scale, options...)
+	} else {
+		if size.width > 0 {
+			options = append(options, gui.WithSize(size.width, size.height))
+		} else if width, height, ok := getLastSize(storage); ok {
+			options = append(options, gui.WithSize(width, height))
+		}
+		if x, y, ok := getLastPosition(storage); ok {
+			options = append(options, gui.WithPosition(x, y))
+		}
+		g, err = gui.New(root, options...)
 	}
-	x, y, ok := getLastPosition(storage)
-	if ok {
-		options = append(options, gui.WithPosition(x, y))
-	}
-
-	g, err := gui.New(root, options...)
 	if errors.Is(err, gui.ErrNoDisplay) {
-		fmt.Printf("%s\nuse --tui to run Rune in this terminal, or --headless to only "+
+		fmt.Fprintf(os.Stderr, "%s\nuse --tui to run Rune in this terminal, or --headless to only "+
 			"expose this machine's workspaces on the Rune network\n", err)
 		log.Errorf("gui: %v", err)
 		return 1
 	}
 	if err != nil {
-		fmt.Printf("gui: %s", err)
+		fmt.Fprintf(os.Stderr, "gui: %s\n", err)
 		log.Errorf("gui: %v", err)
 		return 1
 	}
@@ -853,29 +1031,36 @@ func runGUI(
 		}
 		if root.alreadyBootstrapped() {
 			if err := root.setupConfiguredIDE(root.realIDE, root.client); err != nil {
-				fmt.Printf("setup ide: %s", err)
+				fmt.Fprintf(os.Stderr, "setup ide: %s\n", err)
 				log.Errorf("setup ide: %v", err)
 				return 1
 			}
 		} else {
 			if err := root.setupPreIDE(); err != nil {
-				fmt.Printf("setup pre-config ide: %s", err)
+				fmt.Fprintf(os.Stderr, "setup pre-config ide: %s\n", err)
 				log.Errorf("setup pre-config ide: %v", err)
 				return 1
 			}
 		}
 		root.publishAppMenuInstall()
+		if len(*flagExec) > 0 {
+			// Events published before the loop starts wait for its first tick.
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			r := newExecRunner(root, *flagExec, os.Stdin, os.Stdout)
+			go debug.CapturePanicReport(func() { r.run(ctx) })
+		}
 		err = g.Run("Rune")
-		if err != nil && !errors.Is(err, gui.ErrHandlerExited) {
-			fmt.Printf("%s", err)
-			log.Errorf("run: %v", err)
+		if !*flagOffscreen {
+			// An offscreen size is fixed by the command line, not the user.
 			saveLastSize(storage, g)
 			saveLastPosition(storage, g)
+		}
+		if err != nil && !errors.Is(err, gui.ErrHandlerExited) {
+			fmt.Fprintf(os.Stderr, "%s\n", err)
+			log.Errorf("run: %v", err)
 			return 1
 		}
-
-		saveLastSize(storage, g)
-		saveLastPosition(storage, g)
 		return 0
 	}, g, root)
 }
@@ -1025,10 +1210,21 @@ func newAPIClient(
 	// fails client-side with auth.ErrNotAuthenticated when no token
 	// is cached, which would break package installs for logged-out
 	// users under the usage-based paywall.
-	httpClient := &http.Client{}
-	releaseManager := cdnrelease.NewManager(httpClient,
+	releaseManager := cdnrelease.NewManager(newReleaseHTTPClient(),
 		idepkg.ReleasesURL(*flagHTTPAddress, idepkg.HostArch()))
 	return client, releaseManager
+}
+
+// releaseMaxConnsPerHost caps the connections to the release server: each
+// holds an OS thread while macOS verifies its certificate, so looking up
+// many packages at once would otherwise create a thread per lookup.
+const releaseMaxConnsPerHost = 8
+
+// newReleaseHTTPClient is the client release managers download through.
+func newReleaseHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxConnsPerHost = releaseMaxConnsPerHost
+	return &http.Client{Transport: transport}
 }
 
 // apiClientConfig is the production apiclient configuration from the

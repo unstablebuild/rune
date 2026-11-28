@@ -364,6 +364,40 @@ func newStreamingComponentWithScheduler(
 	return c, wsURI, sched, noti
 }
 
+func TestStreamingOpenLoadingLastsUntilTheTabSettles(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		file     string
+		readOnly bool
+		wantTab  bool
+	}{
+		{name: "loaded", file: "a.txt", wantTab: true},
+		// A read-only open of a missing file fails and removes the tab.
+		{name: "failed", file: "missing.txt", readOnly: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, wsURI, sched, _ := newStreamingComponentWithScheduler(t)
+			writeNLines(t, filepath.Join(wsURI.Path(), "a.txt"), 3)
+			fileURI, err := workspaceapi.ParseURI(
+				"file://" + filepath.Join(wsURI.Path(), tt.file))
+			require.NoError(t, err)
+			require.False(t, c.Loading())
+
+			_, err = c.OpenFileTab(fileURI, tt.readOnly)
+			require.NoError(t, err)
+			assert.True(t, c.Loading(), "loading once the placeholder tab opens")
+
+			c.WaitStreamingLoads()
+			assert.True(t, c.Loading(), "loading until the event loop settles the tab")
+
+			sched.drain()
+			assert.False(t, c.Loading())
+			_, err = c.Editor(fileURI)
+			assert.Equal(t, tt.wantTab, err == nil, "Editor() error: %v", err)
+		})
+	}
+}
+
 func TestStreamingOpenSilentWhenTabClosedDuringLoad(t *testing.T) {
 	c, wsURI, sched, noti := newStreamingComponentWithScheduler(t)
 

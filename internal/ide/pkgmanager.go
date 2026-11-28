@@ -97,6 +97,9 @@ type localPkgManager struct {
 	*pkgManager
 	pkg *idepkg.Manager
 	uc  *idepkg.UpdateChecker
+	// libDir is what the editor's tools list packages through: see
+	// sharedLibDir.
+	libDir *sharedLibDir
 }
 
 type installStorageValue struct {
@@ -141,14 +144,14 @@ func (m *localPkgManager) init(
 	m.uc = idepkg.NewUpdateChecker(m.pkg)
 	m.pkgManager = newPkgManager(m.pkg, "", nil, n, storage, wh,
 		scheduleNextTick, interrupter, autoInstall)
+	m.libDir = newSharedLibDir(installedPackages{m.pkg}, m.pkgManager, true)
 	m.uc.Start(context.Background())
 }
 
-// installedPackages is a syntax.PkgManager of the packages installed on
-// the machine Rune runs on. Unlike pkgManager, it never offers to install
-// a missing one.
+// installedPackages is a syntax.PkgManager of the packages m has
+// installed. Unlike pkgManager, it never offers to install a missing one.
 type installedPackages struct {
-	m *idepkg.Manager
+	m idepkg.PackageManager
 }
 
 func (p installedPackages) LibDir(ctx context.Context, pkgID string) (sdkiterator.Iterator[string], error) {

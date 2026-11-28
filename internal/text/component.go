@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -93,6 +94,9 @@ type Component struct {
 	fileRegistry    FileCommandRegistry
 	pending         PendingTabs
 	streamingLoads  sync.WaitGroup
+	// loading counts the files openFileTabStreaming opened whose tab does
+	// not show their editor yet, nor was removed after a failed load.
+	loading atomic.Int32
 }
 
 // NewComponent allocates storage for a new Component and initializes it.
@@ -630,6 +634,13 @@ func (c *Component) WaitStreamingLoads() {
 	c.streamingLoads.Wait()
 }
 
+// Loading reports whether a file opened with OpenFileTab is still loading:
+// its tab shows a placeholder until the editor replaces it, on the event
+// loop, or the failed open removes the tab.
+func (c *Component) Loading() bool {
+	return c.loading.Load() > 0
+}
+
 func (c *Component) openFileTabStreaming(
 	file, recoveryFilename workspaceapi.URI, readOnly, forceRecover bool,
 ) (browserapi.Handler, error) {
@@ -651,6 +662,7 @@ func (c *Component) openFileTabStreaming(
 	recovering := recoveryFilename != (workspaceapi.URI{})
 	loading := make(chan struct{})
 	c.streamingLoads.Add(2)
+	c.loading.Add(1)
 	go debug.CapturePanicReport(func() {
 		defer c.streamingLoads.Done()
 		c.animateTabLoading(file, loading)
@@ -668,6 +680,7 @@ func (c *Component) openFileTabStreaming(
 		}
 
 		scheduled := c.config.ScheduleNextTick(func() {
+			defer c.loading.Add(-1)
 			if loadErr != nil {
 				c.releaseLoader(file, l)
 			}
@@ -688,8 +701,11 @@ func (c *Component) openFileTabStreaming(
 				streamingTab, sh, def, file, readOnly, recovering,
 				realHandler, efc, openErr)
 		})
-		if !scheduled && parsed != nil {
-			_ = parsed.Close()
+		if !scheduled {
+			c.loading.Add(-1)
+			if parsed != nil {
+				_ = parsed.Close()
+			}
 		}
 	})
 
@@ -1820,6 +1836,12 @@ func (c *Component) OpenPrompt(
 	cfg browserapi.PromptConfig, h handler.PromptHandler,
 ) (browser.Window, bool, error) {
 	return c.comp.OpenPrompt(cfg, h)
+}
+
+// Prompting reports whether a prompt that Prompt or OpenPrompt opened is
+// still open, waiting for an answer.
+func (c *Component) Prompting() bool {
+	return c.comp.Prompting()
 }
 
 // ButtonImages satisfies browser.Prompter.
