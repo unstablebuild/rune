@@ -12,8 +12,9 @@ whole window, or to ASCII encode. In the GUI, a shader can also paint the
 whole window on the GPU, as a still or an animation.
 
 Wallpaper settings live under `workspace`, so you can set one globally in
-`~/.rune/config.yaml` or `~/.rune/config.star`. A project can also provide its
-own wallpaper in `.rune/config.yaml` at the workspace root, which applies once
+`~/.config/rune/config.yaml` or `~/.config/rune/config.star`. A project
+can also provide its own wallpaper in `.rune/config.yaml` at the
+workspace root, which applies once
 you [trust that file](../config.md#where-the-config-lives).
 
 Here, Rune converts a transparent Python logo into colored ASCII art. The

@@ -5,7 +5,7 @@
 # available keys.
 
 # Path to the debug log. This property is not reloaded on reloadWorkspace.
-#log_path: ~/.rune/debug.log
+#log_path: $RUNE_DATADIR/debug.log
 
 # Other config files to read before this one, in order: later files and
 # this file's own settings override earlier ones. Paths are relative to
