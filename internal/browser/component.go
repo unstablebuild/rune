@@ -1538,11 +1538,13 @@ func (c *Component) Selection() (string, bool) {
 // cfg.Message, rendered as markdown, and takes over events until the
 // user picks an option or closes the window, which promptHandler is
 // told as browserapi.Prompter describes. The prompt is styled with
-// Config.PromptConfig. It panics when cfg.Validate fails.
+// Config.PromptConfig. Picking an option while a Mandatory field is
+// blank raises an error notification and keeps the prompt open. It
+// panics when cfg.Validate fails.
 //
 // Prompt uses cfg.Message to de-duplicate prompts: while a prompt with
 // the same message is open, it returns that prompt's window and
-// promptHandler is never called.
+// promptHandler is never called, whatever the fields of either.
 func (c *Component) Prompt(
 	cfg browserapi.PromptConfig, promptHandler handler.PromptHandler,
 ) Window {
@@ -1558,22 +1560,48 @@ func (c *Component) Prompt(
 		message: cfg.Message,
 	}
 	style := c.config.PromptConfig
+	wm := c.config.WindowManagerConfig
+	fields := make([]handler.PromptField, len(cfg.Fields))
+	for i, f := range cfg.Fields {
+		fields[i] = handler.PromptField{
+			Question:    f.Question,
+			Answer:      f.Answer,
+			Secret:      f.Secret,
+			Mandatory:   f.Mandatory,
+			Placeholder: f.Placeholder,
+		}
+	}
 	promptConfig := handler.PromptConfig{
 		PromptConfig: component.PromptConfig{
 			Message:              cfg.Message,
 			Options:              cfg.Options,
 			BackgroundAttributes: style.BackgroundAttr,
+			FieldAttr:            style.FieldAttr,
+			FocusFieldAttr:       style.FocusFieldAttr,
+			FieldFrame:           wm.FrameCharSet,
+			FocusFieldFrame:      wm.FocusFrameCharSet,
+			FieldFrameAttr:       wm.FrameAttr,
+			FocusFieldFrameAttr:  wm.FocusFrameAttr,
 			MinWidth:             style.MinWidth,
 			NewMessage: func(str string) component.Floating {
 				return c.promptMessage(str, cfg.MaxWidth)
 			},
 			ButtonImages: c.ButtonImages(),
 		},
-		PromptHandler:  clearHandler,
-		OptionBindings: cfg.Bindings,
-		OptionAttr:     style.TextAttr,
-		HighlightAttr:  style.HighlightAttr,
-		ClickedAttr:    style.ClickedAttr,
+		PromptHandler: clearHandler,
+		Fields:        fields,
+		OnUnanswered: func(i int) {
+			if q := cfg.Fields[i].Question; q != "" {
+				c.notify(browserapi.LevelError, "%s is required", q)
+				return
+			}
+			c.notify(browserapi.LevelError, "An answer is required")
+		},
+		OptionBindings:  cfg.Bindings,
+		OptionAttr:      style.TextAttr,
+		HighlightAttr:   style.HighlightAttr,
+		ClickedAttr:     style.ClickedAttr,
+		PlaceholderAttr: style.PlaceholderAttr,
 	}
 
 	prompt := handler.NewPrompt(promptConfig)
@@ -1598,6 +1626,12 @@ func (c *Component) OpenPrompt(
 		return win, false, nil
 	}
 	return c.Prompt(cfg, h), true, nil
+}
+
+// Prompting reports whether a prompt that Prompt or OpenPrompt opened is
+// still open, waiting for an answer.
+func (c *Component) Prompting() bool {
+	return len(c.prompts) > 0
 }
 
 // promptMessage renders the message of a prompt, as markdown when it
@@ -2206,27 +2240,26 @@ func (c *Component) wallpaper() browserapi.Handler {
 
 // newWallpaperComponent returns a new component of wallpaper, on its
 // BackgroundAttr.
-func newWallpaperComponent(wallpaper Wallpaper) tui.Component {
+func newWallpaperComponent(wallpaper Wallpaper) ComponentCloser {
 	if wallpaper.NewComponent == nil {
-		wallpaper.NewComponent = component.Nop
+		return NopCloser(component.Nop())
 	}
 	instance := wallpaper.NewComponent()
-	// if background attrs were passed try to re-construct string wallpaper
-	// or set a background via component.Background.
-	if wallpaper.BackgroundAttr != (term.Attributes{}) {
-		if str, ok := instance.(component.String); ok {
-			cfg := str.Config()
-			cfg.BackgroundAttributes = wallpaper.BackgroundAttr
-			cfg.Attributes.Bg = wallpaper.BackgroundAttr.Bg
-			instance = component.NewStringWithConfig(str.String(), cfg)
-		} else {
-			// activate override behaviour
-			nonZeroCh := ' '
-			instance = component.NewBackground(instance,
-				term.NewCell(nonZeroCh, 0, wallpaper.BackgroundAttr))
-		}
+	if wallpaper.BackgroundAttr == (term.Attributes{}) {
+		return instance
 	}
-	return instance
+	// A non-zero character makes the background override all but the
+	// characters and foreground colours of instance.
+	return onBackground{
+		Background: component.NewBackground(instance, term.NewCell(' ', 0, wallpaper.BackgroundAttr)),
+		Closer:     instance,
+	}
+}
+
+// onBackground is a ComponentCloser drawn by a component.Background.
+type onBackground struct {
+	*component.Background
+	io.Closer
 }
 
 // wallpaper is the content of a window with nothing else to show. It
@@ -2235,7 +2268,7 @@ func newWallpaperComponent(wallpaper Wallpaper) tui.Component {
 // floating window, it asks for the size its components need, or keeps
 // the size it was given when they don't know it.
 type wallpaper struct {
-	normal, focused tui.Component
+	normal, focused ComponentCloser
 	width, height   int
 }
 
@@ -2285,7 +2318,13 @@ func (*wallpaper) Cursor() (c term.Coordinates, s term.CursorStyle, show bool) {
 func (*wallpaper) Selection() (string, bool) { return "", false }
 
 // Close satisfies browserapi.Handler.
-func (*wallpaper) Close() error { return nil }
+func (w *wallpaper) Close() error {
+	var err error
+	if w.focused != nil {
+		err = w.focused.Close()
+	}
+	return errors.Join(w.normal.Close(), err)
+}
 
 func isWallpaper(h browserapi.Handler) bool {
 	bc, ok := h.(*browserContent)
@@ -2364,6 +2403,15 @@ func (c *clearOnClosePromptHandler) OnSelect(idx int, option string) {
 	c.root.OnSelect(idx, option)
 }
 
+func (c *clearOnClosePromptHandler) OnAnswer(idx int, option string, answers []string) {
+	c.clear()
+	if ah, ok := c.root.(handler.AnswerHandler); ok {
+		ah.OnAnswer(idx, option, answers)
+		return
+	}
+	c.root.OnSelect(idx, option)
+}
+
 func (c *clearOnClosePromptHandler) OnClose() error {
 	c.clear()
 	return c.root.OnClose()
@@ -2413,16 +2461,6 @@ func (c *browserContent) Close() error {
 	}
 	c.closed = true
 	return c.Handler.Close()
-}
-
-// StitchFrame satisfies tcomponent.FrameStitcher for a Handler that
-// does, and draws nothing for any other.
-func (c *browserContent) StitchFrame(
-	w term.Writer, f *component.Frame, g *tcomponent.FrameGraphics, width, height int, bar bool,
-) {
-	if s, ok := c.Handler.(tcomponent.FrameStitcher); ok {
-		s.StitchFrame(w, f, g, width, height, bar)
-	}
 }
 
 var _ Floating = (*browserFloatingContent)(nil)

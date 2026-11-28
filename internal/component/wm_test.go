@@ -2411,102 +2411,6 @@ func TestWindowBarDraw(t *testing.T) {
 	}
 }
 
-// frameStitcher joins a rule at its first column to the frame around it.
-type frameStitcher struct {
-	tui.Component
-	width, height int
-	bars          []bool
-}
-
-func (s *frameStitcher) Dimensions() (int, int) { return s.width, s.height }
-
-func (s *frameStitcher) StitchFrame(
-	w term.Writer, f *component.Frame, _ *FrameGraphics, _, height int, bar bool,
-) {
-	s.bars = append(s.bars, bar)
-	x := f.ContentPosition().X
-	if !bar {
-		w.SetCell(term.Coordinates{X: x}, term.NewCell('┬', 1, f.Attributes))
-	}
-	w.SetCell(term.Coordinates{X: x, Y: height - 1}, term.NewCell('┴', 1, f.Attributes))
-}
-
-func TestWindowManagerStitchFrame(t *testing.T) {
-	tests := []struct {
-		name     string
-		frame    bool
-		bar      bool
-		floating bool
-		expected string
-		bars     []bool
-	}{
-		{
-			name: "a tile joins its rules to its frame", frame: true,
-			expected: `
-┌┬───────┐
-│SSSSSSSS│
-│SSSSSSSS│
-│SSSSSSSS│
-└┴───────┘`,
-			bars: []bool{false},
-		},
-		{
-			name: "a floating window joins its rules to its frame", frame: true, floating: true,
-			expected: `
-┌────────┐
-│┌┬─┐CCCC│
-││SS│CCCC│
-│└┴─┘CCCC│
-└────────┘`,
-			bars: []bool{false},
-		},
-		{
-			name: "a window bar keeps its row", frame: true, bar: true, floating: true,
-			expected: `
-┌────────┐
-│█●██CCCC│
-││SS│CCCC│
-│└┴─┘CCCC│
-└────────┘`,
-			bars: []bool{true},
-		},
-		{
-			name: "no frame, nothing to join", floating: true,
-			expected: `
-CCCCCCCCCC
-CSSCCCCCCC
-CCCCCCCCCC
-CCCCCCCCCC
-CCCCCCCCCC`,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			const width, height = 10, 5
-			cfg := DefaultWindowManagerConfig()
-			cfg.NoMaxSize = true
-			cfg.Frame = tt.frame
-			cfg.WindowBar = tt.bar
-			cfg.CloseIcon = '●'
-			s := &frameStitcher{Component: &component.TestComponent{Ch: 'S'}, width: 2, height: 1}
-			var content tui.Component = s
-			if tt.floating {
-				content = &component.TestComponent{Ch: 'C'}
-			}
-			wm, _ := NewWindowManager(content, cfg)
-			wm.Resize(width, height)
-			if tt.floating {
-				wm.FloatingWindow(s, FloatingConfig{Offset: term.Coordinates{X: 1, Y: 1}})
-			}
-			w := term.NewStringWriter(width, height)
-			wm.Draw(w)
-			require.NoError(t, w.Flush())
-			assert.Equal(t, tt.expected, "\n"+w.String())
-			assert.Equal(t, tt.bars, s.bars)
-		})
-	}
-}
-
 func TestWindowBarSetFrameCharSet(t *testing.T) {
 	cfg := DefaultWindowManagerConfig()
 	cfg.NoMaxSize = true
@@ -3884,23 +3788,26 @@ func TestWindowManagerWithoutBackgroundRecordsNothing(t *testing.T) {
 // the middle of its cells, transparent either side, and returns its
 // graphics: a cross in the corners, so that each corner's bend is a
 // quarter of it.
-func lineSprites(t *testing.T) component.FrameCharSetGraphics {
+func lineSprites(t testing.TB) component.FrameCharSetGraphics {
 	t.Helper()
-	dir := t.TempDir()
-	write := func(name, art string) string {
-		var b bytes.Buffer
-		require.NoError(t, png.Encode(&b, spritePixels(art)))
-		path := filepath.Join(dir, name+".png")
-		require.NoError(t, os.WriteFile(path, b.Bytes(), 0o600))
-		return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
-	}
-	h := write("h", "....\n####\n....\n....")
-	v := write("v", ".#..\n.#..\n.#..\n.#..")
-	cross := write("cross", ".#..\n####\n.#..\n.#..")
+	h := spriteFile(t, "....\n####\n....\n....")
+	v := spriteFile(t, ".#..\n.#..\n.#..\n.#..")
+	cross := spriteFile(t, ".#..\n####\n.#..\n.#..")
 	return component.FrameCharSetGraphics{
 		TopLeft: cross, TopRight: cross, BottomLeft: cross, BottomRight: cross,
 		HorizontalTop: h, HorizontalBottom: h, VerticalLeft: v, VerticalRight: v,
 	}
+}
+
+// spriteFile writes the sprite of art, as spritePixels draws it, and
+// returns its URI.
+func spriteFile(t testing.TB, art string) string {
+	t.Helper()
+	var b bytes.Buffer
+	require.NoError(t, png.Encode(&b, spritePixels(art)))
+	path := filepath.Join(t.TempDir(), "sprite.png")
+	require.NoError(t, os.WriteFile(path, b.Bytes(), 0o600))
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
 }
 
 // fillMap returns where s holds a fill, f for one in navy and ? for one
@@ -3934,6 +3841,13 @@ func fillMap(t *testing.T, s *imageScreen) string {
 func TestWindowManagerBorderInsides(t *testing.T) {
 	lines := lineSprites(t)
 	pics := newFramePictures(t)
+	// A corner two cells wide whose picture draws a line in its left cell
+	// only, unmirrored at every corner: its right cell's part has no
+	// inside to fill.
+	wideCorner := lines
+	half := spriteFile(t, ".#......\n####....\n.#......\n.#......")
+	wideCorner.TopLeft, wideCorner.TopRight, wideCorner.BottomLeft, wideCorner.BottomRight = half, half, half, half
+	wideCorner.CornerWidth = 2
 	navy := term.Attributes{Bg: term.ColorNavy}
 	ring := `
 ffffffff
@@ -3986,6 +3900,24 @@ nttttttn
 nnnnnnnn
 nnnnnnnn
 nnnnnnnn`,
+		},
+		{
+			name:       "each cell of a corner fills inside its part of the line",
+			background: WindowBackground{Attr: navy},
+			graphics:   wideCorner,
+			loads:      3,
+			fills: `
+f.fffff.
+f......f
+f......f
+f......f
+f.fffff.`,
+			bg: `
+.n.....n
+.tttttt.
+.nnnnnn.
+.nnnnnn.
+.n.....n`,
 		},
 		{
 			name:       "a panel draws the cells it covers",
@@ -4053,6 +3985,171 @@ nnnnnnnn`,
 			require.NoError(t, s.Flush())
 			assert.Equal(t, tt.fills, fillMap(t, s))
 			assert.Equal(t, tt.bg, colorMap(s, func(c term.Cell) term.Color { return c.Bg }))
+		})
+	}
+}
+
+func BenchmarkWindowManagerDrawFramed(b *testing.B) {
+	cfg := testWindowManagerConfig()
+	cfg.Background = WindowBackground{Attr: term.Attributes{Bg: term.ColorNavy}}
+	cfg.FrameCharSet.Graphics = lineSprites(b)
+	cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+	irq := make(interruptCounter, 16)
+	cfg.Interrupter = irq
+	wm, left := NewWindowManager(&stripedContent{}, cfg)
+	b.Cleanup(func() { assert.NoError(b, wm.Close()) })
+	right, _ := wm.SplitVertical(left, &stripedContent{})
+	wm.SplitHorizontal(right, &stripedContent{})
+	const width, height = 160, 48
+	wm.Resize(width, height)
+	wm.Draw(term.NewStringWriter(width, height))
+	irq.wait(b, 3)
+
+	s := newImageScreen(width, height)
+	b.ReportAllocs()
+	for b.Loop() {
+		s.images, s.drawnAt = s.images[:0], s.drawnAt[:0]
+		wm.Draw(s)
+	}
+}
+
+// backdropContent records whether its window's frame shows a picture
+// under it and, when it does, draws one there, as a wallpaper does.
+type backdropContent struct {
+	width, height int
+	backdrop      bool
+}
+
+func (c *backdropContent) Resize(width, height int) { c.width, c.height = width, height }
+
+func (c *backdropContent) Dimensions() (int, int) { return 3, 2 }
+
+func (c *backdropContent) Draw(w term.Writer) {
+	c.backdrop = FrameBackdropFromContext(w.Context())
+	if !c.backdrop {
+		return
+	}
+	w.DrawImage(term.Image{
+		Src: image.NewRGBA(image.Rect(0, 0, 1, 1)), ID: term.NewImageID(),
+		Pos:   term.Coordinates{X: -1, Y: -1},
+		Width: c.width + 2, Height: c.height + 2,
+		Layer: term.ImageLayerBelowBackground, Overflow: true,
+	})
+}
+
+func TestWindowManagerFrameBackdrop(t *testing.T) {
+	navy := WindowBackground{Attr: term.Attributes{Bg: term.ColorNavy}}
+	none := `
+........
+........
+........
+........
+........`
+	tests := []struct {
+		name       string
+		background WindowBackground
+		// glyphs frames the tile with characters rather than images.
+		glyphs   bool
+		noFrame  bool
+		floating bool
+		backdrop bool
+		// fills and bg are the maps of the screen, unchecked when empty.
+		fills, bg string
+	}{
+		{
+			name:       "a tile with a background shows the picture inside its frame's lines",
+			background: navy,
+			backdrop:   true,
+			// Default fills outside the lines.
+			fills: `
+????????
+?......?
+?......?
+?......?
+????????`,
+			bg: `
+........
+.nnnnnn.
+.nnnnnn.
+.nnnnnn.
+........`,
+		},
+		{
+			name:     "a tile without a background shows the picture inside its frame's lines",
+			backdrop: true,
+			fills: `
+????????
+?......?
+?......?
+?......?
+????????`,
+			bg: none,
+		},
+		{
+			name:       "a frame of characters shows the picture under its whole cells",
+			background: navy,
+			glyphs:     true,
+			backdrop:   true,
+			fills:      none,
+			bg: `
+........
+.nnnnnn.
+.nnnnnn.
+.nnnnnn.
+........`,
+		},
+		{
+			name:     "a frame of characters without a background",
+			glyphs:   true,
+			backdrop: true,
+			fills:    none,
+			bg:       none,
+		},
+		{name: "a tile without a frame", background: navy, noFrame: true, fills: none},
+		{name: "a floating window", background: navy, floating: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testWindowManagerConfig()
+			cfg.Frame = !tt.noFrame
+			cfg.Background = tt.background
+			if !tt.glyphs {
+				cfg.FrameCharSet.Graphics = lineSprites(t)
+			}
+			cfg.FrameGraphicsStorage = storagestub.NewInMemoryService()
+			irq := make(interruptCounter, 16)
+			cfg.Interrupter = irq
+			content := &backdropContent{}
+			var root tui.Component = content
+			if tt.floating {
+				root = &stripedContent{}
+			}
+			wm, _ := NewWindowManager(root, cfg)
+			t.Cleanup(func() { assert.NoError(t, wm.Close()) })
+			wm.Resize(8, 5)
+			if tt.floating {
+				wm.FloatingWindow(content, FloatingConfig{Offset: term.Coordinates{X: 2, Y: 1}})
+			}
+			wm.Draw(term.NewStringWriter(8, 5))
+			if cfg.Frame && !tt.glyphs {
+				irq.wait(t, 3)
+			}
+
+			s := newImageScreen(8, 5)
+			wm.Draw(s)
+			require.NoError(t, s.Flush())
+			assert.Equal(t, tt.backdrop, content.backdrop)
+			if tt.fills != "" {
+				assert.Equal(t, tt.fills, fillMap(t, s))
+			}
+			if tt.bg != "" {
+				assert.Equal(t, tt.bg, colorMap(s, func(c term.Cell) term.Color { return c.Bg }))
+			}
+			for _, img := range s.images {
+				if img.Fill && tt.backdrop {
+					assert.Equal(t, term.ColorDefault, img.FillColor, "the fill at %v", img.Pos)
+				}
+			}
 		})
 	}
 }

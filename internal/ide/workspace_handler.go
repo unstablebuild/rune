@@ -79,6 +79,7 @@ import (
 	"unstable.build/rune/internal/ide/console/lspconsole"
 	"unstable.build/rune/internal/ide/console/pkgconsole"
 	"unstable.build/rune/internal/ide/console/searchconsole"
+	"unstable.build/rune/internal/ide/defsearch"
 	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/ideacp"
 	"unstable.build/rune/internal/ide/ideacp/acpcmd"
@@ -282,7 +283,7 @@ type pendingWorkspace struct {
 	cancelCtx         func()
 	canceled          atomic.Bool
 	buildPhase        atomic.Uint32
-	onReady           [][]string
+	onReady           []readyJob
 	cwd               workspace.Workspace
 	teardownBegin     sync.Once
 	teardownStart     sync.Once
@@ -291,6 +292,56 @@ type pendingWorkspace struct {
 	buildReleased     chan struct{}
 	closeGate         chan struct{}
 	ownsCloseGate     bool
+}
+
+// readyJob is a command workspaceready queued until a pending workspace
+// opens. An empty cmd runs nothing. A non-nil waiter is already claimed
+// and must receive exactly one result.
+type readyJob struct {
+	cmd    []string
+	waiter *textrpc.Waiter
+}
+
+// failReady reports err to the waiters of the commands still queued on p,
+// which will not open.
+func (p *pendingWorkspace) failReady(err error) {
+	for _, job := range p.onReady {
+		if job.waiter != nil {
+			job.waiter.Ch <- err
+		}
+	}
+	p.onReady = nil
+}
+
+// resultWaitKey marks a dispatch whose caller waits for the result of
+// commands that finish after they return: workspaceready and
+// extensionready running their command, and the saves of write and
+// writeall. Alias steps and extensions attach a waiter to every dispatch
+// too, but a claimed waiter holds their dispatch slot, so these commands
+// claim one only when asked to.
+type resultWaitKey struct{}
+
+func withResultWait(ctx context.Context) context.Context {
+	return context.WithValue(ctx, resultWaitKey{}, true)
+}
+
+// resultWaiter returns the waiter of ctx if its dispatch was marked with
+// withResultWait, nil otherwise.
+func resultWaiter(ctx context.Context) *textrpc.Waiter {
+	if ctx.Value(resultWaitKey{}) == nil {
+		return nil
+	}
+	w, _ := textrpc.WaiterFromContext(ctx)
+	return w
+}
+
+// readyDispatchCtx is the context of a command workspaceready dispatches:
+// it reports on w, if not nil, and passes the resultWait mark on.
+func readyDispatchCtx(w *textrpc.Waiter) context.Context {
+	if w == nil {
+		return context.Background()
+	}
+	return withResultWait(textrpc.ContextWithWaiter(context.Background(), w))
 }
 
 type visibleWorkspaceManager struct {
@@ -806,7 +857,7 @@ func (h *workspaceManagerHandler) init(
 
 	// don't install a fs watcher for the home workspace,
 	// to prevent unecessary resource consumption
-	homeParser := treesitter.NewParser(h.homeWorkspace, h.pkgmanager, h.homeURI).
+	homeParser := treesitter.NewParser(h.homeWorkspace, h.pkgmanager.libDir, h.homeURI).
 		WithCaptureNamesAttributes(cfg.syntaxConfig().CaptureNamesAttributes)
 	globalOpts := h.textOpts(cfg, homeParser, h.homeURI, h.homeWorkspace)
 	tm := new(workspaceTabManager)
@@ -860,7 +911,7 @@ func (h *workspaceManagerHandler) init(
 	h.homeInstallDir = installDataDir(trackedCwd, homeDirUri, h.sixDir)
 	runner, lspManager, dapManager, acpManager, _, _, err := h.buildExtensions(
 		cfg, homeDirUri, trackedCwd, h.empty, extExec, homeParser, false,
-		h.homeInstallDir, noRegexpSearch{}, extension.NewLiveConfig(cfg.cfg))
+		h.homeInstallDir, noRegexpSearch{}, searchconsole.Config{}, extension.NewLiveConfig(cfg.cfg))
 	if err != nil {
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building channel for extensions and plugins: %v", err)
@@ -1112,6 +1163,7 @@ func (h *workspaceManagerHandler) focusBrowser() browser.Browser {
 
 func (h *workspaceManagerHandler) setThemeColors(c ThemeColors) {
 	h.theme = c
+	h.status.SetDefaultAttributes(c.Default)
 	for _, w := range h.workspaces {
 		if w == nil || w.ex == nil {
 			continue
@@ -1198,6 +1250,34 @@ func (h *workspaceManagerHandler) focusEx() *ex {
 		return handler.ex
 	}
 	return h.empty
+}
+
+// loading reports whether a workspace, focused or not, is still loading a
+// file it opened.
+func (h *workspaceManagerHandler) loading() bool {
+	if h.empty.comp.Loading() {
+		return true
+	}
+	for _, w := range h.workspaces {
+		if w != nil && w.ex.comp.Loading() {
+			return true
+		}
+	}
+	return false
+}
+
+// prompting reports whether a workspace, focused or not, shows a prompt
+// that waits for an answer.
+func (h *workspaceManagerHandler) prompting() bool {
+	if h.empty.comp.Prompting() {
+		return true
+	}
+	for _, w := range h.workspaces {
+		if w != nil && w.ex.comp.Prompting() {
+			return true
+		}
+	}
+	return false
 }
 
 // focusLSPManager returns the LSP manager of the focused workspace, or
@@ -1575,6 +1655,19 @@ type configChangeState struct {
 	lastApplied map[string]any
 }
 
+// packageInstalled has the symbol index of every open workspace scan
+// again, so the files of a language whose grammar the package installed
+// or changed are parsed with it. It may run on any goroutine.
+func (h *workspaceManagerHandler) packageInstalled() {
+	h.scheduleNextTick(func() {
+		for _, wh := range h.workspaces {
+			if wh != nil && wh.symbolIndex != nil {
+				wh.symbolIndex.Rescan()
+			}
+		}
+	})
+}
+
 // configChanged reads the user config again and puts what differs from
 // the one in effect into effect, as far as the running process can,
 // then tells the user what did and did not take. source says what
@@ -1792,7 +1885,7 @@ func (h *workspaceManagerHandler) textOpts(
 		text.WithRightInset(h.rightInset),
 		text.WithTabBarHeight(h.tabBarHeight),
 		text.WithTabNameSeparator(cfg.tabNameSeparator()),
-		text.WithPackageManager(h.pkgmanager),
+		text.WithPackageManager(h.pkgmanager.libDir),
 		text.WithSyntaxConfig(cfg.syntaxConfig()),
 		text.WithMaxSyntaxParseSize(cfg.editorMaxSizeForSyntax()),
 		text.WithSyntaxTree(multitree.New),
@@ -1903,6 +1996,7 @@ func (h *workspaceManagerHandler) addWorkspace(
 				if h.lastReservedPending == pending {
 					h.lastReservedPending = nil
 				}
+				pending.failReady(fmt.Errorf("load workspace %s: %w", uri.String(), err))
 				h.shaderRunner.stopLoading()
 				cancel()
 				log.Errorf("load workspace %s: %v", uri.String(), err)
@@ -1967,6 +2061,7 @@ func (h *workspaceManagerHandler) abortPendingBuild(
 // while the event-loop lock prevents a same-URI successor from being created.
 func (h *workspaceManagerHandler) beginPendingWorkspaceTeardown(pending *pendingWorkspace) {
 	pending.teardownBegin.Do(func() {
+		pending.failReady(fmt.Errorf("workspace %s did not open", pending.uri.String()))
 		key := pending.uri.String()
 		if h.pending[key] != pending {
 			return
@@ -2157,24 +2252,13 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		}
 	}
 
-	parser := treesitter.NewParser(cwd, h.pkgmanager, uri).
+	parser := treesitter.NewParser(cwd, h.pkgmanager.libDir, uri).
 		WithCaptureNamesAttributes(cfg.syntaxConfig().CaptureNamesAttributes)
+	symbolIndex, indexedSymbols := h.openSymbolIndex(cfg, uri, cwd, parser)
+	symbolDBCloser := io.Closer(symbolIndex)
 	var wsParser syntaxapi.Parser = parser
-	var symbolDB *symboldb.Parser
-	var symbolDBCloser io.Closer
-	if cfg.workspaceSymbolDB() {
-		sdb, sdbErr := symboldb.New(parser, cwd, uri, storageapi.WithPartition(
-			storageapi.WithPartition(h.ideStorage, symboldb.PartitionName),
-			uri.String()),
-			h.notifications.current(), h.scheduleNextTick)
-		if sdbErr != nil {
-			h.empty.log(log.ErrorLevel, "symbol database for workspace %q: %v",
-				uri.Path(), sdbErr)
-		} else {
-			symbolDB = sdb
-			wsParser = sdb
-			symbolDBCloser = sdb
-		}
+	if indexedSymbols {
+		wsParser = symbolIndex
 	}
 	textOpts := h.textOpts(cfg, wsParser, uri, cwd)
 	vctrlService, err := gogit.NewService(uri, cwd)
@@ -2214,18 +2298,16 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		cfg.metaOpenURL(),
 		textOpts...)
 	if err != nil {
-		if symbolDBCloser != nil {
-			_ = symbolDBCloser.Close()
-		}
+		_ = symbolDBCloser.Close()
 		return nil, fmt.Errorf("new ex: %w", err)
 	}
 	ex.sponsorsURL = h.sponsorsURL
 	ex.statusBars = statusBars
-	if symbolDB != nil {
+	if indexedSymbols {
 		if serr := ex.comp.SubscribeEvents(
-			symboldb.EditorEvents(), symbolDB,
+			symboldb.EditorEvents(), symbolIndex,
 		); serr != nil {
-			log.Errorf("subscribe symbol database events for %s: %v",
+			log.Errorf("subscribe symbol index events for %s: %v",
 				uri.String(), serr)
 		}
 	}
@@ -2237,20 +2319,20 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		h.scheduleNextTick, fexURI, gitshowBaseURI(),
 	)
 	if err != nil {
-		if symbolDBCloser != nil {
-			_ = symbolDBCloser.Close()
-		}
+		_ = symbolDBCloser.Close()
 		return nil, fmt.Errorf("install cursor history: %w", err)
 	}
 	tm.tm = ex.Browser()
 	searchIndexCloser := h.openSearchIndex(cfg, ex, uri, cwd)
 	regexIndex := h.openRegexIndex(cfg, ex, uri, cwd)
 	h.subscribeSearchRegex(ex, uri, regexIndex, wsParser, apibrowser)
+	h.subscribeSearchDefs(ex, uri, symbolIndex, wsParser, apibrowser)
 
 	wh := &workspaceHandler{
 		vctrlService:        vctrlService,
 		cursorHistoryCloser: cursorHistoryCloser,
 		symbolDBCloser:      symbolDBCloser,
+		symbolIndex:         symbolIndex,
 		searchIndexCloser:   searchIndexCloser,
 		regexIndex:          regexIndex,
 		cancelCtx:           pending.cancelCtx,
@@ -2268,9 +2350,7 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 	extExec, err := newExtensionsExecutor()
 	if err != nil {
 		_ = cursorHistoryCloser.Close()
-		if symbolDBCloser != nil {
-			_ = symbolDBCloser.Close()
-		}
+		_ = symbolDBCloser.Close()
 		if searchIndexCloser != nil {
 			_ = searchIndexCloser.Close()
 		}
@@ -2282,8 +2362,8 @@ func (h *workspaceManagerHandler) buildWorkspaceAsync(
 		return nil, fmt.Errorf("new extensions executor: %w", err)
 	}
 	runner, lspManager, dapManager, acpManager, hostPkgs, promptStorage, err := h.buildExtensions(
-		cfg, uri, trackedCwd, ex, extExec, wsParser, symbolDB != nil, wh.installDir, regexIndex,
-		wh.extensionConfig)
+		cfg, uri, trackedCwd, ex, extExec, wsParser, indexedSymbols, wh.installDir, regexIndex,
+		consoleIndexes(cfg, regexIndex, symbolIndex, indexedSymbols), wh.extensionConfig)
 	if err != nil {
 		_, _ = h.notifications.current().Notify(browserapi.LevelError,
 			"Error building channel for extensions and plugins: %v", err)
@@ -2405,6 +2485,65 @@ func (h *workspaceManagerHandler) subscribeSearchRegex(
 	})
 	if err := ex.editorObserver.SubscribeCommand(regexsearch.Manual(), handler); err != nil {
 		log.Errorf("subscribe %s command: %v", regexsearch.Name, err)
+	}
+}
+
+// openSymbolIndex opens the symbol index of the workspace uri over
+// backing, and reports whether it keeps one: with search.symbols_enabled
+// off, or when its database cannot open, it keeps none, lookups go to
+// backing and searchfunc, searchvar and searchtype parse the files they
+// cover.
+func (h *workspaceManagerHandler) openSymbolIndex(
+	cfg ideConfig, uri workspaceapi.URI, cwd workspace.Workspace, backing treesitter.Parser,
+) (*symboldb.Parser, bool) {
+	scfg := symboldb.Config{
+		Root: uri, FS: cwd, Backing: backing,
+		// A scan of the workspace must not offer to install the package
+		// of every language it meets.
+		Indexer:         treesitter.NewParser(cwd, installedPackages{h.pkgmanager.pkg}, uri),
+		ExcludedFolders: cfg.searchConfig().Options.ExcludedFolders,
+	}
+	if cfg.workspaceSymbolsSearch() {
+		scfg.DB = storageapi.WithPartition(
+			storageapi.WithPartition(h.ideStorage, symboldb.PartitionName), uri.String())
+		notify, schedule := h.notifications.current(), h.scheduleNextTick
+		scfg.Progress = func() symboldb.Progress { return symboldb.NotifyProgress(notify, schedule) }
+		idx, err := symboldb.New(scfg)
+		if err == nil {
+			return idx, true
+		}
+		h.empty.log(log.ErrorLevel, "symbol index for workspace %q: %v", uri.Path(), err)
+		scfg.DB, scfg.Progress = nil, nil
+	}
+	// Without a database New does not fail.
+	idx, _ := symboldb.New(scfg)
+	return idx, false
+}
+
+// subscribeSearchDefs registers the searchfunc, searchvar and searchtype
+// commands of the workspace uri, which search idx.
+func (h *workspaceManagerHandler) subscribeSearchDefs(
+	ex *ex, uri workspaceapi.URI, idx *symboldb.Parser, parser syntaxapi.Parser,
+	apibrowser browserapi.Browser,
+) {
+	cfg := defsearch.Config{
+		Root:     uri,
+		Searcher: idx,
+		Clients: finder.Clients{
+			ResourceOpener: apibrowser,
+			WindowManager:  apibrowser,
+			Interrupter:    apibrowser,
+			Notifications:  h.notifications.new(uri, ex.container),
+			Editor:         newEditorAdapter(ex.Editor()),
+			FileSystem:     ex.workspace,
+		},
+		Parser:           parser,
+		ScheduleNextTick: h.scheduleNextTick,
+	}
+	for _, man := range defsearch.Manuals() {
+		if err := ex.editorObserver.SubscribeCommand(man, defsearch.New(man.Name, cfg)); err != nil {
+			log.Errorf("subscribe %s command: %v", man.Name, err)
+		}
 	}
 }
 
@@ -2582,14 +2721,8 @@ func (h *workspaceManagerHandler) installPendingWorkspace(
 	// pending build was in flight. They run against the freshly
 	// focused ex, in the same event-loop turn, so semantics match
 	// "the new workspace just opened and then ran these commands".
-	for _, cmd := range pending.onReady {
-		if len(cmd) == 0 {
-			continue
-		}
-		if err := ex.dispatchCommand(cmd[0], cmd[1:]...); err != nil {
-			_, _ = h.notifications.current().Notify(browserapi.LevelError,
-				"workspaceready %s: %v", cmd[0], err)
-		}
+	for _, job := range pending.onReady {
+		h.runReadyJob(ex, job)
 	}
 	pending.onReady = nil
 
@@ -2698,7 +2831,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 	cfg ideConfig, uri workspaceapi.URI,
 	cwd workspace.Workspace, ex *ex, extExecutor *extensionsExecutor,
 	parser syntaxapi.Parser, indexedSymbols bool, installDir string,
-	regexp regexpSearcher, extensionConfig *extension.LiveConfig,
+	regexp regexpSearcher, indexes searchconsole.Config, extensionConfig *extension.LiveConfig,
 ) (
 	_ extension.Runner, _ *idelsp.Manager, _ *idedebug.Manager,
 	_ *ideacp.Manager, _ *pkgManager, _ storageapi.Service, retErr error,
@@ -2714,11 +2847,11 @@ func (h *workspaceManagerHandler) buildExtensions(
 	}()
 	// Language servers and debuggers run on the workspace host, so the
 	// packages they need are installed there.
-	var pkgs idelsp.PkgManager = h.pkgmanager
+	var pkgs idelsp.PkgManager = h.pkgmanager.libDir
 	pkgshellCfg := pkgconsole.Config{Manager: h.pkgmanager.pkg}
 	hostPkgs := h.hostPackageManager(cfg, uri, cwd, notifications)
 	if hostPkgs != nil {
-		pkgs = hostPkgs
+		pkgs = newSharedLibDir(installedPackages{hostPkgs.pm}, hostPkgs, false)
 		pkgshellCfg = pkgconsole.Config{Manager: hostPkgs.pm, Host: hostPkgs.host}
 		defer func() {
 			if retErr != nil {
@@ -2850,7 +2983,7 @@ func (h *workspaceManagerHandler) buildExtensions(
 	cmdcfg := lspCommandsConfig(uri, cfg, h.events.newInterrupter(uri),
 		parser, callbacks, ex.onLinkClick)
 	apiHandler, err := lspcmd.AllHandler(
-		lspifc, apieditor, apibrowser, apibrowser, apibrowser,
+		lsp, apieditor, apibrowser, apibrowser, apibrowser, apibrowser,
 		ex.workspace, parser, cmdcfg)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("new lsp command handler: %v", err)
@@ -2898,18 +3031,18 @@ func (h *workspaceManagerHandler) buildExtensions(
 		LocalRegistry:    h.llmRouter.LocalRegistry(),
 		Storage:          h.storage,
 		Router:           h.llmRouter,
-		WindowManager:    apibrowser,
 		Notifications:    notifications,
 		ScheduleNextTick: cfg.scheduleNextTick,
-		PromptOpener:     &ex.comp,
+		Prompter:         apibrowser,
 	})
 	if err := ex.editorObserver.RegisterREPLCommand(llmconsole.Manual(), llmHandler); err != nil {
 		log.Errorf("register llm repl command: %v", err)
 	}
 	if err := ex.editorObserver.RegisterREPLCommand(searchconsole.Manual(), searchconsole.New(searchconsole.Config{
-		Searcher: searcher,
-		Search:   h.llmRouter.SearchService(),
-		Root:     uri,
+		Search:  h.llmRouter.SearchService(),
+		Root:    uri,
+		Regex:   indexes.Regex,
+		Symbols: indexes.Symbols,
 	})); err != nil {
 		log.Errorf("register search repl command: %v", err)
 	}
@@ -3567,45 +3700,87 @@ func (h *workspaceManagerHandler) commandRenameWorkspace(args ...string) error {
 	return nil
 }
 
-func (h *workspaceManagerHandler) commandWorkspaceReady(args ...string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("expected at least one argument with the command to run")
-	}
+func (h *workspaceManagerHandler) commandWorkspaceReady(ctx context.Context, args ...string) error {
+	w := resultWaiter(ctx)
 	if h.lastReservedPending != nil {
-		cmd := append([]string(nil), args...)
-		h.lastReservedPending.onReady = append(h.lastReservedPending.onReady, cmd)
+		if w != nil {
+			w.Claimed = true
+		}
+		job := readyJob{cmd: append([]string(nil), args...), waiter: w}
+		h.lastReservedPending.onReady = append(h.lastReservedPending.onReady, job)
+		return nil
+	}
+	if len(args) == 0 {
 		return nil
 	}
 	ex := h.exHandler(h.focusHandler())
-	return ex.dispatchCommand(args[0], args[1:]...)
+	return ex.dispatchCommandCtx(readyDispatchCtx(w), args[0], args[1:]...)
 }
 
-func (h *workspaceManagerHandler) commandExtensionReady(args ...string) error {
-	if len(args) < 2 {
-		return fmt.Errorf("expected extension id and command")
+// runReadyJob dispatches a command workspaceready queued on ex and reports
+// its result on the job's waiter, or as a notification when it has none.
+func (h *workspaceManagerHandler) runReadyJob(ex *ex, job readyJob) {
+	if len(job.cmd) == 0 {
+		if job.waiter != nil {
+			job.waiter.Ch <- nil
+		}
+		return
+	}
+	if job.waiter == nil {
+		if err := ex.dispatchCommand(job.cmd[0], job.cmd[1:]...); err != nil {
+			_, _ = h.notifications.current().Notify(browserapi.LevelError,
+				"workspaceready %s: %v", job.cmd[0], err)
+		}
+		return
+	}
+	// job.waiter is claimed already, so a nested one tells whether the
+	// command finishes later.
+	nested := &textrpc.Waiter{Ch: make(chan error, 1)}
+	err := ex.dispatchCommandCtx(readyDispatchCtx(nested), job.cmd[0], job.cmd[1:]...)
+	if err != nil || !nested.Claimed {
+		job.waiter.Ch <- err
+		return
+	}
+	go debug.CapturePanicReport(func() {
+		select {
+		case err := <-nested.Ch:
+			job.waiter.Ch <- err
+		case <-ex.bgCtx.Done():
+			job.waiter.Ch <- fmt.Errorf("workspace closed before %s finished", job.cmd[0])
+		}
+	})
+}
+
+func (h *workspaceManagerHandler) commandExtensionReady(ctx context.Context, args ...string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("expected extension id")
 	}
 	if h.lastReservedPending != nil {
-		return h.commandWorkspaceReady(append([]string{cmdExtensionReady}, args...)...)
+		return h.commandWorkspaceReady(ctx, append([]string{cmdExtensionReady}, args...)...)
 	}
 	runner := h.focusRunner()
 	if runner == nil {
 		return fmt.Errorf("no extension runner on the focused workspace")
 	}
 	id := args[0]
-	job := extReadyJob{cmd: args[1], args: append([]string(nil), args[2:]...)}
+	job := extReadyJob{waiter: resultWaiter(ctx)}
+	if len(args) > 1 {
+		job.cmd = args[1]
+		job.args = append([]string(nil), args[2:]...)
+	}
 	ex := h.exHandler(h.focusHandler())
 	ch, ok := ex.extReady[id]
 	if !ok {
 		ch = make(chan extReadyJob, extReadyQueueLimit)
 		ex.extReady[id] = ch
-		ch <- job
 		h.startExtReadyWorker(ex.bgCtx, ex, id, runner, ch)
-		return nil
-	}
-	if len(ch) == extReadyQueueLimit {
+	} else if len(ch) == extReadyQueueLimit {
 		return fmt.Errorf(
 			"too many extensionready commands queued for %q (max %d)",
 			id, extReadyQueueLimit)
+	}
+	if job.waiter != nil {
+		job.waiter.Claimed = true
 	}
 	ch <- job
 	return nil
@@ -3615,10 +3790,41 @@ func (h *workspaceManagerHandler) commandExtensionReady(args ...string) error {
 const extReadyQueueLimit = 20
 
 // extReadyJob is a queued extensionready follow-up command; the id and
-// runner are fixed per worker, so only the command and args vary.
+// runner are fixed per worker, so only the command and args vary. An
+// empty cmd runs nothing. A non-nil waiter is already claimed and must
+// receive exactly one result.
 type extReadyJob struct {
-	cmd  string
-	args []string
+	cmd    string
+	args   []string
+	waiter *textrpc.Waiter
+}
+
+// report delivers the result of j to its waiter, or notifies an error
+// when it has none.
+func (h *workspaceManagerHandler) reportExtReadyJob(id string, j extReadyJob, err error) {
+	if j.waiter != nil {
+		j.waiter.Ch <- err
+		return
+	}
+	if err != nil {
+		_, _ = h.notifications.current().Notify(
+			browserapi.LevelError, "extensionready %s: %v", id, err)
+	}
+}
+
+// failExtReadyJobs reports err to the waiters of the jobs still queued
+// on ch, which will not run.
+func failExtReadyJobs(ch chan extReadyJob, err error) {
+	for {
+		select {
+		case j := <-ch:
+			if j.waiter != nil {
+				j.waiter.Ch <- err
+			}
+		default:
+			return
+		}
+	}
 }
 
 // startExtReadyWorker drains ch for one extension id, dispatching queued
@@ -3643,10 +3849,12 @@ func (h *workspaceManagerHandler) startExtReadyWorker(
 	})
 
 	go debug.CapturePanicReport(func() {
+		closed := fmt.Errorf("workspace closed before extension %q was ready", id)
 		var err error
 		select {
 		case err = <-readyErr:
 		case <-ctx.Done():
+			failExtReadyJobs(ch, closed)
 			return
 		}
 		for {
@@ -3654,20 +3862,25 @@ func (h *workspaceManagerHandler) startExtReadyWorker(
 			select {
 			case job = <-ch:
 			case <-ctx.Done():
+				failExtReadyJobs(ch, closed)
 				return
 			}
 			jobErr := err
-			if jobErr == nil {
+			if jobErr == nil && job.cmd != "" {
 				jobErr = h.waitCommandRegistered(ctx, ex, job.cmd)
 			}
+			if ctx.Err() == nil {
+				jobErr = h.runExtReadyJob(ctx, ex, id, job, jobErr)
+			}
+			// runExtReadyJob gives up without a result when ctx ends.
 			if ctx.Err() != nil {
+				if job.waiter != nil {
+					job.waiter.Ch <- closed
+				}
+				failExtReadyJobs(ch, closed)
 				return
 			}
-			if dispErr := h.runExtReadyJob(ctx, ex, id, job, jobErr); dispErr != nil {
-				_, _ = h.notifications.current().Notify(
-					browserapi.LevelError,
-					"extensionready %s: %v", id, dispErr)
-			}
+			h.reportExtReadyJob(id, job, jobErr)
 		}
 	})
 }
@@ -3683,7 +3896,7 @@ func (h *workspaceManagerHandler) startExtReadyWorker(
 func (h *workspaceManagerHandler) runExtReadyJob(
 	ctx context.Context, ex *ex, _ string, job extReadyJob, jobErr error,
 ) error {
-	if jobErr != nil {
+	if jobErr != nil || job.cmd == "" {
 		return jobErr
 	}
 
@@ -4035,6 +4248,7 @@ type workspaceHandler struct {
 	vctrlService        vctrl.Service
 	cursorHistoryCloser io.Closer
 	symbolDBCloser      io.Closer
+	symbolIndex         *symboldb.Parser
 	searchIndexCloser   io.Closer
 	regexIndex          *codesearch.Index
 	cancelCtx           func()
@@ -4770,7 +4984,8 @@ func (s statusWorkspaces) Close(ws, uri workspaceapi.URI) {
 // task as taskstop does, the companion terminal by hiding it, a
 // detached terminal as terminalclose does, a window of a tile as
 // tabclose does, and any other floating window, such as a "!" command
-// or a prompt, by closing it.
+// or a prompt, by closing it. A tab or a window that shows a terminal
+// ends it as endStatusTerminal does.
 func (h *workspaceManagerHandler) closeStatusSource(ws, uri workspaceapi.URI) error {
 	e := h.exForWorkspace(ws)
 	if e == nil {
@@ -4778,6 +4993,10 @@ func (h *workspaceManagerHandler) closeStatusSource(ws, uri workspaceapi.URI) er
 	}
 	b := e.comp.Browser()
 	if tab, ok := b.Tab(uri); ok {
+		if av, ok := tab.Handler().(*asyncVTE); ok {
+			h.endStatusTerminal(e, ws, uri, av)
+			return nil
+		}
 		if !e.tabIsDirty(tab) {
 			b.RemoveTab(tab)
 			return nil
@@ -4824,12 +5043,44 @@ func (h *workspaceManagerHandler) closeStatusSource(ws, uri workspaceapi.URI) er
 	if !ok {
 		return errors.New("it is shown nowhere to close")
 	}
+	if av, ok := terminalViewIn(win); ok && !sameWindow(win, e.companionTerminalWin) {
+		h.endStatusTerminal(e, ws, uri, av)
+		return nil
+	}
 	if win.IsFloating() && !sameWindow(win, e.companionTerminalWin) {
 		// Removing the content of a floating window would show a free tab
 		// in it instead of closing it.
 		return win.Close()
 	}
 	return e.closeWindowContent(win)
+}
+
+// endStatusTerminal closes the tab or window that shows av, the view of
+// a terminal that reported at uri in the workspace at ws, and ends the
+// terminal unless another view shows it: detached, it would only be
+// listed again. Ending a program asks first, unless the inbox asked
+// already.
+func (h *workspaceManagerHandler) endStatusTerminal(e *ex, ws, uri workspaceapi.URI, av *asyncVTE) {
+	info, ok := e.terminalOf(av)
+	if !ok || info.Attachments > 1 {
+		e.removeView(av, vteCloseAuto)
+		return
+	}
+	// The inbox already asked before closing what reads working or
+	// blocked.
+	if sum, _ := h.status.Status(ws, uri); sum.State == programstatus.Working ||
+		sum.State == programstatus.Blocked {
+		e.removeView(av, vteCloseDelete)
+		return
+	}
+	e.terminals.liveness(info.ID, func(l vte.Liveness) {
+		warning := terminalCloseWarning(info, 1, l)
+		if warning == "" {
+			e.removeView(av, vteCloseDelete)
+			return
+		}
+		statusWorkspaces{h}.Confirm(warning, func() { e.removeView(av, vteCloseDelete) })
+	})
 }
 
 func (s statusWorkspaces) Confirm(message string, yes func()) {
@@ -4926,13 +5177,23 @@ func (h *workspaceManagerHandler) subscribeAllCommands(ex *ex) error {
 
 type commandAllWorkspace struct {
 	man     textapi.CommandManual
-	handler func(*workspaceManagerHandler, ...string) error
+	handler func(*workspaceManagerHandler, context.Context, ...string) error
+}
+
+// withoutCtx adapts a workspace command that has no use for its dispatch
+// context.
+func withoutCtx(
+	f func(*workspaceManagerHandler, ...string) error,
+) func(*workspaceManagerHandler, context.Context, ...string) error {
+	return func(h *workspaceManagerHandler, _ context.Context, args ...string) error {
+		return f(h, args...)
+	}
 }
 
 func (h *workspaceManagerHandler) subscribeActiveWorkspaceCommands(ex *ex) (ret error) {
 	workspaceActiveCommands := map[string]commandAllWorkspace{
 		cmdAddWorkspace: {
-			handler: (*workspaceManagerHandler).commandAddWorkspace,
+			handler: withoutCtx((*workspaceManagerHandler).commandAddWorkspace),
 			man: textapi.CommandManual{
 				Summary: "Opens the workspace at the given URI in the current " +
 					"workspace slot if it's empty, or in the next available slot if it's not. " +
@@ -4941,7 +5202,7 @@ func (h *workspaceManagerHandler) subscribeActiveWorkspaceCommands(ex *ex) (ret 
 			},
 		},
 		cmdRenameWorkspace: {
-			handler: (*workspaceManagerHandler).commandRenameWorkspace,
+			handler: withoutCtx((*workspaceManagerHandler).commandRenameWorkspace),
 			man: textapi.CommandManual{
 				Summary: "Renames the workspace tab. The tab is displayed at the " +
 					"bottom of the screen when multiple workspaces are open.",
@@ -4949,34 +5210,34 @@ func (h *workspaceManagerHandler) subscribeActiveWorkspaceCommands(ex *ex) (ret 
 			},
 		},
 		cmdCloseWorkspace: {
-			handler: (*workspaceManagerHandler).commandCloseWorkspace,
+			handler: withoutCtx((*workspaceManagerHandler).commandCloseWorkspace),
 			man: textapi.CommandManual{
 				Summary: "Closes the current active workspace and switches focus " +
 					"to the previous workspace.",
 			},
 		},
 		cmdReloadWorkspace: {
-			handler: (*workspaceManagerHandler).commandReloadWorkspace,
+			handler: withoutCtx((*workspaceManagerHandler).commandReloadWorkspace),
 			man: textapi.CommandManual{
 				Summary: "Reloads the current active workspace, along with all extensions.",
 			},
 		},
 		cmdSwitchToWorkspace: {
-			handler: (*workspaceManagerHandler).commandSwitchToWorkspace,
+			handler: withoutCtx((*workspaceManagerHandler).commandSwitchToWorkspace),
 			man: textapi.CommandManual{
 				Summary:  "Switches the current active workspace to the workspace at the given position.",
 				Synopsis: "(1|2|3|4|5|6|7|8|9)",
 			},
 		},
 		cmdNextWorkspace: {
-			handler: (*workspaceManagerHandler).commandNextWorkspace,
+			handler: withoutCtx((*workspaceManagerHandler).commandNextWorkspace),
 			man: textapi.CommandManual{
 				Summary: "Switches the current active workspace to the next open " +
 					"workspace. Wraps around to the first open workspace.",
 			},
 		},
 		cmdPreviousWorkspace: {
-			handler: (*workspaceManagerHandler).commandPreviousWorkspace,
+			handler: withoutCtx((*workspaceManagerHandler).commandPreviousWorkspace),
 			man: textapi.CommandManual{
 				Summary: "Switches the current active workspace to the previous open " +
 					"workspace. Wraps around to the last open workspace.",
@@ -4988,7 +5249,7 @@ func (h *workspaceManagerHandler) subscribeActiveWorkspaceCommands(ex *ex) (ret 
 					"within the tabs list, or to an absolute position if a number is passed.",
 				Synopsis: "(right|left|1|2|3|4|5|6|7|8|9)",
 			},
-			handler: (*workspaceManagerHandler).moveWorkspace,
+			handler: withoutCtx((*workspaceManagerHandler).moveWorkspace),
 		},
 		cmdWorkspaceReady: {
 			handler: (*workspaceManagerHandler).commandWorkspaceReady,
@@ -4996,8 +5257,10 @@ func (h *workspaceManagerHandler) subscribeActiveWorkspaceCommands(ex *ex) (ret 
 				Summary: "Runs another workspace command once the most recently " +
 					"issued `workspaceopen` has finished loading. If no workspace is " +
 					"currently being loaded, the command is dispatched immediately " +
-					"against the focused workspace.",
-				Synopsis: "<command> [<args>...]",
+					"against the focused workspace. Without a command, it only " +
+					"waits for the workspace, for callers that wait on commands, " +
+					"such as rune --exec.",
+				Synopsis: "[<command>] [<args>...]",
 			},
 		},
 		cmdExtensionReady: {
@@ -5006,12 +5269,14 @@ func (h *workspaceManagerHandler) subscribeActiveWorkspaceCommands(ex *ex) (ret 
 				Summary: "Runs another command once the extension with the given " +
 					"id has finished initializing on the workspace. If a " +
 					"workspaceopen is currently pending, the wait starts after " +
-					"that workspace finishes installing.",
-				Synopsis: "<extension-id> <command> [<args>...]",
+					"that workspace finishes installing. Without a command, it " +
+					"only waits for the extension, for callers that wait on " +
+					"commands, such as rune --exec.",
+				Synopsis: "<extension-id> [<command>] [<args>...]",
 			},
 		},
 		cmdProgramStatus: {
-			handler: (*workspaceManagerHandler).commandProgramStatus,
+			handler: withoutCtx((*workspaceManagerHandler).commandProgramStatus),
 			man: textapi.CommandManual{
 				Summary: "Opens the status inbox: a floating list of every tab " +
 					"whose program reported a status (OSC 7501) across all " +
@@ -5032,7 +5297,7 @@ func (h *workspaceManagerHandler) subscribeInternalCommands(
 		man.man.Name = cmd
 		err := ex.editorObserver.SubscribeCommand(man.man, text.FuncCommandHandler(
 			func(ctx context.Context, cmd textapi.Command) error {
-				return man.handler(h, cmd.Args...)
+				return man.handler(h, ctx, cmd.Args...)
 			}, func(ctx context.Context, cmd textapi.Command) (
 				iterator.Iterator[string], string, error,
 			) {
@@ -5730,4 +5995,19 @@ func lspCommandsConfig(
 		handlermarkdown.WithOnLinkClick(onLinkClick),
 	}
 	return cmdcfg
+}
+
+// consoleIndexes returns the indexes of a workspace that the search
+// console manages: those the workspace keeps.
+func consoleIndexes(
+	cfg ideConfig, regex *codesearch.Index, symbols *symboldb.Parser, indexedSymbols bool,
+) searchconsole.Config {
+	var out searchconsole.Config
+	if cfg.workspaceRegexSearch() {
+		out.Regex = regex
+	}
+	if indexedSymbols {
+		out.Symbols = symbols
+	}
+	return out
 }

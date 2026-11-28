@@ -117,18 +117,21 @@ type fixture struct {
 	changes []vte.Change
 }
 
-func newFixture(t *testing.T) *fixture {
+func newFixture(t *testing.T, opts ...func(*Config)) *fixture {
 	t.Helper()
 	f := &fixture{
 		term:    &fgTerminal{PtyExecutor: workspacetest.NewPtyExecutor()},
 		tabs:    &recordingTabs{},
 		deleted: make(chan workspaceapi.URI, 8),
 	}
-	cfg := vte.DefaultConfig()
-	f.r = New(nopHost{}, nopHost{}, f.term, f.term, f.tabs, Config{
-		VTE:          cfg,
+	cfg := Config{
+		VTE:          vte.DefaultConfig(),
 		PollInterval: 10 * time.Millisecond,
-	})
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	f.r = New(nopHost{}, nopHost{}, f.term, f.term, f.tabs, cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	f.r.Watch(ctx, func(change vte.Change) {
 		f.mu.Lock()
@@ -594,6 +597,19 @@ func TestRegistryWatch(t *testing.T) {
 			return v.ID()
 		},
 		want: []change{{attachments: 1}, {deleted: true}},
+	}, {
+		desc: "deleting a terminal whose process exited",
+		run: func(t *testing.T, f *fixture) vte.ID {
+			v, p := f.create(t, 10, 4)
+			p.HangUp()
+			p.ReportExit(nil)
+			require.Eventually(t, func() bool { return f.last().Complete },
+				5*time.Second, 5*time.Millisecond)
+			require.NoError(t, f.r.DeleteVTE(context.Background(), v.ID()))
+			return v.ID()
+		},
+		want: []change{{attachments: 1}, {attachments: 1, complete: true},
+			{complete: true, deleted: true}},
 	}, {
 		desc: "closing the registry deletes every terminal",
 		run: func(t *testing.T, f *fixture) vte.ID {

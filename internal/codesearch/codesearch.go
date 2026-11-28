@@ -45,6 +45,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
 	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/workspace/searchfilter"
 )
 
 const (
@@ -57,6 +58,9 @@ const (
 )
 
 var errClosed = errors.New("codesearch: index closed")
+
+// ErrRemoved is returned by Reindex once Remove deleted the index.
+var ErrRemoved = errors.New("codesearch: index removed")
 
 // EditorEvents returns the editor event types an Index must be subscribed
 // to in order to keep the index fresh: in-editor saves and the out-of-band
@@ -82,18 +86,24 @@ func IndexFile(dir string, root workspaceapi.URI) string {
 // has in the folder dir, and what an interrupted build of it left.
 func CleanupWorkspaceHook(dir string) func(ctx context.Context, root workspaceapi.URI) error {
 	return func(_ context.Context, root workspaceapi.URI) error {
-		files, err := filepath.Glob(IndexFile(dir, root) + "*")
-		if err != nil {
-			return err
-		}
-		var errs []error
-		for _, f := range files {
-			if err := os.Remove(f); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				errs = append(errs, err)
-			}
-		}
-		return errors.Join(errs...)
+		return removeIndexFiles(IndexFile(dir, root))
 	}
+}
+
+// removeIndexFiles deletes the index persisted in file, and what an
+// interrupted build of it left.
+func removeIndexFiles(file string) error {
+	files, err := filepath.Glob(file + "*")
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, f := range files {
+		if err := os.Remove(f); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Config is what an Index is opened with.
@@ -122,6 +132,9 @@ type Status struct {
 	// the workspace's files changed since it was built: every search
 	// reads those.
 	Files, Changed int
+	// Removed is set once Remove deleted the index: every search reads
+	// every file.
+	Removed bool
 	// Err is why the index could not be built, if it could not.
 	Err string
 }
@@ -138,7 +151,7 @@ type Index struct {
 	cancel context.CancelFunc
 
 	filterOnce sync.Once
-	flt        *filter
+	flt        *searchfilter.Filter
 
 	mu    sync.Mutex
 	base  *index.Index
@@ -160,6 +173,7 @@ type Index struct {
 	busy     bool
 	building bool
 	rebuild  bool
+	removed  bool
 	closed   bool
 	err      string
 	// updated is closed (and replaced) on every state change so that Wait
@@ -192,8 +206,8 @@ func Open(cfg Config) *Index {
 	return i
 }
 
-func (i *Index) filter() *filter {
-	i.filterOnce.Do(func() { i.flt = newFilter(i.cfg.FS, i.cfg.ExcludedFolders) })
+func (i *Index) filter() *searchfilter.Filter {
+	i.filterOnce.Do(func() { i.flt = searchfilter.New(i.cfg.FS, i.cfg.ExcludedFolders) })
 	return i.flt
 }
 
@@ -254,7 +268,7 @@ func (i *Index) reconcile() bool {
 		log.Warnf("codesearch: read the index of %s: %v", i.cfg.Root, err)
 		return false
 	}
-	files, err := i.filter().walk(i.ctx, i.cfg.FS, []string{"."})
+	files, err := i.filter().Walk(i.ctx, i.cfg.FS, []string{"."})
 	if i.ctx.Err() != nil {
 		_ = base.Close()
 		return true
@@ -303,13 +317,13 @@ func (i *Index) update() {
 	// whose files are found instead.
 	var skipped, found []string
 	for _, rel := range paths {
-		if i.filter().skips(rel) {
+		if i.filter().Skips(rel) {
 			skipped = append(skipped, rel)
 			continue
 		}
 		if info, err := i.cfg.FS.Stat(rel); err == nil && info.IsDir() {
 			skipped = append(skipped, rel)
-			files, _ := i.filter().walk(i.ctx, i.cfg.FS, []string{rel})
+			files, _ := i.filter().Walk(i.ctx, i.cfg.FS, []string{rel})
 			found = append(found, files...)
 		}
 	}
@@ -335,7 +349,8 @@ func (i *Index) update() {
 
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if len(i.pending) == 0 {
+	// A rebuild asked for while building is yet to run.
+	if len(i.pending) == 0 && !i.rebuild {
 		i.busy = false
 	}
 	i.wakeLocked()
@@ -359,7 +374,15 @@ func (i *Index) build() {
 		prog.done(files)
 	case i.ctx.Err() == nil:
 		prog.stop(err)
+	case i.isRemoved():
+		prog.stop(ErrRemoved)
 	}
+}
+
+func (i *Index) isRemoved() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.removed
 }
 
 // finish has searches go through the index write built in tmp, and
@@ -442,7 +465,7 @@ func (i *Index) readNames(base *index.Index) ([]string, error) {
 			return nil, err
 		}
 		name := p.String()
-		if name == "" || len(names) > 0 && comparePaths(names[len(names)-1], name) >= 0 {
+		if name == "" || len(names) > 0 && searchfilter.ComparePaths(names[len(names)-1], name) >= 0 {
 			return nil, &index.CorruptError{File: i.cfg.File}
 		}
 		names = append(names, name)
@@ -459,7 +482,7 @@ func (i *Index) readNames(base *index.Index) ([]string, error) {
 // index is dated started so files modified after are known to have changed.
 // It reports its progress to prog once it knows there are files to index.
 func (i *Index) write(started time.Time, prog *buildProgress) (tmp string, files []string, err error) {
-	files, err = i.filter().walk(i.ctx, i.cfg.FS, []string{"."})
+	files, err = i.filter().Walk(i.ctx, i.cfg.FS, []string{"."})
 	if i.ctx.Err() != nil {
 		return "", nil, i.ctx.Err()
 	}
@@ -597,7 +620,7 @@ func (i *Index) Handle(_ context.Context, ev textapi.Event) bool {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.closed {
+	if i.closed || i.removed {
 		return false
 	}
 	i.dirty[rel] = struct{}{}
@@ -636,25 +659,25 @@ func (i *Index) RegexpSearch(
 		return nil, err
 	}
 	var indexed, direct []string
-	for _, root := range cleanRoots(req.Roots) {
-		if i.filter().leavesOut(root) {
+	for _, root := range searchfilter.CleanRoots(req.Roots) {
+		if i.filter().LeavesOut(root) {
 			direct = append(direct, root)
 		} else {
 			indexed = append(indexed, root)
 		}
 	}
-	paths, err := i.indexedCandidates(ctx, index.RegexpQuery(parsed), outermost(indexed))
+	paths, err := i.indexedCandidates(ctx, index.RegexpQuery(parsed), searchfilter.Outermost(indexed))
 	if err != nil {
 		return nil, err
 	}
 	if len(direct) > 0 {
-		files, err := i.walk(ctx, outermost(direct))
+		files, err := i.walk(ctx, searchfilter.Outermost(direct))
 		if err != nil {
 			return nil, err
 		}
 		paths = append(paths, files...)
 	}
-	slices.SortFunc(paths, comparePaths)
+	slices.SortFunc(paths, searchfilter.ComparePaths)
 	paths, err = included(slices.Compact(paths), req.Include)
 	if err != nil {
 		return nil, err
@@ -688,7 +711,7 @@ func (i *Index) indexedCandidates(ctx context.Context, q *index.Query, roots []s
 // walk lists the files under roots. Only a canceled ctx fails it: a
 // folder it cannot read has no files.
 func (i *Index) walk(ctx context.Context, roots []string) ([]string, error) {
-	files, err := i.filter().walk(ctx, i.cfg.FS, roots)
+	files, err := i.filter().Walk(ctx, i.cfg.FS, roots)
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -731,19 +754,19 @@ func (i *Index) candidates(q *index.Query, roots []string) (paths, unchecked []s
 	paths = make([]string, 0, len(ids)+len(i.dirty))
 	for _, id := range ids {
 		name := i.names[id]
-		if _, changed := i.dirty[name]; !changed && under(name, roots) {
+		if _, changed := i.dirty[name]; !changed && searchfilter.Under(name, roots) {
 			paths = append(paths, name)
 		}
 	}
 	for rel := range i.dirty {
 		if _, ok := i.pending[rel]; ok {
 			unchecked = append(unchecked, rel)
-		} else if under(rel, roots) {
+		} else if searchfilter.Under(rel, roots) {
 			paths = append(paths, rel)
 		}
 	}
 	for rel := range i.unindexed {
-		if _, changed := i.dirty[rel]; !changed && under(rel, roots) {
+		if _, changed := i.dirty[rel]; !changed && searchfilter.Under(rel, roots) {
 			paths = append(paths, rel)
 		}
 	}
@@ -756,8 +779,8 @@ func (i *Index) candidates(q *index.Query, roots []string) (paths, unchecked []s
 func (i *Index) check(ctx context.Context, unchecked, roots []string) []string {
 	var out []string
 	for _, rel := range unchecked {
-		if i.filter().skips(rel) || !under(rel, roots) && !slices.ContainsFunc(roots, func(root string) bool {
-			return under(root, []string{rel})
+		if i.filter().Skips(rel) || !searchfilter.Under(rel, roots) && !slices.ContainsFunc(roots, func(root string) bool {
+			return searchfilter.Under(root, []string{rel})
 		}) {
 			continue
 		}
@@ -765,19 +788,80 @@ func (i *Index) check(ctx context.Context, unchecked, roots []string) []string {
 		switch {
 		case err != nil:
 		case info.IsDir():
-			files, _ := i.filter().walk(ctx, i.cfg.FS, []string{rel})
+			files, _ := i.filter().Walk(ctx, i.cfg.FS, []string{rel})
 			for _, f := range files {
-				if under(f, roots) {
+				if searchfilter.Under(f, roots) {
 					out = append(out, f)
 				}
 			}
 		default:
-			if under(rel, roots) {
+			if searchfilter.Under(rel, roots) {
 				out = append(out, rel)
 			}
 		}
 	}
 	return out
+}
+
+// Reindex has the index built again from scratch, in the background. It
+// does nothing without Config.File, and returns ErrRemoved once Remove
+// deleted the index.
+func (i *Index) Reindex() error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	switch {
+	case i.closed:
+		return errClosed
+	case i.removed:
+		return ErrRemoved
+	case i.cfg.File == "":
+		return nil
+	}
+	i.rebuild = true
+	i.busy = true
+	i.wakeLocked()
+	select {
+	case i.wake <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// Remove deletes the index Config.File holds, and stops keeping it: from
+// then on every search reads every file, as without Config.File. A build
+// under way stops first. It returns ErrRemoved once the index was
+// removed.
+func (i *Index) Remove() error {
+	i.mu.Lock()
+	switch {
+	case i.closed:
+		i.mu.Unlock()
+		return errClosed
+	case i.removed:
+		i.mu.Unlock()
+		return ErrRemoved
+	}
+	i.removed = true
+	i.mu.Unlock()
+	i.cancel()
+	<-i.done
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	defer i.wakeLocked()
+	var errs []error
+	if i.base != nil {
+		errs = append(errs, i.base.Close())
+	}
+	i.base, i.names, i.ready = nil, nil, false
+	i.unindexed, i.since = nil, nil
+	clear(i.dirty)
+	clear(i.pending)
+	i.busy, i.building, i.rebuild = false, false, false
+	i.err = ""
+	if i.cfg.File != "" {
+		errs = append(errs, removeIndexFiles(i.cfg.File))
+	}
+	return errors.Join(errs...)
 }
 
 // Status describes the index now.
@@ -789,6 +873,7 @@ func (i *Index) Status() Status {
 		Building: i.building,
 		Files:    len(i.names),
 		Changed:  len(i.dirty),
+		Removed:  i.removed,
 		Err:      i.err,
 	}
 }

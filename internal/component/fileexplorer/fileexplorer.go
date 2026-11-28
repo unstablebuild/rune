@@ -319,27 +319,27 @@ func (c *Component) NodeAt(
 
 // ExpandNodeAt toggles expand/collapse for the directory whose
 // rowIDs[pos.Y] matches a known node. For files, it returns
-// (uri, true) without mutating the buffer. For directories, it
+// (uri, true, nil) without mutating the buffer. For directories, it
 // rewrites the buffer to reflect the new view and returns
-// (URI{}, false).
+// (URI{}, false, nil), or an error if reading the directory fails.
 //
 // Before mutating, the current buffer is re-parsed and merged with
 // baseTree, so any unflushed user edits (renames, creates, ...) are
 // preserved across the toggle.
 func (c *Component) ExpandNodeAt(
 	pos term.Coordinates,
-) (workspaceapi.URI, bool) {
+) (workspaceapi.URI, bool, error) {
 	if pos.Y < 0 || pos.Y >= len(c.rowIDs) {
-		return workspaceapi.URI{}, false
+		return workspaceapi.URI{}, false, nil
 	}
 	id := c.rowIDs[pos.Y]
 	if id == 0 {
-		return workspaceapi.URI{}, false
+		return workspaceapi.URI{}, false, nil
 	}
 	view := c.parseViewTree()
 	target := c.findNodeByID(view, id)
 	if target == nil {
-		return workspaceapi.URI{}, false
+		return workspaceapi.URI{}, false, nil
 	}
 	if !target.isDir {
 		// For files, resolve to the on-disk URI from the base
@@ -348,9 +348,9 @@ func (c *Component) ExpandNodeAt(
 		// not-yet-existing path. Opening should target the real
 		// file so the editor has content to show.
 		if base := c.findNodeByID(c.baseTree, id); base != nil {
-			return base.uri, true
+			return base.uri, true, nil
 		}
-		return target.uri, true
+		return target.uri, true, nil
 	}
 	if target.expanded {
 		target.expanded = false
@@ -360,7 +360,7 @@ func (c *Component) ExpandNodeAt(
 	} else {
 		if target.children == nil {
 			if err := readChildren(c.fs, c.cfg.Ignore, target); err != nil {
-				return workspaceapi.URI{}, false
+				return workspaceapi.URI{}, false, err
 			}
 			c.assignIDs(target)
 			if baseNode := c.findNodeByID(c.baseTree, id); baseNode != nil {
@@ -375,7 +375,7 @@ func (c *Component) ExpandNodeAt(
 		target.expanded = true
 	}
 	c.rewriteBufferFromTree(view)
-	return workspaceapi.URI{}, false
+	return workspaceapi.URI{}, false, nil
 }
 
 // Reveal expands dir, a path on disk, and each of its ancestors below

@@ -49,3 +49,12 @@ func WithAfterConfigWrite(hook func(pkgID string)) Option {
 		m.afterConfigWrite = hook
 	}
 }
+
+// WithAfterInstall installs a hook called with the package's ID once a
+// version of it is installed or put in use and its files are in place.
+// The hook runs on the goroutine that installed the package.
+func WithAfterInstall(hook func(pkgID string)) Option {
+	return func(m *Manager) {
+		m.afterInstall = hook
+	}
+}

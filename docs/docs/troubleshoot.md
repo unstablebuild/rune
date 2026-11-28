@@ -45,6 +45,42 @@ as it is decoded. If nothing appears, the event is still being swallowed before 
 reaches Rune; revisit step 1 and check for window manager shortcuts that may
 also be claiming the combination.
 
+If an Option (⌥) binding prints a character such as `˙` or `¬` instead of
+`<alt-h>` or `<alt-l>`, see
+[An Alt binding types a character on macOS](#an-alt-binding-types-a-character-on-macos).
+
+## An Alt binding types a character on macOS
+
+On macOS, `gui.alt_modifier` reserves one Option (⌥) key for typing the
+characters your keyboard layout places on it, such as `@`, `|` or `{` on many
+European layouts. While you hold the reserved key, a chord that types a
+character inserts that character instead of triggering an Alt binding. Chords
+that type nothing, such as ⌥ with an arrow key, still trigger their bindings.
+Rune's first-run setup asks which ⌥ key should type characters and saves your
+answer to this setting.
+
+To confirm, run the `keydump` command and press the binding. If you see the
+layout character instead of the Alt chord, for example `˙` instead of
+`<alt-h>` and `¬` instead of `<alt-l>` on a US layout, the ⌥ key you are
+holding is the reserved one.
+
+The setting names the key that types characters, not the key that acts as
+Alt: `alt_modifier: left` leaves only the right ⌥ key for Alt bindings. Set it
+to the ⌥ key you do not use for shortcuts, or to `none` so both keys trigger
+Alt bindings:
+
+```yaml tab
+gui:
+  alt_modifier: none
+```
+
+```python tab
+config["gui"]["alt_modifier"] = "none"
+```
+
+On a keyboard with a single ⌥ key, choose between Alt bindings (`none`) and
+typing layout characters with that key (`left`).
+
 ## My remapped key is not honored in Rune
 
 If you remapped a key at the OS level (a common example is making **CapsLock**
@@ -109,6 +145,13 @@ open display` means the X server that `DISPLAY` names is not running or
 not reachable. `X11: Failed to load libX11` means the X11 client
 libraries are missing: install your distribution's Mesa and X11 client
 library packages.
+
+Scripting Rune with [`--exec`](./develop/runectl.md#automating-rune-with---exec)
+also runs it in GUI mode, so it needs a display too, unless you add
+`--offscreen` to run it without a window. On Linux, `--offscreen` needs
+Mesa's EGL: if Rune exits with `offscreen mode needs libEGL` or `needs
+Mesa's EGL`, install your distribution's Mesa EGL package, such as
+`libegl-mesa0` on Debian and Ubuntu.
 
 ## The command prompt will not open iwth an external editor
 

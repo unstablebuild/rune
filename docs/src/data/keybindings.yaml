@@ -50,6 +50,9 @@ modal:
       <alt-f>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>
       <alt-v>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>
       <alt-s>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>
+      <alt-shift-f>: searchfunc
+      <alt-shift-v>: searchvar
+      <alt-shift-s>: searchtype
       <alt-j>: lspnextdiagnostic
       <alt-k>: lspprevdiagnostic
       <alt-t>: lsp hover
@@ -216,6 +219,9 @@ helix:
       <space>s: echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>
       <space>t: echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>
       <space>v: echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>
+      <alt-shift-f>: searchfunc
+      <alt-shift-v>: searchvar
+      <alt-shift-s>: searchtype
       <ctrl-w>h: windowfocus left
       <ctrl-w>j: windowfocus down
       <ctrl-w>k: windowfocus up
@@ -534,6 +540,9 @@ standard:
       <ctrl-space>: lsp complete
       <alt-x>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>
       <alt-f>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.method|local.definition.function<space>
+      <alt-shift-f>: searchfunc
+      <alt-shift-v>: searchvar
+      <alt-shift-s>: searchtype
       <alt-s>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>
       <shift-meta-r>: history
       <shift-meta-e>: fexplorer
@@ -751,6 +760,9 @@ emacs:
       <meta-s>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.type<space>
       <meta-x>: echo {prompt}jumptoast<space>locals.scm<space>local.definition.var<space>
       <alt-s>o: searchtext
+      <alt-s>f: searchfunc
+      <alt-s>v: searchvar
+      <alt-s>t: searchtype
       <ctrl-alt-\\>: lsp format
       <ctrl-alt-i>: lsp complete
       <meta-l>: lspnextdiagnostic

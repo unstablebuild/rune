@@ -104,6 +104,29 @@ func SupportsReasoning(model string) bool {
 	return strings.HasPrefix(model, "gpt-5") || strings.HasPrefix(model, "gpt-6")
 }
 
+// SupportsSpeed reports whether the OpenAI API can run model at speed. The
+// empty speed and llmapi.SpeedStandard are supported by every model.
+func SupportsSpeed(model string, speed llmapi.Speed) bool {
+	switch speed {
+	case "", llmapi.SpeedStandard:
+		return true
+	case llmapi.SpeedFast:
+		switch model {
+		case GPT6Dot2Astra, GPT6Dot2Sol, GPT6Astra, GPT6Dot1Sol, GPT6Dot1Terra,
+			GPT6Sol, GPT6Luna, GPT5Dot6, GPT5Dot6Sol, GPT5Dot6Terra, GPT5Dot6Luna,
+			GPT5Dot5, GPT5Dot4, GPT5Dot4Mini, GPT5Dot2, GPT5Dot1, GPT4Dot1,
+			GPT4Dot1Mini, GPT4o:
+			return true
+		}
+	case llmapi.SpeedUltrafast:
+		switch model {
+		case GPT6Dot2Astra, GPT6Dot2Sol, GPT6Astra, GPT6Dot1Sol:
+			return true
+		}
+	}
+	return false
+}
+
 // oSeriesEfforts are the effort levels supported by o-series reasoning models
 // (o1, o3, o4). Per OpenAI docs these models accept low/medium/high only.
 var oSeriesEfforts = map[string]bool{

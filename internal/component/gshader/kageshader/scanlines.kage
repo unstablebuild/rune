@@ -1,0 +1,22 @@
+//kage:unit pixels
+
+package main
+
+var Progress float
+
+// Strength is how dark the lines are, from 0 to 1.
+var Strength float
+
+// Spacing is how many pixels apart the lines are.
+var Spacing float
+
+// Speed is how many lines roll past over a run, rounded to a whole number
+// so that the run ends where it starts.
+var Speed float
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	c := imageSrc0At(srcPos)
+	phase := dstPos.y/max(Spacing, 1) - Progress*floor(Speed+0.5)
+	line := 0.5 + 0.5*cos(6.28318530718*phase)
+	return vec4(c.rgb*(1-Strength*line), c.a)
+}

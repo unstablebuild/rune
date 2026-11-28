@@ -1364,37 +1364,6 @@ func TestComponentRestoreTileLayoutFreesDisplayedTabs(t *testing.T) {
 		"clicking the freed tab must load it into the focused window")
 }
 
-// stitchingFloating records the frames it is asked to join its rules to.
-type stitchingFloating struct {
-	Floating
-	sizes [][2]int
-	bars  []bool
-}
-
-func (s *stitchingFloating) StitchFrame(
-	_ term.Writer, _ *component.Frame, _ *tcomponent.FrameGraphics, width, height int, bar bool,
-) {
-	s.sizes = append(s.sizes, [2]int{width, height})
-	s.bars = append(s.bars, bar)
-}
-
-func TestComponentFloatingStitchesFrame(t *testing.T) {
-	for _, noBar := range []bool{true, false} {
-		t.Run(fmt.Sprintf("no window bar %v", noBar), func(t *testing.T) {
-			cfg := DefaultConfig()
-			cfg.Frame = true
-			cfg.WindowBar = true
-			b := NewComponent(cfg)
-			b.Resize(40, 12)
-			s := &stitchingFloating{Floating: StaticFloating(newTestHandler(), 6, 3)}
-			b.Floating(s, browserapi.FloatingConfig{NoWindowBar: noBar})
-			b.Draw(term.NewStringWriter(40, 12))
-			assert.Equal(t, [][2]int{{8, 5}}, s.sizes, "the frame around the content")
-			assert.Equal(t, []bool{!noBar}, s.bars)
-		})
-	}
-}
-
 func TestWindowClosedOnClose(t *testing.T) {
 	b := NewComponent(DefaultConfig())
 	h := newTestHandler()
@@ -4123,7 +4092,7 @@ func TestComponentWallpaperOnABackgroundKeepsItsPictures(t *testing.T) {
 	art := &pictureWallpaper{pic: image.NewRGBA(image.Rect(0, 0, 2, 2)), id: term.NewImageID()}
 	cfg := DefaultConfig()
 	cfg.Wallpaper = Wallpaper{
-		NewComponent:   func() tui.Component { return art },
+		NewComponent:   func() ComponentCloser { return NopCloser(art) },
 		BackgroundAttr: background,
 	}
 	b := NewComponent(cfg)
@@ -4161,10 +4130,10 @@ func TestComponentWallpaperOnABackgroundKeepsItsPictures(t *testing.T) {
 
 func TestComponentFocusWallpaper(t *testing.T) {
 	text := func(s string) Wallpaper {
-		return Wallpaper{NewComponent: func() tui.Component {
-			return component.NewStringWithConfig(s, component.StringConfig{
+		return Wallpaper{NewComponent: func() ComponentCloser {
+			return NopCloser(component.NewStringWithConfig(s, component.StringConfig{
 				Alignment: component.AlignmentCentered,
-			})
+			}))
 		}}
 	}
 	cfg := DefaultConfig()
@@ -4214,13 +4183,13 @@ func TestComponentFocusWallpaper(t *testing.T) {
 }
 
 func TestWallpaperDimensions(t *testing.T) {
-	str := func(s string) tui.Component { return component.NewString(s) }
+	str := func(s string) ComponentCloser { return NopCloser(component.NewString(s)) }
 	tests := []struct {
 		name            string
-		normal, focused tui.Component
+		normal, focused ComponentCloser
 		width, height   int
 	}{
-		{name: "keeps its size without floating components", normal: component.Nop(), width: 30, height: 9},
+		{name: "keeps its size without floating components", normal: NopCloser(component.Nop()), width: 30, height: 9},
 		{name: "asks for the size of its component", normal: str("abc"), width: 3, height: 9},
 		{name: "asks for the size of the larger component", normal: str("a"), focused: str("abc"), width: 3, height: 9},
 	}
@@ -4232,6 +4201,54 @@ func TestWallpaperDimensions(t *testing.T) {
 			assert.Equal(t, []int{tt.width, tt.height}, []int{width, height})
 		})
 	}
+}
+
+// closingWallpaper is a wallpaper component that counts its Closes.
+type closingWallpaper struct {
+	component.String
+	closes *int
+}
+
+func (c closingWallpaper) Close() error { *c.closes++; return nil }
+
+func TestWallpaperClose(t *testing.T) {
+	var closes int
+	closing := func() ComponentCloser {
+		return closingWallpaper{String: component.NewString("w"), closes: &closes}
+	}
+	onNavy := Wallpaper{NewComponent: closing, BackgroundAttr: term.Attributes{Bg: term.ColorNavy}}
+	tests := []struct {
+		name            string
+		normal, focused ComponentCloser
+		want            int
+	}{
+		{name: "closes both components", normal: closing(), focused: closing(), want: 2},
+		{name: "closes its component without a focus one", normal: closing(), want: 1},
+		{name: "closes a component on a background", normal: newWallpaperComponent(onNavy), want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			closes = 0
+			w := &wallpaper{normal: tt.normal, focused: tt.focused}
+			require.NoError(t, w.Close())
+			assert.Equal(t, tt.want, closes)
+		})
+	}
+}
+
+func TestComponentClosesReplacedWallpapers(t *testing.T) {
+	var closes int
+	cfg := DefaultConfig()
+	cfg.Wallpaper = Wallpaper{
+		NewComponent: func() ComponentCloser {
+			return closingWallpaper{String: component.NewString("w"), closes: &closes}
+		},
+		BackgroundAttr: term.Attributes{Bg: term.ColorNavy},
+	}
+	b := NewComponent(cfg)
+	b.Resize(20, 8)
+	b.Restyle(Style{WindowManager: cfg.WindowManagerConfig, Wallpaper: cfg.Wallpaper})
+	assert.Equal(t, 1, closes, "restyling replaces the wallpaper and closes the old one")
 }
 
 // newPointerLess returns a less over more lines than any test size, some

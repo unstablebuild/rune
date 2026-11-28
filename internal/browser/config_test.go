@@ -65,13 +65,16 @@ func TestConfigRestyled(t *testing.T) {
 		},
 		FrameUnionCharSet: component.FrameUnionCharSet{FrameCharSet: plus, Left: 'L', Right: 'R', Top: 'T', Bottom: 'B'},
 		Prompt: PromptConfig{
-			TextAttr:       blue,
-			HighlightAttr:  blue,
-			HoverAttr:      blue,
-			ClickedAttr:    blue,
-			BackgroundAttr: blue,
-			MinWidth:       7,
-			Images:         PromptImages{Idle: PromptButtonImage{Middle: "file:///new.png"}},
+			TextAttr:        blue,
+			HighlightAttr:   blue,
+			HoverAttr:       blue,
+			ClickedAttr:     blue,
+			BackgroundAttr:  blue,
+			FieldAttr:       blue,
+			FocusFieldAttr:  blue,
+			PlaceholderAttr: blue,
+			MinWidth:        7,
+			Images:          PromptImages{Idle: PromptButtonImage{Middle: "file:///new.png"}},
 		},
 		Wallpaper: Wallpaper{BackgroundAttr: blue},
 		Tabs: TabStyle{
@@ -108,6 +111,9 @@ func TestConfigRestyled(t *testing.T) {
 	want.PromptConfig.HoverAttr = blue
 	want.PromptConfig.ClickedAttr = blue
 	want.PromptConfig.BackgroundAttr = blue
+	want.PromptConfig.FieldAttr = blue
+	want.PromptConfig.FocusFieldAttr = blue
+	want.PromptConfig.PlaceholderAttr = blue
 	want.PromptConfig.Images = s.Prompt.Images
 	want.Wallpaper = s.Wallpaper
 	want.FocusTabAttr = blue
@@ -207,6 +213,28 @@ func TestTabImagesImages(t *testing.T) {
 					}
 					assert.Same(t, g.Image(side.uri), side.got)
 				}
+			}
+		})
+	}
+}
+
+func TestNopCloser(t *testing.T) {
+	tests := []struct {
+		name         string
+		c            tui.Component
+		wantFloating bool
+	}{
+		{name: "keeps a floating component floating", c: component.NewString("abc"), wantFloating: true},
+		{name: "leaves another component not floating", c: component.Nop()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := NopCloser(tt.c)
+			assert.NoError(t, c.Close())
+			f, ok := c.(component.Floating)
+			if assert.Equal(t, tt.wantFloating, ok) && ok {
+				width, height := f.Dimensions()
+				assert.Equal(t, []int{3, 1}, []int{width, height})
 			}
 		})
 	}

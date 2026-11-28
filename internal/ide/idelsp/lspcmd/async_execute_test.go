@@ -61,23 +61,23 @@ func TestLocationHandlersCursorPathDoesNotBlockLoop(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		lsp        func(wait func()) semanticapi.LSP
+		lsp        func(wait func()) commandLSP
 		newHandler func(
-			lsp semanticapi.LSP, editor textapi.Editor,
+			lsp commandLSP, editor textapi.Editor,
 			wm browserapi.WindowManager, notify browserapi.Notifications,
 			tick func(func()) bool,
 		) textapi.CommandHandler
 	}{
 		{
 			name: "definition",
-			lsp: func(wait func()) semanticapi.LSP {
+			lsp: func(wait func()) commandLSP {
 				return &mockLSP{definitionFn: func(context.Context, semanticapi.DefinitionParams) (semanticapi.LocationResult, error) {
 					wait()
 					return res, nil
 				}}
 			},
 			newHandler: func(
-				lsp semanticapi.LSP, editor textapi.Editor,
+				lsp commandLSP, editor textapi.Editor,
 				wm browserapi.WindowManager, notify browserapi.Notifications,
 				tick func(func()) bool,
 			) textapi.CommandHandler {
@@ -89,14 +89,14 @@ func TestLocationHandlersCursorPathDoesNotBlockLoop(t *testing.T) {
 		},
 		{
 			name: "declaration",
-			lsp: func(wait func()) semanticapi.LSP {
+			lsp: func(wait func()) commandLSP {
 				return &mockLSP{declarationFn: func(context.Context, semanticapi.DeclarationParams) (semanticapi.LocationResult, error) {
 					wait()
 					return res, nil
 				}}
 			},
 			newHandler: func(
-				lsp semanticapi.LSP, editor textapi.Editor,
+				lsp commandLSP, editor textapi.Editor,
 				wm browserapi.WindowManager, notify browserapi.Notifications,
 				tick func(func()) bool,
 			) textapi.CommandHandler {
@@ -108,14 +108,14 @@ func TestLocationHandlersCursorPathDoesNotBlockLoop(t *testing.T) {
 		},
 		{
 			name: "type-definition",
-			lsp: func(wait func()) semanticapi.LSP {
+			lsp: func(wait func()) commandLSP {
 				return &mockLSP{typeDefinitionFn: func(context.Context, semanticapi.TypeDefinitionParams) (semanticapi.LocationResult, error) {
 					wait()
 					return res, nil
 				}}
 			},
 			newHandler: func(
-				lsp semanticapi.LSP, editor textapi.Editor,
+				lsp commandLSP, editor textapi.Editor,
 				wm browserapi.WindowManager, notify browserapi.Notifications,
 				tick func(func()) bool,
 			) textapi.CommandHandler {
@@ -127,14 +127,14 @@ func TestLocationHandlersCursorPathDoesNotBlockLoop(t *testing.T) {
 		},
 		{
 			name: "implementation",
-			lsp: func(wait func()) semanticapi.LSP {
+			lsp: func(wait func()) commandLSP {
 				return &mockLSP{implementationFn: func(context.Context, semanticapi.ImplementationParams) (semanticapi.LocationResult, error) {
 					wait()
 					return res, nil
 				}}
 			},
 			newHandler: func(
-				lsp semanticapi.LSP, editor textapi.Editor,
+				lsp commandLSP, editor textapi.Editor,
 				wm browserapi.WindowManager, notify browserapi.Notifications,
 				tick func(func()) bool,
 			) textapi.CommandHandler {
@@ -146,14 +146,14 @@ func TestLocationHandlersCursorPathDoesNotBlockLoop(t *testing.T) {
 		},
 		{
 			name: "references",
-			lsp: func(wait func()) semanticapi.LSP {
+			lsp: func(wait func()) commandLSP {
 				return &mockLSP{referencesFn: func(context.Context, semanticapi.ReferenceParams) ([]semanticapi.Location, error) {
 					wait()
 					return []semanticapi.Location{loc}, nil
 				}}
 			},
 			newHandler: func(
-				lsp semanticapi.LSP, editor textapi.Editor,
+				lsp commandLSP, editor textapi.Editor,
 				wm browserapi.WindowManager, notify browserapi.Notifications,
 				tick func(func()) bool,
 			) textapi.CommandHandler {
@@ -165,7 +165,7 @@ func TestLocationHandlersCursorPathDoesNotBlockLoop(t *testing.T) {
 		},
 		{
 			name: "hover",
-			lsp: func(wait func()) semanticapi.LSP {
+			lsp: func(wait func()) commandLSP {
 				return &hoverMockLSP{mockLSP: &mockLSP{}, hoverFn: func(context.Context, semanticapi.HoverParams) (*semanticapi.Hover, error) {
 					wait()
 					return &semanticapi.Hover{Contents: semanticapi.MarkupContent{
@@ -175,7 +175,7 @@ func TestLocationHandlersCursorPathDoesNotBlockLoop(t *testing.T) {
 				}}
 			},
 			newHandler: func(
-				lsp semanticapi.LSP, _ textapi.Editor,
+				lsp commandLSP, _ textapi.Editor,
 				wm browserapi.WindowManager, notify browserapi.Notifications,
 				tick func(func()) bool,
 			) textapi.CommandHandler {

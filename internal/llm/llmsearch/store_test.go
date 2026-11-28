@@ -19,6 +19,7 @@ package llmsearch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -265,42 +266,43 @@ func TestStoreReportsBatchFailures(t *testing.T) {
 
 func TestCleanupWorkspaceHook(t *testing.T) {
 	ctx := context.Background()
-	ideStorage := storagestub.NewInMemoryService()
-	workspaceDB := func(root workspaceapi.URI) storageapi.Service {
-		return storageapi.WithPartition(storageapi.WithPartition(ideStorage, PartitionName), root.String())
-	}
-	ti := openTestIndex(t, true, DefaultOptions())
-	ti.db = workspaceDB(ti.root)
-	require.NoError(t, ti.idx.Close())
-	ti.svc = newService(t, ti.reg, NewFakeEmbedderFactory())
-	ti.open(t, DefaultOptions())
-	require.NoError(t, ti.idx.Close())
+	for _, indexed := range []bool{true, false} {
+		t.Run(fmt.Sprintf("indexed=%v", indexed), func(t *testing.T) {
+			ideStorage := storagestub.NewInMemoryService()
+			t.Cleanup(func() { _ = ideStorage.Close() })
+			workspaceDB := func(root workspaceapi.URI) storageapi.Service {
+				return storageapi.WithPartition(storageapi.WithPartition(ideStorage, PartitionName), root.String())
+			}
+			_, root, fsys := newWorkspace(t)
+			db := workspaceDB(root)
+			if indexed {
+				svc := newService(t, newRegistry(t, true), NewFakeEmbedderFactory())
+				idx, err := svc.OpenIndex(IndexConfig{
+					Root: root, FS: fsys, DB: db, Notify: &recordingNotifications{}, Schedule: syncTick,
+					Options: DefaultOptions(),
+				})
+				require.NoError(t, err)
+				waitCtx, cancel := context.WithTimeout(ctx, waitTimeout)
+				defer cancel()
+				require.NoError(t, idx.Wait(waitCtx))
+				require.NoError(t, idx.Close())
+				for _, part := range []string{filesPartition, segmentsPartition, vectorsPartition} {
+					require.NotZero(t, countDocs(t, db, part), "%s must be populated before the drop", part)
+				}
+			}
+			other, err := workspaceapi.ParseURI(root.String() + "-other")
+			require.NoError(t, err)
+			otherDB := workspaceDB(other)
+			require.NoError(t, otherDB.Set(ctx, metaID, metaDoc{Version: schemaVersion}))
 
-	other, err := workspaceapi.ParseURI(ti.root.String() + "-other")
-	require.NoError(t, err)
-	otherDB := workspaceDB(other)
-	require.NoError(t, otherDB.Set(ctx, metaID, metaDoc{Version: schemaVersion}))
+			require.NoError(t, CleanupWorkspaceHook(ideStorage)(ctx, root))
 
-	count := func(part string) int {
-		p, err := ti.db.Partition(part)
-		require.NoError(t, err)
-		n := 0
-		require.NoError(t, list(ctx, p, func(struct{ ID uint32 }) error {
-			n++
-			return nil
-		}))
-		return n
+			for _, part := range []string{filesPartition, segmentsPartition, vectorsPartition} {
+				assert.Zero(t, countDocs(t, db, part), "%s must be empty after the drop", part)
+			}
+			var m metaDoc
+			assert.ErrorIs(t, db.Get(ctx, metaID, &m), storageapi.ErrNotFound)
+			assert.NoError(t, otherDB.Get(ctx, metaID, &m), "dropping one workspace must not touch another")
+		})
 	}
-	for _, part := range []string{filesPartition, segmentsPartition, vectorsPartition} {
-		require.NotZero(t, count(part), "%s must be populated before the drop", part)
-	}
-
-	require.NoError(t, CleanupWorkspaceHook(ideStorage)(ctx, ti.root))
-
-	for _, part := range []string{filesPartition, segmentsPartition, vectorsPartition} {
-		assert.Zero(t, count(part), "%s must be empty after the drop", part)
-	}
-	var m metaDoc
-	assert.ErrorIs(t, ti.db.Get(ctx, metaID, &m), storageapi.ErrNotFound)
-	assert.NoError(t, otherDB.Get(ctx, metaID, &m), "dropping one workspace must not touch another")
 }

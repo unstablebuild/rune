@@ -47,6 +47,10 @@ func newGoHandler(
 	if err := editor.SubscribeEvents(evs, sel); err != nil {
 		return textapi.CommandManual{}, nil, fmt.Errorf("subscribe selection events: %w", err)
 	}
+	addImport, err := addImportHandler(lsp, editor, notify)
+	if err != nil {
+		return textapi.CommandManual{}, nil, err
+	}
 
 	handlers := map[string]textapi.CommandHandler{
 		// Source actions.
@@ -115,13 +119,13 @@ func newGoHandler(
 		"regenerate-cgo": codeLensHandler(lsp, notify, "gopls.regenerate_cgo"),
 
 		// Module management.
-		"tidy":               modCommandHandler(lsp, notify, "gopls.tidy"),
-		"vendor":             modCommandHandler(lsp, notify, "gopls.vendor"),
-		"upgrade-dependency": modCommandHandler(lsp, notify, "gopls.check_upgrades"),
+		"tidy":               modCommandHandler(lsp, notify, "gopls.tidy", tidyArgs),
+		"vendor":             modCommandHandler(lsp, notify, "gopls.vendor", vendorArgs),
+		"upgrade-dependency": modCommandHandler(lsp, notify, "gopls.check_upgrades", checkUpgradesArgs(fs)),
 		"vulncheck":          vulncheckHandler(lsp, notify),
 
 		// Imports.
-		"add-import": addImportHandler(lsp, notify),
+		"add-import": addImport,
 
 		// Interactive REPL.
 		"repl": newREPLSubcommand(wm, interrupter, fs, executor, lsp, cfg, storage),

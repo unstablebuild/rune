@@ -33,6 +33,7 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/handler/handlertest"
 	"unstable.build/rune/internal/ide/console/ideconsole"
+	"unstable.build/rune/internal/ide/idelsp/goplstest"
 	"unstable.build/rune/internal/text/standard"
 )
 
@@ -209,7 +210,7 @@ type replRig struct {
 
 func newREPLRig(t *testing.T) *replRig {
 	t.Helper()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	dir := copyReplModule(t)
 
 	files := []testFile{{

@@ -19,6 +19,7 @@ package ide
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -388,6 +389,54 @@ func (i *IDE) DispatchCommand(cmd string, args ...string) error {
 	return i.workspaceHandler.focusEx().dispatchCommand(cmd, args...)
 }
 
+// DispatchCommandLine runs line in the focused workspace as the command
+// prompt runs it when it is typed and entered: the arguments lose their
+// quotes and escapes, unless the command parses them itself.
+//
+// A textrpc.Waiter on ctx is claimed by a command that finishes after
+// DispatchCommandLine returns, which then reports its result on the
+// waiter; an unclaimed waiter means the returned error is the result.
+// Unlike other dispatches, workspaceready and extensionready claim it
+// too, also as steps of an alias, and report once the workspace or
+// extension is ready and their command has finished; so do write,
+// write!, writeall and writeall!, which report once their saves have
+// finished. It must run on the event loop.
+func (i *IDE) DispatchCommandLine(ctx context.Context, line string) error {
+	e := i.workspaceHandler.focusEx()
+	argv := command.SplitCommandLine(line)
+	if len(argv) == 0 {
+		return errors.New("empty command line")
+	}
+	args := argv[1:]
+	if !e.rawArgsCommands[argv[0]] {
+		for n, a := range args {
+			args[n] = command.UnquoteToken(a)
+		}
+	}
+	return e.dispatchCommandCtx(withResultWait(ctx), argv[0], args...)
+}
+
+// ForceExit makes the IDE exit on the next event it handles, without the
+// confirm-exit prompt and whatever buffers are dirty. It must run on the
+// event loop.
+func (i *IDE) ForceExit() {
+	i.workspaceHandler.confirmedForceExit = true
+}
+
+// Loading reports whether a workspace is still loading a file it opened,
+// whose tab shows a placeholder until the editor replaces it. Keys sent
+// before then do not reach the editor. It must run on the event loop.
+func (i *IDE) Loading() bool {
+	return i.workspaceHandler.loading()
+}
+
+// Prompting reports whether a workspace shows a prompt that waits for an
+// answer. A file can load only once a prompt is answered, such as the one
+// that offers to install its grammar. It must run on the event loop.
+func (i *IDE) Prompting() bool {
+	return i.workspaceHandler.prompting()
+}
+
 // Show shows uri in the focused workspace as browser.Browser.Show does,
 // except that a directory of the workspace opens in its file explorer.
 // It must run on the event loop.
@@ -574,6 +623,7 @@ func (i *IDE) init(
 	var configErr error
 	i.ideConfig, configErr = loadIDEConfig(cfgfilename, op, i.soundRegistry)
 	i.ideConfig.applySounds(i.soundRegistry, dataDir)
+	i.ideConfig.notifyError = i.notifyError
 
 	i.storage = storage
 	i.ideConfig.storage = storageapi.WithPartition(i.storage, "ide")
@@ -714,6 +764,7 @@ func (i *IDE) init(
 			cfg.cellPixelSize = op.cellPixelSize
 			cfg.clip = op.clip
 			cfg.systemOpenURL = op.systemOpenURL
+			cfg.notifyError = i.notifyError
 			return cfg, err
 		}, op.workspaceConfig, op.tabBarOffset,
 		op.rightInset, op.tabBarHeight, op.workspacesIcon, op.workspacesBarHeight,
@@ -857,6 +908,20 @@ func (i *IDE) initRunning() {
 	i.locker.Lock()
 	defer i.locker.Unlock()
 	i.root.runInitShader()
+}
+
+// notifyError shows err to the user from the next tick, so it is safe to
+// call from any goroutine and while drawing.
+func (i *IDE) notifyError(err error) {
+	if i.options.scheduleFn == nil {
+		return
+	}
+	i.options.scheduleFn(func() {
+		if i.workspaceHandler == nil || i.workspaceHandler.notifications == nil {
+			return
+		}
+		_, _ = i.workspaceHandler.notifications.current().Notify(browserapi.LevelError, "%v", err)
+	})
 }
 
 // startupIntro returns the intro Ready plays, reporting false when it

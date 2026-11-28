@@ -69,9 +69,11 @@ func TestOpenShaderBurnsThePicturesOfTheLoadingScreenIntoTheNewOnes(t *testing.T
 	}
 
 	first := shade(0)
-	require.Len(t, first, 1)
-	assert.Equal(t, loaded[0].Visible(), first[0].Visible())
-	assert.Equal(t, pixels(loaded), pixels(first), "the burn starts on the pictures as the loading left them")
+	require.Len(t, loaded, 2)
+	require.Len(t, first, 2)
+	assert.Equal(t, loaded[0], first[0], "the burn starts on the background as the loading left it")
+	assert.Equal(t, loaded[1].Visible(), first[1].Visible())
+	assert.Equal(t, pixels(loaded[1:]), pixels(first[1:]), "the burn starts on the pictures as the loading left them")
 
 	both := false
 	for frame := 1; frame < total-1; frame++ {

@@ -92,14 +92,16 @@ func (w *symbolWindow) full() bool { return w.pairs >= windowPairs }
 // flushWindow stores what the window holds and empties it: the symbol
 // docs, one write per name however many files changed it, then the name
 // markers, then the file records, which vouch for the rest and so go
-// last. sctx is for the derived records and fctx for the file records,
-// whose durability differs between the scan and a re-index. Without a
-// batching store the files are applied one at a time, as staged.
+// last, and which the catalog then holds. sctx is for the derived
+// records and fctx for the file records, whose durability differs
+// between the scan and a re-index. Without a batching store the files
+// are applied one at a time, as staged.
 func (p *Parser) flushWindow(sctx, fctx context.Context, w *symbolWindow) {
 	defer func() { *w = symbolWindow{} }()
 	if sctx.Err() != nil {
 		return
 	}
+	defer p.catalogFiles(w.files)
 	if p.batch == nil {
 		for _, f := range w.files {
 			p.applyFile(fctx, f.u)

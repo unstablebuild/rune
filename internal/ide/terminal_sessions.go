@@ -326,13 +326,23 @@ func (s *terminalSessions) detached(uri workspaceapi.URI) (vte.Info, bool) {
 // liveness tells then, on the event loop, whether the terminal id runs
 // something for the user: unknown when that cannot be told.
 func (s *terminalSessions) liveness(id vte.ID, then func(vte.Liveness)) {
+	s.livenessOf([]vte.ID{id}, func(ls map[vte.ID]vte.Liveness) { then(ls[id]) })
+}
+
+// livenessOf tells then, on the event loop, what liveness tells of each
+// terminal of ids.
+func (s *terminalSessions) livenessOf(ids []vte.ID, then func(map[vte.ID]vte.Liveness)) {
 	vtes, ctx := s.vtes, s.cfg.Ctx
 	s.offLoop(func() func() {
-		l, err := vtes.VTELiveness(ctx, id)
-		if err != nil {
-			l = vte.LivenessUnknown
+		ls := make(map[vte.ID]vte.Liveness, len(ids))
+		for _, id := range ids {
+			l, err := vtes.VTELiveness(ctx, id)
+			if err != nil {
+				l = vte.LivenessUnknown
+			}
+			ls[id] = l
 		}
-		return func() { then(l) }
+		return func() { then(ls) }
 	})
 }
 
@@ -642,4 +652,27 @@ func terminalCloseWarning(info vte.Info, own int, l vte.Liveness) string {
 		title = "terminal"
 	}
 	return fmt.Sprintf("Terminal '%s' %s. Close it?", title, strings.Join(reasons, " and "))
+}
+
+// terminalDetachQuestion asks whether to detach or terminate the
+// terminals infos describes, whose liveness is ls, which are either
+// running a program or, when unknown, may be.
+func terminalDetachQuestion(infos []vte.Info, ls []vte.Liveness) string {
+	running := "is running"
+	if len(infos) > 1 {
+		running = "are running"
+	}
+	if slices.Contains(ls, vte.LivenessUnknown) {
+		running = "may be running"
+	}
+	if len(infos) > 1 {
+		return fmt.Sprintf("%d terminals %s programs. "+
+			"Detach them and keep them running, or terminate them?", len(infos), running)
+	}
+	title := infos[0].Title
+	if title == "" {
+		title = "terminal"
+	}
+	return fmt.Sprintf("Terminal '%s' %s a program. "+
+		"Detach it and keep it running, or terminate it?", title, running)
 }

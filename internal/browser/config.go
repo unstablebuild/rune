@@ -17,6 +17,7 @@
 package browser
 
 import (
+	"io"
 	"net/url"
 	"time"
 
@@ -182,7 +183,15 @@ type PromptConfig struct {
 	// release that selects it.
 	ClickedAttr    term.Attributes
 	BackgroundAttr term.Attributes
-	MinWidth       int
+	// FieldAttr styles the inputs of a prompt's text fields, and
+	// FocusFieldAttr the input of the field in focus. Their frames are
+	// those of WindowManagerConfig, the focused field's its focus frame.
+	FieldAttr      term.Attributes
+	FocusFieldAttr term.Attributes
+	// PlaceholderAttr styles the placeholder of an empty field. Left
+	// zero, it is gray.
+	PlaceholderAttr term.Attributes
+	MinWidth        int
 	// Images names the images that writers that can draw images show
 	// under the prompt's buttons, in place of their background.
 	Images PromptImages
@@ -279,12 +288,39 @@ func (i PromptButtonImage) image(g *tcomponent.FrameGraphics) component.ButtonIm
 	}
 }
 
-// Wallpaper is a tui.Component wallpaper factory.
+// ComponentCloser is a tui.Component that holds resources until it is
+// closed.
+type ComponentCloser interface {
+	tui.Component
+	io.Closer
+}
+
+// NopCloser returns c with a Close that does nothing. The result is a
+// component.Floating when c is one.
+func NopCloser(c tui.Component) ComponentCloser {
+	if f, ok := c.(component.Floating); ok {
+		return nopFloatingCloser{f}
+	}
+	return nopCloser{c}
+}
+
+type nopCloser struct{ tui.Component }
+
+func (nopCloser) Close() error { return nil }
+
+type nopFloatingCloser struct{ component.Floating }
+
+func (nopFloatingCloser) Close() error { return nil }
+
+// Wallpaper is a wallpaper factory. The browser closes each component
+// NewComponent returns once its window shows something else or closes.
 // NOTE: we might want to move it to the component package
 // and call it a Factory.
 type Wallpaper struct {
+	// BackgroundAttr, when set, is drawn under the component, which keeps
+	// only its characters and foreground colours on it.
 	BackgroundAttr term.Attributes
-	NewComponent   func() tui.Component
+	NewComponent   func() ComponentCloser
 	// Focus is the wallpaper of the window holding the window manager's
 	// focus style. Nil shows this one there too. Its own Focus is
 	// ignored.
@@ -294,8 +330,8 @@ type Wallpaper struct {
 // NopWallpaper is a Wallpaper of component.Nop.
 func NopWallpaper() Wallpaper {
 	return Wallpaper{
-		NewComponent: func() tui.Component {
-			return component.Nop()
+		NewComponent: func() ComponentCloser {
+			return NopCloser(component.Nop())
 		},
 	}
 }
@@ -430,6 +466,9 @@ func (c Config) Restyled(s Style) Config {
 	c.PromptConfig.HoverAttr = s.Prompt.HoverAttr
 	c.PromptConfig.ClickedAttr = s.Prompt.ClickedAttr
 	c.PromptConfig.BackgroundAttr = s.Prompt.BackgroundAttr
+	c.PromptConfig.FieldAttr = s.Prompt.FieldAttr
+	c.PromptConfig.FocusFieldAttr = s.Prompt.FocusFieldAttr
+	c.PromptConfig.PlaceholderAttr = s.Prompt.PlaceholderAttr
 	c.PromptConfig.Images = s.Prompt.Images
 	c.Wallpaper = s.Wallpaper
 	c.FocusTabAttr = s.Tabs.FocusTabAttr

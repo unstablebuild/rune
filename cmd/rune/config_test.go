@@ -34,6 +34,7 @@ import (
 
 	"unstable.build/rune/internal/browser/browsertest"
 	"unstable.build/rune/internal/ide"
+	"unstable.build/rune/internal/ide/idestatus"
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/gui"
 )
@@ -90,8 +91,8 @@ func TestDefaultSearchIndexing(t *testing.T) {
 		want         bool
 	}{
 		{"search", "regex_enabled", true},
+		{"search", "symbols_enabled", true},
 		{"search", "semantic_enabled", false},
-		{"workspace", "symboldb", true},
 	} {
 		t.Run(tt.section+"."+tt.key, func(t *testing.T) {
 			section, err := cfg.GetConfig(tt.section)
@@ -122,6 +123,23 @@ func TestDefaultConfigShowsTheLogoWithItsIntro(t *testing.T) {
 	assert.Equal(t, map[string]any{
 		"path": "", "width": "60%", "height": "60%", "fit": "contain",
 	}, image)
+	shader, err := workspace.GetConfig("wallpaper_shader")
+	require.NoError(t, err)
+	name, err := shader.GetString("shader")
+	require.NoError(t, err)
+	assert.Empty(t, name, "no shader, so the logo shows")
+	fps, err := shader.GetInt("fps")
+	require.NoError(t, err)
+	assert.Equal(t, 30, fps)
+	duration, err := shader.GetString("duration")
+	require.NoError(t, err)
+	assert.Equal(t, "10s", duration)
+	animate, err := shader.GetBool("animate")
+	require.NoError(t, err)
+	assert.True(t, animate)
+	underFrame, err := shader.GetBool("under_frame")
+	require.NoError(t, err)
+	assert.True(t, underFrame, "the GUI's frame draws its lines along the outer edge of its cells")
 
 	animations, err := cfg.GetConfig("animations")
 	require.NoError(t, err)
@@ -595,6 +613,42 @@ func TestBuiltInThemesFocusBackground(t *testing.T) {
 			brighter = brighter || step > 0
 		}
 		assert.True(t, brighter, "%s is brighter than its background", name)
+	}
+}
+
+func TestBuiltInThemesSidebarShade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("editor:\n  mode: modal\n"), 0o644))
+	cfg, err := ide.Config(path, runeDefaultConfig())
+	require.NoError(t, err)
+	guiCfg, ok, err := getGUIConfig(cfg)
+	require.NoError(t, err)
+	require.True(t, ok)
+	themes := getGUIColorThemes(browsertest.NewMockBrowser(gomock.NewController(t)), guiCfg)
+	require.NotEmpty(t, themes)
+	// gap is the largest difference between the channels of a and b.
+	gap := func(a, b term.Color) int32 {
+		ar, ag, ab := a.RGB()
+		br, bg, bb := b.RGB()
+		return max(ar-br, br-ar, ag-bg, bg-ag, ab-bb, bb-ab)
+	}
+	for name, theme := range themes {
+		def := themeColors(theme).Default
+		shade := idestatus.SidebarShade(def)
+		require.NotEqual(t, term.ColorDefault, shade, "%s shades its inbox's sidebar", name)
+		gray, ok := theme.Colors[term.ColorGray.Tcell()]
+		require.True(t, ok, "%s names its gray", name)
+		for _, other := range []struct {
+			what  string
+			color term.Color
+		}{
+			{"the window's background", def.Bg},
+			{"the selected card's and muted text's gray", term.FromTcellColor(gray)},
+			{"the text", def.Fg},
+		} {
+			assert.GreaterOrEqual(t, gap(shade, other.color), int32(8),
+				"%s's sidebar, %s, stands apart from %s, %s", name, shade, other.what, other.color)
+		}
 	}
 }
 

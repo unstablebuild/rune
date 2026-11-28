@@ -84,6 +84,8 @@
 #  #wallpaper_ascii: myAsciiArt
 #  #wallpaper_image: /path/to/image.png
 #  #wallpaper_image_ascii: /path/to/image.png
+#  # A Kage shader the GUI draws as the wallpaper, over the ones above.
+#  #wallpaper_shader: plasma  # a built-in shader, or /path/to/wallpaper.kage
 
 #telemetry:
 #  # Report anonymous usage and system information. Set to false to opt out.

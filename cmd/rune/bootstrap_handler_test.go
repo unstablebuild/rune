@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +41,7 @@ import (
 	"unstable.build/rune/internal/sounds"
 	"unstable.build/rune/internal/term/gui"
 	"unstable.build/rune/internal/term/gui/glassbar"
+	"unstable.build/rune/internal/text/textrpc"
 )
 
 // fakeHandler counts calls to each tui.Handler method so tests can
@@ -684,7 +686,7 @@ func TestConfigChangeHookAppliesThemes(t *testing.T) {
 // for the tick that applies it.
 func reloadHUD(t *testing.T, b *bootstrapHandler) {
 	t.Helper()
-	b.reloadHUDAndScreenshot(b.realIDE)
+	b.reloadHUDAndScreenshot(b.realIDE, func(string, error) {})
 	applied := make(chan struct{})
 	require.True(t, b.scheduleNextTick(func() { close(applied) }))
 	select {
@@ -848,6 +850,97 @@ func TestThemeReloadCommandAppliesHUD(t *testing.T) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	assert.Equal(t, quickMenuColumnCells, b.realIDE.RightInset())
+}
+
+func TestScreenshotCommand(t *testing.T) {
+	const sprite = "file:///nonexistent/open.png"
+	tests := []struct {
+		name        string
+		args        []string
+		wantErr     string
+		wantClaimed bool
+		// wantResult is a substring of the error the waiter receives.
+		wantResult  string
+		wantApplied bool
+	}{
+		{name: "unexpected argument", args: []string{"--now"}, wantErr: "expected [--reload]"},
+		{name: "too many arguments", args: []string{"--reload", "x"}, wantErr: "expected [--reload]"},
+		{name: "no GUI", wantErr: "screenshots require GUI mode"},
+		{name: "reload answers the waiter after applying the HUD", args: []string{"--reload"},
+			wantClaimed: true, wantResult: "screenshots require GUI mode", wantApplied: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := newConfiguredBootstrapForEnvTest(t, configFilename,
+				"editor:\n  mode: modal\ngui:\n  quick_menu: []\n", t.TempDir())
+			require.NoError(t, b.subscribeScreenshotCommand(b.realIDE))
+			require.NoError(t, os.WriteFile(b.configPath, []byte("editor:\n  mode: modal\n"+
+				"gui:\n  quick_menu:\n    - {title: Open Project, command: workspaceopen, "+
+				"sprite: {idle: "+sprite+"}}\n"), 0o644))
+
+			w := &textrpc.Waiter{Ch: make(chan error, 1)}
+			line := strings.Join(append([]string{cmdScreenshot}, tt.args...), " ")
+			b.mu.Lock()
+			err := b.realIDE.DispatchCommandLine(
+				textrpc.ContextWithWaiter(context.Background(), w), line)
+			b.mu.Unlock()
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, tt.wantClaimed, w.Claimed)
+			if !tt.wantClaimed {
+				return
+			}
+			select {
+			case err := <-w.Ch:
+				require.ErrorContains(t, err, tt.wantResult)
+			case <-time.After(10 * time.Second):
+				t.Fatal("the screenshot did not report")
+			}
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			applied := len(b.quickMenu) == 1 && b.quickMenu[0].Sprite.Idle == sprite
+			assert.Equal(t, tt.wantApplied, applied, "the HUD must be applied before the screenshot")
+		})
+	}
+}
+
+func TestTakeScreenshotReportsOnce(t *testing.T) {
+	tests := []struct {
+		name    string
+		reload  bool
+		accept  bool
+		wantErr error
+	}{
+		{name: "not queued", wantErr: errScreenshotNotQueued},
+		{name: "reload not queued", reload: true, wantErr: errScreenshotNotQueued},
+		{name: "taken on the next tick", accept: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var queued []func()
+			b := &bootstrapHandler{publishEvent: func(ev term.Event) bool {
+				if tt.accept {
+					queued = append(queued, ev.UserFunc)
+				}
+				return tt.accept
+			}}
+			var got []error
+			b.takeScreenshot(tt.reload, func(_ string, err error) { got = append(got, err) })
+			for _, f := range queued {
+				f()
+			}
+			require.Len(t, got, 1)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, got[0], tt.wantErr)
+				return
+			}
+			// Without a GUI the tick reports why it took none.
+			require.ErrorContains(t, got[0], "screenshots require GUI mode")
+		})
+	}
 }
 
 func TestReloadHUDAppliesChangedVolumeAndTheme(t *testing.T) {
@@ -1026,7 +1119,7 @@ func TestQueueScreenshotWaitsForSignalledExtensions(t *testing.T) {
 					pending = f
 				},
 			}
-			b.queueScreenshot(tt.signalled)
+			b.queueScreenshot(tt.signalled, func(string, error) {})
 			assert.Equal(t, tt.wantWait, waited)
 			if tt.wantWait == nil {
 				assert.Equal(t, 1, queued, "queued on the next tick")

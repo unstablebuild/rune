@@ -474,7 +474,10 @@ The exact files copied into the package are visible in the
 [Python Makefile](https://github.com/unstablebuild/rune-language-python/blob/main/Makefile#L99-L113).
 
 The most important file for indexing is `locals.scm`. It labels syntax nodes
-with captures such as:
+with captures such as the following; the `local.definition.*` captures also
+feed the definitions the [symbol index](../languages/symbol-index.md) lists
+for `searchfunc`, `searchvar` and `searchtype`, so every installed language
+gets them:
 
 ```scheme
 @local.definition.function

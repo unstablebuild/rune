@@ -29,6 +29,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,6 +53,7 @@ import (
 	"unstable.build/rune/internal/ide/hostenv"
 	"unstable.build/rune/internal/ide/idepkg"
 	"unstable.build/rune/internal/ide/idepkg/idepkgtest"
+	"unstable.build/rune/internal/ide/syntax"
 	"unstable.build/rune/internal/llm/llamaserver"
 	"unstable.build/rune/internal/localstorage"
 	"unstable.build/rune/internal/text"
@@ -205,6 +207,97 @@ func TestLlamaServerPackage(t *testing.T) {
 	assert.False(t, outdated, "a configured server is the user's to keep up to date")
 
 	assert.ErrorContains(t, m.pkgmanager.Install(ctx, "nope"), "latest version of nope")
+}
+
+// countingReleases counts the release server's package lookups. The first
+// waits for release, so concurrent lookups pile up behind it.
+type countingReleases struct {
+	*idepkgtest.ReleaseManager
+	lookups atomic.Int32
+	release chan struct{}
+}
+
+func (r *countingReleases) GetPackage(ctx context.Context, pkgID string) (release.Package, error) {
+	if r.lookups.Add(1) == 1 {
+		<-r.release
+	}
+	return r.ReleaseManager.GetPackage(ctx, pkgID)
+}
+
+func TestPkgManagerSharesConcurrentLookupsOfAMissingPackage(t *testing.T) {
+	t.Parallel()
+	pkgs := idepkgtest.MakePackages(release.Package{Name: "go", Latest: "1"})
+	bundles := idepkgtest.MakeBundles([]release.Bundle{{Package: "go", Version: "1"}})
+	for _, c := range []struct {
+		name        string
+		autoInstall bool
+	}{
+		{name: "installed without asking", autoInstall: true},
+		{name: "installed through the prompt"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			rm := &countingReleases{
+				ReleaseManager: idepkgtest.NewReleaseManager(pkgs, bundles),
+				release:        make(chan struct{}),
+			}
+			rm.SetMissProgressComplete(true)
+			m := newTestWorkspaceManagerHandlerForPkgManager(t, rm, false, 0)
+			if c.autoInstall {
+				require.NoError(t, m.pkgmanager.setAutoInstall())
+			}
+			var pkgs syntax.PkgManager = m.pkgmanager.libDir
+
+			const n = 50
+			files := make([][]string, n)
+			errs := make([]error, n)
+			var found, listed sync.WaitGroup
+			found.Add(n)
+			for i := range n {
+				listed.Go(func() {
+					it, err := pkgs.LibDir(context.Background(), "go")
+					found.Done()
+					if err != nil {
+						errs[i] = err
+						return
+					}
+					defer it.Close()
+					files[i], errs[i] = iterator.ToSlice(context.Background(), it)
+				})
+			}
+			// Lookups that do not share the first pile up behind it.
+			time.Sleep(200 * time.Millisecond)
+			close(rm.release)
+			found.Wait()
+
+			if !c.autoInstall {
+				handlertest.TestHandlerSequence(t, m, 40, 15, []handlertest.SequenceTestCase{
+					{InputSequence: "Y", Expected: `┌──────────────────────────────────────┐
+│                                      │
+├──────────────────────────────────────┤
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│          workspaceWallpaper          │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+├──────────────────────────────────────┤
+│1                                     │
+└━─────────────────────────────────────┘`},
+				})
+			}
+			listed.Wait()
+			assert.Equal(t, int32(1), rm.lookups.Load(), "one lookup on the release server")
+			for i := range n {
+				require.NoError(t, errs[i])
+				assert.NotEmpty(t, files[i])
+			}
+			require.NoError(t, m.Close())
+		})
+	}
 }
 
 func TestPkgManager_HandlePkgInstall_NotAuthenticated(t *testing.T) {

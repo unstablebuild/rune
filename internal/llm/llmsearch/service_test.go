@@ -213,13 +213,19 @@ func openTestIndexWith(t *testing.T, reg *llamacpp.Registry, embed EmbedderFacto
 
 func (ti *testIndex) open(t *testing.T, opts Options) {
 	t.Helper()
+	ti.start(t, opts)
+	ti.wait(t)
+}
+
+// start opens the index without waiting for its scan.
+func (ti *testIndex) start(t *testing.T, opts Options) {
+	t.Helper()
 	idx, err := ti.svc.OpenIndex(IndexConfig{
 		Root: ti.root, FS: ti.fs, DB: ti.db, Notify: ti.notify, Schedule: syncTick, Options: opts,
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = idx.Close() })
 	ti.idx = idx
-	ti.wait(t)
 }
 
 func (ti *testIndex) wait(t *testing.T) {

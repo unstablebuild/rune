@@ -425,6 +425,7 @@ the right.
 | `Model` | The model answering the conversation. |
 | `Provider` | The provider serving that model. |
 | `Effort` | The reasoning effort in use. When the conversation sets none, this names the level the provider applies instead — and reads `default` only for providers that publish no such level. |
+| `Speed` | The inference speed the conversation is billed at, `fast` or `ultrafast`. Hidden at standard speed and on models that do not support the chosen speed, so it only appears while the conversation pays for speed. |
 | `MaxTokens` | The per-response output token budget. |
 | `TokensSent` / `TokensReceived` | Input and output tokens for the turn. |
 | `ContextTokens` / `ContextWindow` | Context occupancy and the model's total window. |
@@ -510,9 +511,9 @@ layout: ' {{ .Spinner }} {{ .Status | bold }} █▓▒░  {{ .Model | fg "whit
 When the row cannot fit everything, elements drop out in a fixed order rather
 than the status text being cut short: the output budget first, then the
 conversation name, the cache gauge, the cache percentage, the provider, the
-effort, the token counts, the context numbers, the model, the context gauge,
-and finally the elapsed time. The spinner and the status text are never
-dropped; the status text clips to whatever room is left.
+effort, the speed, the token counts, the context numbers, the model, the
+context gauge, and finally the elapsed time. The spinner and the status text
+are never dropped; the status text clips to whatever room is left.
 
 ```yaml
 extensions:
@@ -520,7 +521,7 @@ extensions:
     config:
       status_bar:
         enabled: true
-        layout: ' {{ .Spinner }} {{ .Status | bold }} █▓▒░  {{ .Model | fg "white" }}  {{ .Effort }}{{ .ShiftRight }}󰗂 {{ .Cache }}  {{ .Elapsed }}  {{ .Conversation | bold | fg "white" }}  {{ .ContextGauge }} '
+        layout: ' {{ .Spinner }} {{ .Status | bold }} █▓▒░  {{ .Model | fg "white" }}  {{ .Effort }}  󱐋 {{ .Speed }}{{ .ShiftRight }}󰗂 {{ .Cache }}  {{ .Elapsed }}  {{ .Conversation | bold | fg "white" }}  {{ .ContextGauge }} '
         shader: pulse
         background_attr:
           bg: gray

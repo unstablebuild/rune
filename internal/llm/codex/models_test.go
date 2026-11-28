@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/unstablebuild/rune-go-sdk/api/llmapi"
 )
 
 func TestFlagshipModelInCatalog(t *testing.T) {
@@ -93,4 +94,31 @@ func TestUpstreamModelName(t *testing.T) {
 	// UpstreamModelName is the identity function.
 	assert.Equal(t, "gpt-5.4", UpstreamModelName("gpt-5.4"))
 	assert.Equal(t, "unknown", UpstreamModelName("unknown"))
+}
+
+func TestSupportsSpeed(t *testing.T) {
+	tests := []struct {
+		model string
+		speed llmapi.Speed
+		want  bool
+	}{
+		{GPT6Dot2Astra, llmapi.SpeedFast, true},
+		{GPT6Dot1Terra, llmapi.SpeedFast, true},
+		{GPT5Dot5, llmapi.SpeedFast, true},
+		{CodexAutoReview, llmapi.SpeedFast, true},
+		{"gpt-5.4-nano", llmapi.SpeedFast, false},
+		{GPT6Dot2Astra, llmapi.SpeedUltrafast, true},
+		{GPT6Dot2Sol, llmapi.SpeedUltrafast, true},
+		{GPT6Astra, llmapi.SpeedUltrafast, true},
+		{GPT6Dot1Sol, llmapi.SpeedUltrafast, true},
+		{GPT6Dot1Terra, llmapi.SpeedUltrafast, false},
+		{GPT5Dot5, llmapi.SpeedUltrafast, false},
+		{"unknown", llmapi.SpeedStandard, true},
+		{"unknown", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model+"/"+string(tt.speed), func(t *testing.T) {
+			assert.Equal(t, tt.want, SupportsSpeed(tt.model, tt.speed))
+		})
+	}
 }

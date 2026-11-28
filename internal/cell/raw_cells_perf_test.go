@@ -566,8 +566,8 @@ func TestCopyCellsContiguous(t *testing.T) {
 	})
 }
 
-func TestConflatePerfModeFastPath(t *testing.T) {
-	t.Run("conflates two rows without allocating", func(t *testing.T) {
+func TestConflatePerfMode(t *testing.T) {
+	t.Run("conflates two rows", func(t *testing.T) {
 		b := buildPerfBuffer("abc", "def")
 		x, ok := b.ConflateRow(0)
 		require.True(t, ok)
@@ -586,7 +586,7 @@ func TestConflatePerfModeFastPath(t *testing.T) {
 	})
 }
 
-func TestWrapRowPerfModeFastPath(t *testing.T) {
+func TestWrapRowPerfMode(t *testing.T) {
 	t.Run("wraps a row at a column, keeping cells on both sides", func(t *testing.T) {
 		b := buildPerfBuffer("abcdefgh")
 		ok := b.WrapRow(0, 4)

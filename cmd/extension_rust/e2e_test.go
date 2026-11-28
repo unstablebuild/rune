@@ -74,6 +74,37 @@ func TestLocalSchemeEnvironmentHelper(t *testing.T) {
 		os.Getenv("RUNE_RUST_E2E_INHERITED"),
 		os.Getenv("RUNE_RUST_E2E_OVERRIDE"),
 	)
+	_, _ = fmt.Fprintln(os.Stderr, "helper stderr")
+}
+
+func TestLocalSchemeStartCommandKeepsStderrOnRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		keep bool
+		want string
+	}{
+		// rust-analyzer logs gigabytes over the suite at the default level.
+		{name: "unread stderr is not held"},
+		{name: "on request", keep: true, want: "helper stderr\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := newLocalScheme("")
+			scheme.keepStderr = tt.keep
+			done := make(chan error, 1)
+			_, err := scheme.StartCommand(t.Context(), workspaceapi.Cmd{
+				Path:    os.Args[0],
+				Args:    []string{"-test.run=^TestLocalSchemeEnvironmentHelper$"},
+				Env:     []string{"RUNE_RUST_E2E_HELPER=1"},
+				Watcher: workspaceapi.ChanProcessWatcher(done),
+			})
+			require.NoError(t, err)
+			require.NoError(t, <-done)
+			started, ok := scheme.startedProcess(os.Args[0])
+			require.True(t, ok)
+			assert.Equal(t, tt.want, started.stderr.String())
+		})
+	}
 }
 
 func TestE2ERustAnalyzerLogFilterReachesProcess(t *testing.T) {
@@ -84,6 +115,7 @@ func TestE2ERustAnalyzerLogFilterReachesProcess(t *testing.T) {
 	require.NoError(t, err)
 
 	scheme := newLocalScheme(dir)
+	scheme.keepStderr = true
 	mgr := idelsp.New(uri, scheme, scheme, &stubPkgManager{bin: raBin}, nil, nil,
 		idelsp.Config{MaxRetries: 1, Callback: &raCallback{}})
 	t.Cleanup(func() { require.NoError(t, mgr.Close()) })

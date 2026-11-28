@@ -34,6 +34,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/api/browserapi"
 	"github.com/unstablebuild/rune-go-sdk/api/config"
 	"github.com/unstablebuild/rune-go-sdk/api/schemeapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
@@ -753,12 +754,8 @@ func (e *blockingExecutor) Close() error {
 // remote, so prompts should never fire.
 type errorUI struct{}
 
-func (errorUI) PromptSecret(context.Context, string) (string, error) {
-	return "", fmt.Errorf("unexpected prompt: secret")
-}
-
-func (errorUI) PromptText(context.Context, string, string) (string, error) {
-	return "", fmt.Errorf("unexpected prompt: text")
+func (errorUI) PromptFields(context.Context, string, []browserapi.Field) ([]string, error) {
+	return nil, fmt.Errorf("unexpected prompt: fields")
 }
 
 func (errorUI) PromptChoice(context.Context, string, []string) (int, error) {

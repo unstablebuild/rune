@@ -164,7 +164,9 @@ type ProgressRunes struct {
 	End        rune
 
 	// Graphics names an image for each rune, drawn over the cells of
-	// that rune. Images are not tinted with the color of the level.
+	// that rune. Images are not tinted with the color of the level. Their
+	// transparent pixels open to the outside of the notification show
+	// what is under it.
 	Graphics ProgressGraphics
 }
 
@@ -172,9 +174,11 @@ type ProgressRunes struct {
 type ProgressGraphics struct {
 	Start, Current, CurrentTip, Remain, End string
 
-	// Overlay draws each image over its rune, which shows through the
-	// image's transparent pixels in the color of the level. Otherwise
-	// each image replaces its rune.
+	// Overlay paints the clear pixels each image encloses, those no
+	// clear pixel joins to the outside of the notification, such as a
+	// channel between the face and a shadow, in the color of the level,
+	// the color of its rune. Otherwise they take the notification's
+	// color. Either way the image replaces its rune.
 	Overlay bool
 }
 

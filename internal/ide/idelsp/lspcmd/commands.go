@@ -94,6 +94,11 @@ func Manual() textapi.CommandManual {
 	}
 }
 
+type commandLSP interface {
+	semanticapi.LSP
+	ReferenceLocations(context.Context, semanticapi.ReferenceParams) (locations []semanticapi.Location, fromDisk bool, err error)
+}
+
 // Config groups configuration for every subcommand registered by
 // AllHandler.
 type Config struct {
@@ -144,8 +149,9 @@ func DefaultConfig() Config {
 // AllHandler creates the textapi.CommandHandler for the "lsp" command
 // by composing all individual subcommand handlers.
 func AllHandler(
-	lsp semanticapi.LSP, editor textapi.Editor,
-	wm browserapi.WindowManager, opener browserapi.ResourceOpener,
+	lsp commandLSP, editor textapi.Editor,
+	wm browserapi.WindowManager, prompter browserapi.Prompter,
+	opener browserapi.ResourceOpener,
 	notify browserapi.Notifications, fs workspaceapi.FileSystem,
 	parser syntaxapi.Parser, cfg Config,
 ) (textapi.CommandHandler, error) {
@@ -200,7 +206,7 @@ func AllHandler(
 		),
 		"signature-help": SignatureHelpHandler(lsp, editor, wm,
 			cfg.ScheduleNextTick, cfg.SignatureHelp, wsLog),
-		"rename": RenameHandler(lsp, editor, wm, opener, wsLog),
+		"rename": RenameHandler(lsp, editor, prompter, opener, wsLog),
 	}
 	return r, nil
 }

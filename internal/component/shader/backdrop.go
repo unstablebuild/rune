@@ -85,7 +85,7 @@ type run struct {
 // newBackdrop returns the backdrop of from for a shader whose default
 // attributes are defaultAttr.
 func newBackdrop(from Snapshot, defaultAttr term.Attributes) backdrop {
-	return backdrop{Snapshot: from.copied(defaultAttr.Fg), bg: defaultAttr.Bg}
+	return backdrop{Snapshot: from.copied(defaultAttr), bg: defaultAttr.Bg}
 }
 
 // uncover tells when, as a progress through the animation, a reveal

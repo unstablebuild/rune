@@ -25,6 +25,13 @@ import (
 )
 
 // A Buffer offers a high level API to manipulate a matrix of term.Cell.
+//
+// A Buffer reads its rows through a View and edits them through an
+// Editor, which WithView and WithEditor may replace: an installed View
+// may read other rows than those the Buffer stores. Methods documented to
+// edit the stored rows directly bypass both: they read and edit the rows
+// the Buffer stores, whatever View is installed, and no Editor or
+// subscriber sees their edits.
 type Buffer struct {
 	cells    *rawCells
 	undoer   *undoer
@@ -32,6 +39,9 @@ type Buffer struct {
 	rootPub  *syncPublisher
 	usagePub *syncPublisher
 	safew    safeEditor
+	// gen counts the changes Generation reports that cells does not:
+	// installed Views, and the changes of cells this Buffer replaced.
+	gen uint64
 
 	// effective View and Editor
 	view   View
@@ -129,7 +139,8 @@ func (b *Buffer) ResetCapacity(capacity int) {
 // ResetPerformanceCapacity releases the current backing storage and resets this
 // performance-mode buffer to a single empty row with the requested capacities.
 // It is intended for long-lived buffers that may have grown large temporarily
-// and need to drop references to those large row slices.
+// and need to drop references to those large row slices. It edits the stored
+// rows directly: see Buffer.
 func (b *Buffer) ResetPerformanceCapacity(rowCapacity, columnCapacity int) {
 	if b.undoer != nil {
 		panic("ResetPerformanceCapacity should not be used if not initialized via InitPerformance")
@@ -269,7 +280,7 @@ func (b *Buffer) ReplaceContext(ctx context.Context, str string) {
 // any Editor installed via WithEditor and any subscribers are bypassed.
 // Use for snapshot restore and similar bulk reloads where preserving the
 // *cell.Buffer / *rawCells identity matters and the change is not a
-// user-observable edit.
+// user-observable edit. It edits the stored rows directly: see Buffer.
 //
 // In performance mode the copy uses a single contiguous slab so the
 // rowsContiguous fast path applies; otherwise a row-by-row copy is used.
@@ -303,16 +314,6 @@ func (b *Buffer) ConflateRow(y int) (x int, ok bool) {
 func (b *Buffer) ConflateRowContext(
 	ctx context.Context, y int,
 ) (x int, ok bool) {
-	if b.undoer == nil {
-		if y < 0 || b.Rows() <= 1 || y >= b.Rows()-1 {
-			return 0, false
-		}
-		b.cells.linearize()
-		x = len(b.cells.cells[y])
-		b.cells.conflate(y)
-		return x, true
-	}
-
 	from := term.Coordinates{Y: y}
 	to := term.Coordinates{Y: y + 1}
 	from, to, ok = fromToInBounds(b.view, from, to)
@@ -336,7 +337,8 @@ func (b *Buffer) ConflateRowContext(
 // clearMark is called to reset the sentinel on the head cell of each group
 // and on any intermediate cells that were marked.
 //
-// This is only supported in performance mode.
+// This is only supported in performance mode. It edits the stored rows
+// directly: see Buffer.
 func (b *Buffer) MergeMarkedRows(
 	end int,
 	isMark func(term.Cell) bool,
@@ -361,7 +363,7 @@ type RowSplit struct {
 // SplitRowsBatch applies the provided splits in a single pass over the row
 // slice. Splits must reference distinct, strictly increasing row indices,
 // and Width*Times must be <= row length for each split. Only supported in
-// performance mode.
+// performance mode. It edits the stored rows directly: see Buffer.
 func (b *Buffer) SplitRowsBatch(splits []RowSplit) (added int, ok bool) {
 	if b.undoer != nil {
 		panic("SplitRowsBatch should not be used if not initialized via InitPerformance")
@@ -377,7 +379,7 @@ func (b *Buffer) SplitRowsBatch(splits []RowSplit) (added int, ok bool) {
 // whose length is less than padToWidth is padded to padToWidth with fill.
 // Padding is performed by materializing new rows drawn from a single slab
 // allocation so per-tail allocations are avoided. Only supported in
-// performance mode.
+// performance mode. It edits the stored rows directly: see Buffer.
 func (b *Buffer) SplitRowsBatchPadded(splits []RowSplit, padToWidth int, fill term.Cell) (added int, ok bool) {
 	if b.undoer != nil {
 		panic("SplitRowsBatchPadded should not be used if not initialized via InitPerformance")
@@ -410,7 +412,8 @@ func (b *Buffer) validRowSplits(splits []RowSplit) bool {
 // width, in a single allocation when growing capacity is needed. It is
 // equivalent to repeated InsertContext calls appending the fill char, but
 // avoids repeated slice grows and editor overhead. Only supported in
-// performance mode; returns (0, false) otherwise.
+// performance mode: it panics otherwise. It edits the stored rows
+// directly: see Buffer.
 func (b *Buffer) ExtendRowToWidth(y, width int) (added int, ok bool) {
 	if b.undoer != nil {
 		panic("ExtendRowToWidth should not be used if not initialized via InitPerformance")
@@ -419,8 +422,9 @@ func (b *Buffer) ExtendRowToWidth(y, width int) (added int, ok bool) {
 }
 
 // TrimRowsFromEnd removes up to count trailing rows from the buffer without
-// allocating intermediate strings. Only supported in performance mode;
-// returns (0, false) otherwise. Returns the number of rows actually removed.
+// allocating intermediate strings. Only supported in performance mode: it
+// panics otherwise. Returns the number of rows actually removed. It edits
+// the stored rows directly: see Buffer.
 func (b *Buffer) TrimRowsFromEnd(count int) (removed int, ok bool) {
 	if b.undoer != nil {
 		panic("TrimRowsFromEnd should not be used if not initialized via InitPerformance")
@@ -432,6 +436,7 @@ func (b *Buffer) TrimRowsFromEnd(count int) (removed int, ok bool) {
 // without allocating intermediate strings, keeping at least one row.
 // Trimmed row storage is recycled for reuse by AppendBlankRows. Only
 // supported in performance mode. Returns the number of rows removed.
+// It edits the stored rows directly: see Buffer.
 func (b *Buffer) TrimRowsFromStart(count int) (removed int, ok bool) {
 	if b.undoer != nil {
 		panic("TrimRowsFromStart should not be used if not initialized via InitPerformance")
@@ -442,6 +447,7 @@ func (b *Buffer) TrimRowsFromStart(count int) (removed int, ok bool) {
 // AppendBlankRows appends count rows of width cells filled with the
 // buffer's fill-in char after the last row, reusing storage recycled by
 // TrimRowsFromStart when available. Only supported in performance mode.
+// It edits the stored rows directly: see Buffer.
 func (b *Buffer) AppendBlankRows(count, width int) (ok bool) {
 	if b.undoer != nil {
 		panic("AppendBlankRows should not be used if not initialized via InitPerformance")
@@ -452,7 +458,8 @@ func (b *Buffer) AppendBlankRows(count, width int) (ok bool) {
 
 // AppendBlankRowsBounded appends blank rows while keeping at most limit
 // rows. Once full, the oldest row storage is recycled as the new last
-// row without shifting the remaining row slice.
+// row without shifting the remaining row slice. It is only supported in
+// performance mode, and edits the stored rows directly: see Buffer.
 func (b *Buffer) AppendBlankRowsBounded(count, width, limit int) (ok bool) {
 	if b.undoer != nil {
 		panic("AppendBlankRowsBounded should not be used if not initialized via InitPerformance")
@@ -472,15 +479,6 @@ func (b *Buffer) WrapRow(y, at int) (ok bool) {
 func (b *Buffer) WrapRowContext(
 	ctx context.Context, y, at int,
 ) (ok bool) {
-	if b.undoer == nil {
-		if y < 0 || y >= b.Rows() || at > b.Columns(y) {
-			return false
-		}
-		b.cells.linearize()
-		b.cells.insertNewRow(term.Coordinates{Y: y, X: at})
-		return true
-	}
-
 	if y < 0 || y >= b.Rows() || at > b.Columns(y) {
 		return
 	}
@@ -561,7 +559,8 @@ func (b *Buffer) Row(y int) []term.Cell {
 }
 
 // MutableRow returns row y and records that cells before end may be
-// modified. It is only supported in performance mode.
+// modified. It is only supported in performance mode. Row y is a stored
+// row, which the caller edits directly: see Buffer.
 func (b *Buffer) MutableRow(y, end int) []term.Cell {
 	if b.undoer != nil {
 		panic("MutableRow should not be used if not initialized via InitPerformance")
@@ -569,6 +568,7 @@ func (b *Buffer) MutableRow(y, end int) []term.Cell {
 	if y < 0 || y >= b.cells.Rows() {
 		return nil
 	}
+	b.cells.gen++
 	b.cells.ensureRowMeta()
 	physical := b.cells.physicalRow(y)
 	b.cells.rowMeta[physical].occupied = max(b.cells.rowMeta[physical].occupied, end)
@@ -576,7 +576,7 @@ func (b *Buffer) MutableRow(y, end int) []term.Cell {
 }
 
 // SetRow replaces the cells at logical row y. It is only supported in
-// performance mode.
+// performance mode, and edits the stored rows directly: see Buffer.
 func (b *Buffer) SetRow(y int, row []term.Cell) {
 	if b.undoer != nil {
 		panic("SetRow should not be used if not initialized via InitPerformance")
@@ -584,6 +584,7 @@ func (b *Buffer) SetRow(y int, row []term.Cell) {
 	if y < 0 || y >= b.cells.Rows() {
 		return
 	}
+	b.cells.gen++
 	b.cells.ensureRowMeta()
 	physical := b.cells.physicalRow(y)
 	b.cells.cells[physical] = row
@@ -592,7 +593,7 @@ func (b *Buffer) SetRow(y int, row []term.Cell) {
 
 // DeleteRowRange removes [start, end) from logical row y without
 // linearizing circular row storage. It is only supported in performance
-// mode.
+// mode, and edits the stored rows directly: see Buffer.
 func (b *Buffer) DeleteRowRange(y, start, end int) {
 	if b.undoer != nil {
 		panic("DeleteRowRange should not be used if not initialized via InitPerformance")
@@ -641,7 +642,8 @@ func (b *Buffer) CopyRows(dst [][]term.Cell) [][]term.Cell {
 
 // ResetRowRange fills [start, end) in logical row y. Resetting a whole
 // row establishes a new blank template so later recycling only clears
-// cells modified after this call.
+// cells modified after this call. It is only supported in performance
+// mode, and edits the stored rows directly: see Buffer.
 func (b *Buffer) ResetRowRange(y, start, end int, fill term.Cell) {
 	if b.undoer != nil {
 		panic("ResetRowRange should not be used if not initialized via InitPerformance")
@@ -650,7 +652,8 @@ func (b *Buffer) ResetRowRange(y, start, end int, fill term.Cell) {
 }
 
 // RotateRows rotates [start, end) toward lower row indexes by count.
-// A negative count rotates toward higher indexes.
+// A negative count rotates toward higher indexes. It is only supported in
+// performance mode, and edits the stored rows directly: see Buffer.
 func (b *Buffer) RotateRows(start, end, count int) {
 	if b.undoer != nil {
 		panic("RotateRows should not be used if not initialized via InitPerformance")
@@ -820,9 +823,11 @@ func (b *Buffer) ReloadContents(ctx context.Context, str string) {
 }
 
 // ResetPerformance resets the underlying cells, without discarding their capacity.
-// This shopuld only be used when buffer has been initialized with InitPerformance,
+// This should only be used when buffer has been initialized with InitPerformance,
 // as subscribers won't be notified of this change, and it will break undo correctness.
+// It edits the stored rows directly: see Buffer.
 func (b *Buffer) ResetPerformance() {
+	b.cells.gen++
 	b.cells.linearize()
 	for y, row := range b.cells.cells {
 		b.cells.cells[y] = row[:0]
@@ -835,6 +840,16 @@ func (b *Buffer) Version() int {
 		return 0
 	}
 	return b.undoer.version
+}
+
+// Generation returns a number greater than any it returned before once
+// the rows read through View may have changed: after an edit, a method
+// that edits the stored rows directly, MutableRow, or WithView. Unlike
+// Version, Undo moves it forward too. Reads leave it as is, and so do
+// changes a View makes to the rows it reads on its own, without the
+// stored rows changing.
+func (b *Buffer) Generation() uint64 {
+	return b.gen + b.cells.gen
 }
 
 // ReadFrom reads data from r until EOF and appends it to the buffer, growing
@@ -1105,6 +1120,7 @@ func (b *Buffer) WithEditor(e Editor) (ret Editor) {
 }
 
 func (b *Buffer) setView(view View) {
+	b.gen++
 	b.view = view
 	b.safew.view = b.view
 	b.selector.view = b.view
@@ -1116,7 +1132,7 @@ func (b *Buffer) setEditor(ed Editor) {
 }
 
 func (b *Buffer) initWithCells(cells *rawCells) {
-	b.cells = cells
+	b.setCells(cells)
 	// setup the root publisher as the deepest Editor
 	b.rootPub = newPublisher(b.cells)
 	b.undoer = newUndoer(b.rootPub)
@@ -1128,11 +1144,21 @@ func (b *Buffer) initWithCells(cells *rawCells) {
 }
 
 func (b *Buffer) initPerformanceWithCells(cells *rawCells) {
-	b.cells = cells
+	b.setCells(cells)
 	b.cells.performance = true
 
 	b.setEditor(b.cells)
 	b.setView(b.cells)
+}
+
+func (b *Buffer) setCells(cells *rawCells) {
+	// cells counts its changes from wherever it was created, so carry
+	// over the count of the cells it replaces to keep Generation
+	// increasing.
+	if b.cells != nil {
+		b.gen += b.cells.gen
+	}
+	b.cells = cells
 }
 
 func (b *Buffer) truncateFromContextView(

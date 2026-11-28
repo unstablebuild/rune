@@ -95,6 +95,22 @@ func SupportsAdaptiveThinking(model string) bool {
 	}
 }
 
+// SupportsSpeed reports whether model can run at speed. The empty speed and
+// llmapi.SpeedStandard are supported by every model; no model supports
+// llmapi.SpeedUltrafast.
+func SupportsSpeed(model string, speed llmapi.Speed) bool {
+	switch speed {
+	case "", llmapi.SpeedStandard:
+		return true
+	case llmapi.SpeedFast:
+		switch model {
+		case ClaudeFable5Dot2, ClaudeOpus5Dot5, ClaudeOpus5:
+			return true
+		}
+	}
+	return false
+}
+
 // maxOutputTokens maps each model to its documented maximum output-token
 // (API max_tokens) ceiling. Models absent from the map have an unknown
 // ceiling; MaxOutputTokens returns 0 for them so callers apply no cap.

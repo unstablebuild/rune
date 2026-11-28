@@ -40,16 +40,21 @@ import (
 )
 
 // fgPtyExecutor is a PtyExecutor whose ptys run fg in the foreground.
-// Its host answers only while hold is not locked.
+// Its host answers only while hold is not locked, and cannot tell what
+// runs in the foreground while unknown is set.
 type fgPtyExecutor struct {
 	*workspacetest.PtyExecutor
-	fg   atomic.Int64
-	hold sync.RWMutex
+	fg      atomic.Int64
+	unknown atomic.Bool
+	hold    sync.RWMutex
 }
 
 func (t *fgPtyExecutor) ForegroundProcessGroup(workspaceapi.Pty) (int, error) {
 	t.hold.RLock()
 	defer t.hold.RUnlock()
+	if t.unknown.Load() {
+		return 0, errors.New("foreground process group unknown")
+	}
 	return int(t.fg.Load()), nil
 }
 
@@ -681,6 +686,29 @@ func TestTerminalSessionsLiveness(t *testing.T) {
 			assert.Equal(t, []vte.Liveness{tc.want}, got)
 		})
 	}
+}
+
+func TestTerminalSessionsLivenessOf(t *testing.T) {
+	t.Parallel()
+	const job = 99
+	f := newSessionsFixture(t, 0)
+	f.exe.fg.Store(job)
+	running, _ := f.open(t)
+	gone, _ := f.open(t)
+	require.NoError(t, f.s.remove(gone.ID()))
+	ended, p := f.open(t, "make")
+	f.end(t, ended.ID(), p)
+
+	var got []map[vte.ID]vte.Liveness
+	f.s.livenessOf([]vte.ID{running.ID(), gone.ID(), ended.ID()},
+		func(ls map[vte.ID]vte.Liveness) { got = append(got, ls) })
+	assert.Empty(t, got, "it tells on the event loop")
+	f.settle()
+	assert.Equal(t, []map[vte.ID]vte.Liveness{{
+		running.ID(): vte.LivenessRunning,
+		gone.ID():    vte.LivenessUnknown,
+		ended.ID():   vte.LivenessIdle,
+	}}, got)
 }
 
 func TestTerminalSessionsRunningDetached(t *testing.T) {
@@ -1355,6 +1383,45 @@ func TestTerminalCloseWarning(t *testing.T) {
 		t.Run(tc.desc, func(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tc.want, terminalCloseWarning(tc.info, tc.own, tc.l))
+		})
+	}
+}
+
+func TestTerminalDetachQuestion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		desc  string
+		infos []vte.Info
+		ls    []vte.Liveness
+		want  string
+	}{
+		{desc: "a program",
+			infos: []vte.Info{{Title: "make"}}, ls: []vte.Liveness{vte.LivenessRunning},
+			want: "Terminal 'make' is running a program. " +
+				"Detach it and keep it running, or terminate it?"},
+		{desc: "a terminal that may run something",
+			infos: []vte.Info{{Title: "make"}}, ls: []vte.Liveness{vte.LivenessUnknown},
+			want: "Terminal 'make' may be running a program. " +
+				"Detach it and keep it running, or terminate it?"},
+		{desc: "an untitled terminal",
+			infos: []vte.Info{{}}, ls: []vte.Liveness{vte.LivenessRunning},
+			want: "Terminal 'terminal' is running a program. " +
+				"Detach it and keep it running, or terminate it?"},
+		{desc: "programs",
+			infos: []vte.Info{{Title: "make"}, {Title: "top"}, {}},
+			ls:    []vte.Liveness{vte.LivenessRunning, vte.LivenessRunning, vte.LivenessRunning},
+			want: "3 terminals are running programs. " +
+				"Detach them and keep them running, or terminate them?"},
+		{desc: "programs and a terminal that may run something",
+			infos: []vte.Info{{Title: "make"}, {Title: "zsh"}},
+			ls:    []vte.Liveness{vte.LivenessRunning, vte.LivenessUnknown},
+			want: "2 terminals may be running programs. " +
+				"Detach them and keep them running, or terminate them?"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, terminalDetachQuestion(tc.infos, tc.ls))
 		})
 	}
 }

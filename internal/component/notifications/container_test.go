@@ -660,7 +660,7 @@ XXXXXXXXXX
 XXXXXXXXXXXXXXXXXXXX`,
 		},
 		{
-			name:        "overlay progress images keep the runes under them",
+			name:        "overlay progress images go over blank cells too",
 			progressBar: true,
 			progress:    overlay,
 			expected: `
@@ -671,7 +671,7 @@ XXXXXXXXXXXXXXXXXXXX`,
 			underneath: `
 XXXXXXXXXX          
 XXXXXXXXXX  hi      
-XXXXXXXXXX{>       }
+XXXXXXXXXX          
 XXXXXXXXXXXXXXXXXXXX`,
 		},
 		{
@@ -778,6 +778,100 @@ tttttttttttttttttttt`, b.String(), "the cells under the images keep what is unde
 		want = append(want, term.Coordinates{X: x})
 	}
 	assert.Equal(t, want, fills, "the inside of each line takes the notification's colour")
+}
+
+func TestComponentDrawProgressGraphicsOverWhatIsUnder(t *testing.T) {
+	const width, height = 20, 4
+	// bar has a face over a clear channel, which a translucent shadow
+	// under it encloses, and is clear under the shadow.
+	bar := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	for x := range 4 {
+		bar.Set(x, 0, color.NRGBA{R: 0x80, A: 0xff})
+		bar.Set(x, 2, color.NRGBA{A: 0x66})
+	}
+	const uri = "file:///bar.png"
+	g := tcomponent.NewFrameGraphics(storagestub.NewInMemoryService(), term.NopInterrupter())
+	t.Cleanup(func() { assert.NoError(t, g.Close()) })
+	g.Reload(map[string]image.Image{uri: bar})
+
+	tests := []struct {
+		name    string
+		overlay bool
+		// fills are the cells whose channel takes the level's colour.
+		fills []term.Coordinates
+	}{
+		{name: "replace"},
+		{
+			name:    "overlay paints the channels the images enclose",
+			overlay: true,
+			fills: func() []term.Coordinates {
+				var cells []term.Coordinates
+				for x := 11; x < width-1; x++ {
+					cells = append(cells, term.Coordinates{X: x, Y: 2})
+				}
+				return cells
+			}(),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := New(&component.TestComponent{Ch: 'X', Attributes: term.Attributes{Bg: term.ColorTeal}}, Config{
+				AutoClose: time.Hour,
+				Width:     10,
+				Graphics:  func() *tcomponent.FrameGraphics { return g },
+				Style: Style{
+					ProgressBar:          true,
+					Attributes:           term.Attributes{Bg: term.ColorNavy},
+					BackgroundAttributes: term.Attributes{Bg: term.ColorNavy},
+					ColorInfo:            term.Attributes{Fg: term.ColorYellow, Bg: term.ColorNavy},
+					ProgressRunes: ProgressRunes{
+						Start: '{', Current: '█', CurrentTip: '█', Remain: ' ', End: '}',
+						Graphics: ProgressGraphics{
+							Start: uri, Current: uri, CurrentTip: uri, Remain: uri, End: uri,
+							Overlay: tt.overlay,
+						},
+					},
+				},
+			})
+			t.Cleanup(func() { _ = c.Close() })
+			c.Resize(width, height)
+			c.Notify(LevelInfo, "hi")
+
+			s := newImageScreen(width, height)
+			c.Draw(s)
+			require.NoError(t, s.Flush())
+			var b strings.Builder
+			for i, cell := range s.Cells() {
+				if i%width == 0 {
+					b.WriteByte('\n')
+				}
+				switch cell.Bg {
+				case term.ColorTeal:
+					b.WriteByte('t')
+				case term.ColorNavy:
+					b.WriteByte('n')
+				default:
+					b.WriteByte('.')
+				}
+			}
+			assert.Equal(t, `
+ttttttttttnnnnnnnnnn
+ttttttttttnnnnnnnnnn
+tttttttttttttttttttt
+tttttttttttttttttttt`, b.String(), "the cells under the progress images keep what is under the notification")
+			assert.Equal(t, "XXXXXXXXXX          ", strings.Split(s.String(), "\n")[2],
+				"no rune shows through the images")
+
+			var fills []term.Coordinates
+			for _, img := range s.images {
+				if img.Fill {
+					assert.Equal(t, term.ColorYellow, img.FillColor)
+					fills = append(fills, img.Pos)
+				}
+			}
+			assert.Equal(t, tt.fills, fills)
+		})
+	}
 }
 
 func TestContainerRestyle(t *testing.T) {

@@ -30,8 +30,9 @@ import (
 // GetFrameCharset is a helper which extracts and parses a component.FrameCharSet.
 // Slots missing from the config keep their value in def, including the
 // image URIs of the "graphics" table, where an empty string clears the
-// slot, and its "mode", "replace" or "overlay". If any graphics entry is
-// invalid, it returns def and every error.
+// slot, its "mode", "replace" or "overlay", and its "corner_width" and
+// "corner_height", in cells, 0 or more. If any graphics entry is invalid,
+// it returns def and every error.
 func GetFrameCharset(c config.Config, key string, def component.FrameCharSet) (
 	component.FrameCharSet, error,
 ) {
@@ -75,7 +76,7 @@ func GetFrameCharset(c config.Config, key string, def component.FrameCharSet) (
 	}
 
 	g := def.Graphics
-	if err := GetGraphics(cfg, "graphics", &g.Overlay,
+	err = GetGraphics(cfg, "graphics", &g.Overlay,
 		GraphicsSlot{"topleft", &g.TopLeft},
 		GraphicsSlot{"topright", &g.TopRight},
 		GraphicsSlot{"bottomleft", &g.BottomLeft},
@@ -84,11 +85,33 @@ func GetFrameCharset(c config.Config, key string, def component.FrameCharSet) (
 		GraphicsSlot{"horizontalbottom", &g.HorizontalBottom},
 		GraphicsSlot{"verticalleft", &g.VerticalLeft},
 		GraphicsSlot{"verticalright", &g.VerticalRight},
-	); err != nil {
+	)
+	if gcfg, gerr := cfg.GetConfig("graphics"); gerr == nil {
+		err = errors.Join(err,
+			getCornerSize(gcfg, "corner_width", &g.CornerWidth),
+			getCornerSize(gcfg, "corner_height", &g.CornerHeight))
+	}
+	if err != nil {
 		return def, err
 	}
 	cs.Graphics = g
 	return cs, nil
+}
+
+// getCornerSize reads into n the cells at key of the graphics table
+// gcfg, leaving n as it is when key is missing.
+func getCornerSize(gcfg config.Config, key string, n *int) error {
+	v, err := gcfg.GetInt(key)
+	switch {
+	case errors.Is(err, config.ErrNotFound):
+		return nil
+	case err != nil:
+		return fmt.Errorf("graphics.%s: %w", key, err)
+	case v < 0:
+		return fmt.Errorf("graphics.%s: expected 0 or more cells, got %d", key, v)
+	}
+	*n = v
+	return nil
 }
 
 // GraphicsSlot is an image URI that GetGraphics reads from Key.

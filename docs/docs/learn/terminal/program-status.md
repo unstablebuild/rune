@@ -114,7 +114,7 @@ its width, growing and shrinking downwards as the preview changes size.
 | Click | Select a program |
 | Mouse wheel over the sidebar | Scroll the programs |
 | `<enter>` | Switch to the program's workspace and show it. A [detached terminal](./detached-terminals.md) opens in a new tab |
-| `<delete>` / `<backspace>` | Close the program as `tabclose` would: a tab or window is closed, a task stopped, an ACP session or a detached terminal ended, and the companion terminal hidden. A `working` or `blocked` program, or a file with unwritten changes, asks first |
+| `<delete>` / `<backspace>` | Close the program as `tabclose` would: a tab or window is closed, a task stopped, an ACP session ended, and the companion terminal hidden. A terminal, detached or not, is ended rather than detached, unless another tab shows it. A `working` or `blocked` program, a terminal running a program, or a file with unwritten changes, asks first |
 | `<esc>` / `q` / `<ctrl-c>` | Close the inbox |
 
 Tabs that never reported a status are not listed, and the inbox is not bound
@@ -233,8 +233,8 @@ over.
 | `progress_label_attr` | default | The percentage on the bar's right. |
 | `more_below` | `\uf063` (Nerd Font arrow down) | The arrow drawn below the programs when there are more out of sight below. |
 | `more_below_attr` | default | Styles that arrow. |
-| `divider_attr` | gray | The line between the programs and the preview. |
-| `divider_charset` | joins `🭽` and `🭼` in the GUI, `┬` and `┴` in a terminal | The characters joining that line to the inbox's frame: `top` and `bottom` in the frame's top and bottom rows, colored as the frame, and `vertical_top`, `vertical` and `vertical_bottom` down the line, colored by `divider_attr`. `vertical` defaults to the window frame's `verticalleft`, and `vertical_top` and `vertical_bottom` to `vertical`. Under a window bar, there is no top join. A `graphics` table names images for the GUI: `top` and `bottom` over the joins, `vertical` over each cell of the line, a `mode`, and an `outset` with `left`, `right` and `inward` in cells that the joins reach into. A missing join image keeps the frame's own image; `vertical` defaults to the frame's `verticalleft` image. |
+| `sidebar_attr` | a shade of the theme's background, `#262626` in a terminal | Fills the program list, which the preview beside it sets apart by keeping the window's background. Its `fg` replaces the default text color in the list. Leave `bg` unset to keep the shade, which moves the theme's background slightly toward its foreground. |
+| `sidebar_margin` | `top` 0, `left` 0, `bottom` 0, `right` 1 | The cells around the program list's fill that keep the window's background: `top`, `left` and `bottom` between the fill and the window's edges, and `right` between the fill and the preview. The GUI draws the list half a cell lower, so at 0 the fill already stands half a cell from the window bar and the frame's bottom line. The preview takes the window's full height. `focus` doesn't change it. |
 | `placeholder_attr` | gray | The text shown when no program reported a status, or the selected one has nothing to preview. |
 | `images` | none | Images the GUI draws under each program, with its text on top: `selected`, `hover` and `idle`, each with a `left`, `middle` and `right` image, and an `outset` with `top`, `bottom` and `sides` in cells. `selected` falls back to `hover`, and `hover` to `idle`. They stand in for the backgrounds of `selected_attr` and `hover_attr`. |
 | `marker_graphics` | none | Images drawn down the marker of the selected program: `top`, `vertical` and `bottom`, and a `mode`. A top or bottom image left out is the vertical one. |

@@ -1,0 +1,23 @@
+//kage:unit pixels
+
+package main
+
+var Progress float
+var Resolution vec2
+var Seed float
+
+// From and To are the colours of the lowest and highest noise.
+var From vec4
+var To vec4
+
+// Scale is how many features of the noise span the height.
+var Scale float
+
+// Speed is how many times the noise changes over a run.
+var Speed float
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	p := dstPos.xy / Resolution.y * Scale
+	n := fbm(p, Progress, Speed, seedOffset(Seed), 5, 2, 0.5) / 1.9375
+	return mix(From, To, smoothstep(0.2, 0.8, n))
+}

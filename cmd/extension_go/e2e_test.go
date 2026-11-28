@@ -35,9 +35,11 @@ import (
 	"github.com/unstablebuild/rune-go-sdk/api/semanticapi"
 	"github.com/unstablebuild/rune-go-sdk/api/textapi"
 	"github.com/unstablebuild/rune-go-sdk/api/workspaceapi"
+	"github.com/unstablebuild/rune-go-sdk/iterator"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"unstable.build/rune/internal/extension/langext"
 	"unstable.build/rune/internal/ide/idelsp"
+	"unstable.build/rune/internal/ide/idelsp/goplstest"
 	"unstable.build/rune/internal/ide/idelsp/lspcmd"
 )
 
@@ -337,7 +339,7 @@ func main() {}
 )
 
 func TestE2EGoplsLoggingConfigReachesProcess(t *testing.T) {
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 	dir := setupWorkspace(t, "example.com/logging", []testFile{
 		{name: "main.go", content: "package main\n\nfunc main() {}\n"},
 	})
@@ -372,7 +374,7 @@ func TestE2EGoplsLoggingConfigReachesProcess(t *testing.T) {
 
 func TestE2E(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 
 	t.Run("OrganizeImports", func(t *testing.T) {
 		t.Parallel()
@@ -1342,17 +1344,13 @@ type Config struct {
 		require.Eventually(t, func() bool {
 			return mn.hasMessage("gopls.tidy")
 		}, 30*time.Second, 100*time.Millisecond)
+		msgs := mn.getMessages()
+		require.Len(t, msgs, 1)
+		assert.Equal(t, browserapi.LevelInfo, msgs[0].Level, msgs[0].Message)
 	})
 
 	t.Run("Vendor", func(t *testing.T) {
 		t.Parallel()
-
-		// gopls panics with a nil *Snapshot in GoCommandInvocation
-		// when handling gopls.vendor. This is an upstream gopls bug
-		// (confirmed in v0.21.1): the run() handler receives a nil
-		// snapshot from session.FileOf and dereferences it without
-		// a nil check. Remove SkipNow once fixed upstream.
-		t.SkipNow()
 
 		const vendorGoMod = "module example.com/test\n\ngo 1.22\n\n" +
 			"require example.com/dep v0.0.0\n\n" +
@@ -1365,7 +1363,7 @@ type Config struct {
 			{name: "dep/lib.go", content: "package dep\n\nfunc Hello() string { return \"hello\" }\n"},
 			{name: "main.go", content: vendorMain},
 		})
-		handler, _, _ := newTestHandler(t, env, nil)
+		handler, _, mn := newTestHandler(t, env, nil)
 
 		uri := parseTestURI(t, env.fileURIs["main.go"])
 		resource := &stubResource{uri: uri}
@@ -1373,8 +1371,14 @@ type Config struct {
 
 		err := handler.HandleCommand(t.Context(), cmd)
 		require.NoError(t, err)
+		require.Eventually(t, func() bool {
+			return mn.hasMessage("gopls.vendor")
+		}, 30*time.Second, 100*time.Millisecond)
+		msgs := mn.getMessages()
+		require.Len(t, msgs, 1)
+		assert.Equal(t, browserapi.LevelInfo, msgs[0].Level, msgs[0].Message)
+		assert.FileExists(t, filepath.Join(env.dir, "vendor", "modules.txt"))
 
-		// Verify the LSP server is still alive after vendor.
 		hover, err := env.mgr.Hover(t.Context(), semanticapi.HoverParams{
 			TextDocument: semanticapi.TextDocumentIdentifier{
 				URI: env.fileURIs["main.go"],
@@ -1523,12 +1527,6 @@ type Config struct {
 	t.Run("UpgradeDependency", func(t *testing.T) {
 		t.Parallel()
 
-		// gopls panics with a nil *Snapshot when handling
-		// gopls.check_upgrades. This is the same upstream gopls bug
-		// as gopls.vendor (confirmed in v0.21.1). Remove SkipNow
-		// once fixed upstream.
-		t.SkipNow()
-
 		// Use a real module with an outdated dependency so
 		// check_upgrades has something to report.
 		goModContent := "module example.com/test\n\ngo 1.22\n\nrequire golang.org/x/text v0.3.7\n"
@@ -1655,6 +1653,27 @@ type Config struct {
 		err := handler.HandleCommand(t.Context(), cmd)
 		require.NoError(t, err)
 		assert.True(t, mn.hasMessage("Added import"))
+	})
+
+	t.Run("AddImportCompletesKnownPackages", func(t *testing.T) {
+		t.Parallel()
+		env := initGopls(t, goplsBin, []testFile{
+			{name: "main.go", content: "package main\n\nimport \"strconv\"\n\nvar _ = strconv.Itoa\n\nfunc main() {}\n"},
+		})
+		handler, me, _ := newTestHandler(t, env, nil)
+		me.fireEvent(t.Context(), textapi.Event{
+			Type: textapi.EventTypeFocus,
+			URI:  parseTestURI(t, env.fileURIs["main.go"]),
+		})
+
+		it, err := handler.Complete(t.Context(), "go", []string{"add-import", "str"})
+		require.NoError(t, err)
+		got, err := iterator.ToSlice(t.Context(), it)
+		require.NoError(t, err)
+		assert.Contains(t, got, "strings")
+		for _, pkg := range got {
+			assert.True(t, strings.HasPrefix(pkg, "str"), "candidate %q does not extend the typed prefix", pkg)
+		}
 	})
 
 	// Regression: after add-import, gopls must know about the change.
@@ -1960,7 +1979,7 @@ func TestGoRouter(t *testing.T) {
 
 func TestE2EHandleOpenWorksWithNoInitializeServer(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 
 	diskContent := "package main\n\nfunc main() {}\n"
 
@@ -2040,7 +2059,7 @@ func TestE2EHandleOpenWorksWithNoInitializeServer(t *testing.T) {
 
 func TestE2EHandleOpenRaceWithInitialize(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 
 	diskContent := "package main\n\nfunc main() {}\n"
 
@@ -2124,7 +2143,7 @@ func TestE2EHandleOpenRaceWithInitialize(t *testing.T) {
 
 func TestE2EHandleOpenCloseRaceWithInitialize(t *testing.T) {
 	t.Parallel()
-	goplsBin := findGopls(t)
+	goplsBin := goplstest.Find(t)
 
 	diskContent := "package main\n\nfunc main() {}\n"
 

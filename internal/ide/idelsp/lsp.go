@@ -499,22 +499,30 @@ func (m *Manager) References(
 	ctx context.Context,
 	params semanticapi.ReferenceParams,
 ) ([]semanticapi.Location, error) {
+	result, _, err := m.ReferenceLocations(ctx, params)
+	return result, err
+}
+
+// ReferenceLocations returns references and reports whether the syntax fallback
+// found them on disk. Server ranges can include unsaved edits in open documents.
+func (m *Manager) ReferenceLocations(
+	ctx context.Context, params semanticapi.ReferenceParams,
+) (locations []semanticapi.Location, fromDisk bool, err error) {
 	params.WorkDoneToken = m.tokenFor(params.WorkDoneToken)
-	var result []semanticapi.Location
 	if err := m.withEnsuredOpen(ctx, params.TextDocument.URI, func(srv server) error {
-		return srv.call(ctx, "textDocument/references", params, &result)
+		return srv.call(ctx, "textDocument/references", params, &locations)
 	}); err != nil {
 		if isNoServer(err) {
 			fres, ferr := m.fallback.references(ctx, params)
 			if ferr == nil {
-				return fres, nil
+				return fres, true, nil
 			}
 			m.log.Debug("references fallback",
 				"error", ferr, "file", params.TextDocument.URI)
 		}
-		return nil, err
+		return nil, false, err
 	}
-	return result, nil
+	return locations, false, nil
 }
 
 // DocumentHighlight routes to the owning server.

@@ -31,13 +31,24 @@ jobs:
       # the tools.
       - name: Install language toolchains
         run: |
-          go install golang.org/x/tools/gopls@v0.23.0
           go install github.com/go-delve/delve/cmd/dlv@latest
           rustup component add rust-analyzer
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # The Go suites fail, rather than skip, when the host gopls diverges
+      # from the version the language package distributes.
+      - name: Install pinned gopls
+        run: |
+          pin=internal/ide/idelsp/goplstest/goplstest.go
+          version=$(sed -n 's/.*PinnedVersion[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' $pin)
+          if [ -z "$version" ]; then
+            echo "could not read the gopls pin from $pin" >&2
+            exit 1
+          fi
+          go install "golang.org/x/tools/gopls@$version"
 
       # The Python suites fail, rather than skip, when the host ty/ruff
       # diverges from the version the language package distributes, so

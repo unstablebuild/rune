@@ -69,6 +69,11 @@ type canonical struct {
 	width, height int
 	defAttr       term.Attributes
 	destroyed     bool
+	// completeAtDestroy is whether the emulator had stopped reading its
+	// pty before destroy closed it. A destroyed terminal reports it as
+	// its completion: the emulator stops once closed, at no fixed time,
+	// and that is the deletion, not its program ending.
+	completeAtDestroy bool
 	// told is what the watcher of this terminal last told it runs,
 	// unknown while attached, so a listing carries what a watcher
 	// that was not listening missed.
@@ -205,6 +210,10 @@ func (c *canonical) info() vte.Info {
 
 func (c *canonical) infoLocked() vte.Info {
 	comp := c.h.Component()
+	complete := c.completeAtDestroy
+	if !c.destroyed {
+		complete = comp.IsComplete()
+	}
 	return vte.Info{
 		ID:             c.id,
 		URI:            c.uri,
@@ -214,7 +223,7 @@ func (c *canonical) infoLocked() vte.Info {
 		Height:         c.height,
 		Attachments:    len(c.attachments),
 		Liveness:       c.told,
-		Complete:       comp.IsComplete(),
+		Complete:       complete,
 		CreatedAt:      c.createdAt,
 	}
 }
@@ -321,6 +330,7 @@ func (c *canonical) destroy() error {
 		return nil
 	}
 	c.destroyed = true
+	c.completeAtDestroy = c.h.Component().IsComplete()
 	c.stopWatchLocked()
 	for a := range c.attachments {
 		a.gone.Store(true)

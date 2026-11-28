@@ -23,7 +23,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	log "github.com/sirupsen/logrus"
 	"github.com/unstablebuild/rune-go-sdk/term"
 
 	"unstable.build/rune/internal/debug"
@@ -70,17 +69,7 @@ func dispatchGUISignal(
 	case syscall.SIGTSTP:
 		return false
 	case syscall.SIGUSR2:
-		// The swap to the configured IDE assigns it off the locker, so
-		// only the event loop reads it safely.
-		ok := root.scheduleNextTick(func() {
-			i := root.currentIDE()
-			go debug.CapturePanicReport(func() {
-				root.reloadHUDAndScreenshot(i)
-			})
-		})
-		if !ok {
-			log.Errorf("request screenshot: could not queue UI event")
-		}
+		root.takeScreenshot(true, root.notifyScreenshot)
 		return false
 	default:
 		// A second terminate signal or a saturated event queue

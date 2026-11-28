@@ -123,9 +123,12 @@ type Config struct {
 	// bound to the given full command line (e.g. "lsp diagnostics"), or
 	// "" if none/unbound. When nil, no hints are shown.
 	KeyBindingHint func(commandLine string) string
-	// KeyBindingHintAttr styles the right-aligned key hint.
+	// KeyBindingHintAttr styles the right-aligned key hint. When Bg is
+	// term.ColorDefault the hint takes ElementAttr's background.
 	KeyBindingHintAttr term.Attributes
 	// KeyBindingHintFocusAttr styles the key hint on the focused row.
+	// When Bg is term.ColorDefault the hint takes FocusElementAttr's
+	// background.
 	KeyBindingHintFocusAttr term.Attributes
 
 	// ShowArgHint controls whether the placeholder for the argument

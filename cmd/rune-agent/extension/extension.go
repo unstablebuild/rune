@@ -78,6 +78,13 @@ var (
 			Synopsis: "[none|minimal|low|medium|high|xhigh|max|ultra]",
 		},
 		{
+			Name: commandSpeed,
+			Summary: "Show or set the inference speed of the focused agent chat. " +
+				"Fast and ultrafast are billed at a premium. " +
+				"Run from an open agent chat tab.",
+			Synopsis: "[standard|fast|ultrafast]",
+		},
+		{
 			Name: commandMaxTokens,
 			Summary: "Show or set the max output tokens of the focused agent chat. " +
 				"Run from an open agent chat tab.",

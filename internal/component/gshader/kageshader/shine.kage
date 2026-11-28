@@ -1,0 +1,41 @@
+//kage:unit pixels
+
+package main
+
+var Progress float
+var Resolution vec2
+var Background vec4
+
+// Color is the colour of the shine.
+var Color vec4
+
+// Angle is the direction the band sweeps in, in degrees clockwise from
+// left to right.
+var Angle float
+
+// BandWidth is how wide the band is, as a fraction of the sweep.
+var BandWidth float
+
+// Cycles is how many times the band sweeps over a run, rounded to a whole
+// number.
+var Cycles float
+
+// Intensity is how far what the band passes over turns to Color, from 0
+// to 1.
+var Intensity float
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	c := imageSrc0At(srcPos)
+	a := Angle * 3.14159265 / 180
+	dir := vec2(cos(a), sin(a))
+	reach := (abs(dir.x) + abs(dir.y)) / 2
+	t := dot(dstPos.xy/Resolution-0.5, dir)/(2*reach) + 0.5
+	// The band enters before the start and leaves after the end, so a
+	// run ends where it starts.
+	w := max(BandWidth, 0.001)
+	pos := fract(Progress*max(floor(Cycles+0.5), 1))*(1+2*w) - w
+	band := smoothstep(w, 0, abs(t-pos)) * Intensity
+	// Only what is drawn over the background shines.
+	drawn := clamp(distance(c, Background)*3, 0, 1)
+	return mix(c, Color*c.a, band*drawn)
+}

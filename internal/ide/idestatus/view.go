@@ -65,12 +65,22 @@ type InboxStyle struct {
 	// there are more out of sight below.
 	MoreBelow     rune
 	MoreBelowAttr term.Attributes
-	// Divider draws the line between the programs and the preview in
-	// DividerAttr, joined to the frame of the inbox's window, and
-	// PlaceholderAttr the text that stands in for them when there is
-	// nothing to show.
-	Divider                      tcomponent.DividerCharSet
-	DividerAttr, PlaceholderAttr term.Attributes
+	// SidebarAttr fills the sidebar, which the preview beside it stands
+	// apart from by keeping the window's background. Its colors stand in
+	// for the default colors of whatever is drawn in the sidebar. A
+	// default background takes the store's shade of the theme, as
+	// Store.SetDefaultAttributes sets it, and none without a theme.
+	SidebarAttr term.Attributes
+	// SidebarMargin is the cells around the sidebar's fill that keep the
+	// window's background: above it, on its left, below it, and between
+	// it and the preview, which takes the view's full height. The Focus
+	// style's is ignored, for the layout to stay put as the focus moves.
+	// Where the sidebar is drawn half a cell lower, the fill reaches half
+	// a cell into what is below the view, as into a frame's bottom row.
+	SidebarMargin Margin
+	// PlaceholderAttr styles the text that stands in for the programs
+	// and the preview when there is nothing to show.
+	PlaceholderAttr term.Attributes
 	// Images are drawn under each item, from the marker's column to the
 	// right edge of the selection: ButtonSelected's under the selected
 	// item, ButtonHover's under the one under the mouse and ButtonIdle's
@@ -85,6 +95,11 @@ type InboxStyle struct {
 	// window holds the focus, as term.WindowFocusFromContext reads it.
 	// Nil keeps this style, and its own Focus is ignored.
 	Focus *InboxStyle
+}
+
+// Margin is a number of cells on each side of a rectangle.
+type Margin struct {
+	Top, Left, Bottom, Right int
 }
 
 // ProgressBarGraphics names the images drawn over the cells of a progress
@@ -120,7 +135,6 @@ func (g ProgressBarGraphics) cell(i, barW, filled int) tcomponent.LineGraphics {
 
 // DefaultInboxStyle returns the style of an unconfigured inbox.
 func DefaultInboxStyle() InboxStyle {
-	vertical := component.FrameCharSetDefault().VerticalLeft
 	return InboxStyle{
 		Marker:                 '▌',
 		MarkerAttr:             browser.DefaultConfig().FocusTabHighlightAttr,
@@ -136,10 +150,11 @@ func DefaultInboxStyle() InboxStyle {
 		ProgressRemainingAttr:         statusMutedAttr,
 		ProgressRemainingSelectedAttr: term.Attributes{Fg: term.ColorSilver},
 		MoreBelow:                     statusMoreBelow,
-		Divider: tcomponent.DividerCharSet{
-			Top: '┬', VerticalTop: vertical, Vertical: vertical, VerticalBottom: vertical, Bottom: '┴',
-		},
-		DividerAttr:     statusMutedAttr,
+		// The GUI draws the sidebar half a cell lower, under a window bar
+		// and over half its frame's bottom row, and its frame's left
+		// column is a cell wide. A cell is about twice as tall as wide, so
+		// a column on the right makes the fill as far from every side.
+		SidebarMargin:   Margin{Right: 1},
 		PlaceholderAttr: statusMutedAttr,
 	}
 }
@@ -227,52 +242,28 @@ func (v *View) Draw(w term.Writer) {
 	v.drawing = true
 	defer func() { v.drawing = false }()
 	v.focused, _ = term.WindowFocusFromContext(w.Context())
-	sideW := v.sidebarWidth()
-	v.drawSidebar(&component.VirtualWriter{Writer: w, Width: sideW, Height: v.height}, sideW)
-	if sideW >= v.width {
-		return
+	m := v.margin()
+	sideW, sideH := v.sidebarWidth(), v.sidebarHeight()
+	side := &sidebarWriter{
+		Writer: &component.VirtualWriter{
+			Writer: w, Offset: term.Coordinates{X: m.Left, Y: m.Top}, Width: sideW, Height: sideH,
+		},
+		attr: v.sidebarAttr(),
 	}
-	style, _ := v.style()
-	divider := term.NewCell(style.Divider.Vertical, 1, style.DividerAttr)
-	for y := range v.height {
-		w.SetCell(term.Coordinates{X: sideW, Y: y}, divider)
+	blank := term.NewCell(' ', 1, term.Attributes{})
+	for y := range sideH {
+		for x := range sideW {
+			side.SetCell(term.Coordinates{X: x, Y: y}, blank)
+		}
 	}
-	x := sideW + statusDividerWidth
+	v.drawSidebar(side, sideW)
+	x := v.previewX()
 	if x >= v.width {
 		return
 	}
 	v.drawPreview(&component.VirtualWriter{
 		Writer: w, Offset: term.Coordinates{X: x}, Width: v.width - x, Height: v.height,
 	}, v.width-x, v.height)
-}
-
-// StitchFrame joins the divider to the frame f drew width by height
-// around the view, and draws the divider's images with g, unless it is
-// nil. Called from within the view's own Draw, it draws nothing, as Draw
-// does.
-func (v *View) StitchFrame(
-	w term.Writer, f *component.Frame, g *tcomponent.FrameGraphics, width, height int, bar bool,
-) {
-	sideW := v.sidebarWidth()
-	if v.drawing || sideW >= v.width {
-		return
-	}
-	x := f.ContentPosition().X + sideW
-	if width < 3 || height < 3 || x <= 0 || x >= width-1 {
-		return
-	}
-	v.focused, _ = term.WindowFocusFromContext(w.Context())
-	style, _ := v.style()
-	cs := style.Divider
-	if !bar {
-		w.SetCell(term.Coordinates{X: x}, term.NewCell(cs.Top, 1, f.Attributes))
-		w.SetCell(term.Coordinates{X: x, Y: 1}, term.NewCell(cs.VerticalTop, 1, style.DividerAttr))
-	}
-	w.SetCell(term.Coordinates{X: x, Y: height - 2}, term.NewCell(cs.VerticalBottom, 1, style.DividerAttr))
-	w.SetCell(term.Coordinates{X: x, Y: height - 1}, term.NewCell(cs.Bottom, 1, f.Attributes))
-	if g != nil {
-		g.DrawDivider(w, f, cs, style.DividerAttr, width, height, x, !bar)
-	}
 }
 
 // Handle moves the selection, wrapping around, with the arrows, j and
@@ -343,6 +334,21 @@ func (v *View) style() (*InboxStyle, *component.ButtonImages) {
 	return &v.store.style, v.store.images
 }
 
+// sidebarAttr returns the colors that fill the sidebar.
+func (v *View) sidebarAttr() term.Attributes {
+	style, _ := v.style()
+	ret := style.SidebarAttr
+	if ret.Bg == term.ColorDefault {
+		ret.Bg = v.store.sidebarShade
+	}
+	return ret
+}
+
+// margin returns the sidebar's margin, which the focus style leaves alone.
+func (v *View) margin() Margin {
+	return v.store.style.SidebarMargin
+}
+
 // Selection returns the name of the selected program, or false when
 // nothing is listed.
 func (v *View) Selection() (string, bool) {
@@ -362,17 +368,18 @@ func (v *View) Close() error {
 	return nil
 }
 
-// Dimensions returns the size the view asks for: the sidebar beside the
-// preview at the size it asks for, at least as wide as minWidth asks and
-// 40 rows high.
+// Dimensions returns the size the view asks for: the sidebar in its
+// margin beside the preview at the size it asks for, at least as wide as
+// minWidth asks and 40 rows high.
 func (v *View) Dimensions() (int, int) {
+	m := v.margin()
 	sideW, sideH := v.sidebarSize()
 	w, h := v.previewSize()
-	width := sideW + statusDividerWidth + w
+	width := m.Left + sideW + m.Right + w
 	if v.minWidth != nil {
 		width = max(width, v.minWidth())
 	}
-	return width, max(sideH, h, statusMinHeight)
+	return width, max(m.Top+sideH+m.Bottom, h, statusMinHeight)
 }
 
 const (
@@ -383,7 +390,6 @@ const (
 	statusPreviewHeight = 21
 	statusSidebarMin    = 24
 	statusSidebarMax    = 40
-	statusDividerWidth  = 1
 	// statusMinHeight keeps the inbox from changing size as programs
 	// come and go.
 	statusMinHeight = 40
@@ -497,7 +503,19 @@ func (v *View) sidebarSize() (int, int) {
 
 func (v *View) sidebarWidth() int {
 	w, _ := v.sidebarSize()
-	return min(w, v.width)
+	return max(min(w, v.width-v.margin().Left), 0)
+}
+
+// sidebarHeight returns the rows of the sidebar's fill.
+func (v *View) sidebarHeight() int {
+	m := v.margin()
+	return max(v.height-m.Top-m.Bottom, 0)
+}
+
+// previewX returns the column the preview starts at.
+func (v *View) previewX() int {
+	m := v.margin()
+	return m.Left + v.sidebarWidth() + m.Right
 }
 
 // preview returns the preview of the selection, or nil when nothing is
@@ -548,7 +566,7 @@ func (v *View) sizePreview() {
 	if s == nil || s.preview.Open == nil {
 		return
 	}
-	width := v.width - v.sidebarWidth() - statusDividerWidth
+	width := v.width - v.previewX()
 	if width <= 0 || v.height <= 0 || (s.opened && s.width == width && s.height == v.height) {
 		return
 	}
@@ -564,7 +582,7 @@ func (v *View) sizePreview() {
 }
 
 func (v *View) drawSidebar(w term.Writer, width int) {
-	v.rows = slices.Repeat([]int{-1}, v.height)
+	v.rows = slices.Repeat([]int{-1}, v.sidebarHeight())
 	style, images := v.style()
 	if len(v.entries) == 0 {
 		statusText(w, statusIconX, statusPadTop, statusViewEmpty, style.PlaceholderAttr, width-statusPadRight)
@@ -631,7 +649,7 @@ func (v *View) drawSidebar(w term.Writer, width int) {
 }
 
 func (v *View) listRows(heights []int) (int, bool) {
-	rows := v.height - statusPadTop
+	rows := v.sidebarHeight() - statusPadTop
 	// The arrow's row is kept while the programs do not all fit, however
 	// far the sidebar is scrolled, for them not to shift as the arrow
 	// comes and goes.
@@ -644,7 +662,7 @@ func (v *View) listRows(heights []int) (int, bool) {
 func (v *View) layout(heights []int) []statusSpan {
 	rows, _ := v.listRows(heights)
 	spans := statusLayout(v.top, heights, statusPadTop+rows)
-	v.rows = slices.Repeat([]int{-1}, v.height)
+	v.rows = slices.Repeat([]int{-1}, v.sidebarHeight())
 	for _, s := range spans {
 		for dy := range s.n {
 			v.rows[s.y+dy] = s.i
@@ -784,7 +802,9 @@ func (v *View) drawPreview(w term.Writer, width, height int) {
 }
 
 func (v *View) handleMouse(ev term.Event) bool {
-	inSidebar := ev.MouseX >= 0 && ev.MouseX < v.sidebarWidth() && ev.MouseY >= 0
+	m := v.margin()
+	x, y := ev.MouseX-m.Left, ev.MouseY-m.Top
+	inSidebar := x >= 0 && x < v.sidebarWidth() && y >= 0 && y < v.sidebarHeight()
 	handled := true
 	switch ev.Key {
 	case 0, term.MouseLeft:
@@ -794,8 +814,8 @@ func (v *View) handleMouse(ev term.Event) bool {
 		return false
 	}
 	v.hover = -1
-	if inSidebar && ev.MouseY < len(v.rows) {
-		v.hover = v.rows[ev.MouseY]
+	if inSidebar && y < len(v.rows) {
+		v.hover = v.rows[y]
 	}
 	if ev.Key == term.MouseLeft {
 		v.selectAt(v.hover)
@@ -1040,6 +1060,34 @@ func statusText(w term.Writer, x, y int, s string, attr term.Attributes, end int
 		x += cw
 	}
 	return x
+}
+
+// sidebarWriter writes to Writer with the colors of attr in place of
+// the default colors of each cell, but for a cell that keeps the
+// background under it, which keeps it whole. Its cells and images are
+// drawn half a cell lower where the writer can, for the fill to stand
+// as far from the window bar above it as from the frame's line below.
+type sidebarWriter struct {
+	term.Writer
+	attr term.Attributes
+}
+
+func (w *sidebarWriter) SetCell(pos term.Coordinates, c term.Cell) {
+	if c.Attrs&term.AttrKeepBackground == 0 {
+		if c.Bg == term.ColorDefault {
+			c.Bg = w.attr.Bg
+		}
+		if c.Fg == term.ColorDefault {
+			c.Fg = w.attr.Fg
+		}
+	}
+	c.Attrs |= term.AttrVerticalRenderOffset
+	w.Writer.SetCell(pos, c)
+}
+
+func (w *sidebarWriter) DrawImage(img term.Image) bool {
+	img.VerticalRenderOffset = true
+	return w.Writer.DrawImage(img)
 }
 
 // statusProgressBar is a progress bar at pct, with its percentage on its

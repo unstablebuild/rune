@@ -291,8 +291,8 @@ func (c *Client) prewarm() {
 		}
 		if snap, err := c.snaps.get(c.ctx); err == nil {
 			for _, p := range candidates(snap) {
-				if !isRune(p) && !c.known(p) {
-					c.probeAsync(p)
+				if !isRune(p) {
+					c.probeUnknown(p)
 				}
 			}
 		}
@@ -382,15 +382,15 @@ func (c *Client) refresh(p tailcfg.NodeView) <-chan struct{} {
 		return nil
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	known, ok := c.probes[p.StableID()]
-	c.mu.Unlock()
 	age := time.Since(known.at)
 	switch {
 	case !ok, known.answer == probeRefused && age >= c.probeTTL:
-		return c.probeAsync(p)
+		return c.probeLocked(p)
 	case known.answer == probeServes && age >= c.probeTTL,
 		known.answer == probeSilent && age >= c.silentTTL:
-		c.probeAsync(p)
+		c.probeLocked(p)
 	}
 	return nil
 }
@@ -415,11 +415,13 @@ func (c *Client) await(ctx context.Context, pending []<-chan struct{}) error {
 	return nil
 }
 
-func (c *Client) known(p tailcfg.NodeView) bool {
+// probeUnknown probes p unless something is known of it.
+func (c *Client) probeUnknown(p tailcfg.NodeView) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, ok := c.probes[p.StableID()]
-	return ok
+	if _, ok := c.probes[p.StableID()]; !ok {
+		c.probeLocked(p)
+	}
 }
 
 func (c *Client) answer(p tailcfg.NodeView) probeAnswer {
@@ -428,19 +430,19 @@ func (c *Client) answer(p tailcfg.NodeView) probeAnswer {
 	return c.probes[p.StableID()].answer
 }
 
-// probeAsync probes p unless a probe of it is already under way, and
+// probeLocked probes p unless a probe of it is already under way, and
 // returns a channel closed once that probe is done. A probe outlives
 // whatever asked for it: its answer is what the next listing needs.
-func (c *Client) probeAsync(p tailcfg.NodeView) <-chan struct{} {
+//
+// c.mu must be held since what is known of p was read, or a probe that
+// ended in between would be started again.
+func (c *Client) probeLocked(p tailcfg.NodeView) <-chan struct{} {
 	id := p.StableID()
-	c.mu.Lock()
 	if done, ok := c.inflight[id]; ok {
-		c.mu.Unlock()
 		return done
 	}
 	done := make(chan struct{})
 	c.inflight[id] = done
-	c.mu.Unlock()
 	addr := c.addrPort(p.Addresses().At(0).Addr())
 	go debug.CapturePanicReport(func() {
 		defer close(done)

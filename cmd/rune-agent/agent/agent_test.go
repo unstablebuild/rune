@@ -5439,6 +5439,38 @@ func TestCleanSummary(t *testing.T) {
 	}
 }
 
+func TestAgentSpeed(t *testing.T) {
+	tests := []struct {
+		name  string
+		speed llmapi.Speed
+	}{
+		{"fast reaches every request", llmapi.SpeedFast},
+		{"unset sends no speed", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &mockService{
+				responses: []mockResponse{
+					toolCallResponse("my_tool", "{}", "c1"),
+					stopResponse("done"),
+				},
+			}
+			ag := NewAgent(svc, NewRegistry(&mockTool{
+				name:   "my_tool",
+				result: ToolResult{Content: "ok"},
+			}), noSkills(), newMockStore(), NoMemory(),
+				Config{SystemPrompt: "sys"})
+			ag.SetSpeed(tt.speed)
+			assert.Equal(t, tt.speed, ag.Speed())
+
+			collectEvents(t, ag.Run(context.Background(), "d", "go"))
+			require.Equal(t, 2, svc.getCallCount())
+			assert.Equal(t, tt.speed, svc.requests[0].Speed)
+			assert.Equal(t, tt.speed, svc.requests[1].Speed)
+		})
+	}
+}
+
 func TestPromptCacheKey(t *testing.T) {
 	t.Run("sets PromptCacheKey to dialogue ID on every request", func(t *testing.T) {
 		svc := &mockService{

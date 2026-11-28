@@ -45,7 +45,7 @@ func DefaultReferencesConfig() ReferencesConfig {
 // to the symbol at the cursor position and displays them in a floating window
 // with a file preview.
 func ReferencesHandler(
-	lsp semanticapi.LSP, editor textapi.Editor,
+	lsp commandLSP, editor textapi.Editor,
 	wm browserapi.WindowManager, opener browserapi.ResourceOpener,
 	notify browserapi.Notifications, fs workspaceapi.FileSystem,
 	rootURI workspaceapi.URI, scheduleNextTick func(func()) bool,
@@ -61,7 +61,7 @@ func ReferencesHandler(
 }
 
 type referencesHandler struct {
-	lsp              semanticapi.LSP
+	lsp              commandLSP
 	editor           textapi.Editor
 	wm               browserapi.WindowManager
 	opener           browserapi.ResourceOpener
@@ -94,7 +94,7 @@ func (h *referencesHandler) execute(
 		Position:     pos,
 		Context:      semanticapi.ReferenceContext{IncludeDeclaration: true},
 	}
-	locs, err := h.lsp.References(ctx, params)
+	locs, fromDisk, err := h.lsp.ReferenceLocations(ctx, params)
 	if err != nil {
 		return err
 	}
@@ -106,9 +106,14 @@ func (h *referencesHandler) execute(
 		entries[i] = locationFromLoc(loc)
 	}
 	entries = enrichEntries(entries, h.rootURI)
+	cfg := h.cfg.ListConfig
+	cfg.Editor = h.editor
+	if fromDisk {
+		cfg.Editor = nil
+	}
 	presentLocations(
 		"references", h.rootURI, entries, h.opener, h.wm, h.editor, h.notify,
-		h.fs, h.scheduleNextTick, h.parser, h.cfg.ListConfig, h.log,
+		h.fs, h.scheduleNextTick, h.parser, cfg, h.log,
 	)
 	return nil
 }

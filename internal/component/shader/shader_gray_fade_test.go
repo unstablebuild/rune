@@ -73,9 +73,9 @@ func TestGrayFade_HoldsAtFullDesaturationAfterFadeFrames(t *testing.T) {
 	assert.Equal(t, r2, b2)
 }
 
-func TestGrayFade_LastFrameFullyDesaturatesFg(t *testing.T) {
+func TestGrayFade_LastFrameFullyDesaturatesFgAndBg(t *testing.T) {
 	// The loading shader must finish at Progress()==1 so the open shader
-	// can pick up exactly where it left off. Background is left alone.
+	// can pick up exactly where it left off.
 	params := shader.DefaultGrayFadeParams()
 	params.FadeFrames = 10
 	sh := shader.GrayFade(params, term.Attributes{})
@@ -86,11 +86,98 @@ func TestGrayFade_LastFrameFullyDesaturatesFg(t *testing.T) {
 	sh.Shade(params.FadeFrames-1, 10_000, in)
 
 	assert.Equal(t, 1.0, sh.Progress())
-	r, g, b := in[0][0].Fg.RGB()
-	assert.Equal(t, r, g, "fully-desaturated Fg should have r==g==b")
-	assert.Equal(t, r, b, "fully-desaturated Fg should have r==g==b")
-	assert.Equal(t, term.NewRGBColor(10, 20, 30), in[0][0].Bg,
-		"GrayFade must not alter the background")
+	assert.Equal(t, term.NewRGBColor(76, 76, 76), in[0][0].Fg)
+	assert.Equal(t, term.NewRGBColor(18, 18, 18), in[0][0].Bg)
+}
+
+func TestGrayFade_DesaturatesBackgrounds(t *testing.T) {
+	themed := term.Attributes{Fg: term.NewRGBColor(200, 200, 200), Bg: term.NewRGBColor(40, 20, 80)}
+	canvas := func(c term.Color) []term.Image {
+		return []term.Image{{
+			Fill: true, FillColor: c, Width: 2, Height: 1, Layer: term.ImageLayerBelowBackground,
+		}}
+	}
+	tests := []struct {
+		name        string
+		defaultAttr term.Attributes
+		frame       int
+		bg          term.Color
+		attrs       term.AttrMask
+		wantBg      term.Color
+		wantImages  []term.Image
+	}{
+		{
+			name: "explicit", defaultAttr: themed, frame: 2,
+			bg:         term.NewRGBColor(10, 20, 30),
+			wantBg:     term.NewRGBColor(18, 18, 18),
+			wantImages: canvas(term.NewRGBColor(33, 33, 33)),
+		},
+		{
+			name: "explicit half way", defaultAttr: themed, frame: 1,
+			bg:         term.NewRGBColor(10, 20, 30),
+			wantBg:     term.NewRGBColor(14, 19, 24),
+			wantImages: canvas(term.NewRGBColor(36, 26, 56)),
+		},
+		{
+			// Pictures drawn under the backgrounds of cells only show
+			// through the default one.
+			name: "default shows the canvas", defaultAttr: themed, frame: 2,
+			bg:         term.ColorDefault,
+			wantBg:     term.ColorDefault,
+			wantImages: canvas(term.NewRGBColor(33, 33, 33)),
+		},
+		{
+			name: "default of a reversed cell", defaultAttr: themed, frame: 2,
+			bg: term.ColorDefault, attrs: term.AttrReverse,
+			wantBg:     term.NewRGBColor(33, 33, 33),
+			wantImages: canvas(term.NewRGBColor(33, 33, 33)),
+		},
+		{
+			name: "default of a writer that resolves it", frame: 2,
+			bg:     term.ColorDefault,
+			wantBg: term.ColorDefault,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			params := shader.DefaultGrayFadeParams()
+			params.FadeFrames = 3
+			sh := shader.GrayFade(params, tc.defaultAttr)
+			in := makeCharCells(2, 1)
+			in[0][0].Bg, in[0][0].Attrs = tc.bg, tc.attrs
+
+			images := sh.ShadeImages(tc.frame, 100, in, nil)
+
+			assert.Equal(t, tc.wantBg, in[0][0].Bg)
+			assert.Equal(t, tc.wantImages, images)
+		})
+	}
+}
+
+func TestGrayFade_DesaturatesFills(t *testing.T) {
+	params := shader.DefaultGrayFadeParams()
+	params.FadeFrames = 2
+	sh := shader.GrayFade(params, term.Attributes{Bg: term.NewRGBColor(40, 20, 80)})
+	solid := term.Image{
+		Fill: true, FillColor: term.NewRGBColor(0, 90, 200),
+		Pos: term.Coordinates{X: 1}, Width: 1, Height: 1, Layer: term.ImageLayerBelowText,
+	}
+	defaultFill := solid
+	defaultFill.FillColor = term.ColorDefault
+	mask := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	mask.SetRGBA(0, 0, color.RGBA{G: 255, A: 255})
+	masked := solid
+	masked.Src, masked.ID, masked.FillColor = mask, term.NewImageID(), term.NewRGBColor(255, 0, 0)
+
+	got := sh.ShadeImages(1, 100, makeCharCells(2, 1), []term.Image{solid, defaultFill, masked})
+
+	require.Len(t, got, 4)
+	assert.Equal(t, term.ImageLayerBelowBackground, got[0].Layer, "the canvas goes under every picture")
+	solid.FillColor = term.NewRGBColor(76, 76, 76)
+	defaultFill.FillColor = term.NewRGBColor(33, 33, 33)
+	// The colours of a mask's pixels are not the fill's.
+	masked.FillColor = term.NewRGBColor(76, 76, 76)
+	assert.Equal(t, []term.Image{solid, defaultFill, masked}, got[1:])
 }
 
 func TestGrayFade_DesaturationPreservesPerCellBrightness(t *testing.T) {

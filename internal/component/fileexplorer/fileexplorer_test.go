@@ -140,7 +140,8 @@ func TestExpandNodeAtFile(t *testing.T) {
 		"/project": {{name: "main.go"}},
 	}, Config{})
 	before := buf.String()
-	uri, isFile := c.ExpandNodeAt(term.Coordinates{Y: 0})
+	uri, isFile, err := c.ExpandNodeAt(term.Coordinates{Y: 0})
+	require.NoError(t, err)
 	assert.True(t, isFile)
 	assert.Equal(t, "file:///project/main.go", uri.String())
 	assert.Equal(t, before, buf.String())
@@ -152,12 +153,27 @@ func TestExpandNodeAtDirectory(t *testing.T) {
 		"/project/src": {{name: "app.go"}},
 	}, Config{})
 
-	_, isFile := c.ExpandNodeAt(term.Coordinates{Y: 0})
+	_, isFile, err := c.ExpandNodeAt(term.Coordinates{Y: 0})
+	require.NoError(t, err)
 	assert.False(t, isFile)
 	assert.Equal(t, " src/\n│    app.go", buf.String())
 
-	_, _ = c.ExpandNodeAt(term.Coordinates{Y: 0})
+	_, _, err = c.ExpandNodeAt(term.Coordinates{Y: 0})
+	require.NoError(t, err)
 	assert.Equal(t, " src/", buf.String())
+}
+
+func TestExpandNodeAtReturnsReadError(t *testing.T) {
+	c, buf, _ := newComp(t, map[string][]mockEntry{
+		"/project": {{name: "secret", isDir: true}},
+	}, Config{})
+	before := buf.String()
+
+	uri, isFile, err := c.ExpandNodeAt(term.Coordinates{Y: 0})
+	require.Error(t, err)
+	assert.Empty(t, uri.String())
+	assert.False(t, isFile)
+	assert.Equal(t, before, buf.String())
 }
 
 func TestReveal(t *testing.T) {
@@ -921,7 +937,8 @@ func TestExpandNodeAtReturnsBaseURIForRenamedFile(t *testing.T) {
 	}, Config{})
 	// Simulate a pending rename: edit row 0 in place.
 	replaceLine(buf, 0, "  new.go")
-	uri, ok := c.ExpandNodeAt(term.Coordinates{Y: 0})
+	uri, ok, err := c.ExpandNodeAt(term.Coordinates{Y: 0})
+	require.NoError(t, err)
 	require.True(t, ok, "expected <enter> on file to return (uri, true)")
 	assert.Equal(t, "file:///project/old.go", uri.String(),
 		"renamed-but-not-flushed rows must open the file at its "+
@@ -3139,7 +3156,8 @@ func toggleComponentRowContaining(
 		if !strings.Contains(line, label) {
 			continue
 		}
-		_, isFile := c.ExpandNodeAt(term.Coordinates{Y: y})
+		_, isFile, err := c.ExpandNodeAt(term.Coordinates{Y: y})
+		require.NoError(t, err)
 		require.False(t, isFile)
 		return
 	}
@@ -3203,7 +3221,8 @@ func TestIgnoreFiltersOutMatchingEntries(t *testing.T) {
 	assert.Equal(t, "\uf4d3 src/\n\uf40d main.go", buf.String())
 
 	// Expanding src/ must also filter ignored siblings.
-	_, _ = c.ExpandNodeAt(term.Coordinates{Y: 0})
+	_, _, err := c.ExpandNodeAt(term.Coordinates{Y: 0})
+	require.NoError(t, err)
 	assert.Equal(t,
 		"\uf07c src/\n│   \uf40d app.go\n\uf40d main.go",
 		buf.String())

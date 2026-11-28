@@ -39,10 +39,15 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/benchdraw"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/unstablebuild/rune-go-sdk/component"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	"github.com/unstablebuild/rune-go-sdk/tui"
 	"github.com/unstablebuild/tcell/v3"
+	"unstable.build/rune/internal/cell"
+	"unstable.build/rune/internal/component/gshader"
+	"unstable.build/rune/internal/component/gshader/kageshader"
 	"unstable.build/rune/internal/debug"
+	"unstable.build/rune/internal/term/gui/shaderdevice"
 )
 
 func TestUpdate(t *testing.T) {
@@ -502,6 +507,31 @@ func TestPublishEventSchedulesUserFunc(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestNewOffscreenRejectsInvalidSizes(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		width, height int
+		scale         float64
+	}{
+		{name: "zero width", width: 0, height: 10, scale: 1},
+		{name: "negative height", width: 10, height: -1, scale: 1},
+		{name: "zero scale", width: 10, height: 10, scale: 0},
+		{name: "nan scale", width: 10, height: 10, scale: math.NaN()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// The checks run before ebiten, which a process initializes
+			// once, so they leave the GUIs of other tests unaffected.
+			g, err := NewOffscreen(&mockHandler{}, tt.width, tt.height, tt.scale)
+			assert.Nil(t, g)
+			if !OffscreenSupported() {
+				require.ErrorIs(t, err, ErrOffscreenUnsupported)
+				return
+			}
+			require.ErrorContains(t, err, "invalid offscreen size")
+		})
+	}
 }
 
 func TestScreenshot(t *testing.T) {
@@ -1168,7 +1198,7 @@ func TestDrawPaintsPicturesOnTheirCells(t *testing.T) {
 	t.Cleanup(screen.Deallocate)
 	benchdraw.BeginFrame(t)
 	defer benchdraw.EndFrame(t)
-	rects := r.drawImageLayer(screen, gui.writer.Images(), term.ImageLayerAboveText)
+	rects := r.drawImageLayer(nil, screen, gui.writer.Images(), term.ImageLayerAboveText)
 
 	m := gui.fontManager
 	px := func(v float64) int { return int(math.Round(v)) }
@@ -1309,7 +1339,7 @@ func TestCloseRequest(t *testing.T) {
 	})
 }
 
-func newTestGUI(t *testing.T, mock *mockHandler) (*GUI, *mockInputManager) {
+func newTestGUI(t testing.TB, mock *mockHandler) (*GUI, *mockInputManager) {
 	gui, err := New(mock)
 	require.NoError(t, err)
 
@@ -1317,6 +1347,141 @@ func newTestGUI(t *testing.T, mock *mockHandler) (*GUI, *mockInputManager) {
 	gui.input.input = ret
 
 	return gui, ret
+}
+
+func TestDrawHandlerCarriesTheShaderDevice(t *testing.T) {
+	key := term.NewImageID()
+	var frames []gshader.Frame
+	shade := true
+	mock := mockHandler{assertDraw: func(w term.Writer) {
+		device, ok := gshader.DeviceFromContext(w.Context())
+		require.True(t, ok, "the context carries the device")
+		size, ok := cell.PixelSizeFromContext(w.Context())
+		require.True(t, ok, "and the size of a cell")
+		require.Positive(t, size.Width)
+		if !shade {
+			return
+		}
+		f, err := device.Render(key, image.Pt(2, 2), nil, gshader.Solid(term.ColorRed))
+		require.NoError(t, err)
+		frames = append(frames, f)
+		require.True(t, w.DrawImage(term.Image{Src: f.Src, ID: f.ID, Version: f.Version, Width: 2, Height: 2}))
+	}}
+	g, _ := newTestGUI(t, &mock)
+	t.Cleanup(func() { require.NoError(t, g.Close()) })
+	update := func() {
+		t.Helper()
+		g.needsDraw = true
+		benchdraw.BeginFrame(t)
+		require.NoError(t, g.Update())
+		screen := ebiten.NewImage(g.width, g.height)
+		g.Draw(screen)
+		screen.Deallocate()
+		benchdraw.EndFrame(t)
+	}
+
+	update()
+	update()
+	require.Len(t, frames, 2)
+	assert.Equal(t, frames[0], frames[1], "an unchanged tree is not rendered again")
+	_, ok := shaderdevice.Texture(frames[0].Src)
+	require.True(t, ok, "a rendering placed in the last draw is kept")
+	assert.Empty(t, g.renderer.images.textures, "and drawn without an upload")
+
+	g.Layout(defaultWidth+10, defaultHeight)
+	update()
+	require.Len(t, frames, 3)
+	assert.NotEqual(t, frames[1].Version, frames[2].Version, "a resize renders again")
+
+	shade = false
+	update()
+	_, ok = shaderdevice.Texture(frames[2].Src)
+	assert.False(t, ok, "a rendering the last draw did not place is freed")
+}
+
+func TestDrawHandlerShadesComponentsWithTheirCells(t *testing.T) {
+	invert := gshader.MustProgram("invert.kage", []byte(`//kage:unit pixels
+
+package main
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	c := imageSrc0At(srcPos)
+	return vec4(c.a-c.rgb, c.a)
+}
+`))
+	var errs []error
+	comp := gshader.New(component.NewString("hello"), gshader.FromProgram(invert, nil),
+		gshader.Config{OnError: func(err error) { errs = append(errs, err) }})
+	mock := mockHandler{assertDraw: comp.Draw}
+	g, _ := newTestGUI(t, &mock)
+	t.Cleanup(func() { require.NoError(t, g.Close()) })
+	comp.Resize(10, 1)
+
+	g.needsDraw = true
+	benchdraw.BeginFrame(t)
+	require.NoError(t, g.Update())
+	benchdraw.EndFrame(t)
+
+	assert.Empty(t, errs)
+	images := g.writer.Images()
+	require.Len(t, images, 1, "the shaded rendering")
+	_, ok := shaderdevice.Texture(images[0].Src)
+	assert.True(t, ok)
+	assert.Equal(t, 'h', g.writer.RawCells()[0][0].Ch, "under it, its cells")
+}
+
+// BenchmarkAnimatedWallpaper measures what each frame of an animated
+// wallpaper costs the GUI beyond the GPU, which benchdraw leaves out: a
+// full-window wallpaper rendered at a new frame, then an Update and a Draw.
+func BenchmarkAnimatedWallpaper(b *testing.B) {
+	const total = 300
+	sh := kageshader.Plasma(kageshader.DefaultPlasmaParams())
+	key := term.NewImageID()
+	frame := 0
+	var mock mockHandler
+	mock.assertDraw = func(w term.Writer) {
+		device, _ := gshader.DeviceFromContext(w.Context())
+		size := image.Pt(mock.width, mock.height)
+		f, err := device.Render(key, size, nil, sh.Shade(frame, total, gshader.Source()))
+		if err != nil {
+			b.Fatal(err)
+		}
+		w.DrawImage(term.Image{Src: f.Src, ID: f.ID, Version: f.Version, Width: size.X, Height: size.Y})
+	}
+	g, _ := newTestGUI(b, &mock)
+	b.Cleanup(func() { require.NoError(b, g.Close()) })
+	g.Layout(1920, 1080)
+	screen := ebiten.NewImage(g.width, g.height)
+	b.Cleanup(screen.Deallocate)
+	for b.Loop() {
+		frame = (frame + 1) % total
+		g.needsDraw = true
+		benchdraw.BeginFrame(b)
+		if err := g.Update(); err != nil {
+			b.Fatal(err)
+		}
+		g.Draw(screen)
+		benchdraw.EndFrame(b)
+	}
+}
+
+func TestCloseFreesTheShaderDevice(t *testing.T) {
+	var f gshader.Frame
+	mock := mockHandler{assertDraw: func(w term.Writer) {
+		device, _ := gshader.DeviceFromContext(w.Context())
+		var err error
+		f, err = device.Render(1, image.Pt(2, 2), nil, gshader.Source())
+		require.NoError(t, err)
+	}}
+	g, _ := newTestGUI(t, &mock)
+	benchdraw.BeginFrame(t)
+	require.NoError(t, g.Update())
+	benchdraw.EndFrame(t)
+	_, ok := shaderdevice.Texture(f.Src)
+	require.True(t, ok)
+	require.NoError(t, g.Close())
+	_, ok = shaderdevice.Texture(f.Src)
+	assert.False(t, ok)
 }
 
 func newLockedTestGUI(t *testing.T, mu sync.Locker) *GUI {

@@ -19,7 +19,6 @@ package treesitter
 import (
 	"cmp"
 	"fmt"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -57,23 +56,6 @@ func (t *Tree) Injections() ([]Injection, bool) {
 		return nil, false
 	}
 	return t.getInjections(), true
-}
-
-func (t *Tree) initInjections(language *tree_sitter.Language, injectionsFile string) error {
-	data, err := os.ReadFile(injectionsFile)
-	if err != nil {
-		return fmt.Errorf("read injections file: %v", err)
-	}
-	injections, disabled, err := newInjectionsQuery(language, string(data))
-	if err != nil {
-		return err
-	}
-	for _, i := range disabled {
-		t.log(log.DebugLevel, "disabling injections pattern %d: unsupported predicate", i)
-	}
-	t.injections = injections
-	t.log(log.DebugLevel, "injections initialized")
-	return nil
 }
 
 // newInjectionsQuery compiles an injections query against language. Patterns

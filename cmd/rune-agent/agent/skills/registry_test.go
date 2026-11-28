@@ -127,7 +127,8 @@ alpha body`)
 		assert.Empty(t, hud.Type)
 		assert.NotEmpty(t, hud.Description)
 		assert.Contains(t, hud.Body, "# Rune HUD images and sounds")
-		assert.Contains(t, hud.Body, "runectl screenshot")
+		assert.Contains(t, hud.Body, `["screenshot"]`, "the skill checks its work with rune_gui")
+		assert.NotContains(t, hud.Body, "runectl", "the skill never captures the user's Rune")
 	})
 
 	t.Run("explore cannot recursively invoke skills", func(t *testing.T) {

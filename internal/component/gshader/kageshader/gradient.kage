@@ -1,0 +1,22 @@
+//kage:unit pixels
+
+package main
+
+var Resolution vec2
+
+// From and To are the colours at either end.
+var From vec4
+var To vec4
+
+// Angle is the direction it runs in, in degrees clockwise from left to
+// right.
+var Angle float
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	a := Angle * 3.14159265 / 180
+	dir := vec2(cos(a), sin(a))
+	uv := dstPos.xy/Resolution - 0.5
+	// Corners reach 0 and 1 whatever the angle.
+	reach := (abs(dir.x) + abs(dir.y)) / 2
+	return mix(From, To, clamp(dot(uv, dir)/(2*reach)+0.5, 0, 1))
+}

@@ -2632,8 +2632,9 @@ type etcHost struct {
 	dataDir    string
 	configPath string
 
-	mu     sync.Mutex
-	writes []string
+	mu       sync.Mutex
+	writes   []string
+	installs []string
 }
 
 // newEtcHost returns a host whose user config is configName under the
@@ -2663,8 +2664,20 @@ func newEtcHost(
 	}
 	h.m = NewManager(h.n, h.rm, storagestub.NewInMemoryService(), idepkgtest.TrustStore(),
 		newLocalScheme(dataDir), dataDir, h.configPath, &mockPrompter{}, syncTick,
-		term.NopInterrupter(), WithAfterConfigWrite(h.afterWrite))
+		term.NopInterrupter(), WithAfterConfigWrite(h.afterWrite), WithAfterInstall(h.afterInstall))
 	return h
+}
+
+func (h *etcHost) afterInstall(pkgID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.installs = append(h.installs, pkgID)
+}
+
+func (h *etcHost) installed() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.installs)
 }
 
 func (h *etcHost) afterWrite(pkgID string) {
@@ -2716,6 +2729,21 @@ func configPkgBundles() [][]release.Bundle {
 		{Package: "configpkg", Version: "1"},
 		{Package: "configpkg", Version: "2"},
 	}}
+}
+
+func TestAfterInstall(t *testing.T) {
+	h := newEtcHost(t, "config.yaml", configPkgBundles(), nil)
+	h.install(t, "configpkg", "1")
+	assert.Equal(t, []string{"configpkg"}, h.installed())
+
+	h.install(t, "configpkg", "2")
+	assert.Equal(t, []string{"configpkg", "configpkg"}, h.installed())
+
+	require.NoError(t, h.m.UsePackageVersion(context.Background(), "configpkg", "1"))
+	assert.Equal(t, []string{"configpkg", "configpkg", "configpkg"}, h.installed())
+
+	require.ErrorIs(t, h.m.UsePackageVersion(context.Background(), "configpkg", "1"), ErrVersionInUse)
+	assert.Len(t, h.installed(), 3, "a failed use calls no hook")
 }
 
 func TestInstallConfig(t *testing.T) {

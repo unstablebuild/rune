@@ -53,6 +53,12 @@ type Scroll struct {
 	hiddenmeta    map[int]string
 	hiddensorted  []startEndBlock
 
+	// widest caches the columns of the widest row, as of the buffer
+	// generation widestGen, because measuring it walks every cell.
+	widest    int
+	widestGen uint64
+	widestOK  bool
+
 	onWillEditFrom term.Coordinates
 	onWillEditTo   term.Coordinates
 
@@ -75,7 +81,8 @@ type Scroll struct {
 
 	// InvertOffset inverts the semantics of all the Seek* methods,
 	// thus the default offset is the maximum offset. This is incompatible
-	// with hidden lines, so calls to MarkHidden will panic.
+	// with hidden lines, so calls to MarkHidden will panic unless the
+	// scroll was initialized with InitPerformance, where they hide nothing.
 	InvertOffset bool
 
 	// Hatch, when set, draws its stripes over the rows below the content.
@@ -93,6 +100,7 @@ func NewScroll(buf *cell.Buffer) (s *Scroll) {
 
 func (s *Scroll) initBuffer(buf *cell.Buffer) {
 	s.buf = buf
+	s.widestOK = false
 	s.searcher = cell.NewSimpleSearcher(s.buf)
 	s.searcher.Reset()
 }
@@ -133,6 +141,7 @@ func (s *Scroll) SetTabspaces(tabspaces int) {
 		tabspaces = 1 // 0, disabled, effectively is equivalent to 1
 	}
 	s.tabspaces = tabspaces
+	s.widestOK = false
 }
 
 // Tabspaces returns the tabspaces value.
@@ -419,7 +428,12 @@ func (s *Scroll) HiddenLineCount() int {
 // MarkHidden marks the inner rows of the given row range as hidden,
 // so next call to Draw will not display them, and instead display an icon to indicate
 // that there are hidden rows.
+// It hides nothing and returns false if the scroll was initialized with
+// InitPerformance; otherwise it panics if InvertOffset is set.
 func (s *Scroll) MarkHidden(start, end int) bool {
+	if s.hiddenblocks == nil {
+		return false
+	}
 	if s.InvertOffset {
 		panic("called MarkHidden but InvertOffset is enabled")
 	}
@@ -431,7 +445,7 @@ func (s *Scroll) MarkHidden(start, end int) bool {
 	if start == end {
 		return false
 	}
-	if start < 0 || end >= s.buf.Rows() || s.hiddenblocks == nil {
+	if start < 0 || end >= s.buf.Rows() {
 		return false
 	}
 
@@ -520,15 +534,20 @@ func (s *Scroll) getMaxXOffset() (x int) {
 	if s.Wrap {
 		return
 	}
+	return max(0, s.widestColumns()-s.width)
+}
 
+func (s *Scroll) widestColumns() int {
+	gen := s.buf.Generation()
+	if s.widestOK && s.widestGen == gen {
+		return s.widest
+	}
 	var columns int
 	for i := 0; i < s.buf.Rows(); i++ {
-		if c := s.viewColumns(i); c > columns {
-			columns = c
-		}
+		columns = max(columns, s.viewColumns(i))
 	}
-	x = max(0, columns-s.width)
-	return
+	s.widest, s.widestGen, s.widestOK = columns, gen, true
+	return columns
 }
 
 func (s *Scroll) getMaxYOffset() (y int) {

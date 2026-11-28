@@ -1266,6 +1266,18 @@ func TestFileExplorerHandlerReveal(t *testing.T) {
 	})
 }
 
+func TestFileExplorerEnterSurfacesExpandError(t *testing.T) {
+	h, host := newTestFileExplorerHandler(t, map[string][]explorerMockEntry{
+		"/project": {{name: "secret", isDir: true}},
+	})
+	before := h.buf.String()
+
+	sendExplorerKeys(t, h, "<enter>")
+	require.Len(t, host.errs, 1)
+	require.Contains(t, host.errs[0].Error(), "file explorer:")
+	require.Equal(t, before, h.buf.String())
+}
+
 func sendExplorerKeys(
 	t *testing.T, h interface{ Handle(term.Event) (bool, bool) }, seq string,
 ) {
@@ -1285,7 +1297,8 @@ func expandExplorerRowContaining(t *testing.T, h *fileExplorerHandler, label str
 		if !strings.Contains(line, label) {
 			continue
 		}
-		_, opened := h.comp.ExpandNodeAt(term.Coordinates{Y: y})
+		_, opened, err := h.comp.ExpandNodeAt(term.Coordinates{Y: y})
+		require.NoError(t, err)
 		require.False(t, opened)
 		return
 	}

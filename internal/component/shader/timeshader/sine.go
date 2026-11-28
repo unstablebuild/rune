@@ -37,11 +37,21 @@ func Boomerang(baseShader shader.Shader) shader.Shader {
 }
 
 func sine(baseShader shader.Shader, revolutions float64) *timeShader {
-	return &timeShader{baseShader, funcTimeRemapper(
-		func(frame, total int) int {
-			return int(math.Round(float64(total-1) *
-				math.Sin(revolutions*2*math.Pi*float64(frame)/float64(total-1))),
-			)
-		},
-	)}
+	return &timeShader{baseShader, funcTimeRemapper(SineTime(revolutions))}
+}
+
+// SineTime returns the frame Sine plays at frame of total, for shaders
+// other than shader.Shader to remap their time with.
+func SineTime(revolutions float64) func(frame, total int) int {
+	return func(frame, total int) int {
+		return int(math.Round(float64(total-1) *
+			math.Sin(revolutions*2*math.Pi*float64(frame)/float64(total-1))),
+		)
+	}
+}
+
+// BoomerangTime returns the frame Boomerang plays at frame of total, for
+// shaders other than shader.Shader to remap their time with.
+func BoomerangTime() func(frame, total int) int {
+	return SineTime(0.5)
 }
