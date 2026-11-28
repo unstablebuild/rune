@@ -359,6 +359,83 @@ func TestMarkdownCompositeLoadsEachGrammarOnceIntegration(t *testing.T) {
 		"every paragraph shares one markdown_inline grammar")
 }
 
+func TestMarkdownCompositeReloadReusesSectionsIntegration(t *testing.T) {
+	doc := largeMarkdownDocument(60, 20)
+	lines := strings.SplitAfter(doc, "\n")
+	for _, c := range []struct {
+		name    string
+		content string
+		// maxCreated is the most sections the reload may create, or -1
+		// for as many as the content gained.
+		maxCreated int
+	}{
+		{name: "a line inserted at the top", content: "Inserted line.\n" + doc, maxCreated: 1},
+		{name: "a blank line inserted at the top", content: "\n" + doc, maxCreated: 0},
+		{name: "every 10th line edited", content: editEveryTenthLine(lines), maxCreated: 1},
+		{name: "100 lines deleted", content: deleteLines(lines, len(lines)/2, 100), maxCreated: 1},
+		{name: "200 lines appended", content: doc + largeMarkdownDocument(60, 0), maxCreated: -1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pkgs := &countingPackages{PkgManager: newAllMarkdownPackages(t), host: "markdown"}
+			var clock loopClock
+			s := openMarkdownTree(t, &clock, pkgs, doc)
+			before := len(s.tree.Sections())
+			created := measure(&clock, pkgs, func() { s.reload(&clock, c.content) }).sections
+
+			fresh := openMarkdownTree(t, &clock, pkgs, c.content)
+			assert.Equal(t, fresh.tree.Sections(), s.tree.Sections())
+			var got, want []textapi.Location
+			s.locked(func() { got = s.locs })
+			fresh.locked(func() { want = fresh.locs })
+			assert.Equal(t, want, got, "the highlights of a fresh open")
+			maxCreated := c.maxCreated
+			if maxCreated < 0 {
+				maxCreated = len(fresh.tree.Sections()) - before
+			}
+			assert.LessOrEqual(t, created, int64(maxCreated), "sections created")
+		})
+	}
+}
+
+// editEveryTenthLine changes the text of every tenth line of a
+// largeMarkdownDocument, keeping its blocks.
+func editEveryTenthLine(lines []string) string {
+	var b strings.Builder
+	for i, line := range lines {
+		switch {
+		case i%10 != 0, strings.TrimSpace(line) == "", strings.HasPrefix(line, "```"),
+			strings.HasPrefix(line, "|---"), strings.HasPrefix(line, "| Step"):
+		case strings.HasPrefix(line, "| step"):
+			line = strings.Replace(line, "step", "stage", 1)
+		default:
+			line = strings.TrimSuffix(line, "\n") + " edited\n"
+		}
+		b.WriteString(line)
+	}
+	return b.String()
+}
+
+// deleteLines deletes about n lines of a largeMarkdownDocument from the
+// blank line at or after from, up to a blank line, keeping its code
+// blocks whole.
+func deleteLines(lines []string, from, n int) string {
+	boundary := func(i int) int {
+		fences := 0
+		for j, line := range lines {
+			if j >= i && fences%2 == 0 && strings.TrimSpace(line) == "" {
+				return j
+			}
+			if strings.HasPrefix(line, "```") {
+				fences++
+			}
+		}
+		return len(lines)
+	}
+	start := boundary(from)
+	end := boundary(start + n)
+	return strings.Join(lines[:start], "") + strings.Join(lines[end:], "")
+}
+
 // The attributes the markdown suites tell the host's and markdown_inline's
 // captures apart by; their defaults share a color.
 var (
