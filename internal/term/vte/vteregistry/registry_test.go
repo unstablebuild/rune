@@ -598,6 +598,19 @@ func TestRegistryWatch(t *testing.T) {
 		},
 		want: []change{{attachments: 1}, {deleted: true}},
 	}, {
+		desc: "deleting a terminal whose process exited",
+		run: func(t *testing.T, f *fixture) vte.ID {
+			v, p := f.create(t, 10, 4)
+			p.HangUp()
+			p.ReportExit(nil)
+			require.Eventually(t, func() bool { return f.last().Complete },
+				5*time.Second, 5*time.Millisecond)
+			require.NoError(t, f.r.DeleteVTE(context.Background(), v.ID()))
+			return v.ID()
+		},
+		want: []change{{attachments: 1}, {attachments: 1, complete: true},
+			{complete: true, deleted: true}},
+	}, {
 		desc: "closing the registry deletes every terminal",
 		run: func(t *testing.T, f *fixture) vte.ID {
 			v, _ := f.create(t, 10, 4)
