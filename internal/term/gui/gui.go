@@ -315,7 +315,7 @@ func newGUI(handler tui.Handler, offscreen *offscreenSize, options []Option) (*G
 	}
 	ret.shaders = shaderdevice.New(ret.renderCells)
 	ret.input = newInput(ret.fontManager)
-	ret.mouse = newMouse(ret.fontManager)
+	ret.mouse = newMouse(ret.fontManager, ret.scheduleFrame)
 	ret.drag = newDragPoller(ret.mouse)
 	ret.pointer = newPointer()
 	ret.links = newLinkScanner(ret.pointer)
@@ -409,6 +409,7 @@ func (g *GUI) Close() error {
 		}
 		g.runAcceptedUserFuncs()
 		g.cancelCtx()
+		g.mouse.stopRepeatTimer()
 		g.cursorEffect.close()
 		g.shaders.Close()
 		if g.renderer != nil {

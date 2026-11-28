@@ -19,11 +19,15 @@ package gui
 import (
 	"image"
 	"math"
+	"strings"
 	"testing"
+	"time"
+	"unicode"
 
 	ebiten "github.com/hajimehoshi/ebiten/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdkmouse "github.com/unstablebuild/rune-go-sdk/mouse"
 	"github.com/unstablebuild/rune-go-sdk/term"
 	tterm "unstable.build/rune/internal/term"
 	"unstable.build/rune/internal/term/gui/font"
@@ -483,8 +487,14 @@ func newTestMouse(t *testing.T) (*mockMouseManager, *mouse) {
 	f.SetDeviceScale(1)
 	f.SetDPI(72)
 	require.NoError(t, f.SetSize(16))
-	ret := newMouse(f)
+	ret := newMouse(f, func() {})
 	ret.mouse = mock
+	// An armed repeat would otherwise arm a real AfterFunc whose wake
+	// races the test's own calls; the inert timer records nothing and
+	// never fires. Tests exercising the repeat use newTestMouseWithClock.
+	ret.newTimer = func(d time.Duration, f func()) repeatTimer {
+		return &fakeRepeatTimer{at: ret.now().Add(d), f: f}
+	}
 	ret.resize(f.CellsWidth(defaultWidth), f.CellsHeight(defaultHeight))
 	return mock, ret
 }
@@ -727,4 +737,464 @@ func TestWithScrollMultiplierIgnoresNonPositive(t *testing.T) {
 			assert.Equal(t, test.want, mouse.multiplier)
 		})
 	}
+}
+
+// fakeRepeatTimer is the manual repeatTimer the clock harness drives:
+// the test observes the deadline the mouse armed and fires the timer
+// itself, so a held-still drag's frame scheduling is deterministic.
+type fakeRepeatTimer struct {
+	at      time.Time
+	f       func()
+	stopped bool
+	fired   bool
+}
+
+func (t *fakeRepeatTimer) Stop() bool {
+	t.stopped = true
+	return !t.fired
+}
+
+func (t *fakeRepeatTimer) fire() {
+	if t.stopped || t.fired {
+		return
+	}
+	t.fired = true
+	t.f()
+}
+
+// repeatClock is the fake-clock harness for the held-drag repeat: the
+// fake now() feeds the pipeline, newTimer records each armed deadline,
+// and fired timers report through the scheduleFrame spy — the same
+// seam production wires to ebiten.ScheduleFrame.
+type repeatClock struct {
+	now    time.Time
+	timers []*fakeRepeatTimer
+	wakes  int
+}
+
+// armed returns the pending timer, if one is set.
+func (c *repeatClock) armed() *fakeRepeatTimer {
+	for i := len(c.timers) - 1; i >= 0; i-- {
+		if !c.timers[i].stopped && !c.timers[i].fired {
+			return c.timers[i]
+		}
+	}
+	return nil
+}
+
+// fireDue runs every timer whose deadline the fake clock has reached,
+// mirroring how real AfterFunc goroutines fire as the clock passes them.
+func (c *repeatClock) fireDue() {
+	for _, t := range c.timers {
+		if !t.stopped && !t.fired && !t.at.After(c.now) {
+			t.fire()
+		}
+	}
+}
+
+func newTestMouseWithClock(t *testing.T) (*mockMouseManager, *mouse, *repeatClock) {
+	mock, m := newTestMouse(t)
+	clk := &repeatClock{now: time.Now()}
+	m.now = func() time.Time { return clk.now }
+	m.scheduleFrame = func() { clk.wakes++ }
+	m.newTimer = func(d time.Duration, f func()) repeatTimer {
+		timer := &fakeRepeatTimer{at: clk.now.Add(d), f: f}
+		clk.timers = append(clk.timers, timer)
+		return timer
+	}
+	return mock, m, clk
+}
+
+func TestProcessMouseHeldDragRepeatsOncePerWake(t *testing.T) {
+	mock, mouse, clk := newTestMouseWithClock(t)
+
+	mock.pressedButtons[ebiten.MouseButtonLeft] = struct{}{}
+	mock.cursorPosition = image.Point{X: 40, Y: 40}
+	press := mouse.processMouse()
+	require.Len(t, press, 1)
+	require.Equal(t, term.MouseLeft, press[0].Key)
+	assert.Nil(t, clk.armed(), "a press still inside its own cell arms no repeat")
+
+	// The repeat only arms once the drag leaves the press cell.
+	mock.cursorPosition = image.Point{X: 120, Y: 120}
+	move := mouse.processMouse()
+	require.Len(t, move, 1)
+	require.Equal(t, term.MouseLeft, move[0].Key)
+	timer := clk.armed()
+	require.NotNil(t, timer, "a drag outside its press cell arms the repeat wake")
+	assert.Equal(t, clk.now.Add(mouse.dragRepeatInterval()), timer.at)
+
+	// A wake before the deadline emits nothing and leaves the pending
+	// deadline standing.
+	clk.now = clk.now.Add(mouse.dragRepeatInterval() - time.Millisecond)
+	assert.Empty(t, mouse.processMouse())
+	assert.Equal(t, timer, clk.armed())
+
+	// Once due, a wake emits exactly one repeat at the held position —
+	// even when several intervals elapsed, a stall resumes the cadence
+	// rather than paying back every missed one in a burst.
+	clk.now = clk.now.Add(10 * mouse.dragRepeatInterval())
+	repeat := mouse.processMouse()
+	require.Len(t, repeat, 1)
+	assert.Equal(t, term.MouseLeft, repeat[0].Key)
+	assert.Equal(t, move[0].MouseX, repeat[0].MouseX)
+	assert.Equal(t, move[0].MouseY, repeat[0].MouseY)
+	_, ok := tterm.SubCellFractionFromContext(repeat[0].Context)
+	assert.True(t, ok, "repeats carry the same sub-cell payload as motion events")
+
+	// Releasing stands the repeat down; a still frame with no button
+	// stays silent well past the repeat cadence.
+	delete(mock.pressedButtons, ebiten.MouseButtonLeft)
+	require.Len(t, mouse.processMouse(), 1, "release event")
+	assert.Nil(t, clk.armed())
+	clk.now = clk.now.Add(5 * time.Second)
+	assert.Empty(t, mouse.processMouse())
+}
+
+func TestProcessMouseHeldStillInPressCellStaysSilent(t *testing.T) {
+	mock, mouse, clk := newTestMouseWithClock(t)
+
+	mock.pressedButtons[ebiten.MouseButtonLeft] = struct{}{}
+	mock.cursorPosition = image.Point{X: 40, Y: 40}
+	require.Len(t, mouse.processMouse(), 1, "press")
+
+	// A click held in its own cell produces nothing well past the
+	// repeat cadence: repeats start only once the drag leaves the
+	// press cell, so a slow ordinary click never reads as a drag.
+	clk.now = clk.now.Add(5 * time.Second)
+	assert.Empty(t, mouse.processMouse())
+	assert.Empty(t, clk.timers, "a press held in its own cell never arms the repeat")
+
+	// Sub-cell jitter inside the press cell must not arm it either.
+	mock.cursorPosition = image.Point{X: 41, Y: 40}
+	require.Len(t, mouse.processMouse(), 1, "sub-cell move still dispatches")
+	assert.Empty(t, clk.timers)
+}
+
+func TestProcessMouseDragRepeatIsLeftButtonOnly(t *testing.T) {
+	for _, button := range []ebiten.MouseButton{ebiten.MouseButtonRight, ebiten.MouseButtonMiddle} {
+		mock, mouse, clk := newTestMouseWithClock(t)
+
+		mock.pressedButtons[button] = struct{}{}
+		mock.cursorPosition = image.Point{X: 40, Y: 40}
+		require.Len(t, mouse.processMouse(), 1, "press")
+		mock.cursorPosition = image.Point{X: 120, Y: 120}
+		require.Len(t, mouse.processMouse(), 1, "drag")
+
+		clk.now = clk.now.Add(5 * time.Second)
+		assert.Empty(t, mouse.processMouse(),
+			"a held non-left drag produces no repeats")
+		assert.Empty(t, clk.timers)
+	}
+}
+
+func TestProcessMouseDragReturnToPressCellDisarms(t *testing.T) {
+	mock, mouse, clk := newTestMouseWithClock(t)
+
+	mock.pressedButtons[ebiten.MouseButtonLeft] = struct{}{}
+	mock.cursorPosition = image.Point{X: 40, Y: 40}
+	require.Len(t, mouse.processMouse(), 1, "press")
+	mock.cursorPosition = image.Point{X: 120, Y: 120}
+	require.Len(t, mouse.processMouse(), 1, "drag out")
+	require.NotNil(t, clk.armed())
+
+	// Dragging back into the press cell stands the repeat down again:
+	// held still there, a repeat would only collapse the selection the
+	// way a held plain click would.
+	mock.cursorPosition = image.Point{X: 40, Y: 40}
+	require.Len(t, mouse.processMouse(), 1, "drag back")
+	assert.Nil(t, clk.armed())
+	clk.now = clk.now.Add(5 * time.Second)
+	assert.Empty(t, mouse.processMouse())
+}
+
+func TestProcessMouseHeldDragOvershootShortensTimer(t *testing.T) {
+	mock, mouse, clk := newTestMouseWithClock(t)
+
+	mock.pressedButtons[ebiten.MouseButtonLeft] = struct{}{}
+	mock.cursorPosition = image.Point{X: 40, Y: 40}
+	require.Len(t, mouse.processMouse(), 1)
+	mock.cursorPosition = image.Point{X: 40, Y: 120}
+	require.Len(t, mouse.processMouse(), 1)
+	timer := clk.armed()
+	require.NotNil(t, timer)
+	assert.Equal(t, clk.now.Add(baseDragRepeatInterval), timer.at)
+
+	// Dragging far past the window edge shortens the next wake's
+	// deadline instead of batching owed events: the same stillness
+	// scrolls faster the further out the pointer is held.
+	mock.cursorPosition = image.Point{X: 40, Y: defaultHeight * 4}
+	require.Len(t, mouse.processMouse(), 1)
+	assert.Less(t, mouse.dragRepeatInterval(), baseDragRepeatInterval)
+	timer = clk.armed()
+	require.NotNil(t, timer)
+	assert.Equal(t, clk.now.Add(mouse.dragRepeatInterval()), timer.at)
+
+	clk.now = clk.now.Add(mouse.dragRepeatInterval())
+	require.Len(t, mouse.processMouse(), 1, "the shortened deadline still emits one repeat")
+}
+
+func TestProcessMouseStillFrameWithoutButtonStaysSilent(t *testing.T) {
+	mock, mouse, clk := newTestMouseWithClock(t)
+
+	mock.cursorPosition = image.Point{X: 40, Y: 40}
+	require.Len(t, mouse.processMouse(), 1, "first move dispatches")
+	assert.Empty(t, mouse.processMouse(), "identical follow-up frame does not dispatch")
+
+	// The repeat source only exists for drags: well past the repeat
+	// cadence, a still frame with no held button must keep producing
+	// nothing and never arm a wake.
+	clk.now = clk.now.Add(5 * time.Second)
+	assert.Empty(t, mouse.processMouse())
+	assert.Empty(t, clk.timers)
+}
+
+// recordingMouseDelegate implements the SDK's mouse.Delegate for the
+// held-drag integration test over a fixed line buffer. It models
+// selection the way real delegates do — SetSelectionStart anchors it,
+// SetSelectionEnd extends the cursor, SelectWordAt resolves the word
+// under the position like component.Scroll.WordAt does — and counts
+// scrolled lines, so tests can assert which range stayed selected and
+// how far the view moved, not just that a callback fired.
+type recordingMouseDelegate struct {
+	height  int
+	lines   []string
+	scrolls int
+	ends    []term.Coordinates
+	anchor  term.Coordinates
+	cursor  term.Coordinates
+	hasSel  bool
+}
+
+func (d *recordingMouseDelegate) OnAction(term.Event, term.Coordinates, sdkmouse.Action) bool {
+	return false
+}
+
+func (d *recordingMouseDelegate) ScrollUp(n int) bool   { d.scrolls += n; return true }
+func (d *recordingMouseDelegate) ScrollDown(n int) bool { d.scrolls += n; return true }
+func (d *recordingMouseDelegate) SetSelectionEnd(pos term.Coordinates) {
+	d.ends = append(d.ends, pos)
+	if !d.hasSel {
+		return
+	}
+	d.cursor = pos
+}
+func (d *recordingMouseDelegate) SetSelectionStart(pos term.Coordinates) {
+	d.anchor = pos
+	d.cursor = pos
+	d.hasSel = true
+}
+func (d *recordingMouseDelegate) ClearSelection() { d.hasSel = false }
+func (d *recordingMouseDelegate) SelectWordAt(pos term.Coordinates) {
+	if pos.Y < 0 || pos.Y >= len(d.lines) {
+		return
+	}
+	line := []rune(d.lines[pos.Y])
+	if pos.X < 0 || pos.X >= len(line) || !isWordChar(line[pos.X]) {
+		return
+	}
+	start := pos.X
+	for start > 0 && isWordChar(line[start-1]) {
+		start--
+	}
+	end := pos.X
+	for end < len(line) && isWordChar(line[end]) {
+		end++
+	}
+	d.anchor = term.Coordinates{X: start, Y: pos.Y}
+	d.cursor = term.Coordinates{X: end, Y: pos.Y}
+	d.hasSel = true
+}
+func (d *recordingMouseDelegate) SelectLine(y int) {
+	if y < 0 || y >= len(d.lines) {
+		return
+	}
+	d.anchor = term.Coordinates{Y: y}
+	d.cursor = term.Coordinates{X: len([]rune(d.lines[y])), Y: y}
+	d.hasSel = true
+}
+func (d *recordingMouseDelegate) Width() int  { return 40 }
+func (d *recordingMouseDelegate) Height() int { return d.height }
+
+// selection reports the anchor and cursor of the live selection, if any.
+func (d *recordingMouseDelegate) selection() (anchor, cursor term.Coordinates, ok bool) {
+	return d.anchor, d.cursor, d.hasSel
+}
+
+// isWordChar matches the matcher component.Scroll.WordAt selects with:
+// letters, digits, and underscore.
+func isWordChar(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+}
+
+// newRepeatTestGUI builds a real GUI around handler and rewires its
+// mouse to the mock manager plus a fake clock, so gui.Update runs the
+// production event pipeline — unchanged frames included — while the
+// repeat's frame scheduling stays observable and deterministic.
+func newRepeatTestGUI(t *testing.T, handler *mockHandler) (*GUI, *mockMouseManager, *repeatClock) {
+	gui, _ := newTestGUI(t, handler)
+
+	mock := &mockMouseManager{pressedButtons: map[ebiten.MouseButton]struct{}{}}
+	clk := &repeatClock{now: time.Now()}
+	gui.mouse.mouse = mock
+	gui.mouse.now = func() time.Time { return clk.now }
+	gui.mouse.scheduleFrame = func() { clk.wakes++ }
+	gui.mouse.newTimer = func(d time.Duration, f func()) repeatTimer {
+		timer := &fakeRepeatTimer{at: clk.now.Add(d), f: f}
+		clk.timers = append(clk.timers, timer)
+		return timer
+	}
+	return gui, mock, clk
+}
+
+// tick is one run-loop iteration the way ebiten would deliver it: any
+// repeat timers whose deadline passed schedule their frame first —
+// that call is the only thing that makes a real loop wake — and then
+// Update runs.
+func tick(t *testing.T, gui *GUI, clk *repeatClock, advance time.Duration) {
+	t.Helper()
+	clk.now = clk.now.Add(advance)
+	clk.fireDue()
+	require.NoError(t, gui.Update())
+}
+
+func TestUpdateHeldDragSchedulesFramesAndKeepsScrolling(t *testing.T) {
+	delegate := &recordingMouseDelegate{}
+	dispatch := sdkmouse.New(delegate)
+	var handled []term.Event
+	gui, mock, clk := newRepeatTestGUI(t, &mockHandler{
+		assertDraw: func(term.Writer) {},
+		assertEvent: func(ev term.Event) (bool, bool) {
+			handled = append(handled, ev)
+			dispatch.Handle(ev)
+			return false, true
+		},
+	})
+	delegate.height = gui.mouse.height
+
+	// Press mid-pane, then drag below the window's bottom edge: the
+	// motion alone scrolls once through the SDK's edge zone.
+	mock.pressedButtons[ebiten.MouseButtonLeft] = struct{}{}
+	mock.cursorPosition = image.Point{X: 40, Y: 40}
+	tick(t, gui, clk, 0)
+	require.NotEmpty(t, handled)
+	require.Equal(t, term.MouseLeft, handled[len(handled)-1].Key)
+
+	mock.cursorPosition = image.Point{X: 40, Y: defaultHeight + 200}
+	tick(t, gui, clk, 0)
+	require.Positive(t, delegate.scrolls, "the drag itself reaches the edge zone")
+	require.NotNil(t, clk.armed(), "a held drag past the edge arms its own frame wake")
+
+	// Holding the pointer still must keep scrolling: each repeat's
+	// timer is the only thing scheduling the frame it repeats on, and
+	// every wake emits exactly one held-button event.
+	before := delegate.scrolls
+	eventsBefore := len(handled)
+	for range 3 {
+		tick(t, gui, clk, gui.mouse.dragRepeatInterval())
+	}
+	assert.Greater(t, delegate.scrolls, before,
+		"a pointer held still at the edge must keep scrolling")
+	assert.Equal(t, 3, clk.wakes,
+		"a held, motionless drag schedules its own frames")
+	assert.Equal(t, eventsBefore+3, len(handled),
+		"each scheduled frame carries exactly one repeat")
+	for _, ev := range handled[eventsBefore:] {
+		assert.Equal(t, term.MouseLeft, ev.Key)
+		assert.Equal(t, handled[eventsBefore-1].MouseX, ev.MouseX)
+		assert.Equal(t, handled[eventsBefore-1].MouseY, ev.MouseY)
+	}
+	for _, end := range delegate.ends {
+		assert.Equal(t, delegate.ends[0], end,
+			"held-still repeats must not drift the selection endpoint")
+	}
+
+	// A stall mid-hold resumes the cadence rather than bursting: three
+	// intervals of silence still yield one repeat on the next wake.
+	eventsBefore = len(handled)
+	clk.now = clk.now.Add(3 * gui.mouse.dragRepeatInterval())
+	clk.fireDue()
+	require.NoError(t, gui.Update())
+	assert.Equal(t, eventsBefore+1, len(handled), "a stall resumes, it does not burst")
+
+	// Dragging back inside the window and holding still keeps the
+	// repeat armed — the pointer left its press cell — but mid-pane
+	// repeats extend the selection to the cell they already sit on:
+	// the endpoint holds and nothing scrolls.
+	mock.cursorPosition = image.Point{X: 40, Y: defaultHeight / 2}
+	tick(t, gui, clk, 0)
+	require.NotNil(t, clk.armed(), "a held drag off its press cell stays armed")
+	mid := delegate.ends[len(delegate.ends)-1]
+	before = delegate.scrolls
+	for range 2 {
+		tick(t, gui, clk, baseDragRepeatInterval)
+	}
+	assert.Equal(t, before, delegate.scrolls,
+		"held-still repeats away from the edge must not scroll")
+	assert.Equal(t, mid, delegate.ends[len(delegate.ends)-1],
+		"held-still repeats land on the held cell")
+
+	// Release stands the repeat down and delivers the release event.
+	delete(mock.pressedButtons, ebiten.MouseButtonLeft)
+	tick(t, gui, clk, 0)
+	assert.Equal(t, term.MouseRelease, handled[len(handled)-1].Key)
+	assert.Nil(t, clk.armed(), "release disarms the repeat wake")
+}
+
+func TestUpdateHeldClickProducesNoRepeats(t *testing.T) {
+	delegate := &recordingMouseDelegate{lines: make([]string, 40)}
+	dispatch := sdkmouse.New(delegate)
+	var handled []term.Event
+	gui, mock, clk := newRepeatTestGUI(t, &mockHandler{
+		assertDraw: func(term.Writer) {},
+		assertEvent: func(ev term.Event) (bool, bool) {
+			handled = append(handled, ev)
+			dispatch.Handle(ev)
+			return false, true
+		},
+	})
+	delegate.height = gui.mouse.height
+
+	// The word sits under the clicked cell wherever the font metrics
+	// land it; wordStart/wordEnd bound it exactly.
+	pressCell := gui.mouse.cellAt(40, 40)
+	delegate.lines[pressCell.Y] = strings.Repeat(" ", pressCell.X) + "delta more"
+	wordStart := term.Coordinates{X: pressCell.X, Y: pressCell.Y}
+	wordEnd := term.Coordinates{X: pressCell.X + len("delta"), Y: pressCell.Y}
+
+	// A double-click held a beat too long must stay a word select:
+	// while the pointer sits in its press cell the repeat never arms,
+	// so nothing re-reads the hold as a drag and shrinks the selection.
+	mock.pressedButtons[ebiten.MouseButtonLeft] = struct{}{}
+	mock.cursorPosition = image.Point{X: 40, Y: 40}
+	tick(t, gui, clk, 0)
+	delete(mock.pressedButtons, ebiten.MouseButtonLeft)
+	tick(t, gui, clk, 0)
+	mock.pressedButtons[ebiten.MouseButtonLeft] = struct{}{}
+	tick(t, gui, clk, 0)
+
+	anchor, cursor, ok := delegate.selection()
+	require.True(t, ok, "the second click selects a word")
+	assert.Equal(t, wordStart, anchor,
+		"a single char, the line, or the screen all fail this check")
+	assert.Equal(t, wordEnd, cursor,
+		"a single char, the line, or the screen all fail this check")
+
+	// A press held in its own cell never arms the repeat, so seconds
+	// of stillness must not move the selection: a repeat here would
+	// dispatch SetSelectionEnd and collapse the word onto the pointer.
+	clk.now = clk.now.Add(5 * time.Second)
+	clk.fireDue()
+	require.NoError(t, gui.Update())
+	assert.Empty(t, clk.timers, "a held press in its own cell never arms the repeat")
+	assert.Empty(t, delegate.ends,
+		"no repeat means nothing drags the word selection back to the pointer")
+	anchor, cursor, ok = delegate.selection()
+	require.True(t, ok)
+	assert.Equal(t, wordStart, anchor)
+	assert.Equal(t, wordEnd, cursor)
+
+	delete(mock.pressedButtons, ebiten.MouseButtonLeft)
+	tick(t, gui, clk, 0)
+	require.Equal(t, term.MouseRelease, handled[len(handled)-1].Key)
 }
